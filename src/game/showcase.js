@@ -1410,7 +1410,7 @@ export class Showcase {
           } else {
             if (!L.landed) {
               L.landed = true; c.trigger('land', L.cause === 'outfit' ? 6 : 4.5); this.landT = t; this.fx.crown(0, PED.ink, 0, 0.5, 10, 0.3);
-              // look-specific flourish (no-ops when the character has no such trigger)
+              // look-specific flourish (no-ops until the animation stream adds them — see docs/HALYARD.md requests)
               c.trigger(L.cause === 'outfit' ? 'admire' : L.cause === 'hair' ? 'hairflip' : 'wink');
             }
             if (x > 1.35) this.look = null;
@@ -3027,11 +3027,14 @@ export class Showcase {
     const w = this._dbs.x, h = this._dbs.y;
     const comp = G.post?.composer;
     const b = comp && comp.writeBuffer;
-    if (b && b.isWebGLRenderTarget && b.depthBuffer && b.texture.type !== THREE.UnsignedByteType && Math.abs(b.width - w) <= 1 && Math.abs(b.height - h) <= 1) {
+    // the composer's buffers are single-sampled on Apple GPUs (SMAA runs there instead), but the showcase is composited
+    // after the post chain, so it keeps its own 4× target to stay anti-aliased
+    const want = (G.post?.q?.msaa ?? 4) > 0 ? G.post?.samples || 4 : 0;
+    if (b && b.isWebGLRenderTarget && b.depthBuffer && (b.samples || 0) >= want && b.texture.type !== THREE.UnsignedByteType && Math.abs(b.width - w) <= 1 && Math.abs(b.height - h) <= 1) {
       if (this._rt) { this._rt.dispose(); this._rt = null; }
       return b;
     }
-    if (!this._rt) this._rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: (G.post?.q?.msaa ?? 4) > 0 ? 4 : 0 });
+    if (!this._rt) this._rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: want ? 4 : 0 });
     else if (this._rt.width !== w || this._rt.height !== h) this._rt.setSize(w, h);
     return this._rt;
   }

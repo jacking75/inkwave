@@ -12,6 +12,13 @@
 //   music.setIntensity(0..1);            // adds / removes layers (drums drop to hats-only at low intensity)
 //   music.stop(fade)
 //
+// File-backed tracks: songs/manifest.json (written by `npm run music`, see build/music-manifest.mjs) can supply real
+// recordings for any track id. They stream through <audio> elements into the same music bus, so volume + ducking apply.
+// Today: 'battle' shuffles songs/in game/, 'battle_final' plays songs/now or never/ once (it is timed to the last
+// minute). Ids without files keep their synthesized score.
+//   music.preload('battle')   // start buffering the next pick before it is needed
+//   music.pause() / resume()  // freeze a file track with the match clock (synth tracks only duck)
+//
 // audio.init() attaches the singleton to the real AudioContext's music bus (music._init(ctx, bus)).
 
 /* ============================================================================================================
@@ -1237,11 +1244,58 @@ class Player {
 }
 
 const LOOKAHEAD = 0.16, TICK_MS = 25;
+const OVERTIME_RATE = 1.06;       // Zone Control overtime: recordings run ~1 semitone fast
+const MANIFEST_URL = 'songs/manifest.json';
+
+// One recording, streamed by an <audio> element through Web Audio (gain = loudness match from the manifest × fades).
+class FileTrack {
+  constructor(eng, id, entry) {
+    this.eng = eng; this.id = id; this.entry = entry; this.stopped = false;
+    const el = (this.el = new Audio());
+    el.preload = 'auto';
+    el.src = entry.url;
+    this.src = eng.ctx.createMediaElementSource(el);
+    this.gain = eng.ctx.createGain(); this.gain.gain.value = 0;
+    this.src.connect(this.gain); this.gain.connect(eng.fileOut);
+    this.level = Math.pow(10, (entry.gainDb || 0) / 20);
+    el.addEventListener('ended', () => eng._ended(this));
+  }
+  start(now, fadeIn) {
+    const g = this.gain.gain;
+    g.cancelScheduledValues(now); g.setValueAtTime(0, now); g.linearRampToValueAtTime(this.level, now + Math.max(0.01, fadeIn));
+    this.resume();
+  }
+  pause() { this.el.pause(); }
+  // playback speed (Zone Control overtime); pitch rides with it, like a tape running fast
+  setRate(r) { this.el.preservesPitch = false; this.el.playbackRate = r; }
+  resume() {
+    if (this.stopped) return;
+    const p = this.el.play();
+    if (p && p.catch) p.catch((e) => { if (e.name !== 'AbortError') console.warn('[music] could not play', this.entry.title, e.message); });   // AbortError: we paused it ourselves (a quick track change)
+  }
+  fadeOut(now, dur) {
+    if (this.stopped) return;
+    this.stopped = true;
+    const g = this.gain.gain;
+    g.cancelScheduledValues(now); g.setValueAtTime(g.value, now); g.linearRampToValueAtTime(0, now + dur);
+    setTimeout(() => this.dispose(), (dur + 0.1) * 1000);
+  }
+  dispose() {
+    this.stopped = true;
+    this.el.pause(); this.el.removeAttribute('src'); this.el.load();
+    try { this.src.disconnect(); this.gain.disconnect(); } catch (e) { /* */ }
+  }
+}
 
 export class MusicEngine {
   constructor() {
     this.ctx = null; this.players = []; this.current = null; this.intensity = 1; this._want = undefined;
+    this.files = null; this._bags = {}; this._last = {}; this._preloaded = {};
   }
+  // true when songs/manifest.json lists recordings for this track id
+  hasFile(id) { return !!(this.files && this.files[id] && this.files[id].length); }
+  // id of the recording now playing (null for synth / silence)
+  get fileTrack() { return this.current instanceof FileTrack ? this.current.id : null; }
   get track() { return this.current ? this.current.id : null; }
   get tracks() { return Object.keys(SONGS); }
   now() { return this.offline ? this.vnow : this.ctx.currentTime; }
@@ -1274,7 +1328,19 @@ export class MusicEngine {
     const conv = ctx.createConvolver(); conv.buffer = makeImpulse(ctx, 2.2, 2.4, { seed: 5, bright: 0.7, dark: 0.08 });
     const rOut = g(0.5);
     this.revIn.connect(conv); conv.connect(rOut); rOut.connect(this.mix);
-    this._nodes = [this.mix, hp, comp, this.out, this.dlyIn, dhp, dlp, this.dA, this.dB, fbA, fbB, dOut, pl, pr, this.revIn, conv, rOut];
+    // recordings are mastered already: they bypass the synth's compressor / delay / reverb
+    this.fileOut = g(1); this.fileOut.connect(dest);
+    this._nodes = [this.mix, hp, comp, this.out, this.dlyIn, dhp, dlp, this.dA, this.dB, fbA, fbB, dOut, pl, pr, this.revIn, conv, rOut, this.fileOut];
+    if (!this.offline && typeof fetch === 'function') {
+      fetch(MANIFEST_URL, { cache: 'no-cache' }).then((r) => (r.ok ? r.json() : null))
+        .then((m) => {
+          this.files = (m && m.tracks) || {};
+          // a track that started as synth before the list arrived (the lobby at boot) swaps to its recordings
+          const cur = this.current;
+          if (cur && !(cur instanceof FileTrack) && this.hasFile(cur.id)) { const id = cur.id; this.current = null; cur.fadeOut?.(this.now(), 0.6); this.play(id, { fade: 0.6 }); }
+        })
+        .catch(() => { this.files = {}; });
+    }
     if (!this.offline) this._startTimer();
     const w = this._want; this._want = undefined;
     if (w !== undefined) this.play(w.track, w.opts);
@@ -1313,15 +1379,23 @@ export class MusicEngine {
     // a mode director (e.g. src/audio/bossAudio.js) can re-route requests: remap(track) → track to play instead
     if (this.remap) { try { const r = this.remap(track); if (r !== undefined) track = r; } catch (e) { /* keep the request */ } }
     const fade = Math.max(0, opts.fade ?? 1.0);
-    if (track != null && !SONGS[track]) { console.warn('[music] unknown track', track); return; }
+    if (track != null && !SONGS[track] && !this.hasFile(track)) { console.warn('[music] unknown track', track); return; }
     if (!this.ctx) { this._want = { track, opts }; return; }
     const cur = this.current;
     if (cur && cur.id === track) return;
     const now = this.now();
     if (track == null) { if (cur) cur.fadeOut(now, Math.max(0.03, fade)); this.current = null; return; }
+    if (this.hasFile(track)) {
+      // a recording starts on the spot (the final-minute song is timed to the clock); the old track fades under it
+      const ft = this._take(track);
+      if (cur) cur.fadeOut(now, Math.max(0.03, fade));
+      ft.start(now, 0.05);
+      this.current = ft;
+      return;
+    }
     const song = getSong(track);
     let t0 = now + 0.06, sync = false;
-    if (cur && fade > 0 && cur.song.bpm === song.bpm) { t0 = cur.nextBarTime(now + 0.12); sync = true; }
+    if (cur && fade > 0 && cur.song && cur.song.bpm === song.bpm) { t0 = cur.nextBarTime(now + 0.12); sync = true; }
     const p = new Player(this, track, t0, opts);
     this.players.push(p);
     const beat = 60 / song.bpm;
@@ -1342,6 +1416,50 @@ export class MusicEngine {
     this._tick();
   }
 
+  // Buffer the next pick for a file-backed id so play() starts without a gap.
+  preload(id) {
+    if (!this.ctx || !this.hasFile(id) || this._preloaded[id]) return;
+    this._preloaded[id] = new FileTrack(this, id, this._pick(id));
+  }
+  _take(id) {
+    const ft = this._preloaded[id] || new FileTrack(this, id, this._pick(id));
+    delete this._preloaded[id];
+    return ft;
+  }
+  // shuffle bag: every song plays once before any repeats, and a new round never opens with the song just heard
+  _pick(id) {
+    const list = this.files[id];
+    let bag = this._bags[id];
+    if (!bag || !bag.length) {
+      bag = this._bags[id] = list.map((_, i) => i);
+      for (let i = bag.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [bag[i], bag[j]] = [bag[j], bag[i]]; }
+      if (bag.length > 1 && bag[bag.length - 1] === this._last[id]) bag.unshift(bag.pop());
+    }
+    const i = bag.pop();
+    this._last[id] = i;
+    return list[i];
+  }
+  // a match song ran out: roll straight into the next one ('battle_final' plays once and stops)
+  _ended(ft) {
+    if (this.current !== ft || ft.stopped) return;
+    // overtime outlasts the one-shot final-minute song: roll into the match shuffle (still hurried) instead of silence
+    const id = ft.id === 'battle_final' && this.overtime && this.hasFile('battle') ? 'battle' : ft.id;
+    if (id === 'battle_final') { ft.dispose(); return; }
+    const nx = this._take(id);
+    ft.dispose();
+    nx.start(this.now(), 0.05);
+    if (this.overtime) nx.setRate(OVERTIME_RATE);
+    this.current = nx;
+  }
+  // Zone Control overtime: the playing recording runs a touch fast (the hurry-up), and a song that ends during overtime
+  // rolls on instead of leaving silence. setOvertime(false) only ends the roll-over (new tracks start at normal speed).
+  setOvertime(on) {
+    this.overtime = !!on;
+    if (this.overtime && this.current instanceof FileTrack) this.current.setRate(OVERTIME_RATE);
+  }
+  pause() { if (this.current instanceof FileTrack) this.current.pause(); }
+  resume() { if (this.current instanceof FileTrack) this.current.resume(); }
+
   setIntensity(x) {
     this.intensity = Math.min(1, Math.max(0, +x || 0));
     if (!this.ctx) return;
@@ -1353,6 +1471,9 @@ export class MusicEngine {
 
   dispose() {
     for (const p of this.players) p.dispose();
+    if (this.current instanceof FileTrack) this.current.dispose();
+    for (const ft of Object.values(this._preloaded)) ft.dispose();
+    this._preloaded = {};
     this.players.length = 0; this.current = null;
     if (this.worker) { this.worker.postMessage(0); this.worker.terminate(); this.worker = null; }
     if (this.timer) { clearInterval(this.timer); this.timer = null; }

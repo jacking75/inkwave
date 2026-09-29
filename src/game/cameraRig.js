@@ -1,4 +1,4 @@
-// Camera rig: third-person follow, death spectate, cinematic paths, orbit, judge overview.
+// Camera rig: third-person follow, death spectate, cinematic paths, orbit, judge overview (stream 4).
 //
 // Follow: the pivot rides critically-damped springs toward the character's *visual* position with velocity
 // feed-forward (smooth starts/stops/landings, no steady lag), a little strafe look-ahead, a soft vertical for jumps
@@ -218,7 +218,8 @@ export class CameraRig {
     // map diorama (eased both ways; reverses smoothly if the key is released mid-swoop)
     const inPlay = this.mode === 'follow' || this.mode === 'spectate';
     const want = this.mapOpen && inPlay ? 1 : 0;
-    this.mapK = want > this.mapK ? Math.min(1, this.mapK + dt / 0.42) : Math.max(0, this.mapK - dt / 0.34);
+    // (branch on the target, not on want > mapK: that compare turned a fully open map back down every few frames)
+    this.mapK = want ? Math.min(1, this.mapK + dt / 0.42) : Math.max(0, this.mapK - dt / 0.34);
     if (this.mapK > 1e-4) {
       this._diorama(dt);
       const e = easeInOut(this.mapK);

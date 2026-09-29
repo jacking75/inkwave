@@ -4,7 +4,7 @@ import { G, on, emit, clamp, damp } from './core/ctx.js';
 import { Renderer } from './core/renderer.js';
 import { Input } from './core/input.js';
 import { mapTheme,
-  DEFAULT_SETTINGS, QUALITY, TEAM_PALETTES, COLORBLIND_PALETTE, TEAM_NAMES, WEAPONS, WEAPON_ORDER, SUB, SPECIALS,
+  DEFAULT_SETTINGS, QUALITY, TEAM_PALETTES, COLORBLIND_PALETTE, TEAM_NAMES, WEAPONS, WEAPON_ORDER, WEAPON_SUCCESSOR, ZONES, SUB, SUBS, SUB_ORDER, SPECIALS, SPECIAL_ORDER,
   MAPS, DIFFICULTY, PLAYER, PROGRESSION, VERSION, MATCH, OFFLINE_MAPS, mapOfflineOk, mapNoBots, mapBossOk,
 } from './config.js';
 import { Level } from './world/level.js';
@@ -16,13 +16,18 @@ import { Decor } from './world/decor.js';
 import { createMuralTexture } from './world/murals.js';
 import { layoutThumbSVG } from './world/mapThumb.js';
 import { dressingFor } from './world/dressing.js';
+import { inMode, layoutFor, variantKey } from './world/variants.js';
+import './game/kits/index.js';   // kit weapons + subs register themselves (game/kits/registry.js)
 import { Physics, Hit } from './game/physics.js';
 import { NavGraph } from './game/nav.js';
 import { Projectiles } from './game/weapons.js';
+import { SubSystem } from './game/subs.js';
+import { SpecialSystem } from './game/specials.js';
 import { CameraRig } from './game/cameraRig.js';
 import { Match } from './game/match.js';
 import { Minimap } from './game/minimap.js';
 import { Showcase } from './game/showcase.js';
+import { ZoneMarks } from './fx/zoneMarks.js';
 import { BOSS_MODE } from './boss/bossMode.js';
 
 const params = new URLSearchParams(location.search);
@@ -30,6 +35,7 @@ const params = new URLSearchParams(location.search);
 // solo offline (never with bots); without it such a stage only ever loads for an online match
 const DEV_STAGE = params.has('devstage');
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+const REFRESH_RATES = [30, 48, 50, 60, 75, 90, 100, 120, 144, 165, 240]; // common display rates (Hz)
 
 // ------------------------------------------------------------------------------------------ persistence
 function loadJSON(key, def) { try { const v = JSON.parse(localStorage.getItem(key)); return v ? { ...def, ...v } : { ...def }; } catch { return { ...def }; } }
@@ -51,9 +57,15 @@ class Game {
     // real top-down thumbnails for the stage cards, generated from each layout's geometry
     for (const m of MAPS) { try { m.thumb = layoutThumbSVG(MAP_LAYOUTS[m.layout || m.id], m.theme); } catch (e) { console.warn('thumb', m.id, e); } }
     this.settings = G.settings = loadJSON('inkwave.settings', DEFAULT_SETTINGS);
+    // desktop app: the window's fullscreen state is owned by the native shell; mirror it into settings for the menu
+    if (window.inkwaveNative) {
+      this.settings.fullscreen = window.inkwaveNative.isFullScreen();
+      window.inkwaveNative.onFullScreenChange((on) => { this.settings.fullscreen = on; });
+    }
     // v1.1: fov became horizontal — migrate old vertical values once
     if (this.settings.fovMode !== 'h') { this.settings.fov = DEFAULT_SETTINGS.fov; this.settings.fovMode = 'h'; saveJSON('inkwave.settings', this.settings); }
     this.profile = loadJSON('inkwave.profile', DEFAULT_PROFILE);
+    if (WEAPON_SUCCESSOR[this.profile.weapon]) this.profile.weapon = WEAPON_SUCCESSOR[this.profile.weapon];   // retired weapons
     const app = document.getElementById('app');
     this.uiRoot = document.getElementById('ui-root');
     this.fadeEl = document.getElementById('fade');
@@ -109,6 +121,7 @@ class Game {
       this.texlib = await createTextureLibrary(G.renderer, { size: q.paintAtlas >= 4096 ? 512 : 256 });
     } catch (e) { console.error('[inkwave] texture library failed — procedural fallback', e); this.texlib = null; }
     await this._buildWorld(map);
+    this.zoneMarks = new ZoneMarks(scene);   // Zone Control ground markings: build / clear themselves on 'match:state'
     await progress(0.4, 'Filling the harbor…');
     const B = G.level.bounds;
     G.env = new envMod.Environment(G.renderer, scene, { bounds: B, theme: this.theme, shadowSize: q.shadowSize, footprint: this._footprint(G.level) });
@@ -118,6 +131,8 @@ class Game {
     G.renderer.toneMappingExposure = 0.94;
     await progress(0.55, 'Teaching squids to swim…');
     G.projectiles = new Projectiles(scene);
+    G.subs = new SubSystem(scene);
+    G.specials = new SpecialSystem(scene);
     G.fx = new fxMod.FX(scene, { quality: q });
     G.fx.setLighting?.(G.env.getSkyColors?.());
     this._applyNight();
@@ -131,7 +146,7 @@ class Game {
     this._tmpV = new THREE.Vector3(); this._tmpC = new THREE.Color();
     this.rig = new CameraRig(camera);
     G.post = this.R; G.game = this; G.rig = this.rig;
-    // optional modules the VFX / screen-FX modules (absent = skipped)
+    // optional modules owned by the VFX / screen-FX work streams (absent = skipped)
     try { const m = await import('./fx/fxHooks.js'); this.fxHooks = m.initFxHooks?.(G) || null; } catch (e) { if (!/Failed to fetch|Cannot find module|404/i.test(String(e))) console.error('[inkwave] fxHooks', e); }
     try { const m = await import('./fx/screenfx.js'); this.screenfx = m.ScreenFX ? new m.ScreenFX(this.R, G) : null; } catch (e) { if (!/Failed to fetch|Cannot find module|404/i.test(String(e))) console.error('[inkwave] screenfx', e); }
     this.showcase = new Showcase(G.renderer, this.CharacterClass);
@@ -162,8 +177,11 @@ class Game {
     // the online hub / lobby set loads in the background once the menus are idle (no arena flash on the first visit)
     if (!params.has('autostart')) setTimeout(() => { if (G.mode === 'menu') this.showcase.preloadLobby?.(); }, 2500);
     this._applyAudioVolumes();
-    requestAnimationFrame(() => this._loop());
-    if (params.has('autostart')) this.api.startMatch({ mapId: map.id, difficulty: params.get('difficulty') || this.settings.difficulty, duration: +params.get('autostart') || undefined, mode: params.get('mode') === 'boss' ? 'boss' : 'turf' });
+    requestAnimationFrame((t) => this._loop(t));
+    if (params.has('autostart')) {
+      const pm = params.get('mode');
+      this.api.startMatch({ mapId: map.id, difficulty: params.get('difficulty') || this.settings.difficulty, duration: +params.get('autostart') || undefined, mode: pm === 'boss' || pm === 'zones' ? pm : 'turf' });
+    }
     this.bootMs = Math.round(performance.now() - t0);
     window.__inkwave = this; // debug/audit hook
     window.__G = G;
@@ -172,7 +190,7 @@ class Game {
       paintRandom: (n = 400) => { const v = new THREE.Vector3(); for (let i = 0; i < n; i++) { v.set((Math.random() - 0.5) * 48, 0.4, (Math.random() - 0.5) * 86); G.paint.splat(v, 0.8 + Math.random() * 1.4, Math.random() < 0.5 ? 0 : 1); } },
       // deterministic stepping for audits: freeze(), then step(ms) advances the sim at a fixed 60 Hz and renders once
       freeze: () => { this.frozen = true; },
-      unfreeze: () => { this.frozen = false; this.timer.update(); },
+      unfreeze: () => { this.frozen = false; this.timer.update(this._lastTs); },
       step: (ms = 16.7) => {
         const n = Math.max(1, Math.round(ms / (1000 / 60)));
         this._skipRender = true;
@@ -188,15 +206,24 @@ class Game {
 
   // Build (or rebuild) everything that depends on the stage layout: level, collision, paint atlas, surface material,
   // decor, navigation graph and minimap. Environment/FX/projectiles persist across stages.
-  async _buildWorld(map) {
+  // mode: 'turf' | 'zones' — a stage with Zone Control-only pieces (variants.js) builds a separate world for that mode
+  async _buildWorld(map, mode = 'turf') {
     const scene = G.scene;
     const layoutId = map.layout || map.id;
-    if (this.layoutId === layoutId) { this.mapDef = map; return; }
+    const worldKey = variantKey(layoutId, MAP_LAYOUTS[layoutId], dressingFor(layoutId), mode);
+    if (this.worldKey === worldKey) { this.mapDef = map; return; }
+    // the rebuild awaits (lightmap fetch) between swapping G.level and G.paint: hold the simulation until every
+    // stage-dependent system matches, or a frame in between raycasts the new level and samples the old paint atlas
+    this._building = true;
+    try { await this._buildWorldNow(map, scene, layoutId, mode, worldKey); } finally { this._building = false; }
+  }
+  async _buildWorldNow(map, scene, layoutId, mode = 'turf', worldKey = layoutId) {
+    this.zoneMarks?.clear();   // zone markings belong to the old stage's faces
     if (this.levelMesh) { scene.remove(this.levelMesh, this.grateMesh); this.levelMesh.geometry.dispose(); this.grateMesh?.geometry.dispose(); this.levelMat.dispose(); this.grateMat?.dispose(); }
     if (this.decor) { scene.remove(this.decor.group); }
     if (this.props) { this.props.dispose?.(); this.props = null; }
     G.paint?.dispose();
-    this.layoutId = layoutId;
+    this.layoutId = layoutId; this.worldKey = worldKey;
     this.mapDef = map;
     const q = QUALITY[this.settings.quality] || QUALITY.high;
     // set dressing first: solid props hand back collision boxes that become part of the level (physics, nav, paint)
@@ -205,17 +232,18 @@ class Game {
       try {
         this.props = new this.PropKit(scene, { castShadow: true, quality: this.settings.quality });
         for (const it of dressingFor(layoutId)) {
+          if (!inMode(it, mode)) continue;
           const r = this.props.add(it.type, it);
           if (r && r.colliders) colliders.push(...r.colliders);
         }
         this.props.build();
       } catch (e) { console.error('[inkwave] props failed', e); this.props = null; }
     }
-    const level = (G.level = new Level(MAP_LAYOUTS[layoutId], colliders));
+    const level = (G.level = new Level(layoutFor(MAP_LAYOUTS[layoutId], mode), colliders));
     G.physics = new Physics(level);
-    const lightmap = await this._loadLightmap(level, layoutId);
-    this.murals.userData.setStage?.(layoutId);   // the mural atlas's stage decals (ids 4…11) for this layout
+    const lightmap = await this._loadLightmap(level, worldKey);
     G.paint = new PaintSystem(G.renderer, level, { atlasSize: q.paintAtlas, maxDensity: q.paintAtlas >= 4096 ? 30 : 18 });
+    this.murals.userData.setStage?.(layoutId);   // stage decals (murals.js) before the material reads the table
     this.levelMat = createLevelMaterial(G.paint.texture, G.paint.size, this.murals, { lightmap, texlib: this.texlib });
     (this.swimWake || (this.swimWake = new SwimWake())).reset();
     this.levelMesh = new THREE.Mesh(level.buildGeometry(G.paint.size), this.levelMat);
@@ -254,12 +282,12 @@ class Game {
     }
   }
 
-  // deck slabs over the sea: axis-aligned boxes as {minX..maxZ}, boxes turned about Y (Cargo Terminal's berth) as oriented
-  // rects {cx, cz, hx, hz, ax, az} (environment.js orect); ramps and other tilted blocks never count
+  // deck slabs (top at deck level, bottom in the sea) for the environment: axis-aligned boxes and boxes turned about Y
+  // (obox) as oriented rects — centre (cx, cz), half extents (hx, hz), local x axis (ax, az) — plus their XZ AABB
   _footprint(level) {
-    return level.blocks.filter((b) => (b.aligned || b.axes[1].y > 0.9999) && b.aabbMax.y < 0.01 && b.aabbMax.y > -2.5 && b.aabbMin.y < -1)
-      .map((b) => (b.aligned ? { minX: b.aabbMin.x, maxX: b.aabbMax.x, minZ: b.aabbMin.z, maxZ: b.aabbMax.z }
-        : { cx: b.center.x, cz: b.center.z, hx: b.half.x, hz: b.half.z, ax: b.axes[0].x, az: b.axes[0].z }));
+    return level.blocks.filter((b) => (b.aligned || Math.abs(b.axes[1].y) > 0.9999) && b.aabbMax.y < 0.01 && b.aabbMax.y > -2.5 && b.aabbMin.y < -1)
+      .map((b) => ({ minX: b.aabbMin.x, maxX: b.aabbMax.x, minZ: b.aabbMin.z, maxZ: b.aabbMax.z,
+        ...(b.aligned ? {} : { cx: b.center.x, cz: b.center.z, hx: b.half.x, hz: b.half.z, ax: b.axes[0].x, az: b.axes[0].z }) }));
   }
 
   _warmup() {
@@ -320,7 +348,7 @@ class Game {
     const self = this;
     const api = (this.api = {
       version: VERSION,
-      weapons: WEAPONS, weaponOrder: WEAPON_ORDER, specials: SPECIALS, sub: SUB.bomb, maps: MAPS, difficulties: DIFFICULTY,
+      weapons: WEAPONS, weaponOrder: WEAPON_ORDER, specials: SPECIALS, specialOrder: SPECIAL_ORDER, sub: SUB.bomb, subs: SUBS, subOrder: SUB_ORDER, maps: MAPS, difficulties: DIFFICULTY,
       getSettings: () => ({ ...self.settings }),
       setSettings: (partial) => self._setSettings(partial),
       getProfile: () => {
@@ -330,13 +358,26 @@ class Game {
       setProfileName: (n) => { self.profile.name = String(n || 'Player').slice(0, 16); saveJSON('inkwave.profile', self.profile); },
       // locker look ({ hair, skin, outfit, eyes, hat, brows, … } — indices into character-style.js tables)
       setProfileStyle: (st) => { self.profile.style = { ...(st || {}) }; saveJSON('inkwave.profile', self.profile); },
-      getLoadout: () => ({ weapon: self.profile.weapon || 'shooter' }),
-      setLoadout: ({ weapon }) => {
-        if (!WEAPONS[weapon]) return;
-        self.profile.weapon = weapon; saveJSON('inkwave.profile', self.profile);
-        if (self.menus?.current === 'loadout') self.showcase.showLoadout(weapon, G.teamColors[0], self.profile.style);
+      getLoadout: () => ({ weapon: self.profile.weapon || 'shooter', sub: self._subFor(self.profile.weapon), special: self._specialFor(self.profile.weapon) }),
+      setLoadout: ({ weapon, sub, special }) => {
+        if (weapon !== undefined) {
+          if (!WEAPONS[weapon]) return;
+          self.profile.weapon = weapon;
+        }
+        if (sub !== undefined) self.profile.sub = SUBS[sub] ? sub : null;
+        if (special !== undefined) self.profile.special = SPECIALS[special] ? special : null;
+        saveJSON('inkwave.profile', self.profile);
+        if (self.menus?.current === 'loadout' && weapon !== undefined) self.showcase.showLoadout(weapon, G.teamColors[0], self.profile.style);
+        self._applyPracticeLoadout();   // in practice the new kit is in your hands straight away
       },
       startMatch: (o) => self.startMatch(o),
+      // practice: solo on a random stage (no enemies, no clock); the loadout can be changed mid-session
+      startPractice: (o) => self.startPractice(o),
+      isPractice: () => self._inPractice(),
+      practiceInfo: () => (self._inPractice() ? { map: self.mapDef.name, weapon: self.match.local?.weaponId, sub: self.match.local?.subId, special: self.match.local?.specialId } : null),
+      practiceReset: () => self.practiceReset(),
+      practiceNewStage: () => self.startPractice(),
+      quitPractice: () => self.quitToMenu('loadout'),
       resumeMatch: () => self.resume(),
       // online results: the host can take the room back to the lobby without waiting out the timer
       netBackToLobby: () => { if (G.netm && G.net?.isHost && self.match?.state === 'results') { clearTimeout(self._netEndT); G.netm.sendEnd(); self.netMatchEnd(); } },
@@ -349,16 +390,27 @@ class Game {
     return api;
   }
 
+  // the loadout's sub: the one picked in the loadout, else the weapon's own default
+  _subFor(weapon) { return (SUBS[this.profile.sub] && this.profile.sub) || (WEAPONS[weapon || 'shooter'] || WEAPONS.shooter).sub || 'bomb'; }
+  // the loadout's special: the one picked in the loadout, else the weapon's own
+  _specialFor(weapon) { return (SPECIALS[this.profile.special] && this.profile.special) || (WEAPONS[weapon || 'shooter'] || WEAPONS.shooter).special || 'slam'; }
+
   _setSettings(partial) {
     Object.assign(this.settings, partial);
     saveJSON('inkwave.settings', this.settings);
     if ('quality' in partial || 'shadows' in partial || 'bloom' in partial) this.R?.applySettings(this.settings);
+    if ('fullscreen' in partial && window.inkwaveNative) window.inkwaveNative.setFullScreen(!!partial.fullscreen);
     if ('master' in partial || 'music' in partial || 'sfx' in partial) this._applyAudioVolumes();
     if ('colorblind' in partial && G.mode !== 'match') this._setPalette(this._pickPalette());
   }
   _applyAudioVolumes() { G.audio?.setVolumes?.({ master: this.settings.master, music: this.settings.music, sfx: this.settings.sfx }); }
 
   _onScreen(s) {
+    // the loadout opened mid-practice sits over the live stage: tuck the HUD away while it's up
+    if (G.mode === 'match' && this.hud) {
+      const hide = s === 'loadout';
+      if (hide !== !!this._hudTucked) { this._hudTucked = hide; this.hud.setVisible(!hide); }
+    } else this._hudTucked = false;
     if (!this.showcase) return;
     if (s === 'loadout') this.showcase.showLoadout(this.profile.weapon || 'shooter', G.teamColors[0], this.profile.style);
     else if (s !== 'results') { if (this.showcase.mode === 'loadout') this.showcase.hide(); }
@@ -368,7 +420,14 @@ class Game {
       }
     }
   }
-  _playMusic(t) { this._musicTrack = t; try { G.music?.play(t, { fade: 1.2 }); } catch (e) { /* not initialised yet */ } }
+  _playMusic(t) {
+    this._musicTrack = t;
+    try {
+      G.music?.play(t, { fade: 1.2 });
+      // asking for the track that's already current is a no-op — if it was left paused, un-pause it (unless we're paused)
+      if (t && !this.match?.paused) G.music?.resume?.();
+    } catch (e) { /* not initialised yet */ }
+  }
 
   // ---------------------------------------------------------------------------------------- input routing
   _onKey(e, repeat) {
@@ -376,6 +435,7 @@ class Game {
     if (!this._audioOn) { this._audioOn = true; G.audio?.init?.(); this._applyAudioVolumes(); this._playMusic(this.menus?.current === 'title' || !this.menus ? 'title' : 'menu'); }
     if (G.mode === 'match' && this.match && !this.match.paused && !this.menus?.current) {
       if (e.code === 'Escape' || e.code === 'KeyP') { this.pause(); return true; }
+      if (e.code === 'KeyL' && this.match.practice && !repeat) { this.openPracticeLoadout(); return true; }
       return false;
     }
     if (this.menus && this.menus.current) return this.menus.handleKey(e) || false;
@@ -384,10 +444,9 @@ class Game {
   _onPointerUnlock() {
     // only a live round pauses on focus loss; intro / time's up / judge / results release the mouse on purpose.
     // Holding the map is never a reason to pause (some browsers/embeds steal focus on TAB): relock on the next click.
-    if (this.match?.controller?.mapHeld || this.rig.mapK > 0) { this._relock = true; return; }
+    if (this.match?.controller?.mapHeld || (this.rig?.mapK ?? 0) > 0) { this._relock = true; return; }
     if (G.mode === 'match' && this.match && !this.match.paused && this.match.state === 'playing' && !this.menus?.current) this.pause();
   }
-
   // pull the fog back while the view is overhead (the stage is ~150 m away up there), restore it exactly after
   _dioFog() {
     const f = G.scene?.fog, k = this.rig.mapK;
@@ -398,6 +457,7 @@ class Game {
       f.near = this._fog0.near + 190 * e; f.far = this._fog0.far + 600 * e;
     } else if (this._fog0) { f.near = this._fog0.near; f.far = this._fog0.far; this._fog0 = null; }
   }
+
 
   // ---------------------------------------------------------------------------------------- events → HUD/audio
   _bindEvents() {
@@ -438,6 +498,7 @@ class Game {
     on('actor:removed', ({ actor }) => { if (this.match && !this.match.attract) this.hud?.feed({ text: `${actor.name} left the match`, color: G.teamHex[actor.team], kind: 'info' }); });
     on('splatted', ({ victim, attacker, cause }) => {
       if (!this.match || this.match.attract) return;
+      this._addDeathMark(victim);
       const local = this.match.local;
       if (attacker?.isLocal) {
         G.audio?.play('splat_enemy', { volume: 0.9 });
@@ -445,8 +506,9 @@ class Game {
       } else if (victim.isLocal) {
         G.audio?.play('splatted_self');
         G.audio?.duck?.(0.45, 2.2);
-        const by = attacker ? attacker.name : cause === 'water' ? 'the sea' : 'enemy ink';
-        this.hud?.showSplatted({ by, byColor: attacker ? G.teamHex[attacker.team] : '#6fd0ff', respawn: PLAYER.respawnTime });
+        // the card shows what did it (hud.js splatCause): the attacker's main weapon, or the sub / special / the sea
+        const by = attacker ? attacker.name : cause === 'water' ? null : 'enemy ink';
+        this.hud?.showSplatted({ by, byColor: attacker ? G.teamHex[attacker.team] : '#6fd0ff', respawn: PLAYER.respawnTime, attacker: attacker || null, cause });
         this.rig.mode = 'spectate';
         this.rig.spectate = { actor: attacker && attacker.alive ? attacker : null, pos: victim.pos.clone(), from: victim.pos.clone() };
         this.rig.lookAt.copy(victim.pos);
@@ -459,7 +521,11 @@ class Game {
     });
     on('respawn', ({ actor }) => {
       if (!this.match || this.match.attract) return;
-      if (actor.isLocal) { this.hud?.hideSplatted(); this.rig.follow(actor, true); this.rig.yaw = actor.yaw; this.rig.pitch = -0.12; }
+      if (actor.isLocal) {
+        this.hud?.hideSplatted(); this.rig.follow(actor, true); this.rig.yaw = actor.yaw; this.rig.pitch = -0.12;
+        // a Super Jump planned on the TAB map while splatted launches now (normal charge + flight)
+        this.match.controller?.launchQueuedJump?.();
+      }
     });
     on('special:ready', ({ actor }) => {
       if (actor.isLocal && !this.match?.attract) { G.audio?.play('special_ready'); }
@@ -485,14 +551,19 @@ class Game {
       if (match.attract || match !== this.match) return;
       if (state === 'intro') this._intro();
       if (state === 'playing') {
-        this.hud?.banner('go'); G.audio?.play('go_horn');
+        if (!match.practice) { this.hud?.banner('go'); G.audio?.play('go_horn'); }
         if (match.mode !== 'boss') this._playMusic('battle');   // boss mode: the boss audio director scores it by phase
         if (this.match.local) { this.rig.follow(this.match.local, true); }
       }
       if (state === 'finish') {
         const bossWon = match.mode === 'boss' && match.boss?.dead;   // the defeat already had its moment (boss:defeat)
         this.hud?.banner('timesup');
-        if (!bossWon) { G.audio?.play('times_up'); if (match.mode !== 'boss') { G.music?.stop?.(0.4); this._musicTrack = null; } }
+        if (!bossWon) G.audio?.play('times_up');
+        if (match.mode !== 'boss') {
+          // the final-minute recording is timed to ring out just past the horn; anything else stops here
+          if (G.music?.fileTrack !== 'battle_final') G.music?.stop?.(0.4);
+          this._musicTrack = null;
+        }
         this.input.exitLock();
         if (match.boss) this._bossFinishCam(match.boss);
       }
@@ -500,11 +571,40 @@ class Game {
     });
   }
 
+  // ---------------------------------------------------------------------------------------- death markers
+  // A squid-skull in the victim's ink where anyone (either team) was splatted, MATCH.deathMarkLife s, fading out at the
+  // end. One fixed pool, reused (no per-frame allocation): the HUD draws the world-view and minimap marks from it
+  // (positions filled in _updateHud), the TAB map diorama its own (G.deathMarks).
+  _deathPool() {
+    return this.deathMarks || (this.deathMarks = G.deathMarks = Array.from({ length: 12 }, () => (
+      { on: false, id: 0, x: 0, y: 0, z: 0, team: 0, name: '', ally: false, local: false, t: 0, k: 0, sx: 0, sy: 0, sc: 1, vis: false, mx: 0, my: 0 })));
+  }
+  _addDeathMark(victim) {
+    const pool = this._deathPool();
+    let d = pool.find((o) => !o.on);
+    if (!d) d = pool.reduce((o, b) => (b.t > o.t ? b : o));   // all showing: recycle the oldest
+    const p = victim.pos;
+    this._dmId = (this._dmId || 0) + 1;
+    d.on = true; d.id = this._dmId; d.t = 0; d.k = 1; d.vis = false;
+    d.x = p.x; d.y = Math.max(p.y, PLAYER.waterY + 0.1); d.z = p.z;   // lost at sea: on the water where they went in
+    d.team = victim.team; d.name = victim.name || ''; d.local = !!victim.isLocal;
+  }
+  _ageDeathMarks(dt) {
+    const life = MATCH.deathMarkLife ?? 5, fade = MATCH.deathMarkFade ?? 1.3;
+    for (const d of this._deathPool()) {
+      if (!d.on) continue;
+      d.t += dt;
+      if (d.t >= life) { d.on = false; continue; }
+      d.k = d.t > life - fade ? (life - d.t) / fade : 1;
+    }
+  }
+  _clearDeathMarks() { for (const d of this._deathPool()) d.on = false; }
+
   // ---------------------------------------------------------------------------------------- attract mode
   _startAttract() {
     if (this.match) this.match.dispose();
     this.rig.dioFlip = false;
-    G.projectiles.clear(); G.fx.clear?.(); G.paint.clear();
+    G.projectiles.clear(); G.subs.clear(); G.specials.clear(); G.fx.clear?.(); G.paint.clear(); this._clearDeathMarks();
     // (a humans-only stage — after an online match there — idles with nobody on it; ?devstage stands idle kids there
     // for the render audits)
     const m = (this.match = G.match = new Match({ attract: true, duration: 99999, difficulty: 'normal', CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
@@ -554,22 +654,28 @@ class Game {
   }
 
   async startMatch(o = {}) {
+    const practice = !!o.practice;
     const opts = {
       mapId: o.mapId === 'sunset' ? 'tidewater' : (o.mapId || this.mapDef.id),
       time: o.mapId === 'sunset' ? 'dusk' : (o.time || this.time || 'day'),
       difficulty: o.difficulty || this.settings.difficulty,
-      mode: o.mode === 'boss' ? 'boss' : 'turf',
+      // Zone Control / Boss Battle from the stage select's MODE; practice is always turf
+      mode: o.practice ? 'turf' : o.mode === 'zones' ? 'zones' : o.mode === 'boss' ? 'boss' : 'turf',
     };
-    opts.duration = o.duration || (opts.mode === 'boss' ? BOSS_MODE.duration : this.settings.matchLength || MATCH.defaultDuration);
-    this.lastMatchOpts = opts;
+    opts.duration = opts.mode === 'zones' ? (o.duration || ZONES.duration) : opts.mode === 'boss' ? (o.duration || BOSS_MODE.duration)
+      : Math.min(MATCH.maxDuration, o.duration || this.settings.matchLength || MATCH.defaultDuration);
+    if (!practice) this.lastMatchOpts = opts;
     G.audio?.init?.();
+    G.audio?.duck?.(1, 0.01);   // a new stage picked from the practice pause menu starts un-ducked
     this.input.requestLock();
     this.menus?.show(null);
     await this._fade(1, 350);
     G.music?.stop?.(0.3); this._musicTrack = null;
+    // start buffering this round's match song and the final-minute song while the world loads
+    G.music?.preload?.('battle'); if (!practice) G.music?.preload?.('battle_final');
     this.showcase.hide();
     if (this.match) this.match.dispose();
-    G.projectiles.clear(); G.fx.clear?.(); G.paint.clear();
+    G.projectiles.clear(); G.subs.clear(); G.specials.clear(); G.fx.clear?.(); G.paint.clear(); this._clearDeathMarks();
     let map = MAPS.find((m) => m.id === opts.mapId) || MAPS[0];
     // offline never plays an online-only stage (the menus don't offer one; a stray ?autostart / api call falls back)
     if (!mapOfflineOk(map.id) && !DEV_STAGE) {
@@ -578,7 +684,7 @@ class Game {
       map = OFFLINE_MAPS[0];
     }
     if (opts.mode === 'boss' && !mapBossOk(map.id)) opts.mode = 'turf';
-    if ((map.layout || map.id) !== this.layoutId) await this._buildWorld(map);
+    await this._buildWorld(map, opts.mode);   // no-op when this stage (+ mode variant) is already built
     const theme = mapTheme(map, opts.time);
     this.time = opts.time === 'dusk' ? 'dusk' : 'day';
     if (theme !== this.theme) {
@@ -591,7 +697,7 @@ class Game {
     this.mapDef = map;
     this._setPalette(this._pickPalette());
     const m = (this.match = G.match = new Match({
-      attract: false, duration: opts.duration, difficulty: opts.difficulty, mode: opts.mode, weapon: this.profile.weapon || 'shooter',
+      attract: false, practice, duration: opts.duration, mode: opts.mode, difficulty: opts.difficulty, weapon: this.profile.weapon || 'shooter', sub: this._subFor(this.profile.weapon), special: this._specialFor(this.profile.weapon),
       playerName: this.profile.name || 'Player', CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
       autopilot: params.has('autopilot'), style: this.profile.style || null, noBots: mapNoBots(map.id),   // (devstage: a solo walk)
     }));
@@ -601,8 +707,62 @@ class Game {
     G.mode = 'match';
     this.hud?.setVisible(false);
     this.hudPrompt = null; this._hintT = 0; this._hints = {};
+    this.hud?.setPractice?.(practice);
     m.start();
+    if (practice) {
+      // no intro fly-over: straight in, special charged so it can be tried right away
+      if (m.local) m.local.special = m.local.specialCost();
+      this.hud?.setVisible(true);
+    }
     this._fade(0, 500);
+  }
+
+  _inPractice() { return !!(this.match && this.match.practice && G.mode === 'match'); }
+
+  // a random stage (a different one from the current, when there's a choice)
+  startPractice(o = {}) {
+    const pool = OFFLINE_MAPS.filter((m) => m.id !== this.mapDef?.id);   // (never an online-only stage)
+    const map = (o.mapId && OFFLINE_MAPS.find((m) => m.id === o.mapId)) || pool[(Math.random() * pool.length) | 0] || OFFLINE_MAPS[0];
+    return this.startMatch({ mapId: map.id, practice: true });
+  }
+
+  // practice: open the loadout screen straight from play (Esc on it drops you back in)
+  openPracticeLoadout() {
+    const m = this.match;
+    if (!this._inPractice() || m.paused || m.state !== 'playing') return;
+    m.paused = true;
+    this.input.exitLock();
+    this.menus?.show('loadout', { under: ['pause'], quick: true });
+    G.audio?.duck?.(0.5, 99);
+    G.music?.pause?.();
+  }
+
+  // equip the profile's loadout on the practising player (called whenever the loadout changes)
+  _applyPracticeLoadout() {
+    if (!this._inPractice()) return;
+    const a = this.match.local;
+    if (!a) return;
+    const w = this.profile.weapon || 'shooter', sub = this._subFor(w), sp = this._specialFor(w);
+    if (a.weaponId !== w || a.specialId !== sp) {
+      G.specials.end(a, 'swap');
+      a.specialActive = null;
+      if (a.weaponId !== w) a.setWeapon(w);
+      a.setSpecial(sp);
+      a.special = a.specialCost();
+    }
+    if (a.subId !== sub) a.setSub(sub);
+    a.ink = PLAYER.inkMax;
+  }
+
+  // practice: wipe the stage clean and drop back in at spawn with full ink and special
+  practiceReset() {
+    if (!this._inPractice()) return;
+    const a = this.match.local;
+    G.projectiles.clear(); G.subs.clear(); G.specials.clear(); G.fx.clear?.(); G.paint.clear(); this._clearDeathMarks();
+    if (!a) return;
+    a.respawn();
+    a.special = a.specialCost();
+    a.stats.turf = 0; a.stats.splats = 0; a.stats.deaths = 0; a.stats.specials = 0;
   }
 
   // ---- online (src/net/session.js drives these) -----------------------------------------------------------------
@@ -614,9 +774,9 @@ class Game {
     G.music?.stop?.(0.3); this._musicTrack = null;
     this.showcase.hide();
     if (this.match) this.match.dispose();
-    G.projectiles.clear(); G.fx.clear?.(); G.paint.clear();
+    G.projectiles.clear(); G.subs.clear(); G.specials.clear(); G.fx.clear?.(); G.paint.clear(); this._clearDeathMarks();
     const map = MAPS.find((m) => m.id === cfg.map) || MAPS[0];
-    if ((map.layout || map.id) !== this.layoutId) await this._buildWorld(map);
+    await this._buildWorld(map, cfg.mode);   // no-op when this stage (+ mode variant) is already built
     const theme = mapTheme(map, cfg.time);
     this.time = cfg.time === 'dusk' ? 'dusk' : 'day';
     if (theme !== this.theme) {
@@ -719,6 +879,7 @@ class Game {
     this.input.exitLock();
     this.menus?.show('pause');
     G.audio?.duck?.(0.5, 99);
+    G.music?.pause?.(); // a recording holds its place so the final-minute song stays in step with the clock
   }
   resume() {
     if (!this.match) return;
@@ -727,8 +888,9 @@ class Game {
     if (this.match.controller) this.match.controller.enabled = true;
     this.input.requestLock();
     G.audio?.duck?.(1, 0.01);
+    G.music?.resume?.();
   }
-  async quitToMenu() {
+  async quitToMenu(screen = 'main') {
     clearTimeout(this._netEndT);
     if (G.net && G.net.state !== 'offline' && G.net.state !== 'error') G.net.leave();
     this.input.exitLock();
@@ -740,7 +902,8 @@ class Game {
     G.mode = 'menu';
     this._setPalette(this._pickPalette());
     this._startAttract();
-    this.menus?.show('main');
+    this.hud?.setPractice?.(false);
+    this.menus?.show(screen);
     this._playMusic('menu');
     G.audio?.duck?.(1, 0.01);
     this._fade(0, 500);
@@ -816,7 +979,15 @@ class Game {
     this.rig.overview();
     this.hud?.setVisible(true);
     const cov = m.result.coverage;
-    const judgeP = this.hud?.judge({ colors: [G.teamHex[0], G.teamHex[1]], percents: [cov[0] * 100, cov[1] * 100], names: this.palette.names || TEAM_NAMES });
+    // Zone Control: the final counts (the scores) and each team's leftover penalty (shown apart, like the HUD's "+N"), winner and how it was won
+    let zr = null;
+    if (m.mode === 'zones' && m.zones && m.result.mode === 'zones') {
+      const zs = m.zones.state();
+      zr = { counts: [...zs.count], penalty: zs.penalty.map((p) => Math.max(0, Math.ceil(p - 1e-6))), winner: m.result.winner, reason: m.result.reason || 'time', overtime: !!m.result.overtime, overtimeT: zs.overtimeT };
+    }
+    const judgeP = zr
+      ? this.hud?.judge({ mode: 'zones', colors: [G.teamHex[0], G.teamHex[1]], names: this.palette.names || TEAM_NAMES, counts: zr.counts, penalty: zr.penalty, winner: zr.winner, reason: zr.reason, overtime: zr.overtime, percents: [cov[0] * 100, cov[1] * 100] })
+      : this.hud?.judge({ colors: [G.teamHex[0], G.teamHex[1]], percents: [cov[0] * 100, cov[1] * 100], names: this.palette.names || TEAM_NAMES });
     await (judgeP || new Promise((r) => setTimeout(r, 4000)));
     const myTeam = m.local ? m.local.team : 0;
     const won = m.result.winner === myTeam;
@@ -826,16 +997,26 @@ class Game {
     const local = m.local;
     const p = this.profile;
     const turf = Math.round(local.stats.turf);
-    const gained = Math.round((won ? PROGRESSION.xpWin : PROGRESSION.xpLose) + turf * PROGRESSION.xpPerTurfPoint + local.stats.splats * PROGRESSION.xpPerSplat);
+    let gained = Math.round((won ? PROGRESSION.xpWin : PROGRESSION.xpLose) + turf * PROGRESSION.xpPerTurfPoint + local.stats.splats * PROGRESSION.xpPerSplat);
+    let xpParts = null;
+    if (zr) {
+      // Zone Control: less per point of turf (a 5 min match), extra for ink laid on the live zone, a knockout bonus
+      const ZX = PROGRESSION.zones || { turfScale: 0.6, xpPerZoneTurfPoint: 1, xpKnockout: 300 };
+      const zoneTurf = Math.round(local.stats.zoneTurf || 0);
+      xpParts = [[won ? 'WIN BONUS' : 'MATCH', won ? PROGRESSION.xpWin : PROGRESSION.xpLose], ['TURF', Math.round(turf * PROGRESSION.xpPerTurfPoint * ZX.turfScale)],
+        ['ZONE INK', Math.round(zoneTurf * ZX.xpPerZoneTurfPoint)], ['SPLATS', Math.round(local.stats.splats * PROGRESSION.xpPerSplat)], ['KNOCKOUT', won && zr.reason === 'knockout' ? ZX.xpKnockout : 0]].filter(([, v], i) => i < 2 || v > 0);
+      gained = xpParts.reduce((a, [, v]) => a + v, 0);
+    }
     const before = { level: p.level, xp: p.xp, toNext: PROGRESSION.xpForLevel(p.level) };
     p.xp += gained; p.matches++; if (won) p.wins++; p.totalTurf += turf;
     while (p.xp >= PROGRESSION.xpForLevel(p.level)) { p.xp -= PROGRESSION.xpForLevel(p.level); p.level++; }
     saveJSON('inkwave.profile', p);
     const data = {
       win: won, percents: [cov[0] * 100, cov[1] * 100], colors: [G.teamHex[0], G.teamHex[1]], teamNames: this.palette.names || TEAM_NAMES,
-      players: m.actors.map((a) => ({ name: a.name, team: a.team, weapon: a.weaponId, turf: Math.round(a.stats.turf), splats: a.stats.splats, deaths: a.stats.deaths, isSelf: a.isLocal, bot: !!a.isBot })),
-      xp: { gained, levelBefore: before.level, levelAfter: p.level, xpBefore: before.xp, xpAfter: p.xp, xpToNextBefore: before.toNext, xpToNextAfter: PROGRESSION.xpForLevel(p.level) },
+      players: m.actors.map((a) => ({ name: a.name, team: a.team, weapon: a.weaponId, turf: Math.round(a.stats.turf), splats: a.stats.splats, deaths: a.stats.deaths, isSelf: a.isLocal, bot: !!a.isBot, ...(zr ? { zoneTurf: Math.round(a.stats.zoneTurf || 0) } : {}) })),
+      xp: { gained, levelBefore: before.level, levelAfter: p.level, xpBefore: before.xp, xpAfter: p.xp, xpToNextBefore: before.toNext, xpToNextAfter: PROGRESSION.xpForLevel(p.level), ...(xpParts ? { parts: xpParts } : {}) },
       mapName: this.mapDef.name,
+      ...(zr ? { mode: 'zones', zones: zr } : {}),
     };
     // your team on the podium
     const team = m.actors.filter((a) => a.team === myTeam);
@@ -863,10 +1044,16 @@ class Game {
   }
 
   // ---------------------------------------------------------------------------------------- loop
-  _loop() {
-    requestAnimationFrame(() => this._loop());
-    this.timer.update(); let dt = this.timer.getDelta();
-    if (this.frozen) return;
+  // ts is the rAF (vsync) timestamp: stepping the sim by vsync-to-vsync intervals instead of callback times keeps motion
+  // even on 120 Hz displays. settings.fpsCap (0 = display rate) skips vsyncs so frames land on a steady cadence.
+  _loop(ts) {
+    requestAnimationFrame((t) => this._loop(t));
+    this._trackVsync(ts);
+    const cap = this.settings.fpsCap || 0;
+    if (cap && ts !== undefined && this._lastTs !== undefined && ts - this._lastTs < 1000 / cap - 2) return;
+    this._lastTs = ts;
+    this.timer.update(ts); let dt = Math.max(0, this.timer.getDelta());
+    if (this.frozen || this._building) return;
     this.fpsAcc += dt; this.fpsN++;
     if (this.fpsAcc > 0.5) { this.fps = Math.round(this.fpsN / this.fpsAcc); this.fpsAcc = 0; this.fpsN = 0; }
     this._dynRes(dt);
@@ -874,9 +1061,31 @@ class Game {
     this._frame(dt);
   }
 
-  // keep weaker GPUs playable: when a 4 s window of a live round averages under ~40 fps, drop render density one notch.
-  // Stepping back up needs 12 s of real headroom and happens at most twice, so the image never pumps between sizes
-  // (re-sizing every couple of seconds read as flicker).
+  // Display refresh estimate: 10th percentile of raw rAF intervals (rAF fires every vsync while frames keep up, and
+  // keeps doing so under an fps cap because capped frames are skipped here, not in the browser).
+  _trackVsync(ts) {
+    if (ts === undefined) return;
+    const v = this._vs || (this._vs = { last: ts, buf: [], ms: 1000 / 60 });
+    const d = ts - v.last; v.last = ts;
+    if (d > 2 && d < 50) v.buf.push(d);
+    if (v.buf.length >= 90) {
+      v.buf.sort((a, b) => a - b);
+      // timestamp jitter makes the raw percentile read a little short (7.8 ms on a 120 Hz panel): snap to a real rate
+      const hz = 1000 / v.buf[9];
+      v.ms = 1000 / REFRESH_RATES.reduce((best, r) => (Math.abs(r - hz) < Math.abs(best - hz) ? r : best));
+      v.buf.length = 0;
+    }
+  }
+  // the frame interval (ms) we pace and size the render for: the display's refresh, or the user's cap if that is lower
+  _frameTarget() {
+    const cap = this.settings.fpsCap || 0;
+    return Math.max(this._vs?.ms || 1000 / 60, cap ? 1000 / cap : 0);
+  }
+
+  // hold the frame target: when a 4 s window of a live round averages over ~112% of it (frames missing vsync, which
+  // on a 120 Hz display reads as 8/16 ms judder), drop render density one notch. Stepping back up needs 12 s locked
+  // at the target and happens at most twice, so the image never pumps between sizes (re-sizing every couple of
+  // seconds read as flicker).
   _dynRes(dt) {
     if (dt <= 0 || dt > 0.25) return;
     const d = this._dyn || (this._dyn = { acc: 0, n: 0, t: 0, fast: 0, ups: 0 });
@@ -886,9 +1095,9 @@ class Game {
     d.acc = 0; d.n = 0; d.t = 0;
     const m = this.match;
     if (this.settings.quality === 'ultra' || document.hidden || !m || m.attract || m.state !== 'playing') { d.fast = 0; return; }
-    const s = this.R.dynScale || 1;
-    if (avg > 1 / 40 && s > 0.76) { this.R.setDynamicScale(s - 0.125); d.fast = 0; }
-    else if (avg < 1 / 75 && s < 1 && d.ups < 2) { if (++d.fast >= 3) { this.R.setDynamicScale(s + 0.125); d.fast = 0; d.ups++; } }
+    const s = this.R.dynScale || 1, tgt = this._frameTarget() / 1000;
+    if (avg > tgt * 1.12 && s > this.R.dynFloor() + 0.01) { this.R.setDynamicScale(s - 0.125); d.fast = 0; }
+    else if (avg < tgt * 1.04 && s < 1 && d.ups < 2) { if (++d.fast >= 3) { this.R.setDynamicScale(s + 0.125); d.fast = 0; d.ups++; } }
     else d.fast = 0;
   }
 
@@ -907,18 +1116,29 @@ class Game {
       m.updateController(dt);
       const sub = dt > 1 / 45 ? 2 : 1; // substep physics on slow frames
       for (let i = 0; i < sub; i++) m.update(dt / sub);
-      if (!m.paused) G.projectiles.update(dt);
+      if (!m.paused) { G.projectiles.update(dt); G.subs.update(dt); G.specials.update(dt); }
       if (m.attract) this._updateAttract(dt);
       else if (m.state === 'playing' && m.local?.alive && this.rig.mode !== 'follow' && this.rig.mode !== 'path') this.rig.follow(m.local, true);
     }
     if (!m || !m.paused) G.fx.update(dt, G.camera);
     if (!m || !m.paused) this.fxHooks?.update?.(dt);
+    if (m && !m.paused && !m.attract) this._ageDeathMarks(dt);
     this.screenfx?.update?.(dt, this);
+    // the TAB map (also while splatted, planning a Super Jump): lift the splatted desaturation + ink flood off the stage
+    // so the ink and the pins read
+    // (fully gone well before the map is fully open: the flood's drips draw at any alpha above zero)
+    const fxU = this.screenfx?.U, mk = this.rig.mapK || 0;
+    if (fxU && mk > 0 && fxU.uDesat && fxU.uFlood) {
+      const e = Math.min(1, mk / 0.8), k = 1 - e * e * (3 - 2 * e);
+      fxU.uDesat.value *= k; fxU.uFlood.value.w = k > 0.02 ? fxU.uFlood.value.w * k : 0;
+    }
     G.env.update?.(dt, G.camera);
     this.decor.update(dt);
     this.props?.update?.(dt, G.time);
-    // map diorama: held map key during live play (or while waiting to respawn) swoops the view overhead
-    this.rig.setMap?.(!!(m && !m.attract && !m.paused && m.state === 'playing' && m.controller?.mapHeld && !this.menus?.current));
+    // map diorama: held map key during live play (or while waiting to respawn) swoops the view overhead — but not while
+    // aiming a Vortex Strike (that uses the flat stage map)
+    const strikeAiming = !!(m?.local?.specialActive && m.local.specialActive.id === 'strike' && m.local.specialActive.aiming);
+    this.rig.setMap?.(!!(m && !m.attract && !m.paused && m.state === 'playing' && m.controller?.mapHeld && !this.menus?.current && !strikeAiming));
     this.rig.update(dt);
     this._dioFog();
     this.diorama?.update(dt, this.rig.mapK);
@@ -926,7 +1146,8 @@ class Game {
     if (m && m.controller && m.state === 'playing') m.controller.computeAim?.();
     // bomb arc preview
     const loc = m?.local;
-    G.projectiles.updateArc(loc, !!(loc && loc.alive && loc.weaponRunner.aimingSub && m.state === 'playing' && !m.paused));
+    const orbReady = !!(loc && loc.specialActive && loc.specialActive.id === 'booyah' && loc.specialActive.charge >= 1);
+    G.projectiles.updateArc(loc, !!(loc && loc.alive && (loc.weaponRunner.aimingSub || orbReady) && m.state === 'playing' && !m.paused));
     const tB = performance.now();
     // paint → atlas, shader uniforms
     G.paint.flush(dt);
@@ -934,7 +1155,7 @@ class Game {
     // see-through window toward the local player
     {
       const lu = this.levelMat.userData.uniforms;
-      const on = !!(m && !m.attract && loc && loc.alive && this.rig.mode === 'follow' && this.rig.target === loc && this.rig.mapK < 0.3);
+      const on = !!(m && !m.attract && loc && loc.alive && this.rig.mode === 'follow' && this.rig.target === loc && (this.rig.mapK ?? 0) < 0.3);
       lu.uSeeOn.value = damp(lu.uSeeOn.value, on ? 1 : 0, 10, dt);
       lu.uSeeA.value.copy(G.camera.position);
       if (loc) lu.uSeeB.value.set(loc.pos.x, loc.pos.y + (loc.form === 'squid' ? 0.4 : 1.0), loc.pos.z);
@@ -943,6 +1164,12 @@ class Game {
     if (this.grateMat) this.grateMat.userData.uniforms.uTime.value = G.time;
     // swimmers' wakes in the ink surface
     if (this.swimWake && (!m || !m.paused)) this.swimWake.update(dt, this.levelMat.userData.uniforms, G.camera.position);
+    // music self-heal: a live, unpaused round never sits in silence because a recording was left paused
+    if (m && !m.paused && !m.attract && G.mode === 'match' && (this._musicHealT = (this._musicHealT || 0) + dt) > 1) {
+      this._musicHealT = 0;
+      const ct = G.music?.current;
+      if (ct && ct.el && ct.el.paused && !ct.stopped && !ct.el.ended && (m.state === 'playing' || m.state === 'intro')) G.music.resume();
+    }
     this.showcase.update(dt);
     this._updateLocalLoops(dt);
     this._updateAmbience(dt);
@@ -1042,6 +1269,7 @@ class Game {
       if (pp.has(12)) nav('up'); if (pp.has(13)) nav('down'); if (pp.has(14)) nav('left'); if (pp.has(15)) nav('right');
       if (pp.has(0)) nav('accept'); if (pp.has(1)) nav('back'); if (pp.has(2)) nav('alt');   // X: locker shuffle etc.
       if (pp.has(4)) nav('tab_prev'); if (pp.has(5)) nav('tab_next');
+      if (pp.has(3)) nav('alt');
       // left stick as d-pad with repeat
       const ly = inp.padAxis(1), lx = inp.padAxis(0);
       this._stickT = (this._stickT || 0) - 1 / 60;
@@ -1051,6 +1279,7 @@ class Game {
       }
       if (pp.has(9) && this.menus.current === 'pause') this.resume();
     } else if (G.mode === 'match' && pp.has(9)) this.pause();
+    else if (G.mode === 'match' && pp.has(8) && this.match?.practice) this.openPracticeLoadout();
   }
 
   _updateHud(dt) {
@@ -1060,24 +1289,26 @@ class Game {
     // crosshair spread = the weapon's live cone (first-shot accurate, blooms with sustained fire / in the air)
     const vHalf = (G.camera.fov * Math.PI) / 360;
     const coneDeg = a.weaponRunner.spread ?? (w.kind === 'shooter' ? 5.5 : w.kind === 'blaster' ? 1.2 : 0);
-    const spread = w.kind === 'roller' ? 28 : Math.min(90, (Math.tan((coneDeg * Math.PI) / 180) / Math.tan(vHalf)) * (innerHeight / 2));
+    const spread = w.kind === 'roller' ? 28 : w.kind === 'brush' ? 22 : Math.min(90, (Math.tan((coneDeg * Math.PI) / 180) / Math.tan(vHalf)) * (innerHeight / 2));
     const players = [];
     const t = { x: 0, y: 0 };
     for (const o of m.actors) {
       if (!o.alive) continue;
+      const tracked = o.team !== a.team && o.status.track > 0 && o.status.trackTeam === a.team;
       if (o.team !== a.team && !o.isLocal) {
-        // enemies only show on the map when visible to your team (not submerged far away)
-        if (o.anim.form === 'swim') continue;
+        // enemies only show on the map when visible to your team (not submerged far away) — tracked ones always do
+        if (o.anim.form === 'swim' && !tracked) continue;
       }
       this.minimap.toCanvas(o.pos.x, o.pos.z, t);
-      players.push({ x: t.x / this.minimap.w, y: t.y / this.minimap.h, team: o.team, isSelf: o.isLocal, yaw: -o.yaw + (this.minimap.flip ? Math.PI : 0), alive: o.alive, color: G.teamHex[o.team] });
+      players.push({ x: t.x / this.minimap.w, y: t.y / this.minimap.h, team: o.team, isSelf: o.isLocal, yaw: -o.yaw + (this.minimap.flip ? Math.PI : 0), alive: o.alive, color: G.teamHex[o.team], tracked });
     }
     // ally markers
     const markers = [];
     const v = this._mv || (this._mv = new THREE.Vector3());
     const W = innerWidth, H = innerHeight;
     for (const o of m.actors) {
-      if (o.isLocal || o.team !== a.team || !o.alive) continue;
+      const tracked = o.team !== a.team && o.alive && o.status.track > 0 && o.status.trackTeam === a.team;
+      if (!tracked && (o.isLocal || o.team !== a.team || !o.alive)) continue;
       if (o.character.getHeadPosition && o.form !== 'squid') { o.character.getHeadPosition(v); v.y += 0.45; }
       else { if (o.visualPos) o.visualPos(v); else v.copy(o.pos); v.y += o.form === 'squid' ? 1.0 : 1.9; }
       v.project(cam);
@@ -1092,7 +1323,7 @@ class Game {
         const k = Math.min((W / 2 - 40) / Math.max(1e-3, Math.abs(Math.cos(angle))), (H / 2 - 40) / Math.max(1e-3, Math.abs(Math.sin(angle))));
         x = W / 2 + Math.cos(angle) * k; y = H / 2 + Math.sin(angle) * k;
       }
-      markers.push({ x, y, name: o.name, color: G.teamHex[o.team], onScreen, angle, dist: o.pos.distanceTo(a.pos) });
+      markers.push({ x, y, name: o.name, color: G.teamHex[o.team], onScreen, angle, dist: o.pos.distanceTo(a.pos), tracked });
     }
     // contextual prompts (light tutorial)
     this._hintT += dt;
@@ -1104,23 +1335,57 @@ class Game {
       else if (this._lowInkFlash > 0) { this._lowInkFlash -= dt; prompt = 'Low ink! Hold SHIFT in your ink to refill'; }
       else if (a.specialReady() && (this._hints.specialT = (this._hints.specialT || 0) + dt) > 2) prompt = `Special ready! Press F`;
       else if (inkF < 0.25 && a.form !== 'squid') prompt = 'Hold SHIFT to swim in your ink and refill';
-      else if (m.duration - m.time < 8 && !this._hints.shot) prompt = 'Paint the ground — most turf wins!';
+      else if (m.duration - m.time < 8 && !this._hints.shot) prompt = m.zones ? 'Ink the zone and hold it to count down!' : 'Paint the ground — most turf wins!';
       if (!a.specialReady()) this._hints.specialT = 0;
       if (a.intent.fire) this._hints.shot = true;
     }
+    if (m.practice && m.state === 'playing' && a.alive && this._hintT < 7) prompt = 'Practice · L to change loadout · ESC for the practice menu';
+    const strikeAim = !!(a.specialActive && a.specialActive.id === 'strike' && a.specialActive.aiming);
+    // "Yeah!" cheers → screen positions over the cheering player (anyone on screen)
+    const cheers = [];
+    for (const c of G.specials.cheers) {
+      const o = c.a;
+      v.set(o.pos.x, o.pos.y + (o.smoothY || 0) + 2.25, o.pos.z).project(cam);
+      if (v.z > 1 || Math.abs(v.x) > 1.1 || Math.abs(v.y) > 1.1) continue;
+      cheers.push({ x: (v.x * 0.5 + 0.5) * W, y: (-v.y * 0.5 + 0.5) * H, k: c.t / 1.1, color: G.teamHex[o.team] });
+    }
+    // death markers: screen spot (floating a little over where they fell), size by camera distance, minimap spot —
+    // written into the pooled records the HUD reads (no per-frame garbage)
+    const deaths = this._deathPool();
+    for (const d of deaths) {
+      if (!d.on) continue;
+      d.ally = d.team === a.team;
+      v.set(d.x, d.y + 0.95, d.z);
+      const dist = v.distanceTo(cam.position);
+      v.project(cam);
+      d.vis = v.z < 1 && Math.abs(v.x) < 1.08 && Math.abs(v.y) < 1.08;
+      d.sx = (v.x * 0.5 + 0.5) * W; d.sy = (-v.y * 0.5 + 0.5) * H;
+      d.sc = clamp(1.12 - dist / 60, 0.56, 1);
+      this.minimap.toCanvas(d.x, d.z, t); d.mx = t.x / this.minimap.w; d.my = t.y / this.minimap.h;
+    }
+    if (a.specialActive && m.state === 'playing' && a.alive) prompt = G.specials.prompt(a) || prompt;
+    else if (m.state === 'playing' && a.alive && m.actors.some((o) => o !== a && o.team === a.team && o.specialActive?.id === 'booyah' && !o.specialActive.thrown)) prompt = 'A teammate is charging a Cheer Orb — press C to cheer it on!';
     const frame = {
-      time: m.time,
+      time: m.practice ? null : m.time,
       teams: a.team === 1 ? m.teamSummary().reverse() : m.teamSummary(),   // HUD: [your team, theirs]
-      ink: a.ink / PLAYER.inkMax, inkLow: a.ink < 18 || (this._lowInkFlash > 0), subCost: SUB.bomb.inkCost / PLAYER.inkMax,
-      special: a.specialFrac(), specialReady: a.specialReady(), specialActive: !!a.specialActive,
+      ink: a.ink / PLAYER.inkMax, inkLow: a.ink < 18 || (this._lowInkFlash > 0), subCost: a.specialActive?.kind === 'barrage' ? 0 : (a.sub || SUB.bomb).inkCost / PLAYER.inkMax, subKind: (a.specialActive?.kind === 'barrage' ? a.specialActive.bomb : a.sub || SUB.bomb).kind,
+      poisoned: a.status.poison > 0, tracked: a.status.track > 0,
+      special: a.specialActive ? G.specials.remaining(a) : a.specialFrac(), specialReady: a.specialReady(), specialActive: !!a.specialActive, specialId: a.specialId,
       hp: a.hp / PLAYER.hp,
       weapon: a.weaponId, charge: a.weaponRunner.charge,
+      twin: w.kind === 'twins' ? { planted: !!a.weaponRunner.turret, rolls: a.weaponRunner.rollsLeft() } : null,
       crosshair: { spread, onTarget: m.controller?.onTarget ? 'enemy' : null, inRange: m.controller ? m.controller.inRange !== false : true },
       // corner minimap follows the setting; the TAB map (needed for super jumps) is always available
-      map: (this.settings.minimap !== false) ? { canvas: this.minimap.canvas, expanded: false, players } : null,
+      map: (this.settings.minimap !== false || strikeAim) ? { canvas: this.minimap.canvas, expanded: strikeAim, strike: strikeAim, players } : null,
       markers,
+      cheers,
+      deaths,
+      // a Super Jump planned on the TAB map while splatted ({ kind, target, name } | null): shown on the splat screen
+      jumpQueue: !a.alive ? m.controller?.jumpQueue || null : null,
       prompt,
       fps: this.settings.showFps ? this.fps : undefined,
+      // Zone Control: counts / penalties / the operational objective (HUD counters, objective chip, banners)
+      zones: m.zones ? { ...m.zones.state(), viewer: a.team } : undefined,
     };
     this.hud.update(dt, frame);
   }

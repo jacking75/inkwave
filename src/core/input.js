@@ -20,6 +20,10 @@ export class Input {
     this.lastDevice = 'kbm';
     this.onKey = null;              // (e) => bool consumed  (menus)
     window.addEventListener('keydown', (e) => {
+      // ⌘-combos (⌘Q quit, ⌘H hide, ⌘M minimise, ⌘W close …) belong to macOS: never read them as game / menu keys
+      // (the menus mapped ⌘Q to "previous tab" and swallowed it). macOS also sends no keyup for a key released while
+      // ⌘ is held, so tracking them would leave the key stuck down.
+      if (e.metaKey) return;
       // the menus call preventDefault themselves when needed (text fields must still receive keystrokes)
       // auto-repeat must be swallowed too: holding TAB for the map used to let the repeats move browser focus off the
       // canvas → pointer lock dropped → the round paused ("opening the map opens the menu")

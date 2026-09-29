@@ -1,7 +1,7 @@
 // Level surface material: MeshPhysicalMaterial + injected procedural surface patterns and the wet ink layer.
 import * as THREE from 'three';
-import { TEXLIB_GLSL } from './texlib.js';
 import { STAGE_SURFACES, FIRST_STAGE_SLOT, LAST_STAGE_SLOT } from './stages/surfaces.js';
+import { TEXLIB_GLSL } from './texlib.js';
 import { G } from '../core/ctx.js';
 import { inkUniforms, inkBeforeRender, INK_PARS, INK_COLOR, INK_ROUGH, INK_GEL, INK_SLOPE, INK_EMISSIVE, INK_LIGHTS, INK_LIGHT_MAPS, INK_SHADE } from './inkShading.js';
 
@@ -355,23 +355,6 @@ float gWake = 0.0;`)
     base = mix(base, grass, bed);
     rough = mix(rough, 0.95, bed);
     gTexStr *= 1.0 - bed;
-  } else if (pattern > 9.5 && pattern < 10.5 && abs(vWNorm.y) >= 0.5) {
-      vec2 wp = vWPos.xz;
-      float ax = abs(wp.x), az = abs(wp.y);
-      float mw = fwidth(ax) + 1e-4;
-      float dash = step(0.45, fract(az / 3.0));
-      float lane = (1.0 - smoothstep(0.07 - mw, 0.07 + mw, abs(ax - 11.5))) * dash * step(4.0, az);
-      float bay = (1.0 - smoothstep(0.05 - mw, 0.05 + mw, abs(fract((ax - 2.0) / 2.6) - 0.5) * 2.6)) * step(24.5, az) * step(az, 27.0) * step(ax, 8.0);
-      float sx = wp.x * sign(wp.y);
-      vec2 hz = vec2(sx - 4.0, az - 17.0);
-      float inZone = step(abs(hz.x), 2.0) * step(abs(hz.y), 1.0);
-      float hatch = step(0.5, fract((wp.x + wp.y) * 1.25)) * inZone;
-      float border = inZone * (1.0 - step(abs(hz.x), 1.9) * step(abs(hz.y), 0.9));
-      float wear = 0.9 + 0.1 * smoothstep(0.2, 0.5, vnoise(wp * 3.0));
-      float paintM = clamp(lane + hatch * 0.9 + border, 0.0, 1.0) * wear;
-      base = mix(base, vec3(0.95, 0.74, 0.18), paintM);
-      base = mix(base, vec3(0.93, 0.93, 0.9), bay * wear);
-      rough = mix(rough, 0.7, max(paintM, bay));
   }
   // ---- modelled detail (shader-only, no layout change) ----
   {
@@ -562,24 +545,6 @@ float gWake = 0.0;`)
     } else {
       base *= 0.92 + 0.08 * vnoise(fu * 3.0) + 0.04 * (vnoise(fu * 37.0) - 0.5) * (1.0 - smoothstep(0.02, 0.06, length(fwidth(fu))));
       rough = 0.92;
-      // container-yard markings (world space, symmetric under the map's 180° rotation)
-      vec2 wp = vWPos.xz;
-      float ax = abs(wp.x), az = abs(wp.y);
-      float mw = fwidth(ax) + 1e-4;
-      // dashed yellow lane dividers at x = ±11.5
-      float dash = step(0.45, fract(az / 3.0));
-      float lane = (1.0 - smoothstep(0.07 - mw, 0.07 + mw, abs(ax - 11.5))) * dash * step(4.0, az);
-      // white bay lines beside the base containers
-      float bay = (1.0 - smoothstep(0.05 - mw, 0.05 + mw, abs(fract((ax - 2.0) / 2.6) - 0.5) * 2.6)) * step(24.5, az) * step(az, 27.0) * step(ax, 8.0);
-      // hatched safety zone at the foot of each central ramp
-      float sx = wp.x * sign(wp.y);           // 180°-rotation-symmetric x (ramps sit at x=-4,z<0 and x=+4,z>0)
-      vec2 hz = vec2(sx - 4.0, az - 17.0);
-      float inZone = step(abs(hz.x), 2.0) * step(abs(hz.y), 1.0);
-      float hatch = step(0.5, fract((wp.x + wp.y) * 1.25)) * inZone;
-      float border = inZone * (1.0 - step(abs(hz.x), 1.9) * step(abs(hz.y), 0.9));
-      float wear = 0.9 + 0.1 * smoothstep(0.2, 0.5, vnoise(wp * 3.0));
-      base = mix(base, vec3(0.95, 0.74, 0.18), clamp(lane + hatch * 0.9 + border, 0.0, 1.0) * wear);
-      base = mix(base, vec3(0.93, 0.93, 0.9), bay * wear);
     }
   } else if (pattern > 10.5 && pattern < 11.5) {
     // painted steel panels: 1.2 m panels with seams + bolt rows

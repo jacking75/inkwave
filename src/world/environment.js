@@ -6,8 +6,8 @@
 // const env = new Environment(renderer, scene, { bounds, theme: 'day'|'sunset'|'golden', shadowSize, footprint })
 //   footprint (optional): array of deck rects = the deck slab's XZ outline (default [bounds]). Each rect is either an
 //   axis-aligned {minX,maxX,minZ,maxZ} or an oriented rect {cx,cz,hx,hz,ax,az} (centre, half extents along its local
-//   axes, local x axis (ax,az) unit; local z = (−az,ax)) — slabs turned about Y (Cargo Terminal). Internally every rect
-//   carries both (orect()): axis-aligned ones keep their exact min/max and code paths, so those stages are unchanged.
+//   axes, local x axis (ax,az) unit; local z = (−az,ax)) — slabs turned about Y (obox). Internally every rect carries
+//   both (orect()), so code that only needs bounds keeps reading minX..maxZ (the AABB).
 //   Used for pilings, water foam, under-deck shading and the analytic deck shadow on the water.
 //   setTheme(name) switches light/sky/sea in place; rebuildForArena(bounds, footprint) follows a stage change.
 //
@@ -24,8 +24,12 @@ import { G } from '../core/ctx.js';
 
 const WATER_Y = PLAYER.waterY; // -1.6
 const DEG = Math.PI / 180;
-const MAX_RECTS = 32;   // deck slabs (Halyard has 16: every pier/quay slab of both halves; Cargo Terminal 29)
-const MAX_WET = 12;     // marina: solids piercing the surface (hulls) or sunk below it
+const MAX_RECTS = 48;   // deck slabs (Halyard has 16: every pier/quay slab of both halves; curved outlines use many)
+const MAX_WET = 24;     // marina: solids piercing the surface (hulls) or sunk below it
+// More rects than that (curved outlines from many thin segments) switch the sea to a baked distance field (DECK_FIELD):
+const FIELD_RES = 0.1;  // field texel (m); exact along straight edges (bilinear of a linear field), corners within ~1 cm
+const FIELD_R = 10;     // reach (m) of the exact field; past it the distance to the rects' AABB (a lower bound) is used
+const HEMI_FLOOR = 0.38; // = the sky-fill floor main.js applies after construction
 
 // ---------------------------------------------------------------------------------------------------------------
 // Themes (colours are sRGB hex; converted to linear once)
@@ -412,8 +416,8 @@ void main() {
 `;
 
 // Deck / hull rects are oriented: uRects[i] = (centre x, centre z, half extent along local x, along local z),
-// uRectAx[i] = the local x axis (unit, world xz); local z = (−ax.y, ax.x). Axis-aligned slabs pass (1, 0), for which the
-// rotation below is exact (x·1 + z·0), so they shade exactly as the old min/max rects did.
+// uRectAx[i] = the local x axis (unit, world xz); local z = (−ax.y, ax.x). Axis-aligned slabs pass (1, 0), for which
+// the rotation below is exact (x·1 + z·0), so they shade exactly as the old min/max rects did.
 const GLSL_DECK = /* glsl */`
 uniform vec4 uRects[${MAX_RECTS}];
 uniform vec2 uRectAx[${MAX_RECTS}];
@@ -430,22 +434,38 @@ float sdORect(vec2 p, vec4 r, vec2 a) {
   vec2 q = abs(vec2(dot(d, a), dot(d, vec2(-a.y, a.x)))) - r.zw;
   return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
 }
+#ifdef DECK_FIELD
+// more rects than uniform slots: the deck union (R) and the marina hull union (G) baked into a signed-distance field
+// (Environment._bakeDeckField), exact within uDeckFieldK.y of any rect; past that, the distance to the rects' AABB
+uniform sampler2D uDeckField;
+uniform vec4 uDeckFieldRect;   // field origin (x, z), 1 / field size (x, z)
+uniform vec4 uDeckFieldK;      // x: texel (m), y: exact reach (m)
+uniform vec4 uDeckBox;         // AABB of the deck rects (minX, minZ, maxX, maxZ)
+uniform vec4 uWetBox;          // AABB of the hull rects
+vec2 deckField(vec2 p) { return textureLod(uDeckField, clamp((p - uDeckFieldRect.xy) * uDeckFieldRect.zw, 0.0, 1.0), 0.0).rg; }
+float sdDeck(vec2 p) { return max(deckField(p).r, sdRect(p, uDeckBox)); }
+#else
 float sdDeck(vec2 p) {
   float d = 1e5;
   for (int i = 0; i < ${MAX_RECTS}; i++) { if (i >= uRectCount) break; d = min(d, sdORect(p, uRects[i], uRectAx[i])); }
   return d;
 }
+#endif
 #ifdef MARINA
 uniform vec4 uWet[${MAX_WET}];
 uniform vec2 uWetAx[${MAX_WET}];
 uniform int uWetCount;
 uniform vec4 uArena;        // arena bounds (minX, minZ, maxX, maxZ): the harbour basin around it is sheltered
 float basinK(vec2 p) { return smoothstep(60.0, 210.0, sdRect(p, uArena)); }   // 0 in the basin → 1 open sea
+#ifdef DECK_FIELD
+float sdWet(vec2 p) { return max(deckField(p).g, sdRect(p, uWetBox)); }
+#else
 float sdWet(vec2 p) {
   float d = 1e5;
   for (int i = 0; i < ${MAX_WET}; i++) { if (i >= uWetCount) break; d = min(d, sdORect(p, uWet[i], uWetAx[i])); }
   return d;
 }
+#endif
 #endif
 `;
 
@@ -494,6 +514,19 @@ vec3 sdORectG(vec2 p, vec4 r, vec2 a) {
   else o = q.x > q.y ? vec3(q.x, s.x, 0.0) : vec3(q.y, 0.0, s.y);
   return vec3(o.x, o.y * a + o.z * b);
 }
+#ifdef DECK_FIELD
+// field mode: both unions + outward gradients from five taps (central differences one texel apart)
+void deckWetG(vec2 p, out vec3 gd, out vec3 gw) {
+  float h = uDeckFieldK.x;
+  vec2 c = deckField(p);
+  vec2 dx = deckField(p + vec2(h, 0.0)) - deckField(p - vec2(h, 0.0));
+  vec2 dz = deckField(p + vec2(0.0, h)) - deckField(p - vec2(0.0, h));
+  vec2 nd = vec2(dx.x, dz.x), nw = vec2(dx.y, dz.y);
+  float ld = length(nd), lw = length(nw);
+  gd = vec3(max(c.x, sdRect(p, uDeckBox)), ld > 1e-5 ? nd / ld : vec2(0.0, 1.0));
+  gw = vec3(max(c.y, sdRect(p, uWetBox)), lw > 1e-5 ? nw / lw : vec2(0.0, 1.0));
+}
+#else
 vec3 sdDeckG(vec2 p) {
   vec3 b = vec3(1e5, 0.0, 1.0);
   for (int i = 0; i < ${MAX_RECTS}; i++) { if (i >= uRectCount) break; vec3 r = sdORectG(p, uRects[i], uRectAx[i]); if (r.x < b.x) b = r; }
@@ -504,6 +537,7 @@ vec3 sdWetG(vec2 p) {
   for (int i = 0; i < ${MAX_WET}; i++) { if (i >= uWetCount) break; vec3 r = sdORectG(p, uWet[i], uWetAx[i]); if (r.x < b.x) b = r; }
   return b;
 }
+#endif
 vec3 skyRefl(vec3 R) {
   vec3 c = skyGradient(normalize(R + vec3(0.0, 0.015, 0.0)));
   float u = atan(R.z, R.x) / 6.28318531 + 0.5 + uTime * 0.00035 * uCloudParams.z;
@@ -523,9 +557,14 @@ void main() {
   float dA = sdRect(p, uArena);
   vec3 gw = vec3(dA, 0.0, 1.0), gd = gw;
   if (dA < 24.0) {
+#ifdef DECK_FIELD
+    deckWetG(p, gd, gw);
+    if (gw.x < -0.03) discard;
+#else
     gw = sdWetG(p);
     if (gw.x < -0.03) discard;                     // inside a hull / over a sunken floor: no sea
     gd = sdDeckG(p);
+#endif
   }
   vec3 gs = gd.x < gw.x ? gd : gw;                 // nearest face: distance + outward normal
   float dS = gs.x;
@@ -1108,7 +1147,7 @@ const polar = (deg, d) => [Math.cos(deg * DEG) * d, Math.sin(deg * DEG) * d];
 // { cx, cz, hx, hz, ax, az, minX, maxX, minZ, maxZ, aligned }: centre, half extents along the local axes, local x axis
 // (ax, az) (unit), local z = (−az, ax), plus the XZ AABB. `aligned` rects keep their exact min/max and take the exact
 // axis-aligned code paths below (so axis-aligned stages build exactly what they always did). Accepts a legacy
-// {minX..maxZ} rect or an oriented {cx,cz,hx,hz,ax,az} one; extra fields (y0, y1 …) are kept.
+// {minX..maxZ} rect, an oriented {cx,cz,hx,hz,ax,az} one, or both; extra fields (y0, y1 …) are kept.
 function orect(r) {
   if (r.hx === undefined) return { ...r, cx: (r.minX + r.maxX) / 2, cz: (r.minZ + r.maxZ) / 2, hx: (r.maxX - r.minX) / 2, hz: (r.maxZ - r.minZ) / 2, ax: 1, az: 0, aligned: true };
   let ax = r.ax ?? 1, az = r.az ?? 0, hx = r.hx, hz = r.hz;
@@ -1116,8 +1155,18 @@ function orect(r) {
   // quarter turns are axis-aligned rects (swap the extents for 90° / 270°)
   if (Math.abs(az) < 1e-7) { ax = 1; az = 0; } else if (Math.abs(ax) < 1e-7) { ax = 1; az = 0; [hx, hz] = [hz, hx]; }
   const aligned = ax === 1 && az === 0;
-  const ex = Math.abs(ax) * hx + Math.abs(az) * hz, ez = Math.abs(az) * hx + Math.abs(ax) * hz;
-  return { ...r, hx, hz, ax, az, aligned, minX: r.cx - ex, maxX: r.cx + ex, minZ: r.cz - ez, maxZ: r.cz + ez };
+  const o = { ...r, hx, hz, ax, az, aligned };
+  if (!(aligned && r.minX !== undefined)) {
+    const ex = Math.abs(ax) * hx + Math.abs(az) * hz, ez = Math.abs(az) * hx + Math.abs(ax) * hz;
+    o.minX = r.cx - ex; o.maxX = r.cx + ex; o.minZ = r.cz - ez; o.maxZ = r.cz + ez;
+  }
+  return o;
+}
+// a level block as a deck rect (null for ramps / anything tilted: only boxes turned about Y qualify)
+function blockRect(b) {
+  if (b.aligned) return orect({ minX: b.aabbMin.x, maxX: b.aabbMax.x, minZ: b.aabbMin.z, maxZ: b.aabbMax.z });
+  if (Math.abs(b.axes[1].y) < 0.9999) return null;
+  return orect({ cx: b.center.x, cz: b.center.z, hx: b.half.x, hz: b.half.z, ax: b.axes[0].x, az: b.axes[0].z });
 }
 // point strictly inside rect r grown by pad
 function inRect(r, x, z, pad = 0) {
@@ -1125,21 +1174,25 @@ function inRect(r, x, z, pad = 0) {
   const dx = x - r.cx, dz = z - r.cz;
   return Math.abs(dx * r.ax + dz * r.az) < r.hx + pad && Math.abs(dz * r.ax - dx * r.az) < r.hz + pad;
 }
+// signed distance (m) from (x, z) to rect r (matches sdORect in the sea shaders)
+function sdRectJS(r, x, z) {
+  const dx = x - r.cx, dz = z - r.cz;
+  const qx = Math.abs(dx * r.ax + dz * r.az) - r.hx, qz = Math.abs(dz * r.ax - dx * r.az) - r.hz;
+  return qx > 0 || qz > 0 ? Math.sqrt((qx > 0 ? qx * qx : 0) + (qz > 0 ? qz * qz : 0)) : Math.max(qx, qz);
+}
 // world (x, z) of the rect-local point (lx, lz)
 const rectPt = (r, lx, lz) => [r.cx + lx * r.ax - lz * r.az, r.cz + lx * r.az + lz * r.ax];
-// the four edges, counter-clockwise from the (−x, −z) corner, with outward unit normals: aligned rects keep the exact
-// min/max corners and (0, ±1) / (±1, 0) normals (the order the dock builder always used)
+// the four edges, counter-clockwise from the (−x, −z) corner, with outward unit normals: aligned rects keep the
+// exact min/max corners and (0, ±1) / (±1, 0) normals
 function rectEdges(r) {
+  let c, n;
   if (r.aligned) {
-    return [
-      { ax: r.minX, az: r.minZ, bx: r.maxX, bz: r.minZ, nx: 0, nz: -1 },
-      { ax: r.maxX, az: r.minZ, bx: r.maxX, bz: r.maxZ, nx: 1, nz: 0 },
-      { ax: r.maxX, az: r.maxZ, bx: r.minX, bz: r.maxZ, nx: 0, nz: 1 },
-      { ax: r.minX, az: r.maxZ, bx: r.minX, bz: r.minZ, nx: -1, nz: 0 },
-    ];
+    c = [[r.minX, r.minZ], [r.maxX, r.minZ], [r.maxX, r.maxZ], [r.minX, r.maxZ]];
+    n = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+  } else {
+    c = [rectPt(r, -r.hx, -r.hz), rectPt(r, r.hx, -r.hz), rectPt(r, r.hx, r.hz), rectPt(r, -r.hx, r.hz)];
+    n = [[r.az, -r.ax], [r.ax, r.az], [-r.az, r.ax], [-r.ax, -r.az]];
   }
-  const c = [rectPt(r, -r.hx, -r.hz), rectPt(r, r.hx, -r.hz), rectPt(r, r.hx, r.hz), rectPt(r, -r.hx, r.hz)];
-  const n = [[r.az, -r.ax], [r.ax, r.az], [-r.az, r.ax], [-r.ax, -r.az]];
   return c.map((p, i) => ({ ax: p[0], az: p[1], bx: c[(i + 1) & 3][0], bz: c[(i + 1) & 3][1], nx: n[i][0] + 0, nz: n[i][1] + 0 }));
 }
 
@@ -1409,7 +1462,7 @@ export class Environment {
     this.scene = scene;
     const b = opts.bounds || { minX: -25, maxX: 25, minZ: -44, maxZ: 44 };
     this.bounds = { minX: b.minX, maxX: b.maxX, minZ: b.minZ, maxZ: b.maxZ };
-    this.footprint = (opts.footprint && opts.footprint.length ? opts.footprint : [this.bounds]).slice(0, MAX_RECTS).map(orect);
+    this.footprint = (opts.footprint && opts.footprint.length ? opts.footprint : [this.bounds]).map(orect);
     this.shadowSize = opts.shadowSize || 4096;
     this.waterY = WATER_Y;
     this.time = 0;
@@ -1457,12 +1510,110 @@ export class Environment {
       // marina water (theme.marina)
       uWet: { value: Array.from({ length: MAX_WET }, () => new THREE.Vector4()) }, uWetCount: { value: 0 }, uArena: { value: new THREE.Vector4() },
       uWetAx: { value: Array.from({ length: MAX_WET }, () => new THREE.Vector2(1, 0)) },
+      // DECK_FIELD (more rects than slots): baked deck / hull distance field
+      uDeckField: { value: null }, uDeckFieldRect: { value: new THREE.Vector4() }, uDeckFieldK: { value: new THREE.Vector4() },
+      uDeckBox: { value: new THREE.Vector4() }, uWetBox: { value: new THREE.Vector4() },
       uReflTex: { value: null }, uReflMat: { value: new THREE.Matrix4() }, uReflOn: { value: 0 },
       uFarCube: { value: null }, uFarOn: { value: 0 },
       uChannelCol: C(), uShadeCol: C(), uMarinaK: { value: new THREE.Vector4(1, 1, 0.3, 0) },
       uStripK: { value: new THREE.Vector4(1, 0.4, 0, 0) },
     };
-    this._writeRects();
+    this._syncDeckShading();
+  }
+
+  // Push the deck rects (open sea: the footprint; marina: floating slabs + hulls) to the sea shaders: oriented-rect
+  // uniforms while they fit the slots (exact SDFs), else the baked distance field (DECK_FIELD, any number of rects).
+  // JS-side consumers (pilings, runs, waterline, waterHeightAt) always use the full rect lists.
+  _syncDeckShading() {
+    const U = this.U, M = this._marina ? this._marinaData : null;
+    const decks = M ? M.decks : this.footprint, wet = M ? M.wet : [];
+    const field = decks.length > MAX_RECTS || wet.length > MAX_WET || !!this.forceDeckField;   // (forceDeckField: debug A/B)
+    if (field) {
+      this._bakeDeckField(decks, wet);
+      U.uRectCount.value = 0; U.uWetCount.value = 0;
+    } else {
+      this._writeRects(decks); this._writeWet(wet);
+      if (this._fieldRT) { this._fieldRT.dispose(); this._fieldRT = null; this._fieldKey = null; U.uDeckField.value = null; }
+    }
+    if (this.seaMat && ('DECK_FIELD' in this.seaMat.defines) !== field) {
+      if (field) this.seaMat.defines.DECK_FIELD = ''; else delete this.seaMat.defines.DECK_FIELD;
+      this.seaMat.needsUpdate = true;
+    }
+  }
+
+  // Signed distance to the union of the deck rects (R) and of the hull rects (G): 10 cm texels over the arena + reach,
+  // half-float, bilinear, rendered on the GPU (one pass; every texel takes the min over all rects, clamped at FIELD_R).
+  _bakeDeckField(decks, wet) {
+    const U = this.U, b = this.bounds, R = FIELD_R;
+    const aabb = (rs) => {
+      if (!rs.length) return [1e4, 1e4, 1e4, 1e4];      // none: far away (like the analytic 1e5)
+      const a = [Infinity, Infinity, -Infinity, -Infinity];
+      for (const r of rs) { a[0] = Math.min(a[0], r.minX); a[1] = Math.min(a[1], r.minZ); a[2] = Math.max(a[2], r.maxX); a[3] = Math.max(a[3], r.maxZ); }
+      return a;
+    };
+    const db = aabb(decks), wb = aabb(wet);
+    // field extent: the bounds and every rect (within 60 m of the bounds), plus the reach
+    let x0 = b.minX, z0 = b.minZ, x1 = b.maxX, z1 = b.maxZ;
+    for (const r of [...decks, ...wet]) { x0 = Math.min(x0, r.minX); z0 = Math.min(z0, r.minZ); x1 = Math.max(x1, r.maxX); z1 = Math.max(z1, r.maxZ); }
+    x0 = Math.max(x0, b.minX - 60) - R - 1; z0 = Math.max(z0, b.minZ - 60) - R - 1; x1 = Math.min(x1, b.maxX + 60) + R + 1; z1 = Math.min(z1, b.maxZ + 60) + R + 1;
+    let res = FIELD_RES;
+    while (((x1 - x0) / res) * ((z1 - z0) / res) > 2.2e6) res *= 1.25;      // ≤ ~18 MB of RGBA16F
+    const W = Math.ceil((x1 - x0) / res), H = Math.ceil((z1 - z0) / res);
+    const key = [x0, z0, W, H, res, ...[decks, wet].map((rs) => rs.map((r) => [r.cx, r.cz, r.hx, r.hz, r.ax, r.az].join()).join(';'))].join('|');
+    if (key !== this._fieldKey) {
+      const t0 = performance.now();
+      this._fieldKey = key;
+      // rects → float texture: row 0 decks, row 1 hulls; texel 2i = (cx, cz, hx, hz), 2i + 1 = (ax, az)
+      const n = Math.max(1, decks.length, wet.length), data = new Float32Array(2 * n * 2 * 4);
+      [decks, wet].forEach((rs, row) => rs.forEach((r, i) => data.set([r.cx, r.cz, r.hx, r.hz, r.ax, r.az, 0, 0], (row * 2 * n + 2 * i) * 4)));
+      const rectTex = new THREE.DataTexture(data, 2 * n, 2, THREE.RGBAFormat, THREE.FloatType);
+      rectTex.needsUpdate = true;
+      if (!this._fieldMat) {
+        this._fieldMat = new THREE.ShaderMaterial({
+          name: 'DeckFieldBake', depthTest: false, depthWrite: false,
+          uniforms: { uRectTex: { value: null }, uN: { value: new THREE.Vector2() }, uField: { value: new THREE.Vector4() }, uR: { value: R } },
+          vertexShader: /* glsl */`varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+          fragmentShader: /* glsl */`
+            uniform sampler2D uRectTex; uniform vec2 uN; uniform vec4 uField; uniform float uR;
+            varying vec2 vUv;
+            float sdSet(vec2 p, int n, int row) {
+              float d = uR;
+              for (int i = 0; i < n; i++) {
+                vec4 r = texelFetch(uRectTex, ivec2(2 * i, row), 0);
+                vec2 a = texelFetch(uRectTex, ivec2(2 * i + 1, row), 0).xy;
+                vec2 e = p - r.xy;
+                vec2 q = abs(vec2(dot(e, a), dot(e, vec2(-a.y, a.x)))) - r.zw;
+                d = min(d, length(max(q, 0.0)) + min(max(q.x, q.y), 0.0));
+              }
+              return d;
+            }
+            void main() { vec2 p = uField.xy + vUv * uField.zw; gl_FragColor = vec4(sdSet(p, int(uN.x), 0), sdSet(p, int(uN.y), 1), 0.0, 1.0); }`,
+        });
+        this._fieldQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this._fieldMat);
+        this._fieldQuad.frustumCulled = false;
+        this._fieldScene = new THREE.Scene(); this._fieldScene.add(this._fieldQuad);
+        this._fieldCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      }
+      const fu = this._fieldMat.uniforms;
+      fu.uRectTex.value = rectTex; fu.uN.value.set(decks.length, wet.length); fu.uField.value.set(x0, z0, W * res, H * res);
+      if (!this._fieldRT || this._fieldRT.width !== W || this._fieldRT.height !== H) {
+        this._fieldRT?.dispose();
+        this._fieldRT = new THREE.WebGLRenderTarget(W, H, { type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: false, stencilBuffer: false,
+          generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, colorSpace: THREE.NoColorSpace });
+      }
+      const r = this.renderer, prev = r.getRenderTarget(), xr = r.xr.enabled;
+      r.xr.enabled = false;
+      r.setRenderTarget(this._fieldRT);
+      r.render(this._fieldScene, this._fieldCam);
+      r.setRenderTarget(prev);
+      r.xr.enabled = xr;
+      rectTex.dispose();
+      U.uDeckField.value = this._fieldRT.texture;
+      this.fieldBakeMs = performance.now() - t0;
+    }
+    U.uDeckFieldRect.value.set(x0, z0, 1 / (W * res), 1 / (H * res));
+    U.uDeckFieldK.value.set(res, R, 0, 0);
+    U.uDeckBox.value.set(...db); U.uWetBox.value.set(...wb);
   }
 
   // deck rects → uRects (centre, half extents) + uRectAx (local x axis); marina hulls → uWet + uWetAx
@@ -1772,17 +1923,21 @@ export class Environment {
 
   // Which level blocks float over the water (slabs: under-deck shade + dark undersides) and which pierce it or sit
   // below it (hulls, dry-dock floors: no sea inside, contact foam). Read from the live level (y extents matter here —
-  // the main.js footprint only carries XZ).
+  // the main.js footprint only carries XZ). Axis-aligned boxes and boxes turned about Y (oriented rects); ramps and
+  // other tilted blocks are left out.
   _marinaSets() {
     const L = G.level, decks = [], wet = [];
     if (L) for (const b of L.blocks) {
-      if (!b.solid || b.hidden || !b.aligned || b.grate) continue;
+      if (!b.solid || b.hidden || b.grate) continue;
       const lo = b.aabbMin, hi = b.aabbMax;
-      const r = orect({ minX: lo.x, maxX: hi.x, minZ: lo.z, maxZ: hi.z, y0: lo.y, y1: hi.y });
-      if (lo.y < WATER_Y - 0.02 && hi.y > -30) wet.push(r);          // pierces the surface / sunk below it
-      else if (lo.y >= WATER_Y - 0.02 && lo.y < WATER_Y + 0.9) decks.push(r);
+      const inWet = lo.y < WATER_Y - 0.02 && hi.y > -30, inDeck = !inWet && lo.y >= WATER_Y - 0.02 && lo.y < WATER_Y + 0.9;
+      if (!inWet && !inDeck) continue;
+      const r = blockRect(b);
+      if (!r) continue;
+      r.y0 = lo.y; r.y1 = hi.y;
+      (inWet ? wet : decks).push(r);          // wet: pierces the surface / sunk below it
     }
-    return { decks: decks.slice(0, MAX_RECTS), wet: wet.slice(0, MAX_WET) };
+    return { decks, wet };
   }
 
   // (Re)apply marina mode for the current theme + level: rect sets, waterline strips, slab undersides, uniforms.
@@ -1798,11 +1953,10 @@ export class Environment {
       if (on) this.seaMat.defines.MARINA = ''; else delete this.seaMat.defines.MARINA;
       this.seaMat.needsUpdate = true;
     }
-    if (!on) { this._marinaData = null; U.uWetCount.value = 0; U.uReflOn.value = 0; this._writeRects(); return; }
+    if (!on) { this._marinaData = null; U.uWetCount.value = 0; U.uReflOn.value = 0; this._syncDeckShading(); return; }
     const M = (this._marinaData = this._marinaSets());
     U.uArena.value.set(this.bounds.minX, this.bounds.minZ, this.bounds.maxX, this.bounds.maxZ);
-    this._writeRects(M.decks);
-    this._writeWet(M.wet);
+    this._syncDeckShading();
     this._buildFoamField([...(this._foamShapes || []), ...this._waterContours(M.wet)]);
     this._buildMarinaFx(M);
   }
@@ -1812,8 +1966,7 @@ export class Environment {
     if (!L) return;
     const grp = new THREE.Group();
     grp.name = 'MarinaWaterline';
-    const inR = (r, x, z) => x > r.minX && x < r.maxX && z > r.minZ && z < r.maxZ;
-    const open = (x, z) => !M.decks.some((r) => inR(r, x, z)) && !M.wet.some((r) => inR(r, x, z));
+    const open = (x, z) => !M.decks.some((r) => inRect(r, x, z)) && !M.wet.some((r) => inRect(r, x, z));
     const pos = [], nor = [], info = [];
     const quad = (a, b, c, d, n, col, kind) => {   // a b c d counter-clockwise seen from the front (n)
       pos.push(...a, ...b, ...c, ...a, ...c, ...d);
@@ -1822,7 +1975,7 @@ export class Environment {
     const OFF = 0.012;
     for (const f of L.faces) {
       const b = L.blocks[f.block];
-      if (!f.wall || !b.aligned || b.hidden || b.grate || !b.solid) continue;
+      if (!f.wall || (!b.aligned && Math.abs(b.axes[1].y) < 0.9999) || b.hidden || b.grate || !b.solid) continue;   // boxes, upright or turned about Y
       const yb = b.aabbMin.y, yt = b.aabbMax.y;
       const inWater = yb < WATER_Y - 0.02 && yt > WATER_Y + 0.02;
       const overWater = !inWater && yb >= WATER_Y - 0.02 && yb < WATER_Y + 0.9;
@@ -1855,7 +2008,12 @@ export class Environment {
     const dn = new THREE.Vector3(0, -1, 0), dark = new THREE.Color('#2e2923');
     for (const r of M.decks) {
       const y = r.y0 - 0.002, e = 0.004;
-      const A = [r.minX + e, y, r.minZ + e], B = [r.maxX - e, y, r.minZ + e], Cc = [r.maxX - e, y, r.maxZ - e], D = [r.minX + e, y, r.maxZ - e];
+      let A, B, Cc, D;
+      if (r.aligned) { A = [r.minX + e, y, r.minZ + e]; B = [r.maxX - e, y, r.minZ + e]; Cc = [r.maxX - e, y, r.maxZ - e]; D = [r.minX + e, y, r.maxZ - e]; } else {
+        // turned slab: the same quad in its own frame (a rotation keeps the winding)
+        const P = (lx, lz) => { const q = rectPt(r, lx, lz); return [q[0], y, q[1]]; }, hx = r.hx - e, hz = r.hz - e;
+        A = P(-hx, -hz); B = P(hx, -hz); Cc = P(hx, hz); D = P(-hx, hz);
+      }
       under.push(...A, ...B, ...Cc, ...A, ...Cc, ...D);     // winding faces −Y
       const y2 = y - 0.006;
       quad([A[0], y2, A[2]], [B[0], y2, B[2]], [Cc[0], y2, Cc[2]], [D[0], y2, D[2]], dn, dark.clone().multiplyScalar(4), 0);
@@ -1938,7 +2096,7 @@ export class Environment {
     const X0 = b.minX - pad, X1 = b.maxX + pad, Z0 = b.minZ - pad, Z1 = b.maxZ + pad;
     const Wy = WATER_Y;
     const A = new THREE.Vector3(), Bv = new THREE.Vector3(), Cv = new THREE.Vector3(), pts = [];
-    const nearWet = (x, z) => wet.some((r) => x > r.minX - 0.12 && x < r.maxX + 0.12 && z > r.minZ - 0.12 && z < r.maxZ + 0.12);
+    const nearWet = (x, z) => wet.some((r) => inRect(r, x, z, 0.12));
     const cut = (p, q) => { const t = (Wy - p.y) / (q.y - p.y); pts.push(p.x + (q.x - p.x) * t, p.z + (q.z - p.z) * t); };
     const scan = (geo, mat) => {
       const pos = geo.attributes.position, idx = geo.index;
@@ -1986,6 +2144,8 @@ export class Environment {
   _insideFootprint(x, z) { return this.footprint.some((r) => inRect(r, x, z)); }
   _insideBounds(x, z) { const b = this.bounds; return x > b.minX + 0.01 && x < b.maxX - 0.01 && z > b.minZ + 0.01 && z < b.maxZ - 0.01; }
 
+  // exposed stretches of the footprint outline (edge samples whose outside is open water), along each rect's real
+  // (possibly turned) edges: { ax, az → bx, bz, outward nx, nz, len, s0..s1 }
   _boundaryRuns() {
     const runs = [];
     for (const r of this.footprint) {
@@ -2047,13 +2207,27 @@ export class Environment {
     }
 
     // ---- moored boats + dolphins (outside the bounds) ----
-    // (a stage that dresses its own water can switch these off: layout.envBoats === false — Cargo Terminal's ships)
+    // (a stage that dresses its own water can switch these off: layout.envBoats === false)
     const boatsSpec = marina || G.level?.layout?.envBoats === false ? [] : [
       { kind: 'fishing', x: b.maxX + 3.25, z: b.minZ + (b.maxZ - b.minZ) * 0.77, yaw: 0 },
       { kind: 'launch', x: b.minX - 2.85, z: b.minZ + (b.maxZ - b.minZ) * 0.2, yaw: Math.PI },
       { kind: 'row', x: b.minX - 1.75, z: b.minZ + (b.maxZ - b.minZ) * 0.86, yaw: 0.12 },
     ];
     this._mooredSpec = boatsSpec;
+    // nearest exposed deck edge to (x, z) whose outward normal faces (nx, nz), within 8 m: spring-line rings and ladders
+    // hang on the real (possibly turned) slab face rather than on the arena bounds; none near → left out
+    const edgeAt = (x, z, nx, nz) => {
+      let best = null, bd = 8;
+      for (const r of runs) {
+        if (r.nx * nx + r.nz * nz < 0.5) continue;
+        const dx = (r.bx - r.ax) / r.len, dz = (r.bz - r.az) / r.len;
+        const s = Math.min(r.s1, Math.max(r.s0, (x - r.ax) * dx + (z - r.az) * dz));
+        const px = r.ax + dx * s, pz = r.az + dz * s, d = Math.hypot(px - x, pz - z);
+        if (d < bd) { bd = d; best = { x: px, z: pz, nx: r.nx, nz: r.nz }; }
+      }
+      return best && bd < 1e-6 && best.nx === nx && best.nz === nz ? { x, z, nx, nz } : best;   // on the edge: as asked
+    };
+    const ringAt = (e) => dockParts.push(xf(prep(new THREE.TorusGeometry(0.09, 0.02, 5, 10), '#8d969e'), e.x + e.nx * 0.04, -0.36, e.z + e.nz * 0.04, e.nz === 0 ? Math.PI / 2 : Math.atan2(e.nx, e.nz)));
     const dockParts = [];
     const pushRope = (a, c, s = 0.35, r = 0.035) => dockParts.push(tube(sag(a, c, s), r, '#dccaa0'));
     const dolphin = (x, z, h = -0.28) => {
@@ -2078,12 +2252,13 @@ export class Environment {
         const bow = [bs.x, WATER_Y + fb + 0.35, bs.z + fwdZ * len * 0.42], stern = [bs.x, WATER_Y + fb + 0.05, bs.z - fwdZ * len * 0.44];
         pushRope(bow, d1, 0.35); pushRope(stern, d2, 0.35);
         // spring lines to rings on the slab face
-        pushRope([bs.x - sgn * 1.0, WATER_Y + fb, bs.z + 1.0], [edgeX + sgn * 0.06, -0.3, bs.z + 2.8], 0.2);
-        pushRope([bs.x - sgn * 1.0, WATER_Y + fb, bs.z - 1.4], [edgeX + sgn * 0.06, -0.3, bs.z - 3.2], 0.2);
-        for (const dz of [2.8, -3.2]) dockParts.push(xf(prep(new THREE.TorusGeometry(0.09, 0.02, 5, 10), '#8d969e'), edgeX + sgn * 0.04, -0.36, bs.z + dz, Math.PI / 2));
+        const e1 = edgeAt(edgeX, bs.z + 2.8, sgn, 0), e2 = edgeAt(edgeX, bs.z - 3.2, sgn, 0);
+        if (e1) pushRope([bs.x - sgn * 1.0, WATER_Y + fb, bs.z + 1.0], [e1.x + e1.nx * 0.06, -0.3, e1.z + e1.nz * 0.06], 0.2);
+        if (e2) pushRope([bs.x - sgn * 1.0, WATER_Y + fb, bs.z - 1.4], [e2.x + e2.nx * 0.06, -0.3, e2.z + e2.nz * 0.06], 0.2);
+        for (const e of [e1, e2]) if (e) ringAt(e);
       } else {
-        pushRope([bs.x, WATER_Y + 0.5, bs.z + 1.5], [edgeX + sgn * 0.06, -0.3, bs.z + 2.6], 0.25, 0.025);
-        dockParts.push(xf(prep(new THREE.TorusGeometry(0.09, 0.02, 5, 10), '#8d969e'), edgeX + sgn * 0.04, -0.36, bs.z + 2.6, Math.PI / 2));
+        const e = edgeAt(edgeX, bs.z + 2.6, sgn, 0);
+        if (e) { pushRope([bs.x, WATER_Y + 0.5, bs.z + 1.5], [e.x + e.nx * 0.06, -0.3, e.z + e.nz * 0.06], 0.25, 0.025); ringAt(e); }
       }
     }
 
@@ -2113,9 +2288,8 @@ export class Environment {
       // grab rail loop over the top edge
       dockParts.push(tube([[x + nx * off + tx * 0.28, -0.1, z + nz * off + tz * 0.28], [x + nx * 0.02 + tx * 0.28, 0.02, z + nz * 0.02 + tz * 0.28]], 0.035, '#aab3bb'));
     };
-    if (!marina && boatsSpec.length) {
-      ladderAt(b.maxX, boatsSpec[0].z - 5.5, 1, 0);
-      ladderAt(b.minX, boatsSpec[1].z + 4.5, -1, 0);
+    if (boatsSpec.length) {
+      for (const [x, z, nx] of [[b.maxX, boatsSpec[0].z - 5.5, 1], [b.minX, boatsSpec[1].z + 4.5, -1]]) { const e = edgeAt(x, z, nx, 0); if (e) ladderAt(e.x, e.z, e.nx, e.nz); }
     }
 
     // ---- pilings (instanced) ----
@@ -2745,12 +2919,8 @@ export class Environment {
     let d = 1e5;
     const M = this._marinaData;
     for (const set of M ? [M.decks, M.wet] : [this.footprint]) for (const r of set) {
-      // (turned rects: the distance in the rect's own frame, matching sdORect in the sea shaders)
-      const cx = (r.minX + r.maxX) / 2, cz = (r.minZ + r.maxZ) / 2, hx = (r.maxX - r.minX) / 2, hz = (r.maxZ - r.minZ) / 2;
-      const qx = r.aligned ? Math.abs(x - cx) - hx : Math.abs((x - r.cx) * r.ax + (z - r.cz) * r.az) - r.hx;
-      const qz = r.aligned ? Math.abs(z - cz) - hz : Math.abs((z - r.cz) * r.ax - (x - r.cx) * r.az) - r.hz;
-      const dd = Math.hypot(Math.max(qx, 0), Math.max(qz, 0)) + Math.min(Math.max(qx, qz), 0);
-      d = Math.min(d, dd);
+      const ex = Math.max(r.minX - x, x - r.maxX, 0), ez = Math.max(r.minZ - z, z - r.maxZ, 0);
+      if (ex * ex + ez * ez < d * d) d = Math.min(d, sdRectJS(r, x, z));   // (a rect is never nearer than its AABB)
     }
     let amp = 0.035 + (0.16 - 0.035) * smooth(3, 70, d);
     if (M) {   // sheltered basin (matches basinK in the sea vertex shader)
@@ -2760,6 +2930,17 @@ export class Environment {
     }
     const h = 0.45 * Math.sin(x * 0.11 + z * 0.047 + t * 0.95) + 0.35 * Math.sin(-x * 0.052 + z * 0.097 + t * 1.13 + 1.7) + 0.2 * Math.sin(x * 0.173 - z * 0.141 + t * 1.61 + 4.1);
     return WATER_Y + h * amp;
+  }
+
+  // Points every ~step m along the exposed deck edges — the real (possibly turned) outline, not the rects' AABBs:
+  // { x, z, nx, nz } 5 cm out from the face, with its outward normal (e.g. sea-spray FX candidates).
+  deckEdges(step = 1.6) {
+    const out = [];
+    for (const r of this._runs || []) {
+      const L = r.s1 - r.s0, n = Math.max(1, Math.floor(L / step)), dx = (r.bx - r.ax) / r.len, dz = (r.bz - r.az) / r.len;
+      for (let i = 0; i < n; i++) { const s = r.s0 + (L * (i + 0.5)) / n; out.push({ x: r.ax + dx * s + r.nx * 0.05, z: r.az + dz * s + r.nz * 0.05, nx: r.nx, nz: r.nz }); }
+    }
+    return out;
   }
 
   // How lively the water at the stage edges is, 0..1 (FX: wave slaps / spray bursts against the decks). Marina basins
@@ -2781,8 +2962,7 @@ export class Environment {
   rebuildForArena(bounds, rects) {
     this._marina = this._stageMarina();
     this.bounds = { ...bounds };
-    this.footprint = (rects && rects.length ? rects : [this.bounds]).slice(0, MAX_RECTS).map(orect);
-    this._writeRects();
+    this.footprint = (rects && rects.length ? rects : [this.bounds]).map(orect);
     this._rebuildDock();
     this._applyMarina();
     this._fitShadow();
@@ -2801,10 +2981,10 @@ export class Environment {
     if (!this._marina) this._buildFoamField(this._foamShapes);   // marina: _applyMarina builds it with the contours
   }
 
-  // Replace the deck outline (array of {minX,maxX,minZ,maxZ}) → foam/under-deck shading follow. Pilings are built once.
+  // Replace the deck outline (array of rects, see orect()) → foam/under-deck shading follow. Pilings are built once.
   setFootprint(rects) {
-    this.footprint = rects.slice(0, MAX_RECTS).map(orect);
-    this._writeRects();
+    this.footprint = rects.map(orect);
+    this._syncDeckShading();
   }
 
   setTheme(name) {
@@ -2931,6 +3111,6 @@ export class Environment {
     this._cloudRT?.dispose(); this._cloudMat?.dispose();
     this._reflRT?.dispose(); this._farRT?.dispose(); this._stripMat?.dispose(); this._underMat?.dispose();
     this._pmrem.dispose();
-    this.U.uWaveTex.value?.dispose(); this.U.uFoamTex.value?.dispose();
+    this.U.uWaveTex.value?.dispose(); this.U.uFoamTex.value?.dispose(); this._fieldRT?.dispose(); this._fieldMat?.dispose(); this._fieldQuad?.geometry.dispose();
   }
 }

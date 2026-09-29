@@ -385,12 +385,13 @@ export class Level {
   }
 
   // Highest walkable surface under (x,z) below yMax (used by nav + spawns). Returns y or -Infinity.
-  groundHeight(x, z, yMax = 50) {
+  // skipGrates: what a squid would land on (squids drop straight through grates)
+  groundHeight(x, z, yMax = 50, skipGrates = false) {
     let best = -Infinity;
     const ids = this.queryBlocks(x - 0.01, z - 0.01, x + 0.01, z + 0.01, this._qtmp2 || (this._qtmp2 = []));
     for (const id of ids) {
       const b = this.blocks[id];
-      if (!b.solid) continue;
+      if (!b.solid || (skipGrates && b.grate)) continue;
       // intersect vertical line with the block's top face plane
       const n = b.axes[1];
       if (n.y < 0.5) continue;

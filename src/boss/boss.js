@@ -19,7 +19,7 @@ export const BOSS = {
   dmgDiff: { easy: 0.7, normal: 1, hard: 1.2 },         // what its attacks deal
   paceDiff: { easy: 1.25, normal: 1, hard: 0.85 },      // gaps between its moves
   weak: 2.5, stunned: 1.25,                             // damage multipliers (weak point · while stunned)
-  weapon: { roller: 0.3, slam: 0.6, bomb: 0.75 },        // area weapons against a target this big
+  weapon: { roller: 0.3, slam: 0.6, bomb: 0.75, sticky: 0.75, seeker: 0.75, burst: 0.75, shaker: 0.75, waddle: 0.75, torpedo: 0.75 },   // area weapons against a target this big
   phases: [0.66, 0.33],
   introAt: 1.8, introLen: 3.4, roarLen: 1.9,
 };

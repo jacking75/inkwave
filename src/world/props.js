@@ -1222,7 +1222,7 @@ D.railing = {
     B.sph('gloss', c, 0.04, L, H - 0.018, 0, { ws: 10, hs: 6 });
     B.cyl('gloss', c, 0.021, L, L / 2, H * 0.55, 0, { rz: HP, seg: 8, open: true });
     B.cyl('gloss', c, 0.018, L, L / 2, 0.15, 0, { rz: HP, seg: 8, open: true });
-    B.col(-0.05, 0, -0.06, L + 0.05, H, 0.06);
+    B.col(-0.05, 0, -0.06, L + 0.05, H, 0.06, { rail: true });
   },
 };
 
@@ -1251,7 +1251,7 @@ D.fence = {
         B.cyl('gloss', c, 0.016, w, xm, (y0 + top) / 2 + 0.15, 0, { rz: HP, seg: 6, open: true });
       }
     }
-    B.col(-0.3, 0, -0.14, L + 0.3, top, 0.14);
+    B.col(-0.3, 0, -0.14, L + 0.3, top, 0.14, { rail: true });   // see-through fence: kids blocked, shots / ink / squids pass
   },
 };
 
@@ -2387,7 +2387,7 @@ D.bikerack = {
       bike(B, pick(B, BIKE_COLS), B.r() < 0.4);
       B.pop();
     }
-    B.col(-0.25, 0, -0.95, (n - 1) * sp + 0.45, 1.05, 0.95);
+    B.col(-0.25, 0, -0.95, (n - 1) * sp + 0.45, 1.05, 0.95, { rail: true });   // hoops + bike frames: see-through
     B.blob(n * sp + 0.6, 2.0, (n - 1) * sp / 2, 0);
   },
 };
@@ -3174,7 +3174,8 @@ export class PropKit {
     const r4 = (v) => Math.round(v * 1e4) / 1e4;
     for (const b of cols) {
       let box;
-      if (obox && !snapped) {
+      if (!snapped) {
+        // turned prop: keep the collider turned with it (a world-axis box would swell past the real shape)
         const mx = (b[0] + b[3]) / 2, mz = (b[2] + b[5]) / 2;
         const cx = (mx * c + mz * sn) * s, cz = (-mx * sn + mz * c) * s;
         box = { obox: true, center: [r4(pos[0] + cx), r4(pos[1] + ((b[1] + b[4]) / 2) * s), r4(pos[2] + cz)],

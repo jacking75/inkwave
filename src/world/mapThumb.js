@@ -7,10 +7,20 @@ const W = 344, H = 160;
 function expand(layout) {
   const mirror = (d) => d.kind === 'box'
     ? { ...d, min: [-d.max[0], d.min[1], -d.max[2]], max: [-d.min[0], d.max[1], -d.min[2]] }
-    : d.kind === 'obox' ? { ...d, center: [-d.center[0], d.center[1], -d.center[2]] }
+    : d.kind === 'obox' ? { ...d, center: [-d.center[0], d.center[1], -d.center[2]], oct: d.oct && [-d.oct[0], -d.oct[1], d.oct[2]] }
     : { ...d, low: [-d.low[0], d.low[1], -d.low[2]], high: [-d.high[0], d.high[1], -d.high[2]] };
   // (rails are collision-only railings: nothing to draw)
-  return [...layout.single, ...layout.half, ...layout.half.map(mirror)].filter((d) => !d.rail);
+  const all = [...layout.single, ...layout.half, ...layout.half.map((d) => (d.oct && d.kind === 'box' ? { ...mirror(d), oct: [-d.oct[0], -d.oct[1], d.oct[2]] } : mirror(d)))].filter((d) => !d.rail);
+  // octagon platforms (maps.js OCT) are drawn as one octagon instead of their plus + corner-slab parts
+  const out = [], seen = new Set();
+  for (const d of all) {
+    if (!d.oct) { out.push(d); continue; }
+    const key = d.oct.map((v) => v.toFixed(2)).join(',') + ':' + (d.kind === 'box' ? d.max[1] : d.center[1] + d.size[1] / 2).toFixed(1);
+    if (seen.has(key) || d.kind !== 'box') continue;
+    seen.add(key);
+    out.push({ ...d, kind: 'octagon', top: d.max[1] });
+  }
+  return out;
 }
 
 export function layoutThumbSVG(layout, theme = 'day', teams = ['#18c7e8', '#ff4a5a']) {
@@ -30,8 +40,13 @@ export function layoutThumbSVG(layout, theme = 'day', teams = ['#18c7e8', '#ff4a
   for (let i = 0; i < 6; i++) { const y = 14 + i * 26, x = (i * 53) % 300; parts.push(`<path d="M${x} ${y} q8 -5 16 0 t16 0" stroke="#fff" stroke-opacity=".35" stroke-width="2.4" fill="none" stroke-linecap="round"/>`); }
   const blocks = expand(layout).map((d) => {
     if (d.kind === 'box') return { x0: d.min[0], x1: d.max[0], z0: d.min[2], z1: d.max[2], top: d.max[1], d };
+    if (d.kind === 'octagon') {
+      const [cx, cz, R] = d.oct;
+      const poly = Array.from({ length: 8 }, (_, i) => { const a = Math.PI / 8 + (i * Math.PI) / 4; return [cx + R * Math.cos(a), cz + R * Math.sin(a)]; });
+      return { poly, top: d.top, d };
+    }
     if (d.kind === 'obox') {
-      // turned footprint → polygon (x, z corners)
+      // rotated footprint → polygon (x, z corners)
       const a = (d.rotY * Math.PI) / 180, c = Math.cos(a), sn = Math.sin(a), hx = d.size[0] / 2, hz = d.size[2] / 2;
       const poly = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([i, k]) => [d.center[0] + c * hx * i + sn * hz * k, d.center[2] - sn * hx * i + c * hz * k]);
       return { poly, top: d.center[1] + d.size[1] / 2, d };

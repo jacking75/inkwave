@@ -29,11 +29,11 @@
 
 ## Features
 
-- **Turf war, 4 v 4.** Three minutes, most ground painted wins. Play against bots on three difficulty levels.
+- **Game modes, 4 v 4.** Turf War (most ground painted wins) and Zone Control (hold the live zone to count down from 100 — rotating side zones, penalties, overtime). Play against bots on three difficulty levels.
 - **Online with friends.** Create a private room, share the five-character code, and up to eight players line up in the lobby with their loadouts and looks. Empty slots fill with bots; if someone drops, a bot takes over their squidkid mid-match.
 - **Squid form.** Hold to dive into your ink: swim fast, refill your tank, climb inked walls, dolphin-jump water gaps.
-- **Seven weapons**, each with its own feel: Spritzer (shooter), Swell Roller, Glint Charger, Popper Blaster, Twinfin Dualies (dodge roll), Tidebucket Slosher and Gyre Splatling. Every kit comes with Splat Bombs and a special.
-- **Three stages, day or dusk.** Tidewater Plaza, Kelpline Terminal and Halyard Marina, a working marina with a car ferry moored across the middle where the water gaps are the whole point.
+- **Twelve weapons**, each with its own feel: Spritzer, Twinfire Pistols, Canopy Brolly (shotgun + launchable shield), Popper Blaster, Squall Spinner, Glint Charger, Tideline Bow (tri-arrow, two charge rings), Swell Roller, Swish Brush, Brine Cutlass (charged one-hit blade), Sponge Mitts (ink fists, charged leap, wall cling) and Bilge Bucket. Mix any main with any of 15 subs and 19 specials.
+- **Seven stages, day or dusk.** Tidewater Plaza, Kelpline Terminal, Halyard Marina, Saltpan Basin, Crossroads Market, Lockgate Canals and Terrace Heights, each a real place with its own layout. Some stages change a few pieces for Zone Control.
 - **Ink that behaves like liquid.** Splats spread and settle, fresh ink is glossy and dries, drips run down walls, and swimming leaves a wake in the surface itself.
 - **A map you can actually read.** Hold <kbd>Tab</kbd> and the camera cranes up into a tilt-shift diorama of the live stage, with pins for your team and one-click Super Jumps.
 - **Locker.** Choose your squidkid: tentacle style, headgear, face, outfit.
@@ -87,8 +87,13 @@ There is no build step. Any static file server works; the included one also serv
 ```bash
 git clone https://github.com/jaydendavisnc/inkwave.git
 cd inkwave
-npm start        # http://localhost:8490
+npm install      # Electron + the headless tools
+npm start        # the desktop app (Electron)
+npm run serve    # or the web version: http://localhost:8490
+npm run package  # build the macOS app into dist/ (arm64 + x64)
 ```
+
+Optional: drop your own music into `songs/` (see [`songs/README.md`](songs/README.md)); otherwise the procedural soundtrack plays.
 
 Useful URL parameters: `?map=halyard&time=dusk` picks a stage, `&autostart=180` skips the menus into a 180 s match, `&autopilot` lets a bot drive you.
 
@@ -97,8 +102,10 @@ npm install      # once, for the headless tools
 npm run check    # syntax-check every module
 npm run smoke    # boot + 8 s of autopilot in headless Chrome, fails on console errors
 npm run build    # assemble dist/ (game + only the three.js addons it imports)
+npm run check-maps   # sanity-check every stage layout (and its Zone Control variant)
 ```
 
+Bot matches run headless and muted for tuning: `MAP=halyard MODE=turf SECS=180 npm run botlab` (see [`tools/botlab/README.md`](tools/botlab/README.md)).
 With the relay running, `npm run net-test` plays a real match between headless clients and reports what each
 screen drew (see [`docs/NET.md`](docs/NET.md#how-the-netcode-works-srcnetnetmatchjs)).
 

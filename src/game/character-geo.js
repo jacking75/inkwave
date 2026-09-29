@@ -121,7 +121,7 @@ for (const [n, p] of BODY_BONES) BONE_PARENT[n] = p;
 for (let s = 0; s < HAIR_MAX; s++) for (let k = 0; k < HAIR_SEGS; k++) BONE_PARENT[`hair${s}_${k}`] = k === 0 ? 'head' : `hair${s}_${k - 1}`;
 for (const [n, p] of EXTRA_BONES) BONE_PARENT[n] = p;
 for (const [n, , p] of EXTRA_BONES) if (p) REST_BODY[n] = p.clone();
-/** Names of the bones beyond the core skeleton (see docs/RIG.md → Added bones). */
+/** Names of the bones added by the modeling stream (see docs/RIG.md → Added bones). */
 export const ADDED_BONES = EXTRA_BONES.map((b) => b[0]);
 
 // ------------------------------------------------------------------------------------------------

@@ -274,7 +274,7 @@ const HOLD = {
     lobby: { p: [-0.21, 0.86, 0.14], r: [1.2, 0.25, 0] }, lobbyTwo: 0,
   },
 };
-// ---- weapon kinds (grip frames in character-weapons.js; poses here are pure data + the generic
+// ---- kinds added by the arsenal stream (grip frames in character-weapons.js; poses here are pure data + the generic
 // layers in _poseWeapon: dual wield mirrors the anchor to the left fist, `fire` names the one-shot the kind plays)
 HOLD.dualies = {
   dual: true,   // a second pistol in the LEFT fist: the left anchor is the right one mirrored across the kid's midline
@@ -313,7 +313,55 @@ HOLD.splatling = {
   lobby: { p: [-0.15, 0.8, 0.2], r: [0.25, 0.4, -0.15] }, lobbyTwo: 1,
 };
 HOLD.shooter.fire = 'recoil'; HOLD.blaster.fire = 'pump'; HOLD.charger.fire = 'charge'; HOLD.roller.fire = 'flick';
-const STANCE_IDLE = [HIPW + 0.012, 0.014, 0.19, -HIPW - 0.008, -0.01, -0.2];   // ready stance: a bit wide, toes out, left foot a touch ahead
+// ---- fork kinds (bucket / spinner / the Twister Zooka special); twins, brush and the other held specials borrow a
+// family through ANIM_OF below
+// pail held low in front with both hands: right fist on the handle, left palm under the bottom
+HOLD.bucket = {
+  carry: { p: [-0.1, 0.7, 0.24], r: [0.25, 0.1, 0] }, twoCarry: 1,
+  aim: { p: [-0.06, -0.52, 0.34], r: [0.35, 0.06, 0] }, twoAim: 1,
+  poleR: [-0.8, -0.6, -0.2], poleL: [0.7, -0.75, -0.2],
+  rc: { kick: 0.05, back: 0.02, hz: 6, z: 0.4, jit: 0.01, torso: 0.15, head: 0.08, crouch: 0.02 },
+  hip: -0.14, chest: 0.06, crouch: 0.03,
+  stance: [0.118, 0.045, 0.22, -0.112, -0.05, -0.38],
+  raise: { p: [-0.18, 1.22, 0.14], r: [-1.1, 0.3, -0.3] },
+  lobby: { p: [-0.12, 0.72, 0.24], r: [0.3, 0.2, 0.1] }, lobbyTwo: 1,
+};
+// heavy rotary cannon braced at the hip with both hands, wide planted stance
+HOLD.spinner = {
+  carry: { p: [-0.1, 0.74, 0.2], r: [0.3, 0.2, 0.15] }, twoCarry: 1,
+  aim: { p: [-0.06, -0.42, 0.18], r: [0, 0.06, 0] }, twoAim: 1,
+  poleR: [-0.9, -0.5, -0.1], poleL: [0.7, -0.8, -0.1],
+  rc: { kick: 0.03, back: 0.02, hz: 14, z: 0.5, jit: 0.018, torso: 0.12, head: 0.06, crouch: 0.02 },
+  hip: -0.3, chest: 0.18, crouch: 0.05,
+  stance: [0.13, 0.07, 0.26, -0.12, -0.07, -0.55],
+  raise: { p: [-0.17, 1.22, 0.1], r: [-1.05, 0.3, -0.3] },
+  lobby: { p: [-0.12, 0.76, 0.2], r: [0.2, 0.6, 0.4] }, lobbyTwo: 1,
+};
+// special: shoulder-fired launcher (Twister Zooka) — tube resting on the right shoulder beside the head, both hands
+HOLD.sp_zooka = {
+  carry: { p: [-0.2, 0.93, 0.1], r: [-0.22, 0.04, 0] }, twoCarry: 1,
+  aim: { p: [-0.17, 0.02, 0.07], r: [0, 0.03, 0] }, twoAim: 1,
+  poleR: [-0.55, -0.85, 0.05], poleL: [0.55, -0.8, -0.1],
+  rc: { kick: 0.3, back: 0.07, hz: 5, z: 0.38, jit: 0.012, torso: 0.3, head: 0.22, crouch: 0.03 },
+  hip: -0.36, chest: 0.26, crouch: 0.03,
+  stance: [0.112, 0.085, 0.3, -0.098, -0.085, -0.7],
+  raise: { p: [-0.17, 1.22, 0.1], r: [-1.05, 0.3, -0.3] },
+  lobby: { p: [-0.2, 0.93, 0.1], r: [-0.3, 0.1, 0] }, lobbyTwo: 1,
+};
+// ---- Brine Cutlass (kit weapon 'blade', kits/blade.js): one-handed sword. Carry low and forward at the right side,
+// run with the blade trailing, a raised guard while fighting; the cuts themselves are _poseBlade (one-shots).
+HOLD.blade = {
+  carry: { p: [-0.21, 0.72, 0.16], r: [0.62, 0.2, -0.95] }, twoCarry: 0,
+  run: { p: [-0.22, 0.76, 0.04], r: [2.0, 0.3, -0.35] },
+  aim: { p: [-0.12, -0.06, 0.26], r: [-0.45, 0.4, -0.7] }, twoAim: 0,
+  poleR: [-0.9, -0.5, -0.2], poleL: [0.75, -0.65, -0.25],
+  rc: { kick: 0.02, back: 0.01, hz: 6, z: 0.6, jit: 0.005, torso: 0.1, head: 0.05, crouch: 0.004, brace: 0 },
+  hip: -0.16, chest: 0.07, crouch: 0.03,
+  stance: [0.13, 0.07, 0.22, -0.12, -0.08, -0.45],
+  raise: { p: [-0.2, 1.3, 0.1], r: [-1.35, 0.2, -0.2] },
+  lobby: { p: [-0.2, 0.98, 0.02], r: [-2.35, 0.25, 0.3] }, lobbyTwo: 0,
+};
+const STANCE_IDLE =[HIPW + 0.012, 0.014, 0.19, -HIPW - 0.008, -0.01, -0.2];   // ready stance: a bit wide, toes out, left foot a touch ahead
 const STANCE_LOCK = [0.165, 0.035, 0.42, -0.165, -0.035, -0.42];   // dualies' post-roll turret: wide and planted
 // idle re-plants of one foot (kid space, left-foot convention: +x out, +z forward, +yaw toes out): out · back ·
 // back-out · forward-in · toes out
@@ -384,6 +432,68 @@ const K_EM_ST = [0, 0.03, 0.07, 0.095], K_EM_SY = [1, 0.72, 1.42, 1.6], K_EM_SX 
 const K_EM_KT = [0.045, 0.1, 0.16, 0.24, 0.32, 0.42], K_EM_KY = [1.36, 1.13, 0.88, 1.05, 0.985, 1], K_EM_KX = [0.68, 0.9, 1.09, 0.975, 1.008, 1];
 const K_DV_KT = [0, 0.03, 0.07, 0.095], K_DV_KY = [1, 0.82, 0.34, 0.16], K_DV_KX = [1, 1.1, 1.4, 1.2];
 const K_DV_ST = [0.045, 0.08, 0.13, 0.2, 0.28, 0.38], K_DV_SY = [0.3, 0.72, 1.3, 0.9, 1.045, 1], K_DV_SX = [1.5, 1.2, 0.83, 1.07, 0.98, 1];
+const _dAxis = new THREE.Vector3(), _dQ = new THREE.Quaternion(), _dC = new THREE.Vector3(), _fwdZ = new THREE.Vector3(0, 0, 1);
+// weapons animated with another kind's pose family (this.animKind); every other kind is its own family
+const ANIM_OF = { twins: 'shooter', brush: 'roller', sp_blower: 'shooter', sp_jetgun: 'blaster', sp_stamp: 'roller' };
+// families too heavy / long for the idle and dance weapon twirls
+const NO_TWIRL = { roller: true, charger: true, spinner: true, bucket: true, sp_zooka: true, sp_stamp: true };
+// ---- Canopy Brolly (kits/brolly.js): held and aimed like a shooter
+ANIM_OF.brolly = 'shooter';
+// ---- Sponge Mitts (kits/mitts.js): a sponge boxing glove in each fist (dual wield), a boxer's guard in front of the
+// face; punches / leap-charge crouch / leap / wall cling are layered on by _poseMitts
+HOLD.mitts = {
+  dual: true,
+  carry: { p: [-0.125, 0.87, 0.15], r: [-0.25, 0.32, 0.12] }, twoCarry: 0,
+  run: { p: [-0.13, 0.86, 0.16], r: [-0.1, 0.28, 0.1] },
+  aim: { p: [-0.085, 0.03, 0.2], r: [-0.12, 0.2, 0.05] }, twoAim: 0,
+  poleR: [-0.9, -0.6, -0.1], poleL: [0.9, -0.6, -0.1],
+  rc: { kick: 0.012, back: 0.004, hz: 7, z: 0.8, jit: 0.01, torso: 0.05, head: 0.03, crouch: 0.002, brace: 0 },
+  hip: -0.14, chest: 0.06, crouch: 0.03,
+  stance: [0.12, 0.07, 0.3, -0.115, -0.07, -0.34],
+  raise: { p: [-0.16, 1.26, 0.12], r: [-1.2, 0.3, 0.1] },
+  lobby: { p: [-0.13, 0.95, 0.17], r: [-0.35, 0.4, 0.1] }, lobbyTwo: 0,
+};
+NO_TWIRL.mitts = true;
+// punch extension over time since that glove fired (out in 45 ms, back by 210 ms) · a kid-space point pushed onto the
+// wall plane p·n = wd (n = the wall normal in kid space), `off` metres out from it (o = [x, z])
+const mitPunch = (u) => (u < 0.045 ? easeOut(u / 0.045) : u < 0.21 ? 1 - ease((u - 0.045) / 0.165) : 0);
+function mitOnWall(x, z, off, nx, nz, wd, o) { const d = x * nx + z * nz - wd - off; o[0] = x - nx * d; o[1] = z - nz * d; return o; }
+// ---- Tideline Bow (kits/bow.js; model + part animation in kits/bow-model.js). Animates as the charger family but
+// with its own HOLD (setWeapon prefers HOLD[kind]). The weapon origin is the nock on the string in the RIGHT fist; the
+// left fist holds the riser `brace` ahead. The anchors below are the undrawn (string at rest) fist; poseBow pulls that
+// fist back along the arrow by drawLen × draw (the model slides the bow forward by as much, so the bow arm stays put)
+// and cants the bow on its side on the ground (the fan flies flat) / upright in the air (the fan flies upright).
+ANIM_OF.bow = 'charger';
+HOLD.bow = {
+  fire: 'charge',
+  carry: { p: [-0.2, 0.72, 0.14], r: [0.8, -0.15, -0.55] }, twoCarry: 1,
+  aim: { p: [-0.14, 0.16, 0.33], r: [0, 0.03, 0] }, twoAim: 1,         // full draw: the fist beside the right cheek
+  poleR: [-1, 0.3, -0.45], poleL: [0.6, -0.5, 0.1],
+  rc: { kick: 0.06, back: 0.04, hz: 5, z: 0.5, jit: 0.01, torso: 0.25, head: 0.1, crouch: 0.01, brace: 0 },
+  hip: -0.9, chest: -0.8, crouch: 0.02,                                  // side-on: the bow shoulder leads
+  stance: [0.112, 0.085, 0.3, -0.098, -0.085, -0.78],
+  raise: { p: [-0.17, 1.22, 0.1], r: [-1.05, 0.3, -0.3] },
+  lobby: { p: [-0.12, 0.76, 0.2], r: [0.5, 0.35, 0.1] }, lobbyTwo: 1,
+};
+const BOW_CANT = -0.85;   // roll of the whole bow about the arrow on the ground (rad; top limb to the kid's left)
+function poseBow(ch, P, dt) {
+  const w = ch.weapon, len = w.def.drawLen || 0.2;
+  // draw 0..1: a quick first pull, heavier toward full. After a release the fist holds at the cheek a beat, then eases
+  // forward to the string again (the model snaps the string home by itself)
+  const c = clamp(ch.charge, 0, 1);
+  if (ch.lastRelease < (ch._bowLR ?? 99)) ch._bowHold = ch._bowDraw || 0;
+  ch._bowLR = ch.lastRelease;
+  let draw = 1 - (1 - c) * (1 - c);
+  if (ch.lastRelease < 0.5 && c < 0.05) draw = Math.max(draw, (ch._bowHold || 0) * (1 - ease((ch.lastRelease - 0.1) / 0.3)));
+  ch._bowDraw = draw; w.bowDraw = draw;
+  // the fist back along the arrow (the weapon's +Z, in kid space)
+  _e1.set(P[ANCR], P[ANCR + 1], P[ANCR + 2], 'YXZ');
+  _v1.set(0, 0, -len * draw).applyEuler(_e1);
+  P[ANC] += _v1.x; P[ANC + 1] += _v1.y; P[ANC + 2] += _v1.z;
+  // cant (eased, so a jump visibly swings the bow upright)
+  ch._bowCant = damp(ch._bowCant ?? BOW_CANT, ch.grounded ? BOW_CANT : 0, 12, dt);
+  P[ANCR + 2] += ch._bowCant * ch.wAim;
+}
 const HOLD_HERO = { p: [-0.14, 1.05, 0.25], r: [-0.35, 0.35, -0.2] };
 const K_SL_T = [0, 0.13, 0.25, 0.4, 0.62];
 const K_SL_X = [0, -0.08, 0.02, 0.025, 0], K_SL_Y = [0, -0.22, 0.24, 0.33, 0], K_SL_Z = [0, -0.34, 0.04, -0.04, 0];
@@ -421,7 +531,7 @@ export class Character {
 
     // materials
     const u = this.u = makeCharUniforms();
-    // outfit colourway / pattern / iris (+ any face uniforms) come from the style catalogue (character-style.js)
+    // outfit colourway / pattern / iris (+ any face uniforms) come from the appearance stream's catalogue
     if (typeof STYLE.applyStyleUniforms === 'function') STYLE.applyStyleUniforms(u, this.style);
     else {
       const outfit = OUTFITS[this.style.outfit];
@@ -462,7 +572,7 @@ export class Character {
     this._buildSquid();
     this._tierProps(this.lod.tier);
     this.weapons = {};
-    this.weaponKind = null;
+    this.weaponKind = null; this.animKind = null;
 
     // ---- animation state ----
     this.P = new Float32Array(PN); this.PD = new Float32Array(PN); this.PX = new Float32Array(PN); this.PY = new Float32Array(PN);
@@ -525,6 +635,8 @@ export class Character {
     this.jumpRun = 0; this.jumpLead = 0;
     this.kidSY = 1; this.kidSXZ = 1; this.sqSY = 1; this.sqSXZ = 1; this.kidLift = 0;
     this.tumble = 0; this.tumbleX = 1; this.tumbleZ = 0; this.tumbleDrop = 0; this._dt = 0;
+    // fork kinds: specials hide the held weapon / sub prop; brush swipe side; spinner barrels; twins dodge tumble
+    this.weaponHidden = false; this.subPropHidden = false; this.swipeSide = 1; this.spinRate = 0; this.spinAngle = 0; this.dodge = null;
     this.dual = false; this.armL = 0; this.rcP2 = 0; this.rcZ2 = 0; this.dodgeX = 0; this.dodgeZ = 1; this.dodgeDur = 0.3; this.lockW = 0; this.spinW = 0; this.streamW = 0; this.bombSwap = 0;
     this._wst = { t: 0, dt: 0, color: this.color, near: true, hand: 0, runner: null, sinceShoot: 99, sinceFlick: 99, sinceRelease: 99,
       charge: 0, full: false, chargeFlash: 0, lowInk: 0, firing: false, rolling: 0, grounded: true, groundSpeed: 0, worldQuat: null };
@@ -593,7 +705,7 @@ export class Character {
       _v1.subVectors(hc, r0).normalize();
       this.hairIn[s * 3] = _v1.x; this.hairIn[s * 3 + 1] = _v1.y; this.hairIn[s * 3 + 2] = _v1.z;
     }
-    // optional bones (docs/RIG.md) — animated when present
+    // optional bones added by the modelling stream (docs/RIG.md) — animated when present
     const opt = (n) => this.bones[n] || null;
     this.xb = {
       jaw: opt('jaw'), lidL: opt('lidL'), lidR: opt('lidR'), tank: opt('tank'), hem: opt('hem'), hemF: opt('hemF'), hemB: opt('hemB'),
@@ -639,14 +751,25 @@ export class Character {
     }
   }
 
-  _buildBomb() {
-    const d = getSubDef('bomb');
+  // the sub prop held in the left hand while a throw is aimed (any sub kind; see getSubDef)
+  _buildBomb(kind = 'bomb') {
+    const d = getSubDef(kind);
     const g = new THREE.Group(); g.position.copy(d.inHandL.pos); g.quaternion.copy(d.inHandL.quat);
     const body = new THREE.Mesh(d.body, getPlasticMaterial()); body.castShadow = true;
     const ink = new THREE.Mesh(d.ink, getInkMaterial(this.color)); ink.castShadow = true;
-    g.add(body, ink); g.visible = false;
+    g.add(body, ink);
+    let spinInk = null;
+    if (d.spin) { const sp = new THREE.Mesh(d.spin, getPlasticMaterial()); sp.castShadow = true; g.add(sp); }
+    if (d.spinInk) { spinInk = new THREE.Mesh(d.spinInk, getInkMaterial(this.color)); g.add(spinInk); }
+    if (d.glow) g.add(new THREE.Mesh(d.glow, this.mats.glow));
+    g.visible = false;
     this.bones.handL.add(g);
-    this.bomb = { group: g, ink };
+    this.bomb = { group: g, ink, spinInk, kind };
+  }
+  setSub(kind) {
+    if (this.bomb && this.bomb.kind === kind) return;
+    if (this.bomb) this.bones.handL.remove(this.bomb.group);
+    this._buildBomb(kind);
   }
 
   _buildTank() {
@@ -678,6 +801,19 @@ export class Character {
     const w = this._weaponInstance(d, false);
     // dual wield: a second instance of the same weapon in the LEFT fist (docs: character-weapons.js getWeaponDef)
     if (d.dual && d.inHandL) w.left = this._weaponInstance(d, true);
+    if (d.mirrorDual) {
+      // twins: the same gun mirrored across the body's X axis into the left fist (reflection: p → (-x, y, z),
+      // q → (x, -y, -z, w)); a static copy that rides the left hand's pose (no parts, no second anchor)
+      const pivotL = new THREE.Group(); pivotL.position.set(-FIST_OFFSET.x, FIST_OFFSET.y, FIST_OFFSET.z);
+      const offL = new THREE.Group();
+      offL.position.copy(d.inHand.pos).sub(FIST_OFFSET); offL.position.x = -offL.position.x;
+      offL.quaternion.set(d.inHand.quat.x, -d.inHand.quat.y, -d.inHand.quat.z, d.inHand.quat.w);
+      const mir = new THREE.Group(); mir.scale.set(-1, 1, 1);
+      const bodyL = new THREE.Mesh(d.body, getPlasticMaterial()); bodyL.castShadow = true;
+      const inkL = new THREE.Mesh(d.ink, getInkMaterial(this.color)); inkL.castShadow = true;
+      mir.add(bodyL, inkL); offL.add(mir); pivotL.add(offL);
+      w.pivotL = pivotL; w.inkL = inkL;
+    }
     this.weapons[kind] = w;
     return w;
   }
@@ -715,9 +851,34 @@ export class Character {
       const dc = new THREE.Mesh(d.drumCaps, getPlasticMaterial());
       drum.add(dm, dc); off.add(drum); drum.userData.ink = dm;
     }
+    let spin = null;
+    if (d.spin && !left) {
+      // spinner / zooka: the barrel cluster turns about its own axis (weapon +Z through spinAt); geometry is authored in
+      // weapon space. Driven by this character (_applyPose), not animateWeapon.
+      spin = new THREE.Group(); spin.position.copy(d.spinAt);
+      const sm = new THREE.Mesh(d.spin, getPlasticMaterial()); sm.castShadow = true; sm.position.copy(d.spinAt).negate();
+      spin.add(sm); off.add(spin);
+    }
     const muzzle = new THREE.Object3D(); muzzle.position.copy(d.muzzle); off.add(muzzle);
     // part state (pump, trig, ps, drum, spin…) is owned by animateWeapon (character-weapons.js); pump/trig read here
-    return { def: d, pivot, off, body, ink, bodyFar, inkFar, glow, drum, muzzle, parts, partList, lamps, coil, near: true, pump: 0, trig: 0, left: null, hidden: 0 };
+    return { def: d, pivot, off, body, ink, bodyFar, inkFar, glow, drum, muzzle, parts, partList, lamps, coil, near: true, pump: 0, trig: 0, left: null, hidden: 0, spin, pivotL: null, inkL: null };
+  }
+
+  // Dodge roll (twin pistols): one forward tumble about the body centre toward the roll direction, ~0.3 s.
+  _updateDodge(dt) {
+    const m = this.model;
+    if (!this.dodge) return;
+    const R = this.dodge; R.t += dt;
+    const u = R.t / (R.dur || 0.3);
+    if (u >= 1) { this.dodge = null; m.quaternion.identity(); m.position.set(0, 0, 0); return; }
+    // roll direction into root space (the engine sets root.rotation.y to the facing)
+    const ry = this.root.rotation.y, c = Math.cos(-ry), s = Math.sin(-ry);
+    const lx = R.dir.x * c + R.dir.z * s, lz = -R.dir.x * s + R.dir.z * c;
+    _dAxis.set(lz, 0, -lx).normalize();                                   // tumble axis: up × direction
+    const e = u < 0.5 ? 2 * u * u : 1 - 2 * (1 - u) * (1 - u);
+    _dQ.setFromAxisAngle(_dAxis, TAU * e);
+    m.quaternion.copy(_dQ);
+    _dC.set(0, 0.55, 0); m.position.copy(_dC).sub(_dC.clone().applyQuaternion(_dQ)); m.position.y -= Math.sin(Math.PI * u) * 0.28;
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -945,10 +1106,11 @@ export class Character {
     this.mats.fill.color.copy(this.color);
     this.mats.glow.emissive.copy(this.color);
     this.mats.glow.color.copy(this.color).multiplyScalar(0.3);
-    if (this.bomb) this.bomb.ink.material = getInkMaterial(this.color);
+    if (this.bomb) { this.bomb.ink.material = getInkMaterial(this.color); if (this.bomb.spinInk) this.bomb.spinInk.material = getInkMaterial(this.color); }
     for (const k in this.weapons) {
       for (let w = this.weapons[k]; w; w = w.left) {
         w.ink.material = getInkMaterial(this.color); w.inkFar.material = w.ink.material;
+        if (w.inkL) w.inkL.material = w.ink.material;
         if (w.drum) w.drum.userData.ink.material = getInkMaterial(this.color);
         for (const g of w.partList) if (g.userData.mat === 'ink') g.userData.mesh.material = w.ink.material;
         if (w.coil) w.coil.emissive.copy(this.color);
@@ -956,15 +1118,22 @@ export class Character {
     }
   }
 
+  // kind = weapon model; the pose family (animKind) comes from ANIM_OF — new weapons borrow an existing family's animation
   setWeapon(kind) {
-    if (!HOLD[kind]) kind = 'shooter';
+    if (!HOLD[ANIM_OF[kind] || kind]) kind = 'shooter';
     if (kind === this.weaponKind) return;
     const old = this.weaponKind && this.weapons[this.weaponKind];
-    if (old) { this.bones.handR.remove(old.pivot); if (old.left) this.bones.handL.remove(old.left.pivot); }
+    if (old) {
+      this.bones.handR.remove(old.pivot);
+      if (old.left) this.bones.handL.remove(old.left.pivot);
+      if (old.pivotL) this.bones.handL.remove(old.pivotL);
+    }
     const w = this._getWeapon(kind);
+    w.pivot.visible = !this.weaponHidden;
     this.bones.handR.add(w.pivot);
     if (w.left) this.bones.handL.add(w.left.pivot);
-    this.weaponKind = kind; this.weapon = w; this.hold = HOLD[kind];
+    if (w.pivotL) this.bones.handL.add(w.pivotL);
+    this.weaponKind = kind; this.animKind = ANIM_OF[kind] || kind; this.weapon = w; this.hold = HOLD[kind] || HOLD[this.animKind];   // a kind may bring its own hold data (bow)
     this.dual = !!w.left;
   }
 
@@ -972,8 +1141,8 @@ export class Character {
     const tr = this.tr, sp = this.sp;
     switch (name) {
       case 'shoot': {
-        if (this.weaponKind === 'roller') { tr[T_FLICK] = 0; break; }
-        if (this.weaponKind === 'slosher') { if (tr[T_SLOSH] > 0.3) tr[T_SLOSH] = 0; this.lastShot = 0; break; }
+        if (this.animKind === 'roller') { tr[T_FLICK] = 0; break; }
+        if (this.animKind === 'slosher') { if (tr[T_SLOSH] > 0.3) tr[T_SLOSH] = 0; this.lastShot = 0; break; }
         const hand = arg && typeof arg === 'object' ? (arg.hand | 0) : 0;   // dualies alternate hands: { hand: 0|1 }
         if (this.dual && hand === 1) { tr[T_SHOOTL] = 0; this._recoil(1, 1); sp[S_GRIPL + 1] += 2.2; } else { tr[T_SHOOT] = 0; this._recoil(1, 0); sp[S_GRIP + 1] += 2.2; if (!this.dual) sp[S_GRIPL + 1] += 1.2; }
         this.lastShot = 0;
@@ -993,7 +1162,14 @@ export class Character {
         sp[S_SQ + 1] -= 1.6; sp[S_TANKL + 1] += 1.5; this._hairKick(-x * 2, 1.2, -z * 2);
         break;
       }
-      case 'flick': tr[T_FLICK] = 0; this.lastShot = 0; sp[S_GRIP + 1] += 3; sp[S_GRIPL + 1] += 3; break;
+      // roller-family flick / bucket heave / brush swipe (arg = swipe side ±1, alternating)
+      case 'flick': tr[T_FLICK] = 0; this.lastShot = 0; if (arg) this.swipeSide = arg; sp[S_GRIP + 1] += 3; sp[S_GRIPL + 1] += 3; break;
+      // Brine Cutlass (kits/blade.js): a quick cut (arg = side ±1, +1 sweeps right → left) / the charged overhead cut
+      case 'blade_slash': this.blT = 0; this.blSide = arg || 1; this.blHeavy = false; this.lastShot = 0; sp[S_GRIP + 1] += 2.4; break;
+      case 'blade_heavy': this.blT = 0; this.blHeavy = true; this.lastShot = 0; sp[S_SQ + 1] -= 1.2; sp[S_GRIP + 1] += 3.2; break;
+      case 'stream': this.lastShot = 0; break;   // spinner burst in progress: keep the aim pose and the barrels spinning
+      // twins dodge roll: arg = world-space unit direction (Vector3); one forward tumble of this.model (see _updateDodge)
+      case 'roll': this.dodge = { t: 0, dir: (this.dodge?.dir || new THREE.Vector3()).copy(arg || _fwdZ), dur: (arg && arg.dur) || 0.3 }; break;
       case 'throw': tr[T_THROW] = 0; this.bombHeld = false; break;
       case 'land': {
         const a = clamp(((arg ?? 8) - 2.5) / 13, 0.12, 1);
@@ -1078,12 +1254,12 @@ export class Character {
   }
 
   /** 0..1 — how far the held weapon is into its aim pose (1 = up and aimed; rollers never "aim"). */
-  aimReady() { return this.form !== 'kid' || !this.weapon || this.weaponKind === 'roller' ? 1 : this.wAim; }
+  aimReady() { return this.form !== 'kid' || !this.weapon || this.animKind === 'roller' ? 1 : this.wAim; }
 
   /** World-space muzzle of the full aim pose at `pitch` — where the gun is springing to when the trigger is pulled
    *  from the carry pose (weapons.js spawns the first shot of a burst there instead of at the hip). false if n/a. */
   getAimMuzzle(out, pitch) {
-    if (this.form !== 'kid' || !this.weapon || this.weaponKind === 'roller') return false;
+    if (this.form !== 'kid' || !this.weapon || this.animKind === 'roller') return false;
     const a = this.hold.aim;
     const aimP = clamp(pitch ?? 0, -1.0, 1.15), aimPose = clamp(aimP, -0.8, 1.0);
     _v1.set(a.p[0], a.p[1], a.p[2]).applyAxisAngle(XAX, -aimPose).add(AIM_PIVOT);
@@ -1258,9 +1434,9 @@ export class Character {
       const lock = kid && !dance && this.dual && ((R ? (R.lockT || 0) > 0 || (!!R.dodge && dk > 0.55) : this.tr[T_DODGE] < this.dodgeDur + 0.5) || (dk > 0.55 && dk < 1));
       this.lockW = damp(this.lockW, lock ? 1 : 0, lock ? 18 : 7, dt);
     }
-    const aiming = kid && !dance && this.weaponKind !== 'roller' && (!!s.firing || ch > 0.01 || this.lastShot < 0.5 || this.lastRelease < 0.35 || this.lockW > 0.5);
+    const aiming = kid && !dance && this.animKind !== 'roller' && (!!s.firing || ch > 0.01 || this.lastShot < 0.5 || this.lastRelease < 0.35 || this.lockW > 0.5);
     this.wAim = damp(this.wAim, aiming ? 1 : 0, aiming ? 22 : 4.5, dt);
-    const rolling = kid && !dance && !!s.rolling && this.weaponKind === 'roller' && this.tr[T_FLICK] > 0.6;
+    const rolling = kid && !dance && !!s.rolling && this.animKind === 'roller' && this.tr[T_FLICK] > 0.6;
     this.wRoll = damp(this.wRoll, rolling ? 1 : 0, rolling ? 11 : 6, dt);
     this.wAir = damp(this.wAir, this.grounded ? 0 : 1, this.grounded ? 24 : 12, dt);
     this.wDance = damp(this.wDance, dance ? 1 : 0, 5, dt);
@@ -1325,7 +1501,7 @@ export class Character {
     let id = (this.rng() * FIDGETS.length) | 0;
     if (id === this.lastFidget) id = (id + 1 + ((this.rng() * 3) | 0)) % FIDGETS.length;
     // a pistol in each fist: no free hand for the goggles / tank taps
-    if (this.dual && (FIDGETS[id] === 'goggles' || FIDGETS[id] === 'tank')) id = FIDGETS.indexOf(this.rng() < 0.5 ? 'twirl' : 'look');
+    if ((this.dual || this.weapon?.pivotL) && (FIDGETS[id] === 'goggles' || FIDGETS[id] === 'tank')) id = FIDGETS.indexOf(this.rng() < 0.5 ? 'twirl' : 'look');
     this.fidget = id; this.lastFidget = id; this.fidgetT = 0;
   }
 
@@ -1700,7 +1876,12 @@ export class Character {
     this._poseWeapon(dt, s);
 
     // ---------------- one-shots
-    if (tr[T_FLICK] < 0.7 && this.weaponKind === 'roller') this._poseFlick(P, tr[T_FLICK]);
+    if (tr[T_FLICK] < 0.7) {
+      if (this.weaponKind === 'brush') this._poseSwipe(P, tr[T_FLICK]);
+      else if (this.weaponKind === 'bucket') this._poseBucket(P, tr[T_FLICK]);
+      else if (this.animKind === 'roller') this._poseFlick(P, tr[T_FLICK]);
+    }
+    if (this.animKind === 'blade') this._poseBlade(P, dt, s);   // Brine Cutlass cuts + charge raise
     if (this.wSub > 0.001 && tr[T_THROW] > 0.05) this._poseSubAim(P, this.wSub);
     if (tr[T_THROW] < 0.62) this._poseThrow(P, tr[T_THROW]);
     if (tr[T_SPAWN] < 1.4) this._poseSpawn(P, tr[T_SPAWN]);
@@ -1713,6 +1894,7 @@ export class Character {
     if (tr[T_SLOSH] < 0.66 && this.hold.fire === 'slosh') this._poseSlosh(P, tr[T_SLOSH]);
     if (tr[T_DODGE] < this.dodgeDur + 0.3) this._poseDodge(P, tr[T_DODGE]);
     else { this.tumble = 0; this.tumbleDrop = 0; }
+    if (this.weaponKind === 'mitts') this._poseMitts(P, dt, s);   // Sponge Mitts: punches, leap charge, leap, wall cling
 
     // ---------------- head look + face
     this._poseLook(dt, s);
@@ -1827,7 +2009,7 @@ export class Character {
       P[HIPS_P + 1] -= H.crouch * st;
       P[NECK] -= aimP * 0.08 * wAim;
       // charger: charge breathing — sway shrinks as the charge builds, a tremble at full charge, cheek to the scope
-      if (this.weaponKind === 'charger') {
+      if (this.animKind === 'charger') {
         const ch = this.charge;
         const bw = (1 - ch) * 0.012 * wAim;
         P[ANC + 1] += Math.sin(TAU * this.brPh) * bw; P[ANC] += Math.sin(TAU * this.brPh * 0.5 + 1) * bw * 0.6;
@@ -1843,6 +2025,7 @@ export class Character {
         P[CLAVL + 1] -= 0.08 * lk; P[CLAVR + 1] += 0.08 * lk;
       }
     }
+    if (this.weaponKind === 'bow') poseBow(this, P, dt);   // Tideline Bow: the draw + the cant (see poseBow)
     // splatling: spin-up leans back onto the rear foot with the muzzle rising from low to level (tremble at full
     // charge); the stream plants the kid leaning into a sustained push-back (the 15 Hz kicks ride the recoil springs)
     if (H.fire === 'spin') {
@@ -1898,7 +2081,7 @@ export class Character {
     // sustained fire: lean into the gun, knees soften, a slow fight-the-muzzle wander; letting go gives a small dip +
     // settle (follow-through). Blaster: racking the pump tips the muzzle down and turns the chest into the pull.
     {
-      const kind = this.weaponKind, br = H.rc.brace || 0;
+      const kind = this.animKind, br = H.rc.brace || 0;
       const want = br > 0 && s.firing && this.lastShot < 0.22 && kind !== 'roller' ? 1 : 0;
       if (!want && this._fireWant) sp[S_RCP + 1] -= 1.1 * br * this.fireHold;
       this._fireWant = want;
@@ -1939,7 +2122,7 @@ export class Character {
     }
   }
 
-  // Moving weapon parts are driven by animateWeapon(w, st) (character-weapons.js) runs once per held
+  // Moving weapon parts are owned by the arsenal stream: animateWeapon(w, st) (character-weapons.js) runs once per held
   // instance per frame with one reused state object. Near/far LOD by camera distance (far = merged static weapon).
   _animWeapon(dt, s, w) {
     let near = true;
@@ -1993,6 +2176,109 @@ export class Character {
     X[HLP] += 0.06 * coil - 0.1 * whip;
     lerpE(X, POLER, -0.8, 0.1, -0.3, coil); lerpE(X, POLEL, 0.8, 0.1, -0.3, coil);
     this._effort = Math.max(this._effort || 0, coil + whip * 0.7);
+    poseLerp(P, P, X, 1);
+  }
+
+  // Bucket (trigger 'flick'): two-handed underarm throw — dip and swing the pail back beside the hip, heave it forward
+  // and up so the mouth tips out (ink leaves at ~0.12 s), follow through, settle back into the hold.
+  _poseBucket(P, ft) {
+    const X = this.PX; X.set(P);
+    const kBack = ease(ft / 0.11);
+    const kFwd = ease((ft - 0.09) / 0.1);
+    const kFol = easeOut((ft - 0.19) / 0.12);
+    const kRec = ease((ft - 0.34) / 0.24);
+    let ax = -0.1, ay = 0.7, az = 0.24, rx = 0.25;
+    ax = lerp(ax, -0.2, kBack); ay = lerp(ay, 0.48, kBack); az = lerp(az, -0.1, kBack); rx = lerp(rx, 0.95, kBack);
+    ax = lerp(ax, -0.08, kFwd); ay = lerp(ay, 0.9, kFwd); az = lerp(az, 0.42, kFwd); rx = lerp(rx, -0.5, kFwd);
+    ay = lerp(ay, 0.98, kFol); az = lerp(az, 0.46, kFol); rx = lerp(rx, -0.85, kFol);
+    const w = 1 - kRec;
+    lerpE(X, ANC, ax, ay, az, w); lerpE(X, ANCR, rx, 0.05, 0, w);
+    const back = kBack * (1 - kFwd), heave = kFwd * (1 - kRec);
+    X[SPINE] += (0.3 * back - 0.12 * heave); X[CHEST] += (0.14 * back - 0.1 * heave);
+    X[SPINE + 1] += 0.16 * back - 0.06 * heave; X[CHEST + 1] += 0.12 * back;
+    X[HIPS_P + 1] -= 0.07 * back - 0.02 * heave; X[HIPS_P + 2] += -0.04 * back + 0.05 * heave;
+    X[HLP] += 0.08 * back - 0.06 * heave;
+    lerpE(X, POLER, -0.8, -0.7, 0.1, back); lerpE(X, POLEL, 0.8, -0.7, 0.1, back);
+    this._effort = Math.max(this._effort || 0, back * 0.6 + heave);
+    poseLerp(P, P, X, 1);
+  }
+
+  // Brush: a quick sideways swipe low across the body (alternating direction), torso twisting with the sweep.
+  _poseSwipe(P, ft) {
+    const X = this.PX; X.set(P);
+    const sd = this.swipeSide || 1;
+    const k = ease(ft / 0.13);
+    const kRec = ease((ft - 0.15) / 0.2);
+    const u = lerp(-sd, sd, k);                       // -1 … 1 across the body
+    const w = 1 - kRec;
+    lerpE(X, ANC, -0.06 + 0.3 * u, 0.78, 0.28, w);
+    lerpE(X, ANCR, 0.9, 0.95 * u, -0.2 * u, w);
+    X[SPINE + 1] += 0.3 * u * w; X[CHEST + 1] += 0.24 * u * w; X[HIPS + 1] += 0.1 * u * w;
+    X[SPINE] += 0.14 * w; X[CHEST] += 0.06 * w; X[HIPS_P + 1] -= 0.03 * w;
+    lerpE(X, POLER, -0.7, -0.35, -0.7, w); lerpE(X, POLEL, 0.7, -0.35, -0.7, w);
+    this._effort = Math.max(this._effort || 0, 0.5 * w);
+    poseLerp(P, P, X, 1);
+  }
+
+  // ---- Brine Cutlass (kits/blade.js) ------------------------------------------------------------------------------
+  // Quick cut ('blade_slash', side ±1): the fist sweeps a flat, slightly diagonal arc across the chest round a point in
+  // front of the sternum, the edge leading (+1: right, high → left, low; −1: back again, rising), the torso whipping round
+  // with it; follow-through, then back to the guard. Charging (runner charge > 0): the blade rises over the right
+  // shoulder, cocked back, the body coiling as it fills (a tremble at full). Charged cut ('blade_heavy'): the blade
+  // whips over and down in front, the kid lunging into it, then recovers.
+  _poseBlade(P, dt, s) {
+    this.blT = (this.blT ?? 99) + dt;
+    const bt = this.blT, sd = this.blSide || 1, heavy = !!this.blHeavy;
+    const ch = clamp(s.charge ?? 0, 0, 1);
+    const up = ch > 0.001 && this.kidForm && !this.dance;
+    this.blRaise = damp(this.blRaise || 0, up ? 1 : 0, up ? 18 : 9, dt);
+    const rw = this.blRaise * (heavy && bt < 0.45 ? 0 : 1);
+    const cutW = heavy ? (bt < 0.6 ? 1 - ease((bt - 0.26) / 0.3) : 0) : (bt < 0.4 ? ease(bt / 0.03) * (1 - ease((bt - 0.17) / 0.2)) : 0);
+    if (rw < 0.001 && cutW < 0.001) return;
+    const X = this.PX; X.set(P);
+    if (rw > 0.001) {
+      const k = ease(ch), full = ch >= 0.999 ? 1 : 0;
+      const trem = full ? 0.004 * Math.sin(this.t * 63) + 0.003 * Math.sin(this.t * 41 + 1) : 0;
+      lerpE(X, ANC, -0.2, lerp(1.16, 1.3, k) + trem, lerp(0.05, -0.03, k), rw);
+      lerpE(X, ANCR, lerp(-1.75, -2.35, k) + trem * 4, lerp(0.12, 0.22, k), lerp(0.05, 0.22, k), rw);
+      X[AFOLT] = lerp(X[AFOLT], 0.55, rw); X[AFOLR] = lerp(X[AFOLR], 0.25, rw);
+      X[SPINE + 1] -= 0.16 * k * rw; X[CHEST + 1] -= 0.18 * k * rw; X[HIPS + 1] -= 0.05 * rw;   // coil: shoulders turn right
+      X[SPINE] -= 0.05 * k * rw; X[CHEST] -= 0.05 * rw; X[HIPS_P + 1] -= 0.025 * k * rw;
+      lerpE(X, POLER, -0.95, 0.15, -0.35, rw);
+      this._effort = Math.max(this._effort || 0, (0.3 + 0.6 * k) * rw);
+    }
+    if (cutW > 0.001) {
+      const w = cutW;
+      let ax, ay, az, rx, ry, rz;
+      if (!heavy) {
+        // sweep 0.02 → 0.11 s along the arc (φ = where the fist is round the pivot), the blade pointing out along it
+        const k = easeOut(clamp((bt - 0.015) / 0.095, 0, 1));
+        const f0 = sd > 0 ? -1.3 : 1.15, f1 = sd > 0 ? 1.15 : -1.3, f = lerp(f0, f1, k);
+        ax = -0.08 + 0.34 * Math.sin(f); az = 0.06 + 0.3 * Math.cos(f);
+        ay = sd > 0 ? 1.03 - 0.13 * k : 0.91 + 0.11 * k;
+        ry = f * 1.08; rx = sd > 0 ? lerp(-0.18, 0.28, k) : lerp(0.24, -0.16, k); rz = sd * Math.PI * 0.5;
+        const u = lerp(-sd, sd, k);                                 // −1 … 1 across the body (+ = toward the left)
+        X[SPINE + 1] += 0.26 * u * w; X[CHEST + 1] += 0.24 * u * w; X[HIPS + 1] += 0.1 * u * w;
+        X[SPINE] += 0.08 * w; X[HIPS_P + 1] -= 0.02 * w;
+        X[CLAVR + 1] += 0.12 * Math.max(0, u) * w;                   // shoulder reaches across on the forehand
+        lerpE(X, POLER, -0.8, -0.55, -0.1, w);
+        this._effort = Math.max(this._effort || 0, 0.55 * w);
+      } else {
+        // over and down: raised (cocked) → level in front (0.06 s) → low in front (0.12 s), the body lunging into it
+        const k1 = ease(bt / 0.06), k2 = easeOut((bt - 0.055) / 0.07);
+        ax = lerp(lerp(-0.2, -0.1, k1), -0.07, k2); ay = lerp(lerp(1.3, 1.08, k1), 0.62, k2); az = lerp(lerp(-0.03, 0.42, k1), 0.47, k2);
+        rx = lerp(lerp(-2.35, -0.15, k1), 0.95, k2); ry = lerp(lerp(0.22, 0.08, k1), 0.04, k2); rz = lerp(0.22, 0, k1);
+        const lg = ease(bt / 0.08) * (1 - ease((bt - 0.3) / 0.25));
+        X[SPINE] += 0.2 * lg; X[CHEST] += 0.1 * lg; X[HIPS] += 0.06 * lg; X[NECK] -= 0.1 * lg;
+        X[HIPS_P + 1] -= 0.045 * lg; X[HIPS_P + 2] += 0.04 * lg;
+        X[SPINE + 1] += 0.12 * lg; X[CHEST + 1] += 0.08 * lg;       // uncoil through the cut
+        X[KNEEL] += 0.05 * lg; X[KNEER] -= 0.05 * lg;
+        lerpE(X, POLER, -0.85, -0.45, -0.3, w);
+        this._effort = Math.max(this._effort || 0, 0.9 * w);
+      }
+      lerpE(X, ANC, ax, ay, az, w); lerpE(X, ANCR, rx, ry, rz, w);
+      X[AFOLT] = lerp(X[AFOLT], 0.35, w); X[AFOLR] = lerp(X[AFOLR], 0.12, w);
+    }
     poseLerp(P, P, X, 1);
   }
 
@@ -2249,7 +2535,7 @@ export class Character {
     lerpE(X, FOOTL, 0.2, ANKLE_H, 0.06, imp); lerpE(X, FOOTLR, 0, 0.35, 0, imp);
     lerpE(X, FOOTR, -0.2, ANKLE_H, -0.1, imp); lerpE(X, FOOTRR, 0, -0.5, 0, imp);
     X[HIPS_P + 1] -= 0.25 * imp; X[SPINE] += 0.45 * imp; X[CHEST] += 0.25 * imp; X[HLP] += 0.2 * imp;
-    lerpE(X, ANC, -0.05, this.weaponKind === 'roller' ? 0.5 : 0.36, 0.4, imp); lerpE(X, ANCR, this.weaponKind === 'roller' ? 1.2 : 1.35, 0.05, 0, imp);
+    lerpE(X, ANC, -0.05, this.animKind === 'roller' ? 0.5 : 0.36, 0.4, imp); lerpE(X, ANCR, this.animKind === 'roller' ? 1.2 : 1.35, 0.05, 0, imp);
     X[KNEEL] += 0.3 * imp; X[KNEER] -= 0.3 * imp;
     X[IKL] = 1; X[AFOLT] = 1; X[AFOLR] = 0.6; X[EARS] -= 0.6 * dive; X[HANDPL] = -1;
     lerpE(X, POLER, -0.9, -0.2, -0.3, imp); lerpE(X, POLEL, 0.9, -0.2, -0.3, imp);
@@ -2258,12 +2544,114 @@ export class Character {
     poseLerp(P, P, X, w);
   }
 
+  // ---- Sponge Mitts (the mechanics live in kits/mitts.js; this is only its body motion) -------------------------------
+  // Reads the runner's kit state (charging / charge, leaping, landT, cling + clingN / clingPt in world space).
+  //  · punches: each glove thrusts out along the aim and snaps back (right = tr[T_SHOOT], left = tr[T_SHOOTL]),
+  //    knuckles turning in, chest and shoulder driving it
+  //  · leap charge: a coiled crouch, gloves drawn back low by the hips, trembling at full charge
+  //  · leap: pitched into the flight with both gloves thrown forward on the way up, raised overhead to hammer down on
+  //    the way down; landing: a crouched double-glove smash into the ground
+  //  · wall cling: the left glove stuck flat on the wall beside the shoulder, feet against the wall with the knees up,
+  //    the body hugging in; the right glove keeps its guard and punches
+  _poseMitts(P, dt, s) {
+    const R = this._runner(s), K = R && R.kit && R.kit.mitts ? R.kit : null, tr = this.tr, t = this.t;
+    const kid = this.kidForm && !this.dance;
+    // ---- punches
+    const eR = kid ? mitPunch(tr[T_SHOOT]) : 0, eL = kid ? mitPunch(tr[T_SHOOTL]) : 0;
+    if (eR + eL > 0.001) {
+      const ap = clamp(this.aimP || 0, -0.8, 1.0), fy = Math.sin(ap) * 0.24, fz = Math.cos(ap) * 0.24;
+      P[ANC] += 0.07 * eR; P[ANC + 1] += fy * eR; P[ANC + 2] += fz * eR;
+      P[ANL] -= 0.07 * eL; P[ANL + 1] += fy * eL; P[ANL + 2] += fz * eL;
+      P[ANCR + 1] += 0.22 * eR; P[ANCR + 2] -= 0.45 * eR;
+      P[ANLR + 1] -= 0.22 * eL; P[ANLR + 2] += 0.45 * eL;
+      const tw = eR - eL;
+      P[CHEST + 1] += 0.3 * tw; P[SPINE + 1] += 0.12 * tw; P[HIPS + 1] += 0.05 * tw;
+      P[CLAVR + 1] += 0.22 * eR; P[CLAVL + 1] -= 0.22 * eL;
+      P[SPINE] += 0.035 * (eR + eL);
+      this._effort = Math.max(this._effort || 0, 0.45 * Math.max(eR, eL));
+    }
+    // ---- leap charge: coiled crouch
+    const chOn = kid && !!K && K.charging;
+    const chW = this.mitCh = damp(this.mitCh || 0, chOn ? 1 : 0, chOn ? 14 : 9, dt);
+    if (chW > 0.001) {
+      const c = chOn ? K.charge : 0;
+      const tb = c >= 0.999 ? 0.004 * Math.sin(t * 71) + 0.003 * Math.sin(t * 53 + 1) : 0.0015 * Math.sin(t * 40) * c;
+      P[HIPS_P + 1] -= (0.13 + 0.07 * c) * chW; P[HIPS_P + 2] -= 0.04 * chW;
+      P[HIPS] += 0.3 * chW; P[SPINE] += 0.28 * chW; P[CHEST] += 0.1 * chW; P[NECK] -= 0.2 * chW; P[HLP] -= 0.1 * chW;
+      P[KNEEL] += 0.24 * chW; P[KNEER] -= 0.24 * chW;
+      lerpE(P, ANC, -0.2, 0.56 + tb, -0.08, chW); lerpE(P, ANCR, 1.5, 0.35, 0.3, chW);
+      lerpE(P, ANL, 0.2, 0.56 - tb, -0.08, chW); lerpE(P, ANLR, 1.5, -0.35, -0.3, chW);
+      lerpE(P, POLER, -0.9, 0.2, -0.7, chW); lerpE(P, POLEL, 0.9, 0.2, -0.7, chW);
+      P[SQY] *= 1 - (0.03 + 0.05 * c) * chW; P[SQXZ] *= 1 + 0.03 * chW;
+      P[EARS] -= 0.6 * chW;
+      addExpr(P, X_EFFORT, (0.3 + 0.6 * c) * chW);
+      this._effort = Math.max(this._effort || 0, (0.4 + 0.5 * c) * chW);
+    }
+    // ---- leap: superman on the way up, gloves raised to hammer down on the way down
+    const lpOn = kid && !!K && K.leaping;
+    const lpW = this.mitLp = damp(this.mitLp || 0, lpOn ? 1 : 0, lpOn ? 18 : 8, dt);
+    if (lpW > 0.001) {
+      const rise = sstep(-3, 4, this.vyS), wr = rise * lpW, wf = (1 - rise) * lpW;
+      P[MODELR] += 0.5 * wr + 0.12 * wf;
+      P[SQY] *= 1 + 0.07 * wr; P[SQXZ] *= 1 - 0.035 * wr;
+      lerpE(P, ANC, -0.09, 1.26, 0.32, wr); lerpE(P, ANCR, -0.95, 0.12, -0.15, wr);
+      lerpE(P, ANL, 0.09, 1.26, 0.32, wr); lerpE(P, ANLR, -0.95, -0.12, 0.15, wr);
+      lerpE(P, ANC, -0.11, 1.36, 0.1, wf); lerpE(P, ANCR, -1.7, 0.2, 0, wf);
+      lerpE(P, ANL, 0.11, 1.36, 0.1, wf); lerpE(P, ANLR, -1.7, -0.2, 0, wf);
+      P[AFOLT] = lerp(P[AFOLT], 1, lpW); P[AFOLR] = lerp(P[AFOLR], 0.7, lpW);
+      lerpE(P, POLER, -0.8, 0.3, -0.3, lpW); lerpE(P, POLEL, 0.8, 0.3, -0.3, lpW);
+      lerpE(P, FOOTL, 0.09, 0.2, -0.26, wr); lerpE(P, FOOTLR, 1.2, 0.1, 0, wr);
+      lerpE(P, FOOTR, -0.09, 0.26, -0.2, wr); lerpE(P, FOOTRR, 1.0, -0.1, 0, wr);
+      lerpE(P, FOOTL, 0.11, 0.34, 0.1, wf); lerpE(P, FOOTLR, 0.5, 0.12, 0, wf);
+      lerpE(P, FOOTR, -0.11, 0.3, 0.04, wf); lerpE(P, FOOTRR, 0.6, -0.12, 0, wf);
+      P[WPL] *= 1 - lpW; P[WPR] *= 1 - lpW;
+      P[EARS] += 0.9 * lpW;
+      addExpr(P, X_DETERM, 0.8 * lpW); P[MOPEN] = Math.max(P[MOPEN], 0.3 * wf);
+      this._effort = Math.max(this._effort || 0, 0.6 * lpW);
+    }
+    // ---- landing: crouched double-glove smash
+    const smW = K && kid ? win(K.landT, 0, 0.03, 0.16, 0.5) : 0;
+    if (smW > 0.001) {
+      P[HIPS_P + 1] -= 0.2 * smW; P[HIPS_P + 2] -= 0.02 * smW;
+      P[HIPS] += 0.2 * smW; P[SPINE] += 0.4 * smW; P[CHEST] += 0.2 * smW; P[HLP] += 0.2 * smW;
+      P[KNEEL] += 0.3 * smW; P[KNEER] -= 0.3 * smW;
+      lerpE(P, ANC, -0.13, 0.3, 0.34, smW); lerpE(P, ANCR, 1.35, 0.2, 0, smW);
+      lerpE(P, ANL, 0.13, 0.3, 0.34, smW); lerpE(P, ANLR, 1.35, -0.2, 0, smW);
+      P[AFOLT] = lerp(P[AFOLT], 1, smW); P[AFOLR] = lerp(P[AFOLR], 0.6, smW);
+      lerpE(P, POLER, -0.9, -0.2, -0.3, smW); lerpE(P, POLEL, 0.9, -0.2, -0.3, smW);
+      P[EARS] -= 0.6 * smW; addExpr(P, X_EFFORT, 0.7 * smW);
+      this._effort = Math.max(this._effort || 0, smW);
+    }
+    // ---- wall cling (wall plane + contact point taken into kid space; the body hugs 10 cm in toward the wall)
+    const clOn = kid && !!K && K.cling;
+    const clW = this.mitCl = damp(this.mitCl || 0, clOn ? 1 : 0, clOn ? 20 : 9, dt);
+    if (clW > 0.001 && K && K.clingN && K.clingPt) {
+      const c = Math.cos(this.yaw), sn = Math.sin(this.yaw), rp = this.root.position, n = K.clingN;
+      const nx = n.x * c - n.z * sn, nz = n.x * sn + n.z * c, hug = 0.1 * clW;
+      P[MODEL] -= nx * hug; P[MODEL + 2] -= nz * hug;
+      const px = K.clingPt.x - rp.x, pz = K.clingPt.z - rp.z;
+      const wd = (px * c - pz * sn + nx * hug) * nx + (px * sn + pz * c + nz * hug) * nz;   // wall plane: p·n = wd
+      const o = this._mitO || (this._mitO = [0, 0]);
+      mitOnWall(0.21, 0.02, 0.085, nx, nz, wd, o);
+      lerpE(P, ANL, o[0], 1.12, o[1], clW); lerpE(P, ANLR, -0.25, Math.atan2(-nx, -nz), 0, clW);
+      P[AFOLT] *= 1 - clW; P[AFOLR] *= 1 - clW;
+      lerpE(P, POLEL, 0.9, 0.2, -0.2, clW);
+      mitOnWall(0.1, 0.02, 0.11, nx, nz, wd, o); lerpE(P, FOOTL, o[0], 0.36, o[1], clW); lerpE(P, FOOTLR, 0.35, 0.15, 0, clW);
+      mitOnWall(-0.1, 0, 0.11, nx, nz, wd, o); lerpE(P, FOOTR, o[0], 0.27, o[1], clW); lerpE(P, FOOTRR, 0.45, -0.15, 0, clW);
+      P[WPL] *= 1 - clW; P[WPR] *= 1 - clW;
+      P[KNEEL] += 0.12 * clW; P[KNEER] -= 0.12 * clW;
+      P[HIPS_P + 1] -= 0.02 * clW; P[SPINE] += 0.06 * clW;
+      P[EARS] += 0.3 * clW;
+      addExpr(P, X_DETERM, 0.5 * clW);
+    }
+  }
+
   // Idle fidgets (hand-keyed-style one-offs while standing around).
   _poseFidget(P, id, ft) {
     const X = this.PX; X.set(P);
     const L = FIDGET_LEN[id];
     const w = win(ft, 0, 0.22, L - 0.28, L);
-    const kind = this.weaponKind;
+    const kind = this.animKind;
     switch (FIDGETS[id]) {
       case 'goggles': { // push the goggles up the nose, adjust twice
         const a = kf(ft, K_GOG_T, K_GOG_V);
@@ -2619,9 +3007,9 @@ export class Character {
     const eff = this._effort || 0; this._effort = 0;
     const hitK = tr[T_HIT] < 0.7 ? pulse(tr[T_HIT], 0.03, 4.5) * clamp(this.hitAmp, 0.5, 1.2) : 0;
     const firing = this.lastShot < 0.25 ? 1 : 0;
-    const tgt0 = this.wAim * (1 - firing * 0.5) * (this.weaponKind === 'charger' ? 1 : 0.8);
-    const tgt1 = firing * (this.weaponKind === 'shooter' ? 1 : 0.4);
-    const tgt2 = Math.max(eff, this.weaponKind === 'charger' ? this.charge * this.wAim : 0);
+    const tgt0 = this.wAim * (1 - firing * 0.5) * (this.animKind === 'charger' ? 1 : 0.8);
+    const tgt1 = firing * (this.animKind === 'shooter' ? 1 : 0.4);
+    const tgt2 = Math.max(eff, this.animKind === 'charger' ? this.charge * this.wAim : 0);
     const tgt3 = hitK;
     const tgt4 = this.wLow * (1 - hitK);
     const tgt5 = this.wGlow * (1 - this.wLow) * 0.9;
@@ -2721,7 +3109,7 @@ export class Character {
     setAnc(D, H.carry);
     lerpE(D, ANC, -0.16, 0.8, -0.02, dip); lerpE(D, ANCR, 0.9, 0.3, 0.2, dip);
     lerpE(D, ANC, -0.15, 1.36, 0.06, rise); lerpE(D, ANCR, -1.6, 0.2, 0, rise);
-    D[SPIN] = wrapA(TAU * 2 * ease((c - 0.55) / 0.85)) * (this.weaponKind === 'roller' || this.weaponKind === 'charger' ? 0 : 1);
+    D[SPIN] = wrapA(TAU * 2 * ease((c - 0.55) / 0.85)) * (NO_TWIRL[this.animKind] ? 0 : 1);
     lerpE(D, ANC, -0.1, 1.02, 0.32, strike); lerpE(D, ANCR, -0.12, -0.05, 0.25, strike);
     D[IKL] = 0; D[POLER] = -0.9; D[POLER + 1] = 0.05; D[POLER + 2] = -0.3;
     // free hand: up with the twirl, then on the hip
@@ -2852,7 +3240,7 @@ export class Character {
     setAnc(D, H.carry);
     D[IKL] = H.twoCarry ? 1 : 0;
     const tw = cyc >= 6.1 && cyc < 7.1 ? (cyc - 6.1) / 1.0 : -1;
-    if (tw >= 0 && this.weaponKind !== 'roller' && this.weaponKind !== 'charger') {
+    if (tw >= 0 && !NO_TWIRL[this.animKind]) {
       const k = ease(clamp(tw / 0.8, 0, 1));
       const lift = Math.sin(Math.PI * clamp(tw, 0, 1));
       D[SPIN] = wrapA(TAU * 2 * k); D[IKL] = 0;
@@ -2905,7 +3293,7 @@ export class Character {
       D[POLEL] = 1; D[POLEL + 1] = 0.1; D[POLEL + 2] = -0.35;
     }
     // flourish: a quick re-grip / twirl and a proud chin-up
-    if (this.weaponKind === 'shooter' || this.weaponKind === 'blaster') { D[SPIN] = wrapA(TAU * ease((cyc - 4.8) / 0.55)) * (cyc > 4.8 && cyc < 5.5 ? 1 : 0); D[ANC + 1] += 0.05 * fl; }
+    if (this.animKind === 'shooter' || this.animKind === 'blaster') { D[SPIN] = wrapA(TAU * ease((cyc - 4.8) / 0.55)) * (cyc > 4.8 && cyc < 5.5 ? 1 : 0); D[ANC + 1] += 0.05 * fl; }
     else D[ANCR] -= 0.2 * fl;
     D[HEAD] -= 0.08 * fl; D[HIPS_P + 1] -= 0.015 * fl;
     D[MCURVE] = 1; D[MTILT] = 0.22; D[BROW] = -0.25; D[EYE] = 0.92; D[LOOKX] = -0.12; D[LOOKY] = 0.04;
@@ -2920,7 +3308,7 @@ export class Character {
     // ---- hand-held splat bomb: appears (pop) when the sub is aimed, leaves the hand on 'throw'
     if (this.bomb) {
       const on = this.bombHeld && this.kidForm && this.wSub > 0.2;
-      this.bomb.group.visible = on;
+      this.bomb.group.visible = on && !this.subPropHidden;   // specials that hold their own prop hide it
       if (on) this.bomb.group.scale.setScalar(Math.max(0.05, backOut(clamp(this.bombT / 0.14, 0, 1), 2.6)));
     }
     // ---- kid group transform: squash/stretch, model offsets, rotation about the hips, form-change pop
@@ -3101,7 +3489,7 @@ export class Character {
       // the splat bomb needs the left fist: the pistol shrinks away while it is held and pops back after the throw
       const k = 1 - this.bombSwap;
       wl.pivot.scale.setScalar(Math.max(0.001, k < 1 ? backOut(k, 2) : 1));
-      wl.pivot.visible = k > 0.01;
+      wl.pivot.visible = k > 0.01 && !this.weaponHidden;
     } else if (P[IKL] > 0.001 || P[LTW] > 0.001) {
       // left arm → foregrip, an explicit target (hip / visor / tank), or free FK
       this._kidXform(B.handR, _v3, _q3);
@@ -3140,6 +3528,16 @@ export class Character {
     if (lv > 0 || !(this._hairOdd = !this._hairOdd)) { this._updateHair(dt + this._hairAcc); this._hairAcc = 0; } else this._hairAcc += dt;
     // ---- tank slosh (ink level wobble + surface tilt within the glass)
     this._updateTank(dt);
+    // ---- fork weapon extras (the arsenal kinds' drums / barrels are turned by animateWeapon)
+    if (w.spin) {
+      // spinner / zooka barrels: spin up with the charge, flat out while the stream fires, wind down after
+      const want = this.lastShot < 0.12 ? 38 : this.charge * 30;
+      this.spinRate = damp(this.spinRate || 0, want, want > (this.spinRate || 0) ? 6 : 1.6, dt);
+      this.spinAngle = ((this.spinAngle || 0) + this.spinRate * dt) % TAU;
+      w.spin.rotation.z = this.spinAngle;
+    }
+    if (w.pivotL) w.pivotL.visible = !this.bombHeld && !this.weaponHidden;   // twins: the left pistol makes way for the sub
+    this._updateDodge(dt);
     // ---- jiggle bones (docs/RIG.md): toes, tee hem flaps, backpack sway, ears
     if (lv > 0) this._applyJiggle(P, dt);
     // ---- hands: grip weapons / the bomb, relax when free, fists and open palms from the pose layers
@@ -3655,7 +4053,7 @@ export class Character {
     const blink = this.wLow * (0.5 + 0.5 * Math.sin(t * TAU * 3.2));
     this.mats.fill.emissive.copy(this.color).multiplyScalar(0.12 + 0.9 * blink + 0.3 * this.wGlow * pul);
     if (!this.kid.visible) { const f = this.tank.fill; f.scale.y = Math.max(0.004, this.inkS) * this.tank.h; f.visible = this.inkS > 0.005; }
-    const ch = this.weaponKind === 'charger' ? this.charge : 0;
+    const ch = this.animKind === 'charger' ? this.charge : 0;
     const full = ch >= 0.995 ? 0.5 + 0.5 * Math.sin(t * TAU * 8) : 0;
     this.mats.glow.emissiveIntensity = 0.15 + 2.6 * ch * ch + 1.5 * full + 3 * this.chargeFlash;
   }

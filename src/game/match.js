@@ -1,10 +1,11 @@
 // Match: turf-war rules, lifecycle (intro → countdown → play → time's up → judge → results), team setup.
 import * as THREE from 'three';
 import { G, emit, on, clamp } from '../core/ctx.js';
-import { MATCH, PLAYER, WEAPON_ORDER, BOT_NAMES, TEAM_NAMES } from '../config.js';
+import { MATCH, PLAYER, WEAPON_ORDER, SUB_ORDER, SPECIAL_ORDER, BOT_NAMES, TEAM_NAMES, ZONES } from '../config.js';
+import { ZoneControl } from './zones.js';
+import { randomStyle } from './character-style.js';
 import { Actor } from './actor.js';
 import { BotBrain } from './bots.js';
-import { randomStyle } from './character-style.js';
 import { PlayerController } from './player.js';
 import { BossMode, BOSS_MODE } from '../boss/bossMode.js';
 
@@ -12,10 +13,13 @@ const _v = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
 
 export class Match {
   constructor(opts) {
-    this.opts = opts;          // { duration, difficulty, attract, playerName, weapon, CharacterClass, input, rig, mode }
+    this.opts = opts;          // { duration, difficulty, attract, practice, playerName, weapon, CharacterClass, input, rig, mode }
     this.attract = !!opts.attract;
-    this.mode = opts.mode === 'boss' && !this.attract ? 'boss' : 'turf';   // boss: one squad (team 0) vs HULLBREAKER
-    this.duration = opts.duration || (this.mode === 'boss' ? BOSS_MODE.duration : MATCH.defaultDuration);
+    this.practice = !!opts.practice;   // solo on an empty stage: no enemies, no teammates, no clock
+    // turf | zones (Zone Control) | boss (one squad, team 0, vs HULLBREAKER); attract backdrops and practice are turf
+    this.mode = this.attract || this.practice ? 'turf' : opts.mode === 'boss' ? 'boss' : opts.mode === 'zones' ? 'zones' : 'turf';
+    this.duration = opts.duration || (this.mode === 'zones' ? ZONES.duration : this.mode === 'boss' ? BOSS_MODE.duration : MATCH.defaultDuration);
+    this.zones = null;             // ZoneControl (Zone Control mode)
     this.time = this.duration;
     this.state = 'init';
     this.stateT = 0;
@@ -52,18 +56,22 @@ export class Match {
     // humans-only stage (config noBots) offline: a match is just you (the ?devstage walk), the attract backdrop nobody
     // (o.mannequins: idle, brainless kids for the render audits)
     const noBots = !!o.noBots;
-    for (let team = 0; team < (boss ? 1 : 2); team++) {
+    for (let team = 0; team < (boss || this.practice ? 1 : 2); team++) {
       const weapons = pickTeam(team === 0 && !this.attract ? o.weapon : null);
       if (boss) weapons.push(...pickTeam(null));   // the whole squad on one side: 8 kids, every weapon kind
-      for (let s = 0; s < (boss ? BOSS_MODE.squad : MATCH.teamSize); s++) {
+      for (let s = 0; s < (this.practice ? 1 : boss ? BOSS_MODE.squad : MATCH.teamSize); s++) {
         const isLocal = team === 0 && s === 0 && !this.attract;
         if (noBots && !isLocal && !(this.attract && o.mannequins)) continue;
+        // subs: yours from the loadout; bots carry a random one (about half keep their weapon's default)
+        const sub = isLocal ? o.sub : Math.random() < 0.5 ? null : SUB_ORDER[(Math.random() * SUB_ORDER.length) | 0];
+        const special = isLocal ? o.special : Math.random() < 0.5 ? null : SPECIAL_ORDER[(Math.random() * SPECIAL_ORDER.length) | 0];
         const a = new Actor({
-          team, slot: s, weapon: weapons[s], isLocal, isBot: !isLocal,
+          team, slot: s, weapon: weapons[s], sub, special, isLocal, isBot: !isLocal,
           name: isLocal ? (o.playerName || 'You') : names[ni++ % names.length],
-          // the local player wears their locker look; everyone else is rolled (outfit/eyes derive from the name seed)
-          style: isLocal && o.style ? { ...o.style } : randomStyle(), CharacterClass,
+          // your look from the Locker (an empty style resolves from your name); bots get random looks
+          style: isLocal ? { ...(o.style || {}) } : randomStyle(), CharacterClass,
         });
+        if (isLocal && o.style) { /* reserved for future customisation */ }
         G.scene.add(a.character.root);
         if ((!isLocal || o.autopilot) && !(noBots && !isLocal)) a.bot = new BotBrain(a, o.difficulty);
         this.actors.push(a);
@@ -85,6 +93,10 @@ export class Match {
     this.unsubs = [
       on('splatted', (e) => this._onSplatted(e)),
     ];
+    if (this.mode === 'zones') {
+      this.zones = new ZoneControl(this);
+      this.unsubs.push(on('turf', (e) => this._zoneTurf(e)));
+    }
     if (this.mode === 'boss') { this.bossMode = new BossMode(this); this.boss = this.bossMode.boss; }
   }
 
@@ -94,7 +106,7 @@ export class Match {
     this.follower = !o.host;
     for (const r of o.roster) {
       const mine = r.owner === me;
-      const a = new Actor({ team: r.team, slot: r.slot, weapon: r.weapon, isLocal: mine && !r.bot, isBot: r.bot, name: r.name, style: r.style || undefined, CharacterClass });
+      const a = new Actor({ team: r.team, slot: r.slot, weapon: r.weapon, sub: r.sub || null, special: r.special || null, isLocal: mine && !r.bot, isBot: r.bot, name: r.name, style: r.style || undefined, CharacterClass });
       a.nid = r.nid; a.owner = r.owner; a.remote = !mine;
       G.scene.add(a.character.root);
       if (mine && (r.bot || o.autopilot)) a.bot = new BotBrain(a, o.difficulty);
@@ -113,11 +125,29 @@ export class Match {
       if (a.bot) { a.bot.aimYaw = a.yaw; a.bot.aimPitch = 0; }
     }
     this.unsubs = [on('splatted', (e) => this._onSplatted(e))];
+    if (this.mode === 'zones') {   // Zone Control online: the host runs the rules, guests follow (zones.js netEvent)
+      this.zones = new ZoneControl(this);
+      this.unsubs.push(on('turf', (e) => this._zoneTurf(e)));
+    }
     if (this.mode === 'boss') { this.bossMode = new BossMode(this); this.boss = this.bossMode.boss; }
   }
 
+  // Zone Control: ink laid while standing on (or aiming into) the live zone counts as objective play (results / XP)
+  _zoneTurf({ actor, area }) {
+    const Z = this.zones;
+    if (!Z || this.state !== 'playing' || !actor || !(area > 0)) return;
+    const on = (p) => p && Z.active.zones.some((z) => inZone(z.def, p));
+    if (on(actor.pos) || on(actor.aimPoint)) actor.stats.zoneTurf = (actor.stats.zoneTurf || 0) + area;
+  }
+
+  // Zone Control decided the match (knockout / overtime result): straight to time's up
+  endZones(winner, reason) {
+    this.zoneResult = { winner, reason };
+    if (this.state === 'playing') { this.time = Math.max(0, this.time); this.setState('finish'); }
+  }
+
   start() {
-    this.setState(this.attract ? 'playing' : 'intro');
+    this.setState(this.attract || this.practice ? 'playing' : 'intro');
   }
 
   setState(s) {
@@ -163,6 +193,12 @@ export class Match {
         if (this.stateT > (this.bossMode ? BOSS_MODE.intro : 4.2)) this.setState('playing');
         break;
       case 'playing': {
+        if (this.practice) break;   // practice never runs out
+        if (this.zones) {
+          this.zones.update(dt);
+          if (this.state !== 'playing') break;         // knockout / overtime decided it
+          if (this.zones.overtime) break;              // the clock stays at 0 through overtime
+        }
         this.time -= dt;
         if (!this.attract) {
           if (!this.lastMinuteFired && this.time <= 60 && this.duration > 60) { this.lastMinuteFired = true; emit('match:oneminute', {}); }
@@ -171,7 +207,8 @@ export class Match {
         }
         if (this.time <= 0) {
           this.time = 0;
-          if (!this.follower) this.setState('finish');   // online: the host calls time
+          // Zone Control may go to overtime instead; online, the host calls time
+          if (!this.follower && (!this.zones || this.zones.timeUp())) { if (this.state === 'playing') this.setState('finish'); }
         }
         break;
       }
@@ -214,6 +251,14 @@ export class Match {
   }
 
   _judge() {
+    if (this.zones) {
+      const Z = this.zones;
+      this.result = { mode: 'zones', coverage: G.paint.coverage(), winner: Z.winner ?? (Math.random() < 0.5 ? 0 : 1), reason: Z.reason,
+        counts: [Math.ceil(Z.count[0]), Math.ceil(Z.count[1])], penalty: [...Z.penalty], overtime: Z.overtime, log: Z.log };
+      G.netm?.sendResult(this.result);        // online: every client shows the host's result
+      this.setState('judge');
+      return;
+    }
     if (this.bossMode) {
       this.result = this.bossMode.result();
       G.netm?.sendResult(this.result);
@@ -235,6 +280,20 @@ export class Match {
       })),
     }));
   }
+}
+
+// a point on (or just above) a zone: inside one of its outlines, near its floor heights
+function inZone(def, p) {
+  if (p.y < (def.y0 ?? -2) - 1 || p.y > (def.y1 ?? 6) + 2.5) return false;
+  for (const poly of def.polys || [def.poly]) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, zi] = poly[i], [xj, zj] = poly[j];
+      if ((zi > p.z) !== (zj > p.z) && p.x < ((xj - xi) * (p.z - zi)) / (zj - zi) + xi) inside = !inside;
+    }
+    if (inside) return true;
+  }
+  return false;
 }
 
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; }

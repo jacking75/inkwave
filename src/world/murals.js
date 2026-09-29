@@ -1,8 +1,7 @@
 // Procedural wall murals / signage, drawn into one canvas atlas that the level shader samples underneath the ink
 // layer. Rows 0-3 are the original tileable 2048x256 strips (ids 0-3, unchanged pixels); below them sit face-fitted
-// decals (ids 4…11) in one stage region, (re)drawn for the loaded stage by texture.userData.setStage(id): a stage that
-// owns its decals (src/world/stages/<id>/murals.js — Cargo Terminal) draws its own there, every other stage keeps
-// Halyard Marina's (the ferry's car-deck floor markings and cabin livery), exactly as before. The placement table
+// decals for the loaded stage (ids 4…11, redrawn by texture.userData.setStage(id): Halyard Marina's ferry car-deck
+// markings + cabin livery here, every other stage's from src/world/stages/<id>/murals.js). The placement table
 // travels on texture.userData.murals (indexed by mural id) and is read by levelMaterial.js:
 //   rect  [u0, uw, v0, vh]     atlas rectangle in texture space (v from the bottom: CanvasTexture flips Y)
 //   place [x0, xLen, y0, yLen] where it sits on the face in metres (face u / v); xLen < 0 = strip repeating every
@@ -20,10 +19,21 @@ const DECK = { x: 0, y: 1040, w: 2048, h: 640, m: [32, 10] };           // ferry
 const CSIDE = { x: 0, y: 1696, w: 1248, h: 240, m: [13, 2.5] };         // ferry-cabin ±Z faces: 13 x 2.5 m
 const CEND = { x: 1264, y: 1696, w: 557, h: 240, m: [5.8, 2.5] };      // ferry-cabin ±X faces: 5.8 x 2.5 m
 
-// the stage region (ids 4…11) and the stages that draw their own decals into it
+// stage decals (ids 4…11) share one region below the strips; it is redrawn for the loaded stage (setStage)
 const STAGE_R = { x: 0, y: 1040, w: 2048, h: 1008 };
-const STAGE_MURALS = {};
-for (const [id, st] of Object.entries(STAGES)) if (st.drawMurals) STAGE_MURALS[id] = st.drawMurals;
+const STAGE_MURALS = {
+  halyard: (g) => {
+    drawCarDeck(g, DECK);
+    drawCabinSide(g, CSIDE);
+    drawCabinEnd(g, CEND);
+    return [
+      { id: MURAL.deck, ...DECK, place: [0, DECK.m[0], 0, DECK.m[1]], fx: [1, 1] },
+      { id: MURAL.cabinSide, ...CSIDE, fx: [0.85, 1] },
+      { id: MURAL.cabinEnd, ...CEND, fx: [0.85, 1] },
+    ];
+  },
+};
+for (const [id, s] of Object.entries(STAGES)) if (s.drawMurals) STAGE_MURALS[id] = s.drawMurals;
 
 export async function createMuralTexture(stageId = 'halyard') {
   try { await Promise.all([document.fonts.load('120px "Titan One"'), document.fonts.load('800 100px Rubik')]); } catch { /* fallback font */ }
@@ -32,6 +42,7 @@ export async function createMuralTexture(stageId = 'halyard') {
   const g = c.getContext('2d');
   g.clearRect(0, 0, W, H);
   const font = (px) => `${px}px "Titan One", "Arial Black", sans-serif`;
+  const fontB = (px) => `800 ${px}px Rubik, "Arial Black", sans-serif`;
   drawBanner(g, 0, font);
   drawChevrons(g, RH, font);
   drawShop(g, RH * 2, font);
@@ -43,35 +54,22 @@ export async function createMuralTexture(stageId = 'halyard') {
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   const rect = (r) => [r.x / W, r.w / W, 1 - (r.y + r.h) / H, r.h / H];
-  const kit = { font, fontB: (px) => `800 ${px}px Rubik, "Arial Black", sans-serif`, NAVY, CORAL, TEAL, MUSTARD, CREAM, SKY, squid, blob };
-  // Halyard's decals (the default for every stage without its own): the same pixels and table as always
-  const halyard = () => {
-    drawCarDeck(g, DECK);
-    drawCabinSide(g, CSIDE);
-    drawCabinEnd(g, CEND);
-    return [
-      { id: MURAL.deck, ...DECK, place: [0, DECK.m[0], 0, DECK.m[1]], fx: [1, 1] },
-      { id: MURAL.cabinSide, ...CSIDE, place: [0, CSIDE.m[0], 0, CSIDE.m[1]], fx: [0.85, 1] },
-      { id: MURAL.cabinEnd, ...CEND, place: [0, CEND.m[0], 0, CEND.m[1]], fx: [0.85, 1] },
-    ];
-  };
+  const kit = { font, fontB, NAVY, CORAL, TEAL, MUSTARD, CREAM, SKY, squid, blob };
   let cur = null;
-  // (re)draw the stage region for stage `id` and rebuild the placement table; call before building the level material
+  // (re)draw the stage region for `id` and rebuild the placement table; call before building the level material
   tex.userData.setStage = (id) => {
-    const key = STAGE_MURALS[id] ? id : 'halyard';
-    if (key === cur) return;
-    cur = key;
+    if (id === cur) return;
+    cur = id;
     g.clearRect(STAGE_R.x, STAGE_R.y, STAGE_R.w, STAGE_R.h);
     const murals = [0, 1, 2, 3].map((k) => ({ rect: [0, 1, 1 - (k + 1) * RH / H, RH / H], place: [0, -8, 0, 0], fx: [0, 0] }));
     let list = [];
-    g.save();
     try {
-      g.beginPath(); g.rect(STAGE_R.x, STAGE_R.y, STAGE_R.w, STAGE_R.h); g.clip();
-      list = key === 'halyard' ? halyard() : (STAGE_MURALS[key](g, { ...STAGE_R }, kit) || []);
-    } catch (e) { console.error('[inkwave] stage murals failed', key, e); } finally { g.restore(); }
+      g.save(); g.beginPath(); g.rect(STAGE_R.x, STAGE_R.y, STAGE_R.w, STAGE_R.h); g.clip();
+      list = (STAGE_MURALS[id] && STAGE_MURALS[id](g, { ...STAGE_R }, kit)) || [];
+    } catch (e) { console.error('[inkwave] stage murals failed', id, e); } finally { g.restore(); }
     for (const m of list) {
-      if (!(m.id >= 4 && m.id <= 11)) { console.warn('[inkwave] mural id out of range (4…11)', key, m.id); continue; }
-      murals[m.id] = { rect: rect(m), place: m.place, fx: m.fx || [0.85, 1] };
+      if (!(m.id >= 4 && m.id <= 11)) { console.warn('[inkwave] mural id out of range (4…11)', id, m.id); continue; }
+      murals[m.id] = { rect: rect(m), place: m.place || [0, m.m[0], 0, m.m[1]], fx: m.fx || [0.85, 1] };
     }
     tex.userData.murals = murals;
     tex.needsUpdate = true;

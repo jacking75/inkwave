@@ -14,14 +14,14 @@
 //            weld + bolt rows on the repeat border, rust spots — catwalk landings, hatch-cover rims, the spawn stair
 import { PATTERN } from '../../mapkit.js';
 
-// (slots 28–30 belong to this stage: stages/surfaces.js STAGE_SLOTS)
-export const SURF = { tarmac: 28, quay: 29, chequer: 30 };
+// (slots 46–48 belong to this stage: stages/surfaces.js STAGE_SLOTS)
+export const SURF = { tarmac: 46, quay: 47, chequer: 48 };
 
 const GRID = 1, HEX = 2;
 
 export const SURFACES = [
   {
-    slot: 28, name: 'tarmac', onWall: PATTERN.concrete,
+    slot: 46, name: 'tarmac', onWall: PATTERN.concrete,
     mat: {
       detail: 0.6, scale: 4.0, tint: true, mask: true, alpha: false, mode: HEX, sym: 7, hr: [-0.004, 0.0012], ao: 0.45,
       prep: `f[0] = FB(uv, ivec2(3), 4, 0.5, 3101u); f[1] = FB(uv, ivec2(8), 3, 0.5, 3107u); f[2] = FB(uv, ivec2(48), 2, 0.5, 3109u);
@@ -59,7 +59,7 @@ export const SURFACES = [
     },
   },
   {
-    slot: 29, name: 'quay', onWall: PATTERN.concrete,
+    slot: 47, name: 'quay', onWall: PATTERN.concrete,
     mat: {
       detail: 0.9, scale: 4.8, tint: true, mask: true, alpha: false, mode: GRID, sym: 7, hr: [-0.008, 0.001], ao: 0.5,
       prep: `f[0] = FB(uv, ivec2(4), 5, 0.55, 3201u); f[1] = FB(uv, ivec2(12), 3, 0.5, 3203u);
@@ -104,7 +104,7 @@ export const SURFACES = [
     },
   },
   {
-    slot: 30, name: 'chequer', onWall: PATTERN.hullpaint,
+    slot: 48, name: 'chequer', onWall: PATTERN.hullpaint,
     mat: {
       detail: 0.3, scale: 1.2, tint: true, mask: true, alpha: false, mode: GRID, sym: 3, hr: [-0.004, 0.003], ao: 0.3,
       prep: `f[0] = FB(uv, ivec2(3), 4, 0.5, 3301u); f[1] = FB(uv, ivec2(24), 2, 0.5, 3303u); f[2] = FB(uv, ivec2(6), 3, 0.5, 3307u);
