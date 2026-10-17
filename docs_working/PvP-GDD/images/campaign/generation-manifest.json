@@ -1,0 +1,764 @@
+{
+  "method": "built-in image_gen",
+  "model": "not selectable; user approved tool without model verification",
+  "status": "complete",
+  "tasks": [
+    {
+      "id": "stage-1-1",
+      "asset": "stage-1-1.png",
+      "doc": "stages/스테이지-1-1-멈춘-시계-아래-3.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 1-1: 멈춘 시계 아래. Setting: 바닷가 빅토리아풍 광장, 크림색 시계탑, 흰 난간, 벽돌 바닥, 정자, 밝은 낮. Gameplay premise: 비어 있는 광장에 자신의 잉크 길을 처음 만들고, 멈춘 통신등 두 개를 켜는 입문 임무이다..\nPanel A — 잉크 한 줄의 차이: 정자 너머로 시계탑과 흰 난간이 보이는 낮은 3인칭 화면이다. Player action: 마른 바닥을 칠한 뒤 사람 형태와 잠수 이동의 속도 차이를 직접 비교한다. Challenge: 적은 없다. 끊어진 길과 잠수 회복 표시만 제공한다. Visible feedback: 잉크 용량·체력·복구할 중계기 0/2를 표시한다.\nPanel B — 계단과 옆 벽: A로 이어지는 계단 정면에 사격병이 보이고 옆 벽은 비어 있다. Player action: 엄폐 뒤에서 사격하거나 벽을 칠해 옆 고지로 올라간다. Challenge: 사격병 1명이 짧게 연사하고 쉰다. 추가 적은 없다. Visible feedback: 장치 주변 바닥의 도색률과 2초 가동 원을 보여 준다.\nPanel C — 짧은 길과 긴 길: 시계탑 앞 갈림길에서 방패 실루엣과 화단 우회로가 동시에 보인다. Player action: 정면 방패병을 돌아가거나 우회로의 사격병 두 명을 처리하고 X를 회수한다. Challenge: 정면과 우회로는 선택한 경로의 적만 먼저 활성화한다. 동시 활성은 최대 3명이다. Visible feedback: 선택 상자의 별표와 주 목표 화살표를 서로 다른 모양으로 표시한다.\nPanel D — 다시 켜지는 시계: 시계탑을 배경으로 B 주변의 주황 잉크와 파란 적 잉크가 부딪힌다. Player action: 한쪽 퇴로를 남기고 사격병 2명, 이어서 사격병 1명·도색병 1명을 상대한다. Challenge: 두 웨이브 사이에 4초를 주며 화면 밖 가까운 위치에서 적이 즉시 발사하지 않는다. Visible feedback: 마지막 적 정리 뒤 가동 원이 열리고 통신등이 점등된다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-42644c03-164c-4c4a-90bd-045de5929c05.png",
+      "sha256": "4b6debec69a8e3ca0fef6ea8a55ee1c437cc95c59a7873484e4387963fc237e7",
+      "generatedAt": "2026-10-17T09:31:41.578870+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "광장·계단 옆 벽·꽃밭 우회와 방어 중 퇴로를 확인했다. D는 첫 웨이브 2명과 교전하는 순간이며, 두 번째 웨이브와 최종 점등은 본문의 순서를 따른다. A의 잠수 속도 비교와 C의 선택 상자 표식은 본문에서 보완한다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-1-2",
+      "asset": "stage-1-2.png",
+      "doc": "stages/스테이지-1-2-지워지는-발자국-4.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 1-2: 지워지는 발자국. Setting: 바닷가 빅토리아풍 광장, 크림색 시계탑, 흰 난간, 벽돌 바닥, 정자, 밝은 낮. Gameplay premise: 광장 바닥의 지워지는 흔적을 따라 고지로 올라가며 옆길의 가치를 배우는 첫 정예 임무이다..\nPanel A — 지워지는 길: 산책로의 파란 도색선이 광장 안쪽으로 이어지고 종이 조각은 남아 있다. Player action: 적의 도색선을 자신의 색으로 바꾸며 첫 기록함으로 이동한다. Challenge: 도색병 1명과 사격병 1명이 서로 다른 높이에서 접근한다. Visible feedback: 필수 기록 0/2와 기록함 윤곽을 표시한다.\nPanel B — 계단 위의 사선: 위쪽 사격병이 계단을 내려다보고 옆 화단 벽은 칠할 수 있다. Player action: 계단 엄폐를 오르거나 옆 벽을 타고 같은 높이로 접근한다. Challenge: 사격병 2명이 번갈아 쏘며 동시 연사를 피한다. Visible feedback: 고지에 도착하면 적의 측면과 선택 상자가 함께 보인다.\nPanel C — 청소반장의 돌진: 작은 회랑 광장에서 넓은 롤러를 든 잔향 정예가 앞으로 숙인다. Player action: 돌진선을 옆으로 피하고 정예가 방향을 바꾸는 동안 뒤를 공격한다. Challenge: 정예 1명이다. 직선 도색 돌진 → 브러시 모양의 넓은 휘두름 → 2초 재정비를 반복한다. Visible feedback: 직선 바닥 예고와 정예 머리 위 회전 아이콘을 보여 준다.\nPanel D — 남은 발자국: 정예가 풀어진 잉크 너머로 통신함과 낡은 명단이 보인다. Player action: 남은 적을 정리하고 통신함에 접근한다. Challenge: 추가 웨이브는 없다. 회수 전투를 다시 요구하지 않는다. Visible feedback: 명단 한 줄이 복원되고 시장 방향 연결선이 켜진다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-1c4da167-6308-445c-8cf1-829bf0cb0856.png",
+      "sha256": "8cc72606c8ff397f50e0d6043692423c42410d12a7a3e35ae3bb294d1aa2df93",
+      "generatedAt": "2026-10-17T09:33:40.095764+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "서로 다른 높이의 적, 계단 옆 도색 벽, 롤러 정예의 직선 예고와 측면 회피, 기록 회수를 확인했다. 기록 수와 정예의 후속 휘두름·재정비 시간은 본문을 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-1-3",
+      "asset": "stage-1-3.png",
+      "doc": "stages/스테이지-1-3-광장의-통행금지-5.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 1-3: 광장의 통행금지. Setting: 바닷가 빅토리아풍 광장, 크림색 시계탑, 흰 난간, 벽돌 바닥, 정자, 밝은 낮. Gameplay premise: 정면을 막는 우산 대장에게 도색한 측면 통로로 접근해 첫 보스의 빈틈을 읽는 임무이다..\nPanel A — 통행 금지선: 시계탑 앞에 우산 대장과 낮은 난간 양쪽 길이 함께 보인다. Player action: 입장 전 바닥을 칠하고 양쪽 회피 동선을 읽는다. Challenge: 진입 사격병 2명만 배치한다. 보스 공격은 아직 시작하지 않는다. Visible feedback: 보스 예고와 장비 변경 표식을 표시한다.\nPanel B — 방패를 기다리는 순간: 대장이 우산을 펼쳐 정면을 막고 주황 잉크 길이 양옆으로 뻗는다. Player action: 정면에서 짧게 압박한 뒤 펼친 방패의 반대쪽으로 이동한다. Challenge: 우산 전개 → 느린 전진 → 방패 발사 순서이다. Visible feedback: 방패 발사 전 1초 예고와 뒤쪽 원형 약점 표시를 보여 준다.\nPanel C — 빼앗기는 퇴로: 보스가 반대쪽으로 방향을 돌리고 도색병이 한 번 출현한다. Player action: 지원 적을 빠르게 처리하거나 다른 쪽 길을 칠해 후방으로 들어간다. Challenge: 체력 절반에서 도색병 1명을 최대 두 번의 고정 이벤트로 부른다. Visible feedback: 지원 방향과 보스 약점 노출 남은 시간을 함께 표시한다.\nPanel D — 첫 번째 해제: 우산이 접히고 시계탑의 통신등이 밝아진다. Player action: 중앙 단말을 가동하고 작업장으로 돌아간다. Challenge: 추가 적은 없다. Visible feedback: 복구자의 표식과 다음 지역 해금을 보상 카드로 보여 준다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-8f47af4b-b1a2-4771-8900-b6de32a0da2d.png",
+      "sha256": "cdba95170320ea5cd7ba0a6462aecbe131eb1cce2bab57df5796ea5098db7664",
+      "generatedAt": "2026-10-17T09:38:34.881293+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "우산 대장을 기존 캐릭터 체형으로 수정하고 전면 방패·후방 약점·측면 접근·복구 단말을 확인했다. B의 구슬 모양은 발사 방향을 나타내는 러프 예고이며 별도 공격을 추가하지 않는다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-2-1",
+      "asset": "stage-2-1.png",
+      "doc": "stages/스테이지-2-1-비어-있는-가판대-6.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\crossmarket-dusk.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 2-1: 비어 있는 가판대. Setting: 해질녘의 좁은 유럽풍 시장 골목, 유리 지붕 시장홀과 정차한 전차, 줄무늬 차양, 따뜻한 창문. Gameplay premise: 좁은 골목의 가까운 위험 경로와 시장 외곽의 안전 경로 중 하나를 택하며 기록을 회수하는 탐색 임무이다..\nPanel A — 켜진 창문, 빈 골목: 노을의 유리 시장홀을 배경으로 닫힌 가판대와 두 갈래 골목이 보인다. Player action: 가까운 적을 확인하고 A의 가판대를 향해 잉크 길을 만든다. Challenge: 사격병 2명이 차양 아래에서 번갈아 쏜다. Visible feedback: 기록 0/2, 선택 상자는 별표로 표시한다.\nPanel B — 차양 뒤를 고르는 길: 짧은 정면에는 방패병, 긴 외곽에는 사격병과 칠할 벽이 보인다. Player action: 방패 발사를 기다리거나 외곽의 높이 차이를 이용한다. Challenge: 선택한 갈림길에만 경계 적을 우선 활성화한다. Visible feedback: 주 목표와 선택 보관함의 거리·방향을 분리한다.\nPanel C — 기록함의 작은 방어전: B를 둘러싼 파란 잉크와 빈 가판대가 엄폐를 만든다. Player action: 도색병을 먼저 처리해 기록함 가동 원에 안전한 공간을 만든다. Challenge: 도색병 1명·사격병 2명이다. 추가 웨이브는 없다. Visible feedback: 경계 적 3/3 정리 뒤 가동 표시가 열린다.\nPanel D — 시장 지도에 돌아온 이름: 단말의 가게 아이콘 두 개가 다시 켜지고 멀리 유리 지붕이 반짝인다. Player action: 남은 선택 상자를 확인하거나 곧바로 E로 간다. Challenge: 완료 적 재출현은 없다. Visible feedback: 새 무기 3종과 다음 목표를 보여 준다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-acdda428-b993-4573-87be-472febc40032.png",
+      "sha256": "990a3d0a7b7d7d539a780902495590594e891e63fb2c00c33a4b59505b559d95",
+      "generatedAt": "2026-10-17T09:35:19.816364+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "유리 시장홀·전차·차양, 정면 방패와 외곽 높이차, 기록함 방어와 완료 지도를 확인했다. B는 두 후보 경로의 배치 개요이며 실제 활성은 선택 경로만 적용한다. D의 무기 실루엣은 해금 안내이며 현장 추가 드롭이 아니다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-2-2",
+      "asset": "stage-2-2.png",
+      "doc": "stages/스테이지-2-2-유리-지붕의-감시자-7.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\crossmarket-dusk.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 2-2: 유리 지붕의 감시자. Setting: 해질녘의 좁은 유럽풍 시장 골목, 유리 지붕 시장홀과 정차한 전차, 줄무늬 차양, 따뜻한 창문. Gameplay premise: 높은 감시병의 사선을 엄폐로 끊으며 같은 높이를 차지하는 임무이다..\nPanel A — 첫 사선: 유리 홀 위의 감시병과 바닥을 가르는 얇은 위험선이 보인다. Player action: 전차와 철골 기둥 사이를 짧게 이동한다. Challenge: 감시병 1명은 0.9초 조준 후 발사하고, 사격병 1명이 가까운 길을 지킨다. Visible feedback: 위험선 끝에 발사 직전 깜박임을 표시한다.\nPanel B — 높이를 바꾸는 벽: 앞 계단은 사선에 노출되고 옆의 낮은 벽은 끊김 없이 칠할 수 있다. Player action: 계단을 차례로 오르거나 벽으로 잠수 이동해 CP에 도착한다. Challenge: 사격병 2명이며 감시병의 공격은 계단 뒤에서 가려진다. Visible feedback: 같은 높이가 되면 감시병의 방어가 약하다는 것을 보여 준다.\nPanel C — 두 발 뒤의 빈틈: 유리눈 감시자가 유리 골조 사이에서 차저를 든다. Player action: 첫 발과 두 번째 발을 피한 뒤 긴 재정비에 접근한다. Challenge: 정예 1명이다. 두 발의 예고 방향이 서로 같지 않지만 즉시 추적하지 않는다. Visible feedback: 두 번째 발 뒤 2.5초 재정비 아이콘을 표시한다.\nPanel D — 창 너머의 명령: 송신함의 반복 파형과 어두운 시장 중앙이 함께 보인다. Player action: 통신 기록을 회수하고 다음 보스의 송신기 표식을 확인한다. Challenge: 남은 전투는 없다. Visible feedback: 다음 임무의 활성 송신기 아이콘을 미리 보여 준다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-aacbf05e-3f10-4cf0-b15e-3c7b29e9056c.png",
+      "sha256": "bffb07d57f21200fb72815750cc3406dc36d1e6164bd83a2a15cd141aca3c1a7",
+      "generatedAt": "2026-10-17T09:38:36.684128+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "전차·기둥 엄폐, 도색 벽을 통한 높이 접근, 감시자의 두 사선과 기록 회수를 확인했다. C의 점선은 직전 사선의 잔상이며 두 발은 순차 발사한다. 재정비 시간은 본문을 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-2-3",
+      "asset": "stage-2-3.png",
+      "doc": "stages/스테이지-2-3-시장의-마지막-방송-8.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\crossmarket-dusk.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 2-3: 시장의 마지막 방송. Setting: 해질녘의 좁은 유럽풍 시장 골목, 유리 지붕 시장홀과 정차한 전차, 줄무늬 차양, 따뜻한 창문. Gameplay premise: 빛나는 송신기를 순서대로 꺼 중심핵을 여는 첫 고정 장치 보스전이다..\nPanel A — 방송하는 기계: 시장홀 유리 지붕 아래 기존 펌프·상자를 엮은 탑과 송신기 3개가 보인다. Player action: 입구에서 현재 빛나는 송신기와 엄폐를 확인한다. Challenge: 탑은 고정되어 움직이지 않으며 중심핵이 낮은 위치에 있다. Visible feedback: 활성 송신기 1/3과 비활성 핵 아이콘을 표시한다.\nPanel B — 한 줄의 위험: 활성 송신기에서 가느다란 광선 방향을 먼저 보여 준다. Player action: 가로로 잉크 길을 만들고 광선 뒤에 송신기를 가동한다. Challenge: 첫 단계는 광선 1개와 사격병 1명만 사용한다. Visible feedback: 광선 이동 방향과 안전한 엄폐 뒤 공간을 보여 준다.\nPanel C — 두 방향 사이: 두 번째·세 번째 송신기가 차례로 활성화되고 원형 위험 표시가 더해진다. Player action: 원 밖으로 잠수 이동한 뒤 가까운 엄폐를 이용해 다음 송신기로 간다. Challenge: 광선과 원형 공격은 교대로 실행하고 안전 통로 한 개 이상을 남긴다. Visible feedback: 이미 끈 송신기는 불빛과 소리가 사라진다.\nPanel D — 목소리가 꺼진 시장: 탑의 반복 파형이 멎고 가게 이름을 나타내는 작은 표시가 돌아온다. Player action: E에서 배포 기록을 읽는다. Challenge: 잔여 위험 효과를 즉시 해제한다. Visible feedback: 회수반 렌즈와 새 지역 연결을 표시한다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-7b01411f-bceb-45ca-bdaa-9aed5ef17492.png",
+      "sha256": "0eb06c782c9c967111a67626156e8d225d3c5337512e517b324c16cc7f72f5b3",
+      "generatedAt": "2026-10-17T09:42:36.462821+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "송신기 한 개만 활성화하고 C에서 광선을 제거해 원형 예고와 분리했다. 고정 탑·낮은 핵·엄폐·안전 통로·위험 해제를 확인했다. 핵 개방 후 공격과 송신기 순서는 본문을 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-3-1",
+      "asset": "stage-3-1.png",
+      "doc": "stages/스테이지-3-1-목적지-없는-화물-9.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\kelpline-day.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 3-1: 목적지 없는 화물. Setting: 밝은 항만 컨테이너 야적장, 거대한 노란 갠트리 크레인, 푸른 화물선과 바다, 금속 경사로. Gameplay premise: 컨테이너 사이의 교차로에서 세 중계점을 차례로 되살려 야적장을 관통하는 임무이다..\nPanel A — 노란 크레인 아래: 큰 노란 크레인과 층진 컨테이너가 좁은 교차로를 만든다. Player action: 우선 한 교차로를 칠해 시야와 잠수 퇴로를 만든다. Challenge: 사격병 2명과 도색병 1명이다. Visible feedback: 중계기 0/3과 현재 지점만 강조한다.\nPanel B — 화물 위의 우회: 낮은 컨테이너 옆면과 위쪽 선택 상자가 함께 보인다. Player action: 상자를 향해 오르거나 바닥 엄폐를 따라 바로 간다. Challenge: 감시병 1명이 긴 직선 구간을 보지만 높은 옆길은 덜 노출된다. Visible feedback: 낙하 위험 가장자리와 칠할 벽을 구분한다.\nPanel C — 기둥을 돌며 싸우기: 크레인 기둥 양쪽에서 방패병과 사격병이 등장한다. Player action: 기둥으로 둘의 시야를 분리하고 마지막 중계기를 복구한다. Challenge: 방패병 1명·사격병 2명·도색병 1명으로 최대 4명이다. Visible feedback: 완료한 지점은 지도에 체크 표시로 남는다.\nPanel D — 이어진 배포선: 세 지점이 지도로 연결되고 선박 너머에서 큰 그림자가 움직인다. Player action: 서류함을 열고 다음 적재 구역 신호를 확인한다. Challenge: 거대 보스는 배경 예고만 주며 아직 공격하지 않는다. Visible feedback: 새 무기 해금과 다음 임무를 표시한다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-cc3cd063-de2a-4769-b540-9944da3fe104.png",
+      "sha256": "ad0d052e96f2d596e7d772f14c9f4f0b3408a84663e2b69abc0853a5e1d70126",
+      "generatedAt": "2026-10-17T09:42:38.550229+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "노란 크레인·컨테이너·벽 접근·기둥 엄폐와 복구 지점 연결을 확인했다. C는 기둥에 가려진 적을 포함한 배치 개념으로 최대 활성 수 4명은 본문을 따른다. D의 큰 그림자는 보스의 존재만 알리는 비정형 예고이며 새 괴물 설계가 아니다."
+      },
+      "dimensions": {
+        "width": 1539,
+        "height": 1022
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-3-2",
+      "asset": "stage-3-2.png",
+      "doc": "stages/스테이지-3-2-적재-구역-봉쇄-10.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\kelpline-day.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 3-2: 적재 구역 봉쇄. Setting: 밝은 항만 컨테이너 야적장, 거대한 노란 갠트리 크레인, 푸른 화물선과 바다, 금속 경사로. Gameplay premise: 낙하 예고와 좁은 안전 공간을 읽으며 포격 정예에게 접근하는 항만 전투이다..\nPanel A — 첫 번째 낙하 원: 컨테이너 사이 바닥에 원 두 개가 시간차로 생긴다. Player action: 원이 없는 바닥을 칠하고 경계 적에게 접근한다. Challenge: 포격병 1명·사격병 2명이다. 원은 플레이어의 이전 위치에 떨어진다. Visible feedback: 원 테두리에서 안쪽으로 줄어드는 시간을 표시한다.\nPanel B — 안전 공간의 선택: 좁은 직선 통로와 기둥 뒤 넓은 엄폐 길이 갈라진다. Player action: 빠르게 직선으로 지나가거나 우회 상자를 회수하고 넓은 엄폐로 간다. Challenge: 추가 도색병 1명이 퇴로를 칠한다. Visible feedback: 주 목표 경로 한 개는 항상 낙하 범위 밖에 남긴다.\nPanel C — 적재장 포수: 낮은 받침대 위 정예가 통을 준비하고 바닥 두 곳을 차례로 지정한다. Player action: 첫 원과 두 번째 원을 피한 뒤 경사로로 접근해 장전 빈틈을 친다. Challenge: 포격 정예 1명이며 지원 사격병 1명을 한 번만 부른다. Visible feedback: 통 두 개 후 3초의 재장전 표식을 보여 준다.\nPanel D — 껍질의 흔적: 봉쇄 기록과 거대한 발자국이 선박 쪽으로 이어진다. Player action: 서류를 회수하고 거대 전투를 준비한다. Challenge: 추가 전투 없이 정비 표식을 보여 준다. Visible feedback: 물약 대신 장비와 특성 변경으로 준비하도록 안내한다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-6cb1acd7-e3df-4ca9-8d85-3bbf7b4d345e.png",
+      "sha256": "5ce773a53a0118cec2156b1ee406f68c56c2ce630fa4732cead5283b2b296827",
+      "generatedAt": "2026-10-17T09:42:40.345806+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "시간차 낙하 원·안전한 우회·경사로 접근·정비 구간을 확인했다. 원 두 개는 낙하 순서의 개념 표시이며 본문의 시간차를 적용한다. D의 탱크는 장비 진열이며 소비형 회복약이 아니다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-3-3",
+      "asset": "stage-3-3.png",
+      "doc": "stages/스테이지-3-3-껍질-속의-명령-11.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\kelpline-day.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\boss.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 3-3: 껍질 속의 명령. Setting: 밝은 항만 컨테이너 야적장, 거대한 노란 갠트리 크레인, 푸른 화물선과 바다, 금속 경사로. Gameplay premise: 거대한 소라게의 돌진을 벽으로 유도하고 낮은 배 약점을 공격하는 첫 대형 보스전이다..\nPanel A — 껍질이 일어선다: 노란 크레인과 화물선 아래에서 녹슨 컨테이너를 멘 소라게가 등장한다. Player action: 첫 3초는 이동만 가능하게 해 전투 공간과 엄폐를 본다. Challenge: 등장 연출 중 피해를 주지 않는다. Visible feedback: 보스 체력과 강타 방향을 처음 표시한다.\nPanel B — 강타의 원을 넘다: 큰 집게와 바닥으로 퍼지는 원형 잉크 충격파가 보인다. Player action: 예고를 보고 잉크 길을 따라 이동하거나 원을 점프로 넘는다. Challenge: 초기 페이즈는 강타·통 낙하만 사용한다. Visible feedback: 점프할 원의 두께와 닿는 순간을 명확히 표시한다.\nPanel C — 벽에 열린 배: 돌진선 끝의 단단한 컨테이너 벽과 노출된 낮은 배가 함께 보인다. Player action: 벽 앞에서 옆으로 피한 뒤 4초 기절 창에 접근해 약점을 공격한다. Challenge: 후반 소형 게는 최대 3마리이며 강한 공격과 동시에 소환하지 않는다. Visible feedback: 기절 아이콘과 낮은 약점 고리를 보여 준다.\nPanel D — 살아 있는 껍질: 보스가 주저앉고 통제 장치가 부서지며 도시 신호가 약해진다. Player action: 안전해진 장비에 접근해 정비반 표식을 읽는다. Challenge: 소라게는 해방 연출의 대상으로 남고 추가 공격을 하지 않는다. Visible feedback: 모라의 짧은 침묵 뒤 다음 지역을 표시한다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-c1d4389c-617a-431c-9a8f-d5024548d9b5.png",
+      "sha256": "61df1989075a2c838efb0037745d76d7c2c415306179065989229535a885eaf5",
+      "generatedAt": "2026-10-17T09:42:42.067117+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "컨테이너 껍질·비대칭 집게·충격파 점프·벽 충돌 뒤 낮은 배 약점·해방 연출을 확인했다. C는 기절 순간으로 지원 소형 게를 생략했으며 기절 시간과 후반 소환 제한은 본문을 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-4-1",
+      "asset": "stage-4-1.png",
+      "doc": "stages/스테이지-4-1-끊어진-계류선-12.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\halyard-dusk.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 4-1: 끊어진 계류선. Setting: 노을빛 마리나, 목재 부두, 흰 선실의 예인선과 큰 파란 카페리, 밧줄과 계류 말뚝, 추락 가능한 바다. Gameplay premise: 움직이는 호위 대상 없이 고정된 부두 중계점을 따라 건너며 두 번의 짧은 방어전을 수행한다..\nPanel A — 부두의 폭을 읽다: 목재 부두와 양쪽 바다, 큰 카페리의 파란 선체를 낮은 시점에서 보여 준다. Player action: 육지와 연결된 넓은 길을 칠해 안전 퇴로를 먼저 확보한다. Challenge: 사격병 2명이 상자 뒤에서 교대 사격한다. Visible feedback: 난간 없는 가장자리에 물결 경고를 표시한다.\nPanel B — 첫 번째 계류점: 말뚝 옆 작은 원을 중심으로 두 방향의 부두가 보인다. Player action: 적을 원 바깥에서 처리하며 30초를 누적한다. Challenge: 사격병 2명 다음 도색병 1명·사격병 1명으로 두 웨이브이다. Visible feedback: 점령 중지와 재개를 같은 게이지로 명확히 보여 준다.\nPanel C — 선실을 사이에 둔 전투: 카페리 사선과 예인선 뒤 엄폐, 창고 쪽 우회로가 갈라진다. Player action: 선실로 감시병의 시야를 끊거나 X로 우회한다. Challenge: 감시병 1명·방패병 1명이다. Visible feedback: 부두 끝 대신 육지 쪽 벽타기 경로를 강조한다.\nPanel D — 두 번째 계류점: 카페리 앞 넓은 데크에 B와 세 방향 출현 표식이 보인다. Player action: 30초 안정화를 완료하고 남은 적을 정리한다. Challenge: 도색병 1명·사격병 2명이 두 묶음으로 출현하며 동시 최대 4명이다. Visible feedback: 새 무기 해금보다 먼저 안전 구역 완료를 표시한다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-620ae793-b763-44e6-bb31-05aa015bf9cf.png",
+      "sha256": "ad8e0529f888c5b2e846d9bbd0d8bac6c7e27a3adda31bbdad6556c18b963818",
+      "generatedAt": "2026-10-17T09:46:55.532927+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "목재 부두·카페리·물가 경고·고정 계류점·선실 엄폐를 확인했다. B는 첫 웨이브, D는 안정화 중 교전을 그렸으며 누적 시간과 다음 출현 묶음은 본문을 따른다. D의 직사각형 소품은 도색 장비이며 별도 방패병 추가를 뜻하지 않는다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-4-2",
+      "asset": "stage-4-2.png",
+      "doc": "stages/스테이지-4-2-돌아오지-않은-작업반-13.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\halyard-dusk.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 4-2: 돌아오지 않은 작업반. Setting: 노을빛 마리나, 목재 부두, 흰 선실의 예인선과 큰 파란 카페리, 밧줄과 계류 말뚝, 추락 가능한 바다. Gameplay premise: 선박과 난간 사이의 좁은 길에서 방패 정예를 흘려보내고 작업반의 대피 기록을 찾는다..\nPanel A — 남겨진 장비: 해질녘의 선실 아래 공구 상자와 젖은 바닥이 보인다. Player action: 사격병을 엄폐로 분리한 뒤 상자를 회수한다. Challenge: 사격병 2명·도색병 1명이다. Visible feedback: 장비 0/2와 대피 기록 목적을 표시한다.\nPanel B — 물가에 몰리지 않기: 부두 끝 좁은 정면과 선실 안쪽 넓은 우회 길이 대비된다. Player action: 선실 안쪽으로 칠해 경로를 잡고 X를 선택 회수한다. Challenge: 감시병 1명은 바깥 직선만 보며 안쪽 길은 막지 않는다. Visible feedback: 물가 경고와 피격 방향을 분리한다.\nPanel C — 방패가 지나간 자리: 정예가 큰 우산 방패를 통로를 따라 쏘아 보낸다. Player action: 방패를 물 쪽으로 피하지 않고 선실 쪽으로 피해 뒤를 노린다. Challenge: 정예 1명과 보조 사격병 1명이다. 방패 발사 전 1초 예고를 준다. Visible feedback: 방패 이동선과 3초 재성장 빈틈을 표시한다.\nPanel D — 모라의 원본 명령: 안전해진 갑판 위 단말과 모라의 통신 초상이 함께 보인다. Player action: 기록을 읽고 작업반의 살아 있는 응답을 듣는다. Challenge: 전투를 완전히 멈추고 자막을 읽게 한다. Visible feedback: 대사 건너뛰기와 기록 보관을 제공한다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-a321923e-06ff-484d-8c98-4b4c25a72c57.png",
+      "sha256": "0053af57e5c20feb26d4c245c93674fc47ea513f93f6ff4c56c2a0609c8771ce",
+      "generatedAt": "2026-10-17T09:46:57.282891+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "선실 안쪽 우회, 물가 반대 방향의 방패 회피, 보조 사격병과 안전한 기록 열람을 확인했다. D의 통신 초상은 모라의 임시 표정 시안이며 최종 외형은 NPC 문서를 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-4-3",
+      "asset": "stage-4-3.png",
+      "doc": "stages/스테이지-4-3-등대-없는-항로-14.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\halyard-dusk.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 4-3: 등대 없는 항로. Setting: 노을빛 마리나, 목재 부두, 흰 선실의 예인선과 큰 파란 카페리, 밧줄과 계류 말뚝, 추락 가능한 바다. Gameplay premise: 부두 양끝의 사선을 바꿔 쏘는 대장에게 안전 통로를 연결하며 가까이 접근하는 전투이다..\nPanel A — 사라진 항로등: 선실과 부두 양끝의 사격 거점, 꺼진 중계점 두 개를 보여 준다. Player action: 첫 사선을 보며 선체 뒤로 이동한다. Challenge: 진입 사격병 2명을 처리한 뒤 보스전을 시작한다. Visible feedback: 서쪽 거점의 조준선 하나만 먼저 표시한다.\nPanel B — 빛이 켜지는 길: A가 켜지면 선실 뒤의 주황 잉크 통로와 보스의 옆모습이 보인다. Player action: 사격 후 재정비 시간에 짧은 거리를 전진한다. Challenge: 스큐는 1초 조준 뒤 2발, 3초 정비를 반복한다. Visible feedback: 작동한 중계점에서 다음 엄폐까지 방향 표식을 준다.\nPanel C — 다른 방향의 두 번째 선: 스큐가 반대 사격 거점으로 이동하고 기존 엄폐의 안전 방향이 바뀐다. Player action: 같은 엄폐에 머물지 않고 반대쪽 선실로 이동해 접근한다. Challenge: 지원 사격병 1명만 한 번 출현한다. 두 거점에서 동시에 쏘지 않는다. Visible feedback: 다음 사선이 열릴 방향을 1초 먼저 보여 준다.\nPanel D — 다시 생긴 항로: 부두의 안내등이 잇따라 켜지고 멀리 염전 펌프의 응답이 보인다. Player action: E에서 복구 경로를 확인한다. Challenge: 잔여 조준과 투사체를 해제한다. Visible feedback: 계류 밸브와 새 지역을 표시한다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-b55d0885-a107-4c75-b3ee-b78f65f9673c.png",
+      "sha256": "e6369bcd2f1c52e55f05fa4c49cc4dd0a5b50f80ae8f94fa34bd04af49305450",
+      "generatedAt": "2026-10-17T09:46:58.796358+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "선체 엄폐·중계등·거점 이동에 따른 사선 변경·안내등 복구를 확인했다. A는 보스전 직전 공간 개요이며 진입 적 2명은 본문대로 먼저 정리한다. B·C의 사선은 각 시점의 한 거점에서만 발생한다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-5-1",
+      "asset": "stage-5-1.png",
+      "doc": "stages/스테이지-5-1-소금-밭의-두-흐름-15.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\saltpan-day.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 5-1: 소금 밭의 두 흐름. Setting: 밝은 해안 염전, 낮게 파인 소금 밭, 흰 소금더미, 녹슨 풍력 펌프와 창고, 좁은 판자 통로. Gameplay premise: 염전의 두 펌프를 순서대로 가동하며 다른 잉크를 덮는 행동이 복구 원리임을 배우는 임무이다..\nPanel A — 넓지만 끊긴 바닥: 흰 소금더미와 낮은 밭, 좁은 판자 길이 한 화면에 보인다. Player action: 가장 짧은 길 대신 넓은 회복 지대를 먼저 칠한다. Challenge: 도색병 2명·사격병 1명이다. Visible feedback: 도색된 연결 경로와 펌프 A만 목표로 표시한다.\nPanel B — 한 펌프를 지키기: 소금더미 뒤의 엄폐와 펌프 가동 원이 보인다. Player action: 도색병을 먼저 처리하며 가동 원을 지킨다. Challenge: 사격병 2명 다음 도색병 1명·포격병 1명으로 두 웨이브이다. Visible feedback: 누적 안정화 0~30초를 표시한다.\nPanel C — 둘째 흐름으로 건너기: 첫 펌프는 켜진 채 남고 반대편 판자 길에 새 적 잉크가 보인다. Player action: 좁은 길을 뛰어넘기보다 칠하면서 건너고 측면 소금더미를 엄폐로 쓴다. Challenge: 감시병 1명과 도색병 1명이다. Visible feedback: A 완료 체크와 현재 B 목표를 함께 보여 준다.\nPanel D — 돌아가는 순환도: 중앙 기록함에 두 색의 흐름이 합쳐지는 단순 도식이 보인다. Player action: 기록을 읽고 다음 구역의 건조 신호를 확인한다. Challenge: 추가 전투는 없다. 펌프 회전은 기존 소품 움직임 수준으로 표현한다. Visible feedback: 이야기 설명이 실제 도색 행동과 연결되도록 문구를 준다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-8c784162-f3bd-465a-b2eb-60b4eae360bf.png",
+      "sha256": "01bbbdb7b0be11f5a0535bb881b55f6b46cf425d9fabbcb7fafaed91fdd9d7db",
+      "generatedAt": "2026-10-17T09:51:18.553249+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "염전·소금더미 엄폐·첫 펌프 방어·판자길·두 흐름의 순환도를 확인했다. B는 첫 사격병 웨이브 순간이다. 누적 시간, 두 번째 웨이브와 펌프 가동 순서는 본문을 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-5-2",
+      "asset": "stage-5-2.png",
+      "doc": "stages/스테이지-5-2-마르는-길-16.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\saltpan-day.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 5-2: 마르는 길. Setting: 밝은 해안 염전, 낮게 파인 소금 밭, 흰 소금더미, 녹슨 풍력 펌프와 창고, 좁은 판자 통로. Gameplay premise: 넓은 적 잉크 지대에서 이동·회복 공간을 유지하며 도색 정예와 살수 장치를 공략한다..\nPanel A — 작은 섬 하나: 넓은 파란 잉크 사이 소금더미 주변의 작은 마른 바닥이 보인다. Player action: 짧은 주황 길과 작은 회복 원을 만들며 조금씩 전진한다. Challenge: 도색병 2명과 사격병 1명이 넓게 나뉘어 있다. Visible feedback: 목표 면적을 좁게 표시해 과도한 도색 노동을 막는다.\nPanel B — 계속 칠해지는 길: 앞쪽 살수 장치가 퇴로를 다시 적 잉크로 덮는다. Player action: 장치를 먼저 부수거나 소금더미 옆의 다른 안전 경로를 만든다. Challenge: 장치 1개·감시병 1명·사격병 1명이다. Visible feedback: 적 잉크 재확산의 원점을 선으로 보여 준다.\nPanel C — 염전 청소조: 정예와 좌우 살수 장치 두 개가 구역을 나누어 압박한다. Player action: 한 장치를 먼저 끄고 생긴 안전 공간으로 정예의 돌진을 유도한다. Challenge: 도색 정예 1명과 고정 장치 2개이다. 일반 지원 적은 추가하지 않는다. Visible feedback: 꺼진 장치의 구역은 체크 무늬 없는 안전색으로 바뀐다.\nPanel D — 섬들이 길이 되다: 뒤를 돌아보면 작은 주황 안전 지점들이 연결되어 있다. Player action: E를 가동해 펌프 제어에 필요한 기록을 보낸다. Challenge: 추가 적과 재도색 장치는 정지한다. Visible feedback: 다음 보스의 안전 구역 아이콘을 미리 보여 준다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-a1690f33-ee73-49ab-a217-8f7d8de7de91.png",
+      "sha256": "3f44c964496e4ffaa91010b20bb85e96f18faba57b8509bacf296e43e577ed57",
+      "generatedAt": "2026-10-17T09:51:20.144927+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "작은 회복 지점·퇴로를 덮는 살수 원점·정예와 고정 장치 2개·연결된 귀환 길을 확인했다. C는 장치를 끄기 전 접근 순간이며 한 장치 차단 후 안전 공간 확보가 이어진다. 회복 원은 소비품을 뜻하지 않는다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-5-3",
+      "asset": "stage-5-3.png",
+      "doc": "stages/스테이지-5-3-바람이-멈춘-펌프-17.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\saltpan-day.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 5-3: 바람이 멈춘 펌프. Setting: 밝은 해안 염전, 낮게 파인 소금 밭, 흰 소금더미, 녹슨 풍력 펌프와 창고, 좁은 판자 통로. Gameplay premise: 장치가 만드는 잉크 압박을 끊어 스피너 대장을 과열시키고 공격하는 구역 관리 보스전이다..\nPanel A — 펌프의 두 팔: 풍력 펌프 아래 대장과 좌우 살수 장치가 대칭처럼 보이되 도색은 다른 방향으로 흐른다. Player action: 왼쪽과 오른쪽 중 접근하기 쉬운 장치를 고른다. Challenge: 진입 사격병 2명 뒤 보스전을 시작한다. Visible feedback: 현재 안전 원과 장치 상태를 표시한다.\nPanel B — 사격 사이에 길을 칠하다: 스피너 연사선과 주황 안전 원의 빈 바닥이 대비된다. Player action: 엄폐를 이용해 연사를 끊고 공격 휴지기에 바닥을 칠한다. Challenge: 연사 2초 뒤 최소 1.5초 정비를 준다. 사격은 플레이어를 즉시 추적하지 않는다. Visible feedback: 안전 상태 누적 0~6초를 표시한다.\nPanel C — 과열된 대장: 스피너에서 연기가 나고 대장이 잠깐 장비를 내려놓는다. Player action: 4초 동안 접근 공격하거나 스페셜을 사용한다. Challenge: 체력 절반에서 장치 활성 위치를 반대로 바꾸되 기존 장치를 무한 재생하지 않는다. Visible feedback: 노출 창과 다음 활성 장치를 동시에 예고한다.\nPanel D — 돌아가는 풍차: 기존 펌프의 작은 움직임과 켜지는 순환 단말을 보여 준다. Player action: 복구 명령을 회수하고 모라의 결심을 듣는다. Challenge: 추가 전투는 없다. Visible feedback: 풍차축의 효과를 이전 도색 행동과 연결해 보여 준다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-b57e75b8-7a72-4617-89b6-2faa60fac40e.png",
+      "sha256": "16321908da60a83efa71c0df27fbe61cdf093f6a6e29969f4705fd8665f45f2b",
+      "generatedAt": "2026-10-17T09:51:21.733386+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "살수 장치 양쪽 배치·엄폐로 연사 피하기·과열 시 장비를 내린 대장·복구된 펌프를 확인했다. 주황 장치 표현은 안전 구역의 러프 색 구분이며 장치 소유권 전환 기능이 아니다. 안정화·연사·과열의 시간은 본문을 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-6-1",
+      "asset": "stage-6-1.png",
+      "doc": "stages/스테이지-6-1-닫힌-물길-18.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\lockgate-dusk.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 6-1: 닫힌 물길. Setting: 해질녘 붉은 벽돌 창고 지구, 비어 있는 운하와 높은 벽, 돌다리, 고정 수문, 금속 난간과 램프. Gameplay premise: 높은 운하 벽과 다리로 나뉜 세 제어점을 순서대로 켜 도시의 마지막 통신선을 연결한다..\nPanel A — 깊어 보이는 운하: 높은 벽돌 벽과 고정된 돌다리, 내려갈 수 있는 경사로가 한눈에 보인다. Player action: 깊이와 안전 경로를 확인하고 첫 제어점을 향해 내려간다. Challenge: 감시병 1명·사격병 2명이다. Visible feedback: 물이 아닌 이동 가능한 바닥과 낙하 경계를 구분한다.\nPanel B — 다리 아래에서 위로: 다리 위 감시병과 아래의 안전 엄폐가 수직으로 대비된다. Player action: 벽을 칠해 올라가거나 경사로를 이용해 같은 높이를 확보한다. Challenge: 도색병 1명·감시병 1명·사격병 1명이다. Visible feedback: 이전 제어점의 체크 표시를 계속 유지한다.\nPanel C — 지키는 대신 이어 가기: 뒤쪽은 복구된 빛으로 남고 앞 창고에서 방패병이 등장한다. Player action: 다시 돌아가지 않고 방패병을 옆으로 돌아 마지막 지점에 진입한다. Challenge: 방패병 1명·포격병 1명·사격병 2명, 동시 최대 4명이다. Visible feedback: 완료 제어점 재방어가 필요 없다는 문구를 한 번 표시한다.\nPanel D — 세 불빛의 연결: 다리와 창고 사이 통신등이 순서대로 켜진다. Player action: 복구 명령을 전송하고 다음 통로의 두 실루엣을 본다. Challenge: 두 문지기는 배경 예고만 한다. Visible feedback: 전송 3/3과 다음 임무를 표시한다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-7769dfa4-6cd7-473f-92ec-dce10f244b0c.png",
+      "sha256": "5ac1aeacc759d4a135993d0eb366259f7bffa402e8f5077efb64377dde32720f",
+      "generatedAt": "2026-10-17T09:53:45.237931+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "마른 운하 바닥·벽오르기·석교 엄폐·이어지는 제어점과 닫힌 수문을 확인했다. D의 두 실루엣은 다음 임무 예고이며 현재 교전하지 않는다. C의 최대 활성 수 4명은 본문을 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-6-2",
+      "asset": "stage-6-2.png",
+      "doc": "stages/스테이지-6-2-두-문지기-19.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\lockgate-dusk.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 6-2: 두 문지기. Setting: 해질녘 붉은 벽돌 창고 지구, 비어 있는 운하와 높은 벽, 돌다리, 고정 수문, 금속 난간과 램프. Gameplay premise: 방패 정예와 감시 정예를 돌다리·벽돌 엄폐로 분리해 싸우는 조합 전투이다..\nPanel A — 두 개의 시선: 방패 정예는 낮은 다리 입구에, 감시 정예는 반대 경사로 위에 서 있다. Player action: 엄폐 안에서 두 공격 방향을 먼저 확인한다. Challenge: 진입 경계 적 3명을 처리한 뒤 정예가 활성화된다. Visible feedback: 각 정예의 이름과 체력을 따로 표시한다.\nPanel B — 시야를 끊는 벽: 큰 벽돌 엄폐가 화면 가운데에서 감시자의 선을 가린다. Player action: 방패 정예만 엄폐 옆으로 유도하거나 경사로로 감시자에게 접근한다. Challenge: 정예 둘 외의 지원 적은 출현하지 않는다. Visible feedback: 동시에 가려진 적의 예고는 방향 아이콘으로 안내한다.\nPanel C — 남은 한 명의 규칙: 남은 정예가 엄폐 옆으로 이동해 새로운 공격선을 만든다. Player action: 기존에 배운 방패 발사 빈틈 또는 두 발 뒤 정비 창을 이용한다. Challenge: 남은 정예에게 큰 체력 회복·즉시 광폭화는 주지 않는다. Visible feedback: 처리한 정예 이름은 회색 체크로 바뀐다.\nPanel D — 열리는 통로: 큰 수문은 그대로이고 옆 점검 통로의 표시만 녹색으로 바뀐다. Player action: 작은 잠금 단말을 켜고 관제 신호를 읽는다. Challenge: 실제 문 이동 연출은 필수로 만들지 않는다. Visible feedback: 최종 제어핵 표식을 다음 임무로 보여 준다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-96fb2235-224c-4ee4-9640-6d4e4935d504.png",
+      "sha256": "fb2f68b24e558e23fe0391cf64d46130f038e62e0799aadb1fec61d10514dca4",
+      "generatedAt": "2026-10-17T09:57:52.006435+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "두 정예의 다른 높이·벽돌 엄폐에 의한 시야 분리·한 명만 남은 교전·잠금 단말 가동을 확인했다. D의 공격 표현을 제거했으며 큰 수문은 움직이지 않는다. 체력 막대는 설명용 러프이다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-6-3",
+      "asset": "stage-6-3.png",
+      "doc": "stages/스테이지-6-3-역류의-관제실-20.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\lockgate-dusk.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 6-3: 역류의 관제실. Setting: 해질녘 붉은 벽돌 창고 지구, 비어 있는 운하와 높은 벽, 돌다리, 고정 수문, 금속 난간과 램프. Gameplay premise: 두 제어구역을 차례로 지킨 뒤 중심핵을 여는 장치 보스전으로 지금까지의 공간 관리 능력을 시험한다..\nPanel A — 물길의 회로: 벽돌 운하 양쪽 제어점과 중앙 장치가 고정된 회로처럼 보인다. Player action: 현재 활성 지점 A와 이동 엄폐를 확인한다. Challenge: 진입 전투는 짧게 사격병 2명으로 제한한다. Visible feedback: 현재 A, 다음 B 순서를 명확하게 보여 준다.\nPanel B — 한 곳을 먼저 지키기: A에 좁은 광선이 가로지르고 반대편은 비활성 상태이다. Player action: 광선 예고를 보고 원 안팎을 오가며 30초를 누적한다. Challenge: 사격병 2명과 장치 광선이 번갈아 공격한다. Visible feedback: 원에서 나가면 시간이 멈추고 줄지 않는다는 것을 보여 준다.\nPanel C — 원과 선 사이의 길: B 근처에서 원형 낙하 예고와 광선이 시간차로 겹친다. Player action: A에서 확보한 퇴로를 활용해 B로 접근하고 안전 시간을 채운다. Challenge: 지원 도색병 1명·사격병 1명이다. 강한 공격은 하나씩 예고한다. Visible feedback: A의 완료 표식과 B 진행률을 함께 보여 준다.\nPanel D — 마지막 핵: 중앙 핵이 낮게 열리고 이제 이동과 사격을 함께 할 수 있다. Player action: 기존 두 안전 공간을 오가며 핵을 공격한다. Challenge: 새 제어점은 생성하지 않고 남은 광선의 빈도도 낮춘다. Visible feedback: 핵 파괴 시 초기화 파형이 끊기고 중앙 통신선이 켜진다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-97cbb0c1-656f-40f9-a62b-6ac691f76a96.png",
+      "sha256": "3b756a4dc88d24328f8419bb1e5d69bb3636b44f6a935881fa8abf4d604f9b1c",
+      "generatedAt": "2026-10-17T09:57:54.275207+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "제어점 A·B와 낮은 핵, 고정 장치의 광선, 원형 예고의 안전 통로, 핵 공격을 확인했다. B의 잉크 흔적은 앞선 사격 흔적이며 장치 광선과 사격병 공격은 본문대로 교대한다. C에는 원형 예고 하나만 표현했다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-7-1",
+      "asset": "stage-7-1.png",
+      "doc": "stages/스테이지-7-1-가장-높은-우회로-21.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\terraces-dusk.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 7-1: 가장 높은 우회로. Setting: 해질녘 흰 벽의 해안 언덕마을, 주황 기와, 여러 층의 계단과 테라스, 작은 광장과 돔 건물, 보라색 바다. Gameplay premise: 언덕마을의 층진 계단과 벽을 연결해 감시 사선을 우회하며 중앙 중계기로 올라가는 임무이다..\nPanel A — 계단을 보는 시선: 흰 벽과 주황 지붕 사이 계단이 위로 이어지고 감시선이 길을 가른다. Player action: 첫 엄폐까지 도색하고 낮은 중계기를 확보한다. Challenge: 감시병 1명·사격병 2명·도색병 1명이다. Visible feedback: 높이가 다른 목표는 위·아래 화살표로 구분한다.\nPanel B — 벽에 만든 계단: 막힌 정면 계단과 칠할 수 있는 옆집 벽이 대비된다. Player action: 기본 잠수·벽오르기로 우회하거나 정면 엄폐를 순서대로 오른다. Challenge: 방패병 1명은 정면만 막고 측면 경로를 완전히 보지 못한다. Visible feedback: 도달 가능한 벽 끝과 안전 착지 공간을 보여 준다.\nPanel C — 세 방향의 작은 전투: 위 광장의 계단 세 방향에서 제한된 적이 접근한다. Player action: 높은 감시병과 도색병 중 우선순위를 고르고 마지막 중계기를 복구한다. Challenge: 감시병 1명·도색병 1명·사격병 2명, 동시 최대 4명이다. Visible feedback: 이전 지역에서 복구한 통신 아이콘이 차례로 들어온다.\nPanel D — 뒤돌아본 항구: 높은 테라스에서 바다와 복구된 아래 지역을 멀리 바라본다. Player action: 중앙 통신대에 도착해 남은 신호를 듣는다. Challenge: 새 적을 출현시키지 않는다. Visible feedback: 시야를 방해하지 않는 짧은 통신 자막만 넣는다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-ed686f15-3eea-4a2a-beea-5e4c0fbb82bb.png",
+      "sha256": "b25257866416b6acf959729cba1eeb08bb8547d45e474da8eff8b59788c1420e",
+      "generatedAt": "2026-10-17T09:57:56.309682+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "흰 벽·주황 지붕·층진 계단·벽오르기와 착지 공간·최종 중계기·항구 조망을 확인했다. 붉은 사선은 병종별 공격 영역의 개념 표시이며 사격병을 추가 감시병으로 바꾸지 않는다. 적 구성과 예고 시간은 본문을 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-7-2",
+      "asset": "stage-7-2.png",
+      "doc": "stages/스테이지-7-2-남은-신호-22.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\terraces-dusk.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 7-2: 남은 신호. Setting: 해질녘 흰 벽의 해안 언덕마을, 주황 기와, 여러 층의 계단과 테라스, 작은 광장과 돔 건물, 보라색 바다. Gameplay premise: 세 가지 역할의 적 조합과 마지막 지휘관을 순서대로 상대하며 마지막 복구 기록을 찾는다..\nPanel A — 배운 역할을 다시 읽다: 짧은 골목 끝 방패병과 위쪽 감시병, 측면 도색병을 함께 보여 준다. Player action: 엄폐로 시야를 분리하고 도색병 또는 감시병을 먼저 처리한다. Challenge: 방패병 1명·감시병 1명·도색병 1명·사격병 1명, 동시 최대 4명이다. Visible feedback: 병종 아이콘과 우회 벽을 함께 표시한다.\nPanel B — 멈출 줄 아는 방어: 작은 테라스 원과 두 계단 출현점이 보인다. Player action: 위험 예고 때 원 밖으로 피하고 30초를 누적한다. Challenge: 사격병 2명 다음 도색병 1명·포격병 1명, 두 웨이브이다. Visible feedback: 진행 중지와 완료를 구분하고 시간이 뒤로 줄지 않게 한다.\nPanel C — 잔향의 마지막 지휘: 지휘관의 포격 원과 지원 출현 표식이 번갈아 켜진다. Player action: 지원 적을 먼저 정리하거나 포격 정비 중 지휘관을 압박한다. Challenge: 정예 1명과 지원 최대 2명이다. 지원은 사격병 1묶음, 도색병 1묶음 두 번뿐이다. Visible feedback: 공격 예고와 지원 신호가 같은 순간에 겹치지 않는다.\nPanel D — 끝나는 조건: 작은 단말에 귀환 확인 목록과 마지막 빈칸이 보인다. Player action: 원본 기록을 회수하고 최종 명령을 완성한다. Challenge: 전투를 끝내고 대사를 읽을 공간을 준다. Visible feedback: 마지막 임무 해금과 현재 장비 정비 안내를 표시한다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-0906b236-412a-4436-8cfe-2d9511e06fe1.png",
+      "sha256": "f3e63c26311ebfbc06442c281aab7f5933f24da7cf97c8a0327b276cc9371ac1",
+      "generatedAt": "2026-10-17T10:03:36.978127+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "지휘관을 기존 캐릭터 체형으로 수정하고 역할 조합·첫 방어 웨이브·지원 적 2명·마지막 기록 회수를 확인했다. A의 가려진 사격병을 포함한 실제 배치 수와 지원 출현 횟수는 본문을 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "stage-7-3",
+      "asset": "stage-7-3.png",
+      "doc": "stages/스테이지-7-3-되찾는-물결-23.md",
+      "panels": 4,
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\stages\\terraces-dusk.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\boss.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a clean 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nStage 7-3: 되찾는 물결. Setting: 해질녘 흰 벽의 해안 언덕마을, 주황 기와, 여러 층의 계단과 테라스, 작은 광장과 돔 건물, 보라색 바다. Gameplay premise: 마지막 제어 고리를 끊고 자유로워진 거대 소라게와 함께 항구의 서로 다른 흐름을 되돌리는 결전이다..\nPanel A — 마지막 광장의 껍질: 해질녘 흰 벽의 광장에 같은 소라게가 단순 제어 고리와 함께 나타난다. Player action: 입장 전 양쪽 엄폐와 충돌 가능한 벽을 확인한다. Challenge: 새 괴물 모델이 아니라 기존 HULLBREAKER와 제어 장치이다. Visible feedback: 세 고리 아이콘과 보스 페이즈를 표시한다.\nPanel B — 익숙한 빈틈, 첫 고리: 벽 충돌 뒤 낮은 배와 옆 받침대의 첫 고리가 밝아진다. Player action: 돌진을 옆으로 피하고 기절 중 약점 또는 고리를 공격한다. Challenge: 66% 체력에서 고리1을 제거해야 다음 페이즈로 넘어간다. Visible feedback: 고리는 전투장 바닥에서 닿는 높이에 두고 파괴 후 체크한다.\nPanel C — 서로 다른 공격 사이: 광선이 지나간 뒤 소형 게가 나오고, 회전은 그 뒤에 따로 예고된다. Player action: 엄폐로 광선을 피하고 소형 게를 정리한 뒤 회전 바깥으로 이동한다. Challenge: 광선·소형 게·회전을 동시에 사용하지 않는다. 소형 게는 최대 3마리이다. Visible feedback: 현재 패턴 아이콘과 다음 회피 공간을 보여 준다.\nPanel D — 되찾는 물결: 보스가 주저앉고 마지막 고리와 낮은 통제핵이 남는다. 항구의 통신등이 이어진다. Player action: 전투가 멈춘 짧은 시간에 마지막 장치를 끊고 복구 명령을 보낸다. Challenge: 마지막 입력 중 공격·낙하·잔여 투사체를 모두 정지한다. Visible feedback: 주민 귀환 신호와 엔딩 카드, 최종 서명 보상을 보여 준다.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-a1682f71-01f3-4ec9-bbd7-ed3194a74f2f.png",
+      "sha256": "82546705ab0a612623fa1e14db11bebc3eb45b65e60833189ef3ea62f6963c4a",
+      "generatedAt": "2026-10-17T10:03:38.529271+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "3-3과 같은 컨테이너 껍질·비대칭 집게로 수정했다. 낮은 받침대 고리·벽 충돌 뒤 기절·소형 게 3마리·안전한 마지막 단말을 확인했다. C는 광선 종료 뒤 한 순간이며 회전은 그 뒤에 별도로 실행한다. 광장 배치와 충돌 공간은 구현 시 검증한다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "visual-direction",
+      "panels": 6,
+      "title": "일러스트 시각 설계",
+      "doc": "일러스트-시각설계-29.md",
+      "desc": "Six equally sized panels: A small adventurer paints a navigable orange path in the cream-colored Victorian seaside clock-tower square; B the same adventurer dives into that ink then climbs a painted low wall; C a cobalt enemy aim-line is interrupted by a real stone pillar, orange flank path visible; D giant armored orange hermit crab with rusty shipping container shell faces a tiny player and telegraphs a ground ring; E dusk harbor workshop with mechanic and radio scout; F a small recovery terminal changing from dark to lit, adjacent loot crate with star and checkpoint double-ring. Sketch tactical scenes, retain small hero to large environment scale.",
+      "asset": "visual-direction.png",
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
+        "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\boss.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, six equal panels in a 3 by 2 grid, wide gutters, only panel letters A B C D E F. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nSix equally sized panels: A small adventurer paints a navigable orange path in the cream-colored Victorian seaside clock-tower square; B the same adventurer dives into that ink then climbs a painted low wall; C a cobalt enemy aim-line is interrupted by a real stone pillar, orange flank path visible; D giant armored orange hermit crab with rusty shipping container shell faces a tiny player and telegraphs a ground ring; E dusk harbor workshop with mechanic and radio scout; F a small recovery terminal changing from dark to lit, adjacent loot crate with star and checkpoint double-ring. Sketch tactical scenes, retain small hero to large environment scale.",
+      "status": "generated",
+      "source": "C:\\Users\\heungbae\\.codex\\generated_images\\01a148d8-47da-7d63-90d4-8876edd614ed\\exec-5e904532-0af0-4554-8d7e-019fd7740c80.png",
+      "saved": "docs_working/PvP-GDD/images/campaign/visual-direction.png",
+      "review": {
+        "status": "reviewed",
+        "note": "기존 파일을 재생성하거나 덮어쓰지 않고 유지했다. 신규 장면판과 화풍·주황/코발트 구분·공간 관계를 대조했다."
+      },
+      "dimensions": {
+        "width": 1672,
+        "height": 941
+      },
+      "sha256": "2a5a5ef92e57823e5d167c854952e057d9770f71cda833a4540c2da8896b756e",
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "gameplay",
+      "panels": 6,
+      "title": "게임플레이",
+      "doc": "systems/게임플레이-상세-24.md",
+      "desc": "Six sequential action panels: A third-person player shoots orange ink onto a dry brick path; B player becomes small squid silhouette swimming within that painted path to refill tank; C player paints a side wall and climbs to flank a blue umbrella-shield enemy; D player holds a compact recovery-terminal circle as a clear progress arc fills; E player jumps a telegraphed shock ring from a giant crab, leaving a safe orange retreat path; F calm checkpoint behind cover allows gear change and retry. Use arrows for movement, transparent outlined warnings for danger, no long text.",
+      "asset": "gameplay.png",
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
+        "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\boss.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, six equal panels in a 3 by 2 grid, wide gutters, only panel letters A B C D E F. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nSix sequential action panels: A third-person player shoots orange ink onto a dry brick path; B player becomes small squid silhouette swimming within that painted path to refill tank; C player paints a side wall and climbs to flank a blue umbrella-shield enemy; D player holds a compact recovery-terminal circle as a clear progress arc fills; E player jumps a telegraphed shock ring from a giant crab, leaving a safe orange retreat path; F calm checkpoint behind cover allows gear change and retry. Use arrows for movement, transparent outlined warnings for danger, no long text.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-0142104e-a178-432d-83d3-05b91f9266dd.png",
+      "sha256": "047b9d8b583db4d6771eb1021c22d3af5badfaac54f2ffe3ff50e9c1747173be",
+      "generatedAt": "2026-10-17T10:08:41.180277+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "도색·오징어형 잠수·도색 벽 우회·복구 범위·컨테이너 소라게의 원형 예고 회피·안전한 장비 교체의 6컷을 확인했다. F의 동행 인물을 제거해 싱글 플레이 전제에 맞췄다. 가동 시간과 회복 수치는 본문을 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "npc",
+      "panels": 4,
+      "title": "NPC와 서사",
+      "doc": "systems/NPC와-서사-상세-25.md",
+      "desc": "Four character/story panels on the same warm sketch paper: A customizable short tentacle-haired new recovery worker with orange tank, no fixed name; B Mora the practical mechanic with tied-back olive tentacle hair, work apron, goggles on head, wrench and patched jacket at existing harbor workshop; C Til the radio archivist with short teal tentacle hair, headset, notepad and small recorder, alert but kind; D Archive as a low rectangular old harbor terminal with three status lamps and a simple waveform, never a humanoid robot. Existing game character proportions, no need for new body rigs. Each panel includes portrait and tiny scene showing the role. Letters only.",
+      "asset": "npc.png",
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
+        "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nFour character/story panels on the same warm sketch paper: A customizable short tentacle-haired new recovery worker with orange tank, no fixed name; B Mora the practical mechanic with tied-back olive tentacle hair, work apron, goggles on head, wrench and patched jacket at existing harbor workshop; C Til the radio archivist with short teal tentacle hair, headset, notepad and small recorder, alert but kind; D Archive as a low rectangular old harbor terminal with three status lamps and a simple waveform, never a humanoid robot. Existing game character proportions, no need for new body rigs. Each panel includes portrait and tiny scene showing the role. Letters only.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-09a04c0a-e6e1-48e7-a239-4bf676d7bfc3.png",
+      "sha256": "8f7301f59b4eb1753a55aab96e3abbe8821661334a41c812082fb7f7974f12ce",
+      "generatedAt": "2026-10-17T10:08:39.556654+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "4컷으로 정리하고 회수반 신입·모라의 올리브 머리와 고글·틸의 청록 머리와 헤드셋·상태등 3개와 파형의 아카이브 단말을 확인했다. C의 작은 전장 삽화는 통신으로 알려 주는 상황이며 틸의 전장 동행을 뜻하지 않는다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "enemies",
+      "panels": 6,
+      "title": "잔향 적의 역할",
+      "doc": "systems/게임플레이-상세-24.md",
+      "desc": "Six clear enemy role sketches, cobalt ink and consistent diamond crest: A shooter grunt behind a crate with short ink blaster; B painter with wide roller creating enemy terrain; C umbrella shield guard facing forward with orange flanking arrow behind; D long ink charger sniper with thin telegraphed line and clear stone cover; E bucket/ink cannon bombardier with two telegraphed floor circles; F three small low-detail crablets beside player-scale silhouette. Distinguish weapon silhouette, pose, role icon and counterplay. Use original existing tentacle character look, not new monsters.",
+      "asset": "enemies.png",
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
+        "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, six equal panels in a 3 by 2 grid, wide gutters, only panel letters A B C D E F. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nSix clear enemy role sketches, cobalt ink and consistent diamond crest: A shooter grunt behind a crate with short ink blaster; B painter with wide roller creating enemy terrain; C umbrella shield guard facing forward with orange flanking arrow behind; D long ink charger sniper with thin telegraphed line and clear stone cover; E bucket/ink cannon bombardier with two telegraphed floor circles; F three small low-detail crablets beside player-scale silhouette. Distinguish weapon silhouette, pose, role icon and counterplay. Use original existing tentacle character look, not new monsters.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-089b80af-3c51-4ac7-ad50-1f5b12fb02e5.png",
+      "sha256": "400507feb898fc3453dfeb1752ef66d5ae7946a00b5b96262b365cd406ddce20",
+      "generatedAt": "2026-10-17T10:03:40.035102+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "사격·도색·우산 방패·감시·포격·소형 게 3마리의 여섯 역할과 엄폐·우회·회피를 확인했다. E의 두 원은 시간차 낙하 개념이며 동시 강제 피격을 뜻하지 않는다. 병종 표식과 수치는 본문을 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "bosses",
+      "panels": 3,
+      "title": "보스 기본형",
+      "doc": "systems/NPC와-서사-상세-25.md",
+      "desc": "Three broad panels A B C: A original tentacle humanoid commander with umbrella shield, orange player flanking a low rear glowing weak point; B stationary harbor controller assembled from existing pump/crates, three low peripheral transmitters, central low core, orange sequential route arrows not simultaneous capture; C gigantic armored hermit crab with rusty container shell, asymmetric claws, low belly weak point, collision wall and tiny orange adventurer. Show one telegraphed action and counterplay in each. Retain all three boss archetypes as reused assets, no new huge creature.",
+      "asset": "bosses.png",
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
+        "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp",
+        "C:\\github_dev\\inkwave\\assets\\news\\boss.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, three wide panels stacked vertically, wide gutters, only panel letters A B C. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nThree broad panels A B C: A original tentacle humanoid commander with umbrella shield, orange player flanking a low rear glowing weak point; B stationary harbor controller assembled from existing pump/crates, three low peripheral transmitters, central low core, orange sequential route arrows not simultaneous capture; C gigantic armored hermit crab with rusty container shell, asymmetric claws, low belly weak point, collision wall and tiny orange adventurer. Show one telegraphed action and counterplay in each. Retain all three boss archetypes as reused assets, no new huge creature.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-d0657baf-5973-405d-88d0-1cdd2402386c.png",
+      "sha256": "6a390288f8d2eadb07c0b213c786ab884398c6a5a41f234876c13c2a1bab1afd",
+      "generatedAt": "2026-10-17T10:11:55.909045+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "3컷으로 정리해 잔향 대장·고정 제어 장치·컨테이너 소라게의 기본형을 확인했다. B는 송신기 한 개만 켜지고 낮은 중심핵으로 이어진다. A의 원형 표식은 후방 약점이며 별도 회전 공격 추가가 아니다. 세부 공격은 각 스테이지 본문을 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "finalRevisionPrompt": "Edit this sheet into EXACTLY THREE broad landscape illustration panels stacked vertically A B C, filling the canvas. Keep only the THREE large colored scenes currently at left. REMOVE the ENTIRE right-hand column of diagrams and English captions and REMOVE the ENTIRE bottom equipment/perks/reward strip. Enlarge the retained scenes to fill width. Remove ALL text except the large A B C panel letters. A umbrella captain is organic tentacle humanoid, orange hero flanks rear weak point, no added umbrella-spin attack. B stationary pump/crate controller with THREE LOW transmitters and low central core. Only ONE transmitter glows; other two dark. Use one orange sequential movement arrow, no beams linking transmitters. C keep container-shell living hermit crab and low belly weakpoint, add a nearby solid collision wall with rubble, NO blue wall wave. No insets or explanatory captions.",
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "items",
+      "panels": 6,
+      "title": "아이템",
+      "doc": "systems/아이템-상세-26.md",
+      "desc": "Six-panel equipment explainer: A familiar ink weapon with small removable nozzle adapter; B transparent backpack ink tank with a modular filter cartridge; C a small recovery-worker badge with double-circle crest; D three quality cards distinguished by border and one or two simple option glyphs, not shiny weapon replacements; E seven small regional signature modules laid out with clock, lens, crab-shell chip, valve, turbine axle, canal conductor, wave memory silhouettes; F a low-fidelity gear comparison screen showing exactly three equipment slots and one swap arrow. Large simple forms, short panel letters only, no tiny illegible numbers, no entirely new guns.",
+      "asset": "items.png",
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
+        "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, six equal panels in a 3 by 2 grid, wide gutters, only panel letters A B C D E F. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nSix-panel equipment explainer: A familiar ink weapon with small removable nozzle adapter; B transparent backpack ink tank with a modular filter cartridge; C a small recovery-worker badge with double-circle crest; D three quality cards distinguished by border and one or two simple option glyphs, not shiny weapon replacements; E seven small regional signature modules laid out with clock, lens, crab-shell chip, valve, turbine axle, canal conductor, wave memory silhouettes; F a low-fidelity gear comparison screen showing exactly three equipment slots and one swap arrow. Large simple forms, short panel letters only, no tiny illegible numbers, no entirely new guns.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-0687f234-d6f8-41e8-b237-31562c3caa22.png",
+      "sha256": "fc373b613992c6da38ff65db04777b872910097b7feeb3d6937f36d7bcafd0a3",
+      "generatedAt": "2026-10-17T10:11:57.450697+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "어댑터·탱크 필터·표식과 등급 카드 3종·지역 서명 7종·장착 슬롯 3개 및 교체 화살표를 확인했다. 불필요한 특성·보장·분해 도식을 제거했다. 작은 문양은 시안이며 실제 옵션·불이익·상한은 표를 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "finalRevisionPrompt": "Edit ONLY panel F of this six-panel A-F equipment concept sheet. Remove EVERY element in F and replace with a SIMPLE gear comparison diagram: exactly THREE side-by-side bordered equipment slots containing a nozzle adapter, a tank filter, a worker badge. Under ONLY the adapter slot, show one small candidate adapter card and one swap arrow into that slot. No perk bars, no upgrade dots, no crab, no rewards, no pity markers, no salvage. Preserve panels A B C D E exactly, including seven regional modules in E. No words except existing A-F panel letters.",
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "growth",
+      "panels": 4,
+      "title": "캐릭터 성장",
+      "doc": "systems/성장-상세-27.md",
+      "desc": "Four-panel growth explainer: A same small hero at beginning and end, unchanged scale and basic look, slightly fuller health and tank bars; B three small perk branches with movement, weak-point and ink-cycle glyphs, ten filled square point tokens across branches; C three tactical mini-vignettes showing mobility flank, weak-point punish, safe ink-space control rather than different body classes; D familiar module moves from old to new gear slot carrying three upgrade dots, old module loses dots. Pencil-and-flat-color planning diagram, no long text, use A-D only.",
+      "asset": "growth.png",
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
+        "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nFour-panel growth explainer: A same small hero at beginning and end, unchanged scale and basic look, slightly fuller health and tank bars; B three small perk branches with movement, weak-point and ink-cycle glyphs, ten filled square point tokens across branches; C three tactical mini-vignettes showing mobility flank, weak-point punish, safe ink-space control rather than different body classes; D familiar module moves from old to new gear slot carrying three upgrade dots, old module loses dots. Pencil-and-flat-color planning diagram, no long text, use A-D only.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-ace0e0e2-ae0c-4035-ad49-b4beb1fc80c9.png",
+      "sha256": "9599e555af6bba19baa165fb439f1a88bec181ede054e4fc2a0dd358c17ee5d2",
+      "generatedAt": "2026-10-17T10:11:58.914436+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "동일 체형의 전후 비교, 특성점 6+4로 총 10개, 세 공략 방식, 같은 슬롯 강화 이전 후 기존 0·새 장비 3단계를 확인했다. 체력·잉크 그림 막대는 상대적 여유의 개념이며 실제 증가율은 레벨 표를 따른다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "finalRevisionPrompt": "Edit this four-panel A B C D growth sheet. A: REPLACE whole A with two views of the SAME orange tentacle-haired small hero, at EXACTLY the same height/body/gear, ivory backdrop, arrow between them. Left short heart/tank capacity bars, right slightly longer bars. NO enemies or boss in A. B: remove the duplicate hero figures and health bars at left and right, KEEP ONLY the three colored perk branches and EXACTLY ten filled square tokens, six green-branch and four red-branch; blue empty. C: preserve three tactical vignettes, but REPLACE the center mechanical enemy with a LIVING CONTAINER-SHELL HERMIT CRAB low belly weakpoint; left flank and right safe ink-space scene unchanged. D: REPLACE entire D with ONLY two same-slot module cards and one arrow: old filter with THREE EMPTY dots, new filter with THREE FILLED dots. Nothing else in D, no extra gear slots, icons, rewards, pity tokens, bosses or scrap. Only A-D letters.",
+      "consumerLinkValidated": true
+    },
+    {
+      "id": "farming",
+      "panels": 4,
+      "title": "파밍과 보상",
+      "doc": "systems/파밍과-보상-상세-28.md",
+      "desc": "Four-panel farming/reward explainer: A mission select board with seven harbor-area thumbnails and one highlighted regional lens reward, no real map geography; B player chooses optional crate side-route while exit route remains open, orange arrows and star; C completion workbench shows one module, scrap parts and single resonance core, with nine small unfilled tokens followed by tenth special-marked token for pity; D same-slot crafting and upgrade transfer at mechanic bench with old module returning to zero dots, duplicate marked for manual salvage. Show deliberate target farming and one-time completion banking, not casino loot showers. Only A-D letters.",
+      "asset": "farming.png",
+      "refs": [
+        "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
+        "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp"
+      ],
+      "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, four equal panels in a 2 by 2 grid, wide gutters, only panel letters A B C D. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nFour-panel farming/reward explainer: A mission select board with seven harbor-area thumbnails and one highlighted regional lens reward, no real map geography; B player chooses optional crate side-route while exit route remains open, orange arrows and star; C completion workbench shows one module, scrap parts and single resonance core, with nine small unfilled tokens followed by tenth special-marked token for pity; D same-slot crafting and upgrade transfer at mechanic bench with old module returning to zero dots, duplicate marked for manual salvage. Show deliberate target farming and one-time completion banking, not casino loot showers. Only A-D letters.",
+      "status": "generated",
+      "sourcePath": "C:\\Users\\heungbae\\.codex\\generated_images\\01a14930-1235-77d1-ad97-038baa661f4e\\exec-19d8875a-1dde-4cc3-8fe4-c960e1c08349.png",
+      "sha256": "7321f98fd58fe76d89e86be421dba3411269fe63d734feaa9982eebe9d084fcc",
+      "generatedAt": "2026-10-17T10:13:29.172906+00:00",
+      "review": {
+        "status": "reviewed",
+        "note": "지역 후보 7개·열린 출구와 선택 상자·완료 작업대의 모듈/부품/공명핵·동일 슬롯 이전과 수동 분해를 확인했다. C의 보장 표시는 위 5칸·아래 빈 4칸과 별 1칸으로 총 10칸이다. 공명핵은 보스 완료 예시이며 일반 임무 공통 보상이 아니다. A의 썸네일 배치는 지리·지역별 보상표가 아닌 선택 화면 개념이다."
+      },
+      "dimensions": {
+        "width": 1536,
+        "height": 1024
+      },
+      "finalRevisionPrompt": "Edit this four-panel A-D farming sheet. A: Keep seven mission thumbnails, highlight the market thumbnail with a small blue LENS module. REMOVE the big boss/reward inset at right, leave space for the seven thumbnails only. B: keep optional STAR chest route and independent exit route; replace the infinity-like exit glyph with WHITE CONCENTRIC DOUBLE CIRCLES. No forced extra objective. C: REMOVE the battle scene completely. Show calm WOODEN WORKBENCH, not battlefield, with ONE module card, small scrap parts pile, and ONE resonance core, indicating a boss-completion reward EXAMPLE. Along bottom draw EXACTLY NINE EMPTY small circles then ONE STAR at tenth, no extra markers. D: REMOVE upper perk-point chart completely, replace upper with mechanic's hands crafting ONE lens module at workbench. Keep lower old-to-new SAME-SLOT transfer cards, old three EMPTY dots, new three FILLED dots, and separate duplicate marked for manual salvage. Use the SAME BLUE LENS image on old/new/duplicate cards, not different slots. Only letters A B C D, no English or Korean text.",
+      "finalCountCorrectionPrompt": "Edit ONLY the pity-counter strip along the bottom of panel C. It currently has too few empty circles. ERASE the entire current strip contents and redraw EXACTLY TEN large markers in a TWO-ROW FIVE-COLUMN grid: TOP ROW five EMPTY circles; BOTTOM ROW four EMPTY circles then one ORANGE STAR inside a circle in the final bottom-right fifth position. Thus NINE empty circles total plus ONE star marker at tenth. Every marker equal size, clear spacing. No text, no digits, no extra marks. Keep panel C reward workbench, one module, scrap and one resonance core unchanged. Preserve panels A B D exactly and keep the whole four-panel sheet. This single count correction only.",
+      "consumerLinkValidated": true
+    }
+  ],
+  "preservedAsset": {
+    "asset": "visual-direction.png",
+    "sha256": "2a5a5ef92e57823e5d167c854952e057d9770f71cda833a4540c2da8896b756e"
+  },
+  "validation": {
+    "status": "passed",
+    "scope": "local Markdown links, image files and hashes, panel inventory, level formulas, item IDs and initial economy arithmetic",
+    "checks": {
+      "documentCount": 31,
+      "localLinks": 414,
+      "assetCount": 29,
+      "panelCount": 123,
+      "stageCount": 21,
+      "itemDesignCount": 19,
+      "growthLevels": 20,
+      "firstClearXp": 12600,
+      "levelCapXp": 12350,
+      "parts": 1400,
+      "upgradeCost": 840,
+      "partsAfterExample": 280,
+      "initialModules": 30,
+      "modulesWithOptionalCrates": 44,
+      "originalPreserved": true
+    },
+    "visualReview": "All 29 sheets visually inspected. Identity, action, layout and count mismatches revised with built-in image tool; per-image notes record conceptual omissions.",
+    "notPerformed": [
+      "Campaign code implementation",
+      "Runtime/playability/balance testing",
+      "Browser Markdown renderer verification",
+      "CI",
+      "Commit/push"
+    ]
+  },
+  "executionClarification": "Execution clarification: use only corner panel letters; omit HUD, captions, numbers, text and inset diagrams even if feedback is described above. Convey feedback with simple shapes. One moment per panel: never overlay multiple waves or sequential enemy appearances. Match exactly the active enemy count at the chosen moment. White double circles are concentric rings. Keep rough pencil/gouache storyboard style consistent with the existing visual-direction sheet.",
+  "completedAt": "2026-10-17T10:15:38.221117+00:00"
+}
