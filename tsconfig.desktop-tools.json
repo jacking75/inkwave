@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmitOnError": true,
+    "types": ["node"],
+    "rootDir": "tools/desktop",
+    "outDir": ".desktop-tools"
+  },
+  "include": ["tools/desktop/**/*.ts"]
+}

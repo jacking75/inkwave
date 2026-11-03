@@ -87,31 +87,31 @@ npm run relay    # 접속 주소는 ws://<이 컴퓨터의 IP 주소>:8787이다
 
 ## 로컬 실행
 
-빌드 단계 없이 실행할 수 있다. 어떤 정적 파일 서버든 사용할 수 있다. 포함된 서버는 LAN에서도 접속할 수 있으며, 모듈 변경 사항이 오래된 캐시에 가려지지 않도록 캐시 재검증을 요청하는 헤더를 전송한다.
+**현재는 성능 문제 수정 전 실행을 보류한다.** 데스크톱 앱에서 긴 로딩과 심한 렉, PC 전체 멈춤이 보고됐다. 수정과 실행 조건 확인 전에는 앱·웹 게임·GPU 진단·자동 플레이를 실행하지 않는다. 화면 없는 실행도 게임과 GPU 작업을 수행하므로 이 제한에 포함한다.
 
-```bash
-git clone https://github.com/jaydendavisnc/inkwave.git
-cd inkwave
-npm install      # Electron과 화면 없이 실행하는 도구를 설치한다.
-npm start        # 데스크톱 앱(Electron)을 실행한다.
-npm run serve    # 웹 버전은 http://localhost:8490에서 실행한다.
-npm run package  # macOS 앱을 dist/에 빌드한다(arm64 + x64).
-```
+데스크톱 기본 실행·패키징은 **Tauri 2**를 사용한다. 공통 게임의 기존 JavaScript와 자산을 재사용하며, 새 호스트 연결·준비 도구는 TypeScript, 네이티브 진입점은 Rust로 작성했다. 이 PC의 Rust 1.89 MSVC·Visual Studio C++ 구성요소·Windows SDK·WebView2 설치를 확인했으며 도구 체인을 갱신하지 않았다.
 
-원하는 음악을 `songs/`에 넣을 수도 있다. 자세한 방법은 [`songs/README.md`](songs/README.md)를 참고한다. 별도의 음악을 넣지 않으면 코드로 생성한 사운드트랙이 재생된다.
+`npm start`는 웹 자산을 준비한 뒤 **Tauri 시작 화면**을 연다. 별도 개발 서버를 띄우지 않으며 시작 화면은 게임·three.js를 불러오지 않는다. 사용자가 `게임 시작`을 눌렀을 때만 기존 게임을 낮은 화질로 불러온다. 낮은 화질은 성능 문제가 해결됐다는 보장이 아니다. 기존 Electron의 설정·프로필은 자동 이전하지 않으며 원본은 보존한다. 전환의 남은 작업과 성능·게임패드·한국어 기본값·영어 옵션은 [34번 수정 계획](docs_working/데스크톱-성능-게임패드-언어-정적검토-34.md)을 따른다.
 
-편리한 URL 매개변수도 제공한다. `?map=halyard&time=dusk`는 스테이지와 시간대를 지정하고, `&autostart=180`은 메뉴를 건너뛰어 180초 경기를 시작한다. `&autopilot`을 추가하면 봇이 플레이어 캐릭터를 대신 조종한다.
+아래 표는 현재 `package.json`의 명령을 설명하는 참고 자료이며, 지금 앱을 실행할 순서가 아니다. `npm start`와 `npm run package`의 실제 앱 실행·설치 패키지 검증은 아직 수행하지 않았다.
 
-```bash
-npm install      # 화면 없이 실행하는 도구를 최초 한 번 설치한다.
-npm run check    # 모든 모듈의 구문을 검사한다.
-npm run smoke    # 화면 없는 Chrome에서 시작 후 8초간 자동 조종한다. 콘솔 오류가 발생하면 실패한다.
-npm run build    # 게임과 게임에서 사용하는 three.js 확장 모듈만 dist/에 모은다.
-npm run check-maps   # 모든 스테이지 지형과 구역 점령전용 변형의 기본 정합성을 검사한다.
-```
+| 명령 | 현재 역할과 주의점 |
+|---|---|
+| `npm install --ignore-scripts` | 잠금 파일의 의존성을 설치한다. Tauri 도구를 포함하며 기존 베이크 도구용 Electron 의존성도 남아 있다. |
+| `npm start` | Tauri 시작 화면을 연다. Electron을 실행하지 않는다. 현재 앱 실행 보류 대상이다. |
+| `npm run desktop:typecheck` | 새 TypeScript 호스트 연결과 준비 도구를 검사한다. 앱을 기동하지 않는다. 기존 게임 전체의 TypeScript 이전 완료를 뜻하지 않는다. |
+| `npm run desktop:prepare` | 타입 검사 후 `.desktop-dist/`에 웹 자산과 호스트 연결을 생성한다. 기존 `dist/`와 원본 자산은 수정하지 않는다. |
+| `npm run desktop:check` | 웹 자산 준비 후 Rust를 최대 두 작업으로 검사한다. 앱은 기동하지 않지만 컴파일·다운로드 비용은 발생할 수 있다. |
+| `npm run serve` | 기존 웹 개발 서버를 시작한다. 웹 게임 접속도 현재 실행 보류 대상이다. |
+| `npm run package` | Tauri 릴리스와 Windows NSIS 설치 파일을 만든다. 출력은 `src-tauri/target/release/` 아래이며 현재 패키징 검증은 미실행이다. |
+| `npm run check` | 기존 JavaScript 구문 검사이다. TypeScript 타입 검사나 게임 동작 검증을 대신하지 않는다. |
+| `npm run check-maps` | 기존 맵 정합성 검사이다. 실제 이동·완주·성능 검증을 대신하지 않는다. |
+| `npm run build` | 기존 웹 파일을 `dist/`에 수집한다. Tauri 앱 생성이나 TypeScript 컴파일을 수행하지 않는다. |
+| `npm run smoke`, `npm run botlab`, `npm run net-test` | 게임을 기동하는 자동 검사이다. 현재 실행 보류 대상이다. |
 
-봇 경기는 조정 작업을 위해 화면과 소리 없이 실행할 수 있다. `MAP=halyard MODE=turf SECS=180 npm run botlab` 명령을 사용한다. 자세한 내용은 [`tools/botlab/README.md`](tools/botlab/README.md)를 참고한다.
-중계 서버가 실행 중일 때 `npm run net-test`를 실행하면 화면 없는 클라이언트끼리 실제 경기를 진행하고 각 화면에서 그린 내용을 보고한다. 자세한 내용은 [`docs/NET.md`](docs/NET.md#how-the-netcode-works-srcnetnetmatchjs)를 참고한다.
+수정 후 검사도 먼저 스크립트 내용을 확인하고 앱을 기동하지 않는 검사부터 수행한다. 빌드 성공과 실제 성능·패드 조작 검증은 별도로 판정한다. Tauri로 바꿨다는 이유만으로 실행을 재개하지 않는다.
+
+음원 구성은 [`songs/README.md`](songs/README.md)를 참고한다. Tauri 전환 시에도 로컬 음원의 오프라인 로딩·탐색·반복 재생을 검증한다. 기존 자동 시작·자동 조종 URL 옵션은 실행 제한을 우회하는 방법으로 사용하지 않는다.
 
 <a id="how-it-works"></a>
 
@@ -130,6 +130,8 @@ npm run check-maps   # 모든 스테이지 지형과 구역 점령전용 변형�
 웹 우선 개발과 향후 안드로이드·아이폰 지원 방침은 [클라이언트 전환 계획](docs_working/클라이언트-멀티플랫폼-전환계획-31.md)과 [클라이언트 구현 설계](docs_working/클라이언트-멀티플랫폼-구현설계-32.md)에 정리되어 있다. 게임패드가 없을 때의 가상 키와 Xbox 360 기준 조작, 스테이지 1 이후 검토 및 별도 요청 후 안드로이드 빌드 조건을 다룬다. 새 정책은 설계 단계이며 구현·실기기 검증은 남아 있다.
 
 실제 구현 순서와 태스크별 구현 방법·완료 조건·검증 방법은 [클라이언트·캠페인 상세 구현 계획](docs_working/클라이언트-캠페인-상세구현계획-33.md)을 따른다. 여러 태스크를 함께 요청하더라도 태스크 하나를 완료할 때마다 해당 항목을 즉시 체크한다.
+
+데스크톱 앱의 긴 로딩·렉·게임패드 문제에 대한 코드 근거와 한국어 기본값·영어 옵션 구현 계획은 [데스크톱 성능·게임패드·언어 정적 검토](docs_working/데스크톱-성능-게임패드-언어-정적검토-34.md)에 정리되어 있다. 기본 실행·패키징은 **Tauri 2**로 연결했고 필요한 Rust·Cargo를 허용한다. 기존 저장 이전·실환경 검증과 성능·패드·언어 개선은 남아 있다. 수정과 실행 조건 확인 전에는 앱·게임·GPU 진단을 실행하지 않는다.
 
 기존 리소스를 활용하는 스테이지 진행형 싱글 플레이 구상은 [PvE 캠페인 기획 — 되찾는 물결](docs_working/PvP-GDD/싱글플레이-PvE-캠페인-기획-2.md)에 정리되어 있다. 이 문서의 목차에서 21개 스테이지와 게임플레이·NPC·아이템·성장·파밍 상세 문서를 볼 수 있다. 그림의 표현 방향과 생성된 러프는 [일러스트 시각설계](docs_working/PvP-GDD/campaign/일러스트-시각설계-29.md)에 정리되어 있다.
 

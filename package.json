@@ -3,15 +3,15 @@
   "productName": "INKWAVE",
   "version": "1.1.0",
   "description": "An original Splatoon-style 4v4 turf-war shooter for the browser, built on three.js.",
-  "main": "electron/main.cjs",
   "scripts": {
-    "start": "electron .",
+    "start": "tauri dev --no-watch --no-dev-server",
+    "desktop:typecheck": "tsc -p tsconfig.desktop.json && tsc -p tsconfig.desktop-tools.json --noEmit",
+    "desktop:prepare": "npm run desktop:typecheck && tsc -p tsconfig.desktop-tools.json && node .desktop-tools/prepare.js",
+    "desktop:check": "npm run desktop:prepare && cd src-tauri && cargo check --locked --features custom-protocol --jobs 2",
     "serve": "node tools/py.mjs tools/serve.py",
     "check": "node tools/check-syntax.mjs",
-    "package": "electron-packager . INKWAVE --platform=darwin --arch=arm64,x64 --icon=build/icon.icns --app-bundle-id=local.inkwave.game --app-category-type=public.app-category.action-games --extend-info=build/extend-info.plist --darwin-dark-mode-support --asar.unpackDir=songs --out=dist --overwrite --ignore='^/(dist|build|node_modules|docs|tools|server|\\.botlab)(/|$)' --ignore='\\.DS_Store$'",
+    "package": "tauri build",
     "music": "node build/music-manifest.mjs",
-    "prestart": "npm run -s music",
-    "prepackage": "npm run -s check && npm run -s music",
     "bake": "electron build/bake-ao.cjs",
     "check-maps": "node build/check-maps.mjs",
     "icon": "sh build/make-icon.sh",
@@ -48,8 +48,13 @@
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
+    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/cli": "2.11.5",
+    "@types/node": "22.20.5",
     "electron": "^44.4.5",
+    "esbuild": "0.25.12",
     "puppeteer-core": "^25.12.0",
+    "typescript": "5.9.3",
     "wrangler": "^4.141.0"
   }
 }
