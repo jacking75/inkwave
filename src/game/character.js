@@ -1002,7 +1002,7 @@ export class Character {
   _updateLod(dt) {
     const L = this.lod;
     // fallback when the host did not warm this kid before the match (see warmAll): at first sight, not at first fade
-    if (!this._warmed && this.inWorld && this._rendered) this.warmAll();
+    if (!this._warmed && this.inWorld && this._rendered && window.inkwaveNative?.performance?.warmCharacterVariants !== false) this.warmAll();
     // the builders' detail also depends on the quality setting: a settings change rebuilds the tier sets
     const q = G.settings?.quality || 'high';
     if (q !== L.q && L.to < 0) {
@@ -1033,6 +1033,7 @@ export class Character {
   _startFade(t) {
     const L = this.lod;
     if (L.to >= 0 || t === L.tier) return;
+    if (window.inkwaveNative?.performance?.lodFade(G.settings?.quality || 'high') === false) { this._setTier(t); return; }
     const A = this.lodSets[L.tier], B = this._tierSet(t);
     for (const m of A.list) { m.material = this._ditherMat(m.userData.iwMat, 0); m.castShadow = false; }
     for (const m of B.list) { m.material = this._ditherMat(m.userData.iwMat, 1); m.castShadow = m.userData.iwShadow; m.visible = true; }
@@ -1063,9 +1064,15 @@ export class Character {
       const q = G.settings?.quality || 'high';
       // build every tier + the dither twins (warm-only meshes on this skeleton; the materials stay with the kid)
       const grp = new THREE.Group(); grp.name = 'warm';
-      for (let t = 0; t < 3; t++) for (const m of this._tierSet(t).list) for (let side = 0; side < 2; side++) {
-        const w = new THREE.SkinnedMesh(m.geometry, this._ditherMat(m.userData.iwMat, side));
-        w.bind(this.skeleton, IDENT); w.castShadow = m.userData.iwShadow; w.receiveShadow = true; w.frustumCulled = false; grp.add(w);
+      const tiers = window.inkwaveNative?.performance?.characterTiers(q) || [0, 1, 2];
+      const fade = window.inkwaveNative?.performance?.lodFade(q) ?? true;
+      for (const t of tiers) {
+        const set = this._tierSet(t);
+        if (!fade) continue;
+        for (const m of set.list) for (let side = 0; side < 2; side++) {
+          const w = new THREE.SkinnedMesh(m.geometry, this._ditherMat(m.userData.iwMat, side));
+          w.bind(this.skeleton, IDENT); w.castShadow = m.userData.iwShadow; w.receiveShadow = true; w.frustumCulled = false; grp.add(w);
+        }
       }
       this.kid.add(grp);
       // far weapon decimation (CPU, cached per weapon geometry) — built now rather than at the first far switch

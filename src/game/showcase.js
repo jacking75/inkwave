@@ -1254,7 +1254,7 @@ export class Showcase {
   update(dt) {
     dt = Math.min(dt || 0, 0.1);
     this._ffFrame = this.fullFrame;   // what main.js saw at the top of this frame (it didn't draw the world if true)
-    if (!this._warmState && G.env) this._warmup();
+    if (!this._warmState && G.env && (window.inkwaveNative?.performance?.shouldWarmShowcase(this.mode, this._pq.length) ?? true)) this._warmup();
     this._updateSet(dt);
     let mode = OVERLAY.has(this.mode) ? this.mode : null;
     if (!mode && this._out > 0) {

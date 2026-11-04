@@ -29,6 +29,13 @@ await build({
   outdir: path.join(output, 'desktop'),
   bundle: true, platform: 'browser', format: 'esm', target: 'es2022',
 });
+// 분할 모듈을 같은 깊이에 두어 기존 ../../assets 상대 URL 계약을 유지한다.
+await build({
+  absWorkingDir: root, entryPoints: ['src/main.js'],
+  outdir: path.join(output, 'src/bundle'), entryNames: 'main', chunkNames: '[name]-[hash]',
+  bundle: true, splitting: true, platform: 'browser', format: 'esm', target: 'es2022',
+  external: ['three', 'three/*'],
+});
 // 기존 manifest가 없을 때만 출력 폴더에서 만든다. ffmpeg나 게임을 실행하지 않는다.
 const manifestPath = path.join(output, 'songs/manifest.json');
 const manifest = await lstat(manifestPath).catch((error: NodeJS.ErrnoException) => {

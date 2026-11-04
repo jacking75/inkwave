@@ -77,6 +77,8 @@ class Game {
     // are indistinguishable — which is exactly how the touch quality tier below silently failed to apply.
     let storedRaw = null;
     try { storedRaw = JSON.parse(localStorage.getItem('inkwave.settings')); } catch { /* private mode */ }
+    // 세션 정책의 구현은 TypeScript 호스트가 소유한다. 기존 웹 기본값은 유지한다.
+    const desktopPerformance = window.inkwaveNative?.performance;
     // desktop app: the window's fullscreen state is owned by the native shell; mirror it into settings for the menu
     if (window.inkwaveNative) {
       this.settings.fullscreen = window.inkwaveNative.isFullScreen();
@@ -114,6 +116,7 @@ class Game {
     // pinned from the URL without clearing site data on a phone you cannot reach with a console.
     const qOverride = params.get('quality');
     if (qOverride && QUALITY[qOverride]) this.settings.quality = qOverride;
+    desktopPerformance?.configureSettings(this.settings, storedRaw);
     this.profile = loadJSON('inkwave.profile', DEFAULT_PROFILE);
     if (WEAPON_SUCCESSOR[this.profile.weapon]) this.profile.weapon = WEAPON_SUCCESSOR[this.profile.weapon];   // retired weapons
     const app = document.getElementById('app');
@@ -235,7 +238,7 @@ class Game {
     this.murals = await createMuralTexture();
     try {
       const { createTextureLibrary } = await import('./world/texlib.js');
-      this.texlib = await createTextureLibrary(G.renderer, { size: (q.paintAtlas >= 4096 ? 512 : 256) * this.memK });
+      this.texlib = desktopPerformance?.proceduralTextures === false ? null : await createTextureLibrary(G.renderer, { size: (q.paintAtlas >= 4096 ? 512 : 256) * this.memK });
     } catch (e) { console.error('[inkwave] texture library failed — procedural fallback', e); this.texlib = null; }
     await this._buildWorld(map);
     this.zoneMarks = new ZoneMarks(scene);   // Zone Control ground markings: build / clear themselves on 'match:state'
@@ -274,10 +277,10 @@ class Game {
 
     this._setPalette(this._pickPalette());
     this._bindEvents();
-    this._startAttract();
+    if (desktopPerformance?.menuAttract !== false) this._startAttract();
     // warm up: compile every shader now so the first shot/splat never hitches
     await progress(0.85, 'Warming up…');
-    this._warmup();
+    if (desktopPerformance?.warmupAll !== false) this._warmup();
     // Shader compile. three.js's compileAsync calls compile() SYNCHRONOUSLY as its first statement — the extension
     // only lets the driver do the work in the background while the main thread carries on. Without
     // KHR_parallel_shader_compile (true of most Android phones, including the Adreno 730 this was debugged on) that
@@ -287,7 +290,7 @@ class Game {
     // attract match — a few hitches instead of a dead context. ?lazycompile forces this path on a desktop that has
     // the extension, so it can still be exercised without a phone.
     const parallelCompile = !!G.renderer.getContext().getExtension('KHR_parallel_shader_compile');
-    if (parallelCompile && !params.has('lazycompile')) {
+    if (parallelCompile && !params.has('lazycompile') && desktopPerformance?.warmupAll !== false) {
       try { await G.renderer.compileAsync(scene, camera); } catch { G.renderer.compile(scene, camera); }
     } else {
       console.info('[inkwave] compiling shaders lazily (no KHR_parallel_shader_compile)');
@@ -312,7 +315,7 @@ class Game {
     G.mode = 'menu';
     this.menus?.show(params.has('skipTitle') ? 'main' : 'title');
     // the online hub / lobby set loads in the background once the menus are idle (no arena flash on the first visit)
-    if (!params.has('autostart')) setTimeout(() => { if (G.mode === 'menu') this.showcase.preloadLobby?.(); }, 2500);
+    if (!params.has('autostart') && desktopPerformance?.preloadLobby !== false) setTimeout(() => { if (G.mode === 'menu') this.showcase.preloadLobby?.(); }, 2500);
     this._applyAudioVolumes();
     requestAnimationFrame((t) => this._loop(t));
     if (params.has('autostart')) {
@@ -746,6 +749,10 @@ class Game {
     if (this.match) this.match.dispose();
     this.rig.dioFlip = false;
     G.projectiles.clear(); G.subs.clear(); G.specials.clear(); G.fx.clear?.(); G.paint.clear(); this._clearDeathMarks();
+    if (window.inkwaveNative?.performance?.menuAttract === false) {
+      this.match = G.match = null;
+      return;
+    }
     // (a humans-only stage — after an online match there — idles with nobody on it; ?devstage stands idle kids there
     // for the render audits)
     const m = (this.match = G.match = new Match({ attract: true, duration: 99999, difficulty: 'normal', CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
@@ -842,8 +849,11 @@ class Game {
       playerName: this.profile.name || 'Player', CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
       autopilot: params.has('autopilot'), style: this.profile.style || null, noBots: mapNoBots(map.id),   // (devstage: a solo walk)
     }));
+    window.inkwaveNative?.performance?.mark('actors:setup:start');
     m.setup();
+    window.inkwaveNative?.performance?.mark('actors:setup:end');
     await this._warmCharacters(m);
+    window.inkwaveNative?.performance?.mark('actors:warm:end');
     this.minimap.setViewerTeam(0);
     G.mode = 'match';
     this.hud?.setVisible(false);
@@ -950,6 +960,11 @@ class Game {
   // weapons) and build every kid's tier meshes while the screen is still faded out, so none of it lands mid-match.
   // Programs are shared, so after the first kid of each weapon the rest are a few ms each.
   async _warmCharacters(m) {
+    const policy = window.inkwaveNative?.performance;
+    if (!m.opts.roster && !m.boss && policy?.warmCharacterVariants === false) {
+      await policy.warmVisible(m.actors.map(a => a.character.root), new THREE.Group(), G.renderer, G.camera, G.scene, G.post.composer.readBuffer);
+      return;
+    }
     const jobs = m.actors.map((a) => a.character?.warmAll ? Promise.resolve(a.character.warmAll()).catch((e) => console.warn('[inkwave] warm', e)) : null).filter(Boolean);
     if (m.boss) jobs.push(Promise.resolve(m.boss.model.ready).then(() => Promise.all(m.boss.warm().map((o) => G.renderer.compileAsync(o, G.camera, G.scene)))).catch((e) => console.warn('[inkwave] boss warm', e)));
     if (jobs.length) await Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 8000))]);   // never hang a load
@@ -1190,7 +1205,8 @@ class Game {
   _loop(ts) {
     requestAnimationFrame((t) => this._loop(t));
     this._trackVsync(ts);
-    const cap = this.settings.fpsCap || 0;
+    const requestedCap = this.settings.fpsCap || 0;
+    const cap = window.inkwaveNative?.performance?.frameCap(requestedCap, G.mode === 'menu') ?? requestedCap;
     if (cap && ts !== undefined && this._lastTs !== undefined && ts - this._lastTs < 1000 / cap - 2) return;
     this._lastTs = ts;
     this.timer.update(ts); let dt = Math.max(0, this.timer.getDelta());

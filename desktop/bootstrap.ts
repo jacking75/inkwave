@@ -1,9 +1,11 @@
 import { isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { desktopPerformance } from './performance';
 
 type FullscreenListener = (on: boolean) => void;
 interface NativeBridge {
   platform: string;
+  performance: typeof desktopPerformance;
   isFullScreen(): boolean;
   setFullScreen(on: boolean): void;
   onFullScreenChange(listener: FullscreenListener): () => void;
@@ -42,6 +44,7 @@ async function boot(): Promise<void> {
   }
   window.inkwaveNative = {
     platform: 'tauri',
+    performance: desktopPerformance,
     isFullScreen: () => fullscreen,
     setFullScreen: setFullscreen,
     onFullScreenChange: (listener) => {
@@ -68,7 +71,7 @@ async function boot(): Promise<void> {
     window.removeEventListener('keydown', keydown, true);
   }, { once: true });
   // 게임과 three.js는 호스트 연결 완료 뒤에만 불러온다.
-  const gameUrl = new URL('./src/main.js', window.location.href).href;
+  const gameUrl = new URL('./src/bundle/main.js', window.location.href).href;
   await import(gameUrl);
 }
 

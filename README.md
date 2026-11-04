@@ -87,27 +87,29 @@ npm run relay    # 접속 주소는 ws://<이 컴퓨터의 IP 주소>:8787이다
 
 ## 로컬 실행
 
-**현재는 성능 문제 수정 전 실행을 보류한다.** 데스크톱 앱에서 긴 로딩과 심한 렉, PC 전체 멈춤이 보고됐다. 수정과 실행 조건 확인 전에는 앱·웹 게임·GPU 진단·자동 플레이를 실행하지 않는다. 화면 없는 실행도 게임과 GPU 작업을 수행하므로 이 제한에 포함한다.
+사용자의 실행·성능 측정 요청에 따라 PC 브라우저에서 기존 게임과 데스크톱 성능 정책을 비교 검증했다. 제한된 시작 정책은 메뉴 자동 전투·로비 선행 로딩·전체 효과 사전 준비를 생략하고, 바닥 재질 세부 표현을 단순화한다. 메뉴는 최대 30fps, 전투는 기본 60fps로 제한하며 직접 선택하지 않은 그림자는 끈다. 첫 전투와 새 효과의 셰이더 준비 지연은 남아 있다. 상세 측정과 제약은 [34번 수정 계획](docs_working/데스크톱-성능-게임패드-언어-정적검토-34.md)의 F07에 기록한다.
 
 데스크톱 기본 실행·패키징은 **Tauri 2**를 사용한다. 공통 게임의 기존 JavaScript와 자산을 재사용하며, 새 호스트 연결·준비 도구는 TypeScript, 네이티브 진입점은 Rust로 작성했다. 이 PC의 Rust 1.89 MSVC·Visual Studio C++ 구성요소·Windows SDK·WebView2 설치를 확인했으며 도구 체인을 갱신하지 않았다.
 
-`npm start`는 웹 자산을 준비한 뒤 **Tauri 시작 화면**을 연다. 별도 개발 서버를 띄우지 않으며 시작 화면은 게임·three.js를 불러오지 않는다. 사용자가 `게임 시작`을 눌렀을 때만 기존 게임을 낮은 화질로 불러온다. 낮은 화질은 성능 문제가 해결됐다는 보장이 아니다. 기존 Electron의 설정·프로필은 자동 이전하지 않으며 원본은 보존한다. 전환의 남은 작업과 성능·게임패드·한국어 기본값·영어 옵션은 [34번 수정 계획](docs_working/데스크톱-성능-게임패드-언어-정적검토-34.md)을 따른다.
+`npm start`는 웹 자산을 준비한 뒤 **Tauri 시작 화면**을 연다. 별도 개발 서버를 띄우지 않으며 시작 화면은 게임·three.js를 불러오지 않는다. 사용자가 `게임 시작`을 눌렀을 때만 낮은 화질의 분할 번들을 불러온다. 첫 전투에는 현재 보이는 캐릭터 메시를 먼저 준비하고, 장비·라커 화면은 열 때 준비한다. 낮은 화질에서는 멀리 있는 캐릭터의 상세도 전환을 단순화한다. 기존 Electron의 설정·프로필은 자동 이전하지 않으며 원본은 보존한다.
 
-아래 표는 현재 `package.json`의 명령을 설명하는 참고 자료이며, 지금 앱을 실행할 순서가 아니다. `npm start`와 `npm run package`의 실제 앱 실행·설치 패키지 검증은 아직 수행하지 않았다.
+Windows에는 **Visual Studio IDE 전체가 필요하지 않다.** Tauri의 공식 MSVC 경로에 필요한 C++ Build Tools와 Windows SDK, WebView2가 필요하다. 이 PC에는 Build Tools 2022의 MSVC x64/x86 및 Windows 11 SDK 구성요소를 설치했고 `npm start`의 빌드와 Tauri 실제 전투 실행을 확인했다. 자세한 요구 사항은 [Tauri 공식 문서](https://tauri.app/start/prerequisites/)를 따른다. 첫 Tauri 측정은 전투 진입 18.0초, 같은 앱의 캐시 적용 재진입은 8.7초였다. 다른 머신과 설치 패키지의 결과를 보장하는 수치는 아니다.
+
+아래 표는 현재 `package.json`의 명령이다. Tauri 개발 실행은 검증했고 설치 패키지 검증은 미실행이다.
 
 | 명령 | 현재 역할과 주의점 |
 |---|---|
 | `npm install --ignore-scripts` | 잠금 파일의 의존성을 설치한다. Tauri 도구를 포함하며 기존 베이크 도구용 Electron 의존성도 남아 있다. |
-| `npm start` | Tauri 시작 화면을 연다. Electron을 실행하지 않는다. 현재 앱 실행 보류 대상이다. |
+| `npm start` | Tauri 시작 화면을 연다. Electron을 실행하지 않는다. Windows에는 Visual Studio C++ 빌드 도구·Windows SDK가 필요하다. |
 | `npm run desktop:typecheck` | 새 TypeScript 호스트 연결과 준비 도구를 검사한다. 앱을 기동하지 않는다. 기존 게임 전체의 TypeScript 이전 완료를 뜻하지 않는다. |
 | `npm run desktop:prepare` | 타입 검사 후 `.desktop-dist/`에 웹 자산과 호스트 연결을 생성한다. 기존 `dist/`와 원본 자산은 수정하지 않는다. |
 | `npm run desktop:check` | 웹 자산 준비 후 Rust를 최대 두 작업으로 검사한다. 앱은 기동하지 않지만 컴파일·다운로드 비용은 발생할 수 있다. |
-| `npm run serve` | 기존 웹 개발 서버를 시작한다. 웹 게임 접속도 현재 실행 보류 대상이다. |
+| `npm run serve` | 기존 웹 개발 서버를 시작한다. 일반 웹은 기존 표현·설정을 사용한다. |
 | `npm run package` | Tauri 릴리스와 Windows NSIS 설치 파일을 만든다. 출력은 `src-tauri/target/release/` 아래이며 현재 패키징 검증은 미실행이다. |
 | `npm run check` | 기존 JavaScript 구문 검사이다. TypeScript 타입 검사나 게임 동작 검증을 대신하지 않는다. |
 | `npm run check-maps` | 기존 맵 정합성 검사이다. 실제 이동·완주·성능 검증을 대신하지 않는다. |
 | `npm run build` | 기존 웹 파일을 `dist/`에 수집한다. Tauri 앱 생성이나 TypeScript 컴파일을 수행하지 않는다. |
-| `npm run smoke`, `npm run botlab`, `npm run net-test` | 게임을 기동하는 자동 검사이다. 현재 실행 보류 대상이다. |
+| `npm run smoke`, `npm run botlab`, `npm run net-test` | 게임을 기동하는 자동 검사이다. 이번 성능 검사에서는 실행하지 않았다. |
 
 수정 후 검사도 먼저 스크립트 내용을 확인하고 앱을 기동하지 않는 검사부터 수행한다. 빌드 성공과 실제 성능·패드 조작 검증은 별도로 판정한다. Tauri로 바꿨다는 이유만으로 실행을 재개하지 않는다.
 
