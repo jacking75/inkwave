@@ -9,11 +9,21 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
-import { QUALITY, rendererQuality } from '../config.js';
+import { DEFAULT_SETTINGS, rendererQuality } from '../config.js';
 import { G } from './ctx.js';
 import { shouldUseTouch } from './touch.js';
 
-const BLOOM = [0.28, 0.45, 2.4];   // default bloom: strength, radius, HDR threshold
+// 렌더러가 읽는 설정 필드이다(전체 설정은 config.js의 DEFAULT_SETTINGS).
+export type RendererSettings = typeof DEFAULT_SETTINGS & { shadows?: boolean; bloom?: boolean };
+type Quality = ReturnType<typeof rendererQuality>;
+// 환경 테마가 권하는 색 보정(environment.js THEMES[*].grade)이다.
+interface ThemeGrade {
+  uSat?: number; uVib?: number; uContrast?: number; uLift?: number; uVignette?: number; uExposure?: number;
+  uShadowTint?: [number, number, number]; uHighTint?: [number, number, number]; bloom?: [number, number, number];
+}
+type GradeKey = 'uSat' | 'uVib' | 'uContrast' | 'uLift' | 'uVignette' | 'uExposure';
+
+const BLOOM: [number, number, number] = [0.28, 0.45, 2.4];   // default bloom: strength, radius, HDR threshold
 
 const GradeShader = {
   uniforms: {
@@ -74,14 +84,35 @@ const GradeShader = {
 				shadow = s9 * ( 1.0 / 9.0 );`);
 })();
 
-function isAppleGPU(gl) {
+function isAppleGPU(gl: WebGLRenderingContext | WebGL2RenderingContext): boolean {
   const ext = gl.getExtension('WEBGL_debug_renderer_info');
   const name = String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
   return /Apple/i.test(name) && !/Intel|AMD|Radeon|NVIDIA/i.test(name);
 }
 
 export class Renderer {
-  constructor(container, settings) {
+  declare renderer: THREE.WebGLRenderer;
+  declare appleGPU: boolean;
+  declare container: HTMLElement;
+  declare scene: THREE.Scene | null;
+  declare camera: THREE.PerspectiveCamera | null;
+  declare settings: RendererSettings;
+  declare touch: boolean;
+  declare q: Quality;
+  declare _w: number;
+  declare _h: number;
+  declare composer: EffectComposer;
+  declare dynScale: number;
+  declare noMSAA: boolean;
+  declare samples: number;
+  declare renderPass: RenderPass;
+  declare gtao: GTAOPass | null;
+  declare bloom: UnrealBloomPass;
+  declare grade: ShaderPass;
+  declare _gradeSrc: ThemeGrade | null;
+  declare extraPass: ShaderPass | undefined;
+
+  constructor(container: HTMLElement, settings: RendererSettings) {
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', stencil: false }));
     // Shader status checks make every compile synchronous (the main thread waits on the GPU process for the link
     // result): a mid-game compile then stalls input, netcode and all. Players run without them; ?shadercheck (the
@@ -105,13 +136,14 @@ export class Renderer {
     this._w = 0; this._h = 0;
   }
 
-  setScene(scene, camera) {
+  setScene(scene: THREE.Scene, camera: THREE.PerspectiveCamera): void {
     this.scene = scene; this.camera = camera;
     this._buildComposer();
   }
 
-  _buildComposer() {
-    const r = this.renderer, q = this.q;
+  // setScene() 뒤에만 불린다(applySettings·setExtraPass도 장면이 있을 때만 다시 만든다).
+  _buildComposer(): void {
+    const r = this.renderer, q = this.q, scene = this.scene!, camera = this.camera!;
     if (this.composer) { this.composer.renderTarget1.dispose(); this.composer.renderTarget2.dispose(); }
     this.dynScale = this.dynScale || 1;
     const pr = Math.min(window.devicePixelRatio || 1, q.pixelRatio) * this.dynScale;
@@ -128,18 +160,18 @@ export class Renderer {
     const comp = (this.composer = new EffectComposer(r, rt));
     comp.setPixelRatio(pr);
     comp.setSize(w, h);
-    this.renderPass = new RenderPass(this.scene, this.camera);
+    this.renderPass = new RenderPass(scene, camera);
     comp.addPass(this.renderPass);
     this.gtao = null;
     if (q.ao) {
-      const ao = (this.gtao = new GTAOPass(this.scene, this.camera, w, h));
+      const ao = (this.gtao = new GTAOPass(scene, camera, w, h));
       ao.output = GTAOPass.OUTPUT.Default;
       ao.blendIntensity = 0.8;   // never crush to black: fully enclosed spots (tunnel mouths, under the overpass) keep 20 % of their light
       // contact AO: a metre-scale radius so crates, planters and pillar feet sit on the deck (it multiplies the lit
       // frame, so it stays short-range — no dirty halos on sunlit walls)
       ao.updateGtaoMaterial({ radius: 1.1, distanceExponent: 1.6, thickness: 1.0, scale: 1.5, samples: 12, distanceFallOff: 1.0 });
       ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 16 });
-      if (this.appleGPU) { const set = ao.setSize.bind(ao); ao.setSize = (sw, sh) => set(Math.ceil(sw / 2), Math.ceil(sh / 2)); }
+      if (this.appleGPU) { const set = ao.setSize.bind(ao); ao.setSize = (sw: number, sh: number) => set(Math.ceil(sw / 2), Math.ceil(sh / 2)); }
       comp.addPass(ao);
     }
     this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), ...BLOOM);
@@ -159,12 +191,12 @@ export class Renderer {
   }
 
   // Install (or replace) the screen-FX post pass; kept across quality/setting rebuilds.
-  setExtraPass(pass) {
+  setExtraPass(pass: ShaderPass): void {
     this.extraPass = pass;
     if (this.scene) this._buildComposer();
   }
 
-  applySettings(settings) {
+  applySettings(settings: RendererSettings): void {
     const prevQ = this.q;
     this.settings = settings;
     this.touch = shouldUseTouch(settings);
@@ -173,7 +205,7 @@ export class Renderer {
     if (prevQ !== this.q || shadowChanged) {
       if (prevQ !== this.q) this.dynScale = 1;
       this._buildComposer();
-      this.scene?.traverse((o) => { if (o.material) { const m = Array.isArray(o.material) ? o.material : [o.material]; m.forEach((mm) => (mm.needsUpdate = true)); } });
+      this.scene?.traverse((o) => { const mat = (o as THREE.Mesh).material; if (mat) { const m = Array.isArray(mat) ? mat : [mat]; m.forEach((mm) => (mm.needsUpdate = true)); } });
     }
     if (this.bloom) this.bloom.enabled = !!(this.q.bloom && settings.bloom);
   }
@@ -185,14 +217,14 @@ export class Renderer {
   // vertex-bound, not fill-bound, so quadrupling the pixel count (0.5 -> 1.0) measured only 42 -> 39 fps, while the
   // halved density is immediately visible as blur on a 3x screen. Reducing resolution bought ~3 frames and cost the
   // whole image.
-  dynFloor() {
+  dynFloor(): number {
     if (this.touch) return 1;
     const base = Math.min(window.devicePixelRatio || 1, this.q.pixelRatio);
     return Math.max(0.5, Math.min(0.75, 0.75 / base));
   }
 
   // Dynamic resolution (never on ultra): scale the render density between dynFloor() and 1 of the quality preset.
-  setDynamicScale(s) {
+  setDynamicScale(s: number): void {
     s = Math.max(this.dynFloor(), Math.min(1, s));
     if (Math.abs(s - this.dynScale) < 0.01) return;
     this.dynScale = s;
@@ -202,7 +234,7 @@ export class Renderer {
     this.composer.setSize(this._w, this._h);
   }
 
-  resize() {
+  resize(): void {
     const w = window.innerWidth, h = window.innerHeight;
     if (w === this._w && h === this._h) return;
     this._w = w; this._h = h;
@@ -213,14 +245,14 @@ export class Renderer {
     if (this.camera) { this.camera.aspect = w / h; this.camera.updateProjectionMatrix(); }
   }
 
-  render() {
+  render(): void {
     this.resize();
     // colour grade recommended by the environment theme (day / dusk)
-    const gr = G.env && G.env.grade;
+    const gr: ThemeGrade | null = (G.env && G.env.grade) || null;
     if (gr && gr !== this._gradeSrc && this.grade) {
       this._gradeSrc = gr;
       const u = this.grade.uniforms;
-      for (const k of ['uSat', 'uVib', 'uContrast', 'uLift', 'uVignette', 'uExposure']) u[k].value = gr[k] ?? GradeShader.uniforms[k].value;
+      for (const k of ['uSat', 'uVib', 'uContrast', 'uLift', 'uVignette', 'uExposure'] as GradeKey[]) u[k].value = gr[k] ?? GradeShader.uniforms[k].value;
       u.uShadowTint.value.set(...(gr.uShadowTint || [0.975, 0.99, 1.035]));
       u.uHighTint.value.set(...(gr.uHighTint || [1.025, 1.0, 0.972]));
       // bloom per theme: [strength, radius, threshold] — dusk lets lamps / lit windows bloom, daylight keeps it to the sun

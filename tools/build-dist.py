@@ -1,4 +1,5 @@
 # Assemble dist/: the game files plus only the three.js addons the game imports (and their deps).
+# src/ comes from the compiled dev output (.web-dev/src: npm run compile — .ts transpiled, .js verbatim), never the raw sources.
 import re, os, shutil, glob
 root = 'vendor/three/jsm'
 keep = {'.vercel', 'vercel.json'}
@@ -10,20 +11,23 @@ if os.path.isdir('dist'):
 else:
     os.makedirs('dist')
 need = set()
-for f in glob.glob('src/**/*.js', recursive=True):
-    need |= {m for m in re.findall(r"three/addons/([A-Za-z0-9_./-]+\.js)", open(f).read())}
+SRC = '.web-dev/src'
+if not os.path.isfile(os.path.join(SRC, 'main.js')): raise SystemExit('build-dist: run `npm run compile` first (.web-dev/src missing)')
+for f in glob.glob(SRC + '/**/*.js', recursive=True):
+    need |= {m for m in re.findall(r"three/addons/([A-Za-z0-9_./-]+\.js)", open(f, encoding='utf-8').read())}
 need, seen = list(need), set()
 while need:
     f = need.pop()
     if f in seen: continue
     seen.add(f)
-    for m in re.findall(r"from\s+['\"](\.[^'\"]+)['\"]", open(os.path.join(root, f)).read()):
+    for m in re.findall(r"from\s+['\"](\.[^'\"]+)['\"]", open(os.path.join(root, f), encoding='utf-8').read()):
         need.append(os.path.normpath(os.path.join(os.path.dirname(f), m)))
 for f in seen:
     d = os.path.join('dist/vendor/three/jsm', f); os.makedirs(os.path.dirname(d), exist_ok=True); shutil.copy(os.path.join(root, f), d)
 os.makedirs('dist/vendor/three/build', exist_ok=True)
 for f in ['three.module.js', 'three.core.js']: shutil.copy('vendor/three/build/' + f, 'dist/vendor/three/build/' + f)
-for d in ['src', 'styles', 'assets', 'songs']: shutil.copytree(d, 'dist/' + d)
+shutil.copytree(SRC, 'dist/src')
+for d in ['styles', 'assets', 'songs']: shutil.copytree(d, 'dist/' + d)
 shutil.copy('index.html', 'dist/index.html')
 # Device diagnostics that ship. These two are the only pages under tools/ that are self-contained — styles and script
 # inline, no sibling assets — so copying the file alone is a complete page. That matters because a phone has no console

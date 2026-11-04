@@ -1,0 +1,22 @@
+{
+  // 게임 클라이언트(src/)의 타입 검사이다. 기존 .js는 allowJs로 타입 정보만 제공하고(checkJs 끔) .ts에는 strict를 적용한다.
+  // 출력은 tools/client/dev.ts가 만든다(.ts → esbuild 변환, .js → 그대로 복사).
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "allowJs": true,
+    "checkJs": false,
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": [],
+    "incremental": true,
+    "tsBuildInfoFile": ".web-dev/client.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts", "src/**/*.js"]
+}

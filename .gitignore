@@ -28,3 +28,5 @@ songs/**/*.opus
 songs/**/*.wav
 songs/**/*.flac
 songs/manifest.json
+.web-dev/
+.tools/
