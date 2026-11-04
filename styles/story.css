@@ -1,0 +1,47 @@
+/* 이야기 연출 UI(35번 R012 말풍선·R013 퐁 통신 초상·R019 물결 링). 종이 카드 + 먹선이다.
+   좌표·불투명도는 스크립트가 transform·opacity로만 바꾼다(레이아웃 없음). */
+
+/* ---- 월드 말풍선 */
+.iw-speech { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 7; contain: strict; }
+.iw-bubble {
+  position: absolute; left: 0; top: 0; display: none; max-width: 15em; padding: .42em .75em .5em;
+  font: 400 calc(var(--u, 1vw) * 1.35) / 1.25 'Jua', var(--font-title, sans-serif); color: var(--ink, #15121c);
+  background: var(--paper, #f4efe6); border: 2.5px solid var(--ink, #15121c); border-radius: 1.1em 1.25em 1.05em 1.3em;
+  box-shadow: 3px 4px 0 rgba(21, 18, 28, .35); transform-origin: 30% 100%; will-change: transform, opacity; white-space: pre-line;
+  word-break: keep-all;
+}
+.iw-bubble::after {   /* 꼬리: 화면 중심 쪽(기본은 왼쪽 30% 지점, 오른쪽 말풍선은 70% 지점) */
+  content: ''; position: absolute; left: 30%; bottom: -11px; width: 14px; height: 12px; background: var(--paper, #f4efe6);
+  border: 2.5px solid var(--ink, #15121c); border-top: 0; border-left: 0; transform: translateX(-50%) skewX(-28deg) rotate(38deg);
+  border-radius: 0 0 4px 0;
+}
+.iw-bubble--tail-r { transform-origin: 70% 100%; }
+.iw-bubble--tail-r::after { left: 70%; transform: translateX(-50%) skewX(28deg) rotate(52deg); }
+.iw-bubble[data-speaker="teal"] { background: #e6f6f3; }
+.iw-bubble[data-speaker="mora"] { background: #f3ead6; }
+.iw-bubble[data-speaker="pong"] { font-size: calc(var(--u, 1vw) * 1.2); border-radius: 1.4em; }
+.iw-bubble[data-speaker="teal"]::after { background: #e6f6f3; }
+.iw-bubble[data-speaker="mora"]::after { background: #f3ead6; }
+
+/* ---- 퐁 통신 초상(좌하단). 얼굴 아틀라스(4×2칸)를 CSS 스프라이트로 보여 준다 */
+.iw-comm {
+  position: absolute; left: calc(var(--u, 1vw) * 1.4); bottom: calc(var(--u, 1vw) * 9); z-index: 7; pointer-events: none;
+  width: calc(var(--u, 1vw) * 5.2); height: calc(var(--u, 1vw) * 5.2); border-radius: 50%;
+  background-color: var(--paper, #f4efe6); border: 3px solid var(--ink, #15121c); box-shadow: 3px 4px 0 rgba(21, 18, 28, .35);
+  opacity: 0; transform: translateY(8px) scale(.9); transition: opacity .18s, transform .18s; overflow: hidden;
+}
+.iw-comm.is-on { opacity: 1; transform: none; }
+.iw-comm__face { position: absolute; inset: 8%; background-repeat: no-repeat; background-size: 400% 200%; }
+
+/* ---- 물결 게이지 링(스페셜 게이지 둘레, 3칸) */
+.iw-wave {
+  position: absolute; pointer-events: none; z-index: 6; width: 0; height: 0; transition: opacity .15s;
+}
+.iw-wave svg { position: absolute; overflow: visible; }
+.iw-wave__seg { fill: none; stroke: rgba(21, 18, 28, .55); stroke-width: 5; stroke-linecap: round; transition: stroke .12s; }
+.iw-wave__seg.is-on { stroke: var(--wave-col, #4fd0ff); }
+.iw-wave__fill { fill: none; stroke: rgba(244, 239, 230, .85); stroke-width: 2.2; stroke-linecap: round; }
+.iw-wave__lv { position: absolute; transform: translate(-50%, -50%); font: 400 calc(var(--u, 1vw) * 1.1) / 1 'Jua', sans-serif;
+  color: var(--paper, #f4efe6); text-shadow: 0 2px 0 var(--ink, #15121c); white-space: nowrap; }
+.iw-wave.is-pop .iw-wave__lv { animation: iw-wave-pop .2s ease-out; }
+@keyframes iw-wave-pop { from { transform: translate(-50%, -50%) scale(1.5); } to { transform: translate(-50%, -50%) scale(1); } }

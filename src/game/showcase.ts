@@ -31,6 +31,8 @@ import { WEAPONS } from '../config.js';
 import { resolveLook } from '../style/lookProfile.js';
 import type { Character } from './character.js';
 import type { LobbySet } from './lobbySet.js';
+import { setCast, react, castOf } from './cast/castCharacter.js';
+import type { CastId, ReactKind, EchoSpec } from './cast/cast.js';
 
 // ================================================================================================ types
 // 타입만 둔다(실행 코드 없음). 캐릭터 외형은 키 → 번호(hair·skin·outfit·eyes …)이다.
@@ -1063,6 +1065,7 @@ export class Showcase {
   declare camera: THREE.PerspectiveCamera;
   declare mode: ShowMode | null;
   declare chars: StageChar[];
+  declare castId?: CastId | null;   // 표정 검수(?castcheck): 받침대 캐릭터에 걸 인물 프로필(35번 R011)
   declare color: THREE.Color;
   declare won: boolean;
   declare t: number; declare fadeIn: number; declare _out: number; declare _outDur: number; declare _lastMode: ShowMode | null;
@@ -1440,9 +1443,20 @@ export class Showcase {
   }
 
   // ---------------------------------------------------------------------------------------------- update
+  // 표정 검수(?castcheck): 받침대 캐릭터에 인물 프로필을 걸고(외형 교체로 새 캐릭터가 서도 유지) 사건 반응을 재생한다.
+  // 반환: 그 반응의 말풍선 문장(없으면 null)
+  castCheck(id: CastId | null, kind?: ReactKind | null, echo?: EchoSpec | null): string | null {
+    this.castId = id;
+    const c = this.chars[0];
+    if (!c) return null;
+    if (castOf(c)?.id !== id || echo) setCast(c, id, echo ?? null);
+    return kind && id ? react(c, kind, this.t) : null;
+  }
+
   update(dt: number) {
     dt = Math.min(dt || 0, 0.1);
-    this._ffFrame = this.fullFrame;   // what main.js saw at the top of this frame (it didn't draw the world if true)
+    this._ffFrame = this.fullFrame;
+    if (this.castId && PEDESTAL.has(this.mode) && this.chars[0] && castOf(this.chars[0])?.id !== this.castId) setCast(this.chars[0], this.castId);   // what main.js saw at the top of this frame (it didn't draw the world if true)
     if (!this._warmState && G.env && ((window.inkwaveNative as NativeBridge | undefined)?.performance?.shouldWarmShowcase(this.mode, this._pq.length) ?? true)) this._warmup();
     this._updateSet(dt);
     let mode = OVERLAY.has(this.mode) ? this.mode : null;

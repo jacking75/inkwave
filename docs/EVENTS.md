@@ -18,7 +18,7 @@ screen-FX modules should subscribe to these instead of editing gameplay code.
 | `lowink` | `{ actor, need? }` | weapons |
 | `match:state` | `{ state, match }` ('intro','playing','finish','judge','results') | match.js |
 | `match:oneminute` / `match:count` | `{}` / `{ n }` | match.js |
-| `actor:<name>` | `{ actor, surface, ...data }` — re-emitted from `character.onEvent(name, data)`; surface 0 dry · 1 own ink · 2 enemy ink | actor.js wiring |
+| `actor:<name>` | `{ actor, surface, ...data }` — re-emitted from `character.onEvent(name, data)`; surface 0 dry · 1 own ink · 2 enemy ink | actor.ts wiring |
 
 ## To add
 | event | payload |
@@ -83,3 +83,11 @@ longer emitted.
 | event | payload | where |
 |---|---|---|
 | `fx:word` | `{ text, pos, kind, color? }` — 의성어 월드 라벨. kind: kill · eliteKill · stagger · perfect · surge · bomb · hurt · cue | src/style/sfxWords.ts가 받는다. 로컬 플레이어의 `hit`(처치)·`damage`(피격)·근처 `bomb:explode`를 여기서 바꿔 내고, 캠페인 액션 모듈이 직접 낸다 |
+| `action:perfectDive` | `{ actor, attacker, source }` — 퍼펙트 잠수 성공(그 공격은 무효) | src/campaign/action/combat.ts |
+| `action:surge` | `{ actor, dir, pos }` — 잉크 서지 시작 | src/campaign/action/combat.ts |
+| `action:wave` | `{ actor, level, prev, points }` — 물결 단계 변화(0~3) | src/campaign/action/combat.ts |
+| `action:objective` | `{ actor }` — 목표 완료가 물결 게이지에 반영됨(목표 실행기가 `combat.objective()`를 부를 때) | src/campaign/action/combat.ts |
+| `enemy:stagger` / `enemy:staggerEnd` | `{ actor, by, exposeWeak }` / `{ actor }` — 버팀(poise) 0 → 0.7초 스태거 / 끝(3초 면역 시작) | src/campaign/action/combat.ts |
+| `cast:say` | `{ actor?, pos?, text, kind, speaker? }` — 머리 위(또는 pos) 말풍선과 찍찍 목소리. speaker: player · mora · teal · pong · captain | src/game/cast/castDirector.ts가 내고 src/game/cast/speech.ts가 받는다 |
+
+위 `action:*`·`enemy:*`·`cast:say`는 캠페인 세션(개발 중에는 `?tune=campaign` 미리보기, src/campaign/preview.ts)이 있을 때만 난다.

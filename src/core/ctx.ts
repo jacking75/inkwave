@@ -25,6 +25,7 @@ import type { Boss } from '../boss/boss.js';
 import type { NetSession } from '../net/session.js';
 import type { MockNet } from '../net/mock.js';
 import type { NetMatch } from '../net/netmatch.js';
+import type { CampaignRuntime } from '../campaign/action/combat.js';
 
 // 저장된 설정(localStorage 'inkwave.settings')이다. 기본값 밖의 키는 이전 판 마이그레이션·호스트가 더한 값이다.
 export type Settings = typeof DEFAULT_SETTINGS & { fovMode?: string; fullscreen?: boolean; timeOfDay?: string; [key: string]: unknown };
@@ -44,6 +45,8 @@ export interface GameContext {
   post?: Renderer | null; touch?: TouchControls | null; screenfx?: ScreenFX | null; boss?: Boss | null;
   net?: NetSession | MockNet | null; netm?: NetMatch | null;
   game?: unknown; deathMarks?: unknown[];
+  // 캠페인 세션(개발 중에는 ?tune=campaign 미리보기)만 갖는다. 대전·온라인은 null이다(35번 R016~R021).
+  campaign?: CampaignRuntime | null;
 }
 
 export const G: GameContext = {

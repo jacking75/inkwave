@@ -17,6 +17,46 @@ import { PLAYER, WEAPONS, SPECIALS, SUBS } from '../config.js';
 import { makeContacts, Hit, GroundHit, WALKABLE } from './physics.js';
 import { WeaponRunner } from './weapons.js';
 import { MAIN_KITS } from './kits/registry.js';
+import type { Character } from './character.js';
+// 캠페인 전투 훅(35번 R016~R020): 캠페인 세션(개발 중에는 ?tune=campaign 미리보기)만 G.campaign을 가진다. 대전·온라인은 null이다.
+import { runScale, type PlayerTuning } from '../campaign/tuning.js';
+
+type WeaponDef = (typeof WEAPONS)[keyof typeof WEAPONS];
+type SubDef = (typeof SUBS)[keyof typeof SUBS];
+const WEAPON_DEFS: Record<string, WeaponDef> = WEAPONS;
+const SUB_DEFS: Record<string, SubDef> = SUBS;
+const SPECIAL_DEFS: Record<string, (typeof SPECIALS)[keyof typeof SPECIALS]> = SPECIALS;
+
+// 진행 중인 스페셜(specials.js가 만든다)이다. 여기서는 Actor가 읽는 플래그만 형식으로 둔다. 나머지는 specials.js 소유이다.
+export interface ActiveSpecial {
+  id: string; t: number; phase?: string; startY?: number;
+  armor?: boolean; body?: boolean; inkProof?: boolean; noSquid?: boolean; faceMove?: boolean; aimFace?: boolean; raise?: boolean; aiming?: boolean;
+  speed?: number | null; accel?: number; faceYaw?: number | null; firing?: number; seat?: number; hang?: number;
+  jumpBack?: boolean; origin?: THREE.Vector3;
+  [key: string]: unknown;
+}
+export interface SuperJumpState {
+  phase: 'charge' | 'flight'; t: number; dur?: number; marker: number; home: boolean;
+  target: Actor | THREE.Vector3; from: THREE.Vector3; to: THREE.Vector3;
+}
+export interface ActorIntent { move: THREE.Vector3; jump: boolean; squid: boolean; fire: boolean; sub: boolean; special: boolean }
+export interface ActorOptions {
+  team: number; name: string; weapon?: string; sub?: string | null; special?: string | null;
+  isLocal?: boolean; isBot?: boolean; style?: object; slot?: number; CharacterClass: typeof Character;
+}
+// weapons.js가 Object.assign으로 더하는 회피 구르기 메서드와 kit 상태(형식만)
+type Runner = WeaponRunner & {
+  dodgeVelocity(out: THREE.Vector3): THREE.Vector3 | null; tryDodge(intent: ActorIntent): boolean; endDodge(): void;
+  kit?: { hang?: boolean } | null;
+};
+interface KitHooks {
+  damageTaken?(runner: Runner, amount: number, attacker: Actor | null | undefined, source: string): number;
+  jump?(runner: Runner, intent: ActorIntent): boolean;
+}
+const KITS = MAIN_KITS as Record<string, KitHooks | undefined>;
+// character.js는 onEvent가 있으면 발소리 같은 사건을 알린다
+type CharacterBus = Character & { onEvent?: (name: string, data?: object) => void };
+type Block = { id: number; roof?: boolean; rail?: boolean; solid?: boolean; center: THREE.Vector3; half: THREE.Vector3; axes: THREE.Vector3[] };
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _fwd = new THREE.Vector3();
 const DOWN = new THREE.Vector3(0, -1, 0);
@@ -24,20 +64,56 @@ const TAU = Math.PI * 2;
 const _ZERO_MOVE = Object.freeze(new THREE.Vector3());   // move input while planted after a dualies dodge roll
 
 // Local-player gamepad rumble (subtle, scaled by settings.rumble, no-op without a pad).
-export function rumble(actor, strong, weak, ms) {
+export function rumble(actor: Actor | null | undefined, strong: number, weak: number, ms: number): void {
   if (!actor || !actor.isLocal || actor.isBot) return;
   G.input?.rumble?.(strong, weak, ms);
 }
 
 const _dodgeV = new THREE.Vector3();
 export class Actor {
-  constructor({ team, name, weapon = 'shooter', sub = null, special = null, isLocal = false, isBot = false, style = { hair: 0, skin: 0 }, slot = 0, CharacterClass }) {
+  declare team: number; declare name: string; declare isLocal: boolean; declare isBot: boolean; declare slot: number;
+  declare weaponId: string; declare weapon: WeaponDef; declare subId: string; declare sub: SubDef; declare specialId: string;
+  declare status: { track: number; trackTeam: number; poison: number; reveal: number; revealTeam: number; shield: number };
+  declare pos: THREE.Vector3; declare vel: THREE.Vector3;
+  declare yaw: number; declare aimYaw: number; declare aimPitch: number; declare aimDir: THREE.Vector3; declare aimPoint: THREE.Vector3;
+  declare intent: ActorIntent;
+  declare _prevIntent: { fire: boolean; sub: boolean; jump: boolean; special: boolean; squid: boolean };
+  declare _squidPressT: number; declare _firePressT: number;
+  declare contacts: ReturnType<typeof makeContacts>; declare groundHit: Hit; declare wallHit: Hit; declare ground: GroundHit;
+  declare groundN: THREE.Vector3; declare wallN: THREE.Vector3; declare _ledgeHit: Hit;
+  declare character: Character; declare weaponRunner: Runner;
+  declare stats: { turf: number; splats: number; deaths: number; specials: number; zoneTurf?: number };
+  declare anim: {
+    time: number; speed: number; localMove: { x: number; z: number }; grounded: boolean; vy: number; aimPitch: number; firing: boolean;
+    charge: number | undefined; rolling: boolean; form: string; wallNormal: THREE.Vector3; ink: number; lowInk: boolean; special: number; invuln: boolean;
+    turnRate: number; hp: number; inEnemyInk: boolean; surface: number; subAim: boolean; specialId?: string | null;
+  };
+  // 이동·잉크·체력 수치이다. 기본은 전역 PLAYER 자체이고 캠페인만 덮어쓴 복사본을 넣는다(src/campaign/tuning.ts).
+  declare tune: PlayerTuning;
+  // reset()이 채우는 상태
+  declare alive: boolean; declare hp: number; declare ink: number; declare special: number; declare specialActive: ActiveSpecial | null;
+  declare form: 'kid' | 'squid'; declare submerged: boolean; declare climbing: boolean; declare grounded: boolean; declare groundTeam: number;
+  declare respawnTimer: number; declare invuln: number; declare lastDamage: number; declare lastFire: number; declare inkIdle: number;
+  declare damageFromInk: number; declare hurtFlash: number; declare lastAttacker: Actor | null; declare fireFacing: number;
+  declare airTime: number; declare landSpeed: number; declare landT: number; declare hardLand: number; declare coyote: number;
+  declare jumpBuffer: number; declare fireBuffer: number; declare kidT: number; declare climbExit: number; declare climbV: number;
+  declare inkWarnCd: number; declare superJumpState: SuperJumpState | null; declare yawVel: number; declare _faceTarget: number | null;
+  declare smoothY: number; declare smoothYV: number; declare onEnemy: boolean;
+  declare _evSub: boolean; declare _evEnemy: boolean; declare _evClimb: boolean; declare _evForm: string; declare _jumpBeacon: unknown;
+  declare roofDir: THREE.Vector3 | null; declare roofP: THREE.Vector3; declare roofStall: number; declare roofT: number;
+  declare _railIds?: number[]; declare _wakeT?: number;
+  // 다른 모듈이 붙이는 값(경기·온라인·봇)
+  declare bot?: unknown; declare nid?: number; declare owner?: string; declare remote?: boolean; declare netTp?: number; declare netTurnRate?: number;
+  declare hitH?: number; declare hitR?: number;
+
+  constructor({ team, name, weapon = 'shooter', sub = null, special = null, isLocal = false, isBot = false, style = { hair: 0, skin: 0 }, slot = 0, CharacterClass }: ActorOptions) {
+    this.tune = PLAYER;
     this.team = team; this.name = name; this.isLocal = isLocal; this.isBot = isBot; this.slot = slot;
     this.weaponId = weapon;
-    this.weapon = WEAPONS[weapon];
-    this.subId = SUBS[sub] ? sub : (this.weapon.sub || 'bomb');
-    this.sub = SUBS[this.subId];
-    this.specialId = SPECIALS[special] ? special : (this.weapon.special || 'slam');
+    this.weapon = WEAPON_DEFS[weapon];
+    this.subId = sub && SUB_DEFS[sub] ? sub : ((this.weapon as { sub?: string }).sub || 'bomb');
+    this.sub = SUB_DEFS[this.subId];
+    this.specialId = special && SPECIAL_DEFS[special] ? special : ((this.weapon as { special?: string }).special || 'slam');
     // status effects: tracking (visible to trackTeam), poison (slow + ink drain), sonar reveal (slow + ink burn) —
     // all in seconds; `shield` is a Bubble Guard force field on this player (seconds left)
     this.status = { track: 0, trackTeam: -1, poison: 0, reveal: 0, revealTeam: -1, shield: 0 };
@@ -56,12 +132,12 @@ export class Actor {
     this.groundN = new THREE.Vector3(0, 1, 0);
     this.wallN = new THREE.Vector3(0, 0, 1);
     this._ledgeHit = new Hit();
-    this.character = new CharacterClass({ color: G.teamColors[team], weapon, style, name, isLocal });
+    this.character = new CharacterClass({ color: G.teamColors[team]!, weapon, style, name, isLocal });
     this.character.setSub?.(this.sub.kind);
     // Character → game bus: character.js calls this.onEvent(name, data) (e.g. 'footstep' at each foot plant) and it is
     // re-emitted as 'actor:<name>' with the actor and the surface under it (0 dry, 1 own ink, 2 enemy ink). See docs/EVENTS.md.
-    this.character.onEvent = (name, data) => emit('actor:' + name, { actor: this, surface: this.groundTeam, ...(data || {}) });
-    this.weaponRunner = new WeaponRunner(this);
+    (this.character as CharacterBus).onEvent = (name: string, data?: object) => emit('actor:' + name, { actor: this, surface: this.groundTeam, ...(data || {}) });
+    this.weaponRunner = new WeaponRunner(this) as Runner;
     this.stats = { turf: 0, splats: 0, deaths: 0, specials: 0 };
     this.anim = {
       time: 0, speed: 0, localMove: { x: 0, z: 0 }, grounded: true, vy: 0, aimPitch: 0, firing: false, charge: 0, rolling: false,
@@ -71,13 +147,13 @@ export class Actor {
     this.reset();
   }
 
-  get color() { return G.teamColors[this.team]; }
-  get enemyTeam() { return 1 - this.team; }
+  get color(): THREE.Color { return G.teamColors[this.team]!; }
+  get enemyTeam(): number { return 1 - this.team; }
 
-  reset() {
+  reset(): void {
     this.alive = true;
-    this.hp = PLAYER.hp;
-    this.ink = PLAYER.inkMax;
+    this.hp = this.tune.hp;
+    this.ink = this.tune.inkMax;
     this.special = 0;            // points toward special
     this.specialActive = null;   // { id, t, phase }
     this.form = 'kid';           // desired form
@@ -113,53 +189,54 @@ export class Actor {
     this.weaponRunner?.reset();
   }
 
-  setSub(id) {
-    if (!SUBS[id]) return;
-    this.subId = id; this.sub = SUBS[id];
-    this.character.setSub?.(SUBS[id].kind);
+  setSub(id: string): void {
+    if (!SUB_DEFS[id]) return;
+    this.subId = id; this.sub = SUB_DEFS[id];
+    this.character.setSub?.(SUB_DEFS[id].kind);
   }
 
-  setWeapon(id) {
-    this.weaponId = id; this.weapon = WEAPONS[id];
+  setWeapon(id: string): void {
+    this.weaponId = id; this.weapon = WEAPON_DEFS[id];
     this.character.setWeapon(id);
     this.weaponRunner.reset();
   }
-  setSpecial(id) { if (SPECIALS[id]) this.specialId = id; }
+  setSpecial(id: string): void { if (SPECIAL_DEFS[id]) this.specialId = id; }
 
-  specialCost() { return this.weapon.specialCost; }
-  specialFrac() { return clamp(this.special / this.specialCost(), 0, 1); }
-  specialReady() { return this.special >= this.specialCost() && !this.specialActive; }
+  specialCost(): number { return this.weapon.specialCost; }
+  specialFrac(): number { return clamp(this.special / this.specialCost(), 0, 1); }
+  specialReady(): boolean { return this.special >= this.specialCost() && !this.specialActive; }
 
-  addTurf(area) {
+  // specialK: 이 면적이 스페셜 충전에 반영되는 비율(잉크 서지의 길은 0.5)
+  addTurf(area: number, specialK = 1): void {
     if (area <= 0) return;
     this.stats.turf += area;
     emit('turf', { actor: this, area });
     if (!this.specialActive) {
       const was = this.specialReady();
-      this.special = Math.min(this.specialCost(), this.special + area * PLAYER.specialChargeRate);
+      this.special = Math.min(this.specialCost(), this.special + area * this.tune.specialChargeRate * specialK * (G.campaign?.combat.specialChargeMul(this) ?? 1));
       if (!was && this.specialReady()) emit('special:ready', { actor: this });
     }
   }
 
-  spawnAt(p, yaw) {
+  spawnAt(p: THREE.Vector3, yaw: number): void {
     this.reset();
     this.pos.copy(p);
     this.vel.set(0, 0, 0);
     this.yaw = this.aimYaw = yaw;
     this.aimPitch = 0;
-    this.invuln = PLAYER.spawnInvuln;
+    this.invuln = this.tune.spawnInvuln;
     this.character.root.position.copy(p);
     this.character.root.rotation.y = yaw;
     this.character.setVisible(true);
     this.character.setHurt(0, G.teamColors[this.enemyTeam]);
     // settle onto whatever is under the spawn point
-    const gh = G.physics.groundProbe(p.x, p.y, p.z, 0.3, 0.3, PLAYER.footRadius, this.ground, false);
+    const gh = G.physics!.groundProbe(p.x, p.y, p.z, 0.3, 0.3, this.tune.footRadius, this.ground, false);
     if (gh.hit && Math.abs(gh.y - p.y) < 0.3) { this.pos.y = gh.y; this.grounded = true; this.groundN.copy(gh.normal); }
   }
 
   // Drop in from above the spawn pad (respawn), landing with a splash.
-  respawn() {
-    const pad = G.level.spawnPads[this.team];
+  respawn(): void {
+    const pad = G.level!.spawnPads[this.team];
     const a = (this.slot / 4) * Math.PI * 2 + 0.6;
     const p = _v.set(pad.x + Math.cos(a) * 1.1, pad.y + 4.5, pad.z + Math.sin(a) * 1.1);
     const yaw = this.team === 0 ? 0 : Math.PI;
@@ -176,12 +253,13 @@ export class Actor {
   }
 
   // ------------------------------------------------------------------ damage
-  damage(amount, attacker, source = 'weapon') {
+  damage(amount: number, attacker: Actor | null | undefined, source = 'weapon'): boolean {
     if (!this.alive || amount <= 0) return false;
     if (this.invuln > 0) return false;
+    { const cc = G.campaign?.combat; if (cc) { const ic = cc.intercept(this, amount, attacker ?? null, source); if (ic.perfect || !(ic.amount > 0)) return false; amount = ic.amount; } }
     if (this.specialActive && this.specialActive.armor) amount *= 0.25;
-    if (G.specials) { amount = G.specials.filterDamage(this, amount, attacker, source); if (!(amount > 0)) return false; }
-    { const K = MAIN_KITS[this.weapon?.kind]; if (K?.damageTaken) { amount = K.damageTaken(this.weaponRunner, amount, attacker, source); if (!(amount > 0)) return false; } }   // kit armour (e.g. the mitts' leap)
+    if (G.specials) { amount = G.specials!.filterDamage(this, amount, attacker, source); if (!(amount > 0)) return false; }
+    { const K = KITS[this.weapon?.kind]; if (K?.damageTaken) { amount = K.damageTaken(this.weaponRunner, amount, attacker, source); if (!(amount > 0)) return false; } }   // kit armour (e.g. the mitts' leap)
     this.hp -= amount;
     this.lastDamage = 0;
     this.hurtFlash = Math.min(1, this.hurtFlash + amount / 60);
@@ -205,15 +283,15 @@ export class Actor {
     return false;
   }
 
-  splat(attacker, cause = 'weapon') {
+  splat(attacker: Actor | null | undefined, cause = 'weapon'): void {
     if (!this.alive) return;
     this.alive = false;
     this.hp = 0;
-    this.respawnTimer = PLAYER.respawnTime;
+    this.respawnTimer = this.tune.respawnTime;
     this.stats.deaths++;
-    // keep a share of the gauge (PLAYER.specialKeepOnSplat); a special cut short by the splat restarts the gauge from
+    // keep a share of the gauge (this.tune.specialKeepOnSplat); a special cut short by the splat restarts the gauge from
     // that share of full (its points were spent when it started). Carried through respawn() (reset() zeroes it).
-    const keep = PLAYER.specialKeepOnSplat ?? 0.5;
+    const keep = this.tune.specialKeepOnSplat ?? 0.5;
     this.special = this.specialActive ? this.specialCost() * keep : Math.min(this.specialCost(), this.special) * keep;
     G.specials?.onSplat(this);
     this.specialActive = null;
@@ -226,7 +304,7 @@ export class Actor {
       attacker.stats.splats++;
       // burst into the attacker's ink
       _v.copy(this.pos); _v.y += 0.35;
-      attacker.addTurf(G.paint.splat(_v, 1.7, attacker.team, { seed: Math.random() }));
+      attacker.addTurf(G.paint!.splat(_v, 1.7, attacker.team, { seed: Math.random() }));
     }
     this.character.setVisible(false);
     if (this.isLocal) rumble(this, 0.8, 0.6, 260);
@@ -234,27 +312,29 @@ export class Actor {
   }
 
   // ------------------------------------------------------------------ update
-  update(dt) {
+  update(dt: number): void {
     this.anim.time = G.time;
     // safety net: a non-finite position/velocity must never poison the camera or physics
     if (!Number.isFinite(this.pos.x + this.pos.y + this.pos.z + this.vel.x + this.vel.y + this.vel.z + this.yaw + this.smoothY)) {
       console.warn('[inkwave] non-finite actor state recovered', this.name);
       this.superJumpState = null; this.specialActive = null; this.yaw = 0; this.yawVel = 0; this.smoothY = 0; this.smoothYV = 0;
-      if (this.alive) this.respawn(); else { this.pos.copy(G.level.spawnPads[this.team]); this.vel.set(0, 0, 0); }
+      if (this.alive) this.respawn(); else { this.pos.copy(G.level!.spawnPads[this.team]); this.vel.set(0, 0, 0); }
     }
     if (!this.alive) {
       this.respawnTimer -= dt;
       if (this.respawnTimer <= 0 && G.match?.canRespawn()) this.respawn();
       return;
     }
-    const P = PLAYER;
+    const P = this.tune;
+    const cc = G.campaign?.combat;
+    cc?.beforeUpdate(this);
     const intent = this.intent;
     const prev = this._prevIntent;
     const firePressed = intent.fire && !prev.fire;
     const jumpPressed = intent.jump && !prev.jump;
     const subReleased = !intent.sub && prev.sub;
     const specialPressed = intent.special && !prev.special;
-    if (intent.squid && !prev.squid) this._squidPressT = G.time;
+    if (intent.squid && !prev.squid) { this._squidPressT = G.time; cc?.squidPressed(this); }
     if (firePressed) this._firePressT = G.time;
     prev.fire = intent.fire; prev.jump = intent.jump; prev.sub = intent.sub; prev.special = intent.special; prev.squid = intent.squid;
 
@@ -300,17 +380,18 @@ export class Actor {
 
     // ---- horizontal movement (a dodge roll owns it while it lasts: twins override the velocity here, dualies inside
     // _horizontal via dodgeVel)
-    if (spx) G.specials.move?.(this, spx, dt);
+    if (spx) G.specials!.move?.(this, spx, dt);
     if (!this.climbing) this._horizontal(dt, isSquid, onEnemy);
     const dv = this.weaponRunner.dodgeVelocity(_dodgeV);
     if (dv) { this.vel.x = dv.x; this.vel.z = dv.z; }
+    cc?.move(this, dt);   // 캠페인: 잉크 서지가 수평 속도를 갖고, 넉백이 위치를 민다
 
     // ---- dodge roll (twin pistols / dualies): jump pressed while firing and moving rolls instead of jumping. The
     // runner's tryDodge dispatches by weapon kind (it spends the ink, triggers the character's roll, emits the FX events)
     if (this.jumpBuffer > 0 && !isSquid && this.weaponRunner.tryDodge(intent)) this.jumpBuffer = 0;
     // kit weapons (kits/*.js) may take the jump press instead: MAIN_KITS[kind].jump(runner, intent) → true swallows it
     // (Sponge Mitts: fire + jump charges a leap; jump lets go of a wall)
-    if (this.jumpBuffer > 0 && !isSquid && MAIN_KITS[this.weapon.kind]?.jump?.(this.weaponRunner, intent)) this.jumpBuffer = 0;
+    if (this.jumpBuffer > 0 && !isSquid && KITS[this.weapon.kind]?.jump?.(this.weaponRunner, intent)) this.jumpBuffer = 0;
 
     // ---- jump (buffered, with coyote time)
     this.coyote = this.grounded ? P.coyoteTime : this.coyote - dt;
@@ -370,15 +451,16 @@ export class Actor {
     const winp = { fire, firePressed: pressed, sub: intent.sub && !isSquid, subReleased: subReleased && !isSquid };
     const inkBefore = this.ink;
     // specials that replace the main weapon (zooka, stamp, blower, crab …) take the trigger; others may take the sub
-    if (!(spx && G.specials.weapon(this, spx, dt, winp))) this.weaponRunner.update(dt, winp);
+    if (!(spx && G.specials!.weapon(this, spx, dt, winp))) this.weaponRunner.update(dt, winp);
+    if (cc && this.ink < inkBefore) { const k = cc.inkCostMul(this); if (k !== 1) this.ink = inkBefore - (inkBefore - this.ink) * k; }
     // sonar-revealed players burn ink faster
     if (st.reveal > 0 && this.ink < inkBefore) this.ink = Math.max(0, this.ink - (inkBefore - this.ink) * (SPECIALS.sonar.inkMul - 1));
-    if (this.specialActive) G.specials.tick(this, this.specialActive, dt);
+    if (this.specialActive) G.specials!.tick(this, this.specialActive, dt);
     if (!this.alive) return;
 
     // ---- fall into the sea
     // the sea: below the waterline with no deck underneath (dry-dock trenches sit below sea level and are safe)
-    if (this.pos.y < P.fallDeathY && G.level.groundHeight(this.pos.x, this.pos.z, this.pos.y + 0.6) === -Infinity) {
+    if (this.pos.y < P.fallDeathY && G.level!.groundHeight(this.pos.x, this.pos.z, this.pos.y + 0.6) === -Infinity) {
       G.fx?.burst(_v.copy(this.pos).setY(P.waterY + 0.05), _v2.set(0, 1, 0), new THREE.Color('#bfe9ff'), { count: 18, speed: 5, size: 0.1 });
       G.audio?.play('splat_big', { pos: this.pos });
       this.splat(this.lastDamage < 4 ? this.lastAttacker : null, 'water');
@@ -388,30 +470,30 @@ export class Actor {
     this._finishFrame(dt);
   }
 
-  _nearCamera() {
+  _nearCamera(): boolean {
     const c = G.rig?.gameCam || G.camera; if (!c) return false;
     return c.position.distanceToSquared(this.pos) < 30 * 30;
   }
 
   // Paint under the feet: 0 dry, 1 own ink, 2 enemy ink (only while grounded).
-  _surface() {
+  _surface(): void {
     const g = this.ground;
     if (this.grounded && g.hit && g.face >= 0) {
-      const t = G.paint.sample(g.face, g.u, g.v);
+      const t = G.paint!.sample(g.face, g.u, g.v);
       this.groundTeam = t === 0 ? 0 : (t - 1 === this.team ? 1 : 2);
     } else this.groundTeam = 0;
   }
 
   // Legacy probe (super jump charge / external callers): refresh ground + surface at the current position.
-  _probeGround() {
-    const gh = G.physics.groundProbe(this.pos.x, this.pos.y, this.pos.z, 0.4, 0.35, PLAYER.footRadius, this.ground, this.form === 'squid');
-    if (gh.hit) { const t = G.paint.sample(gh.face, gh.u, gh.v); this.groundTeam = gh.face < 0 || t === 0 ? 0 : (t - 1 === this.team ? 1 : 2); }
+  _probeGround(): void {
+    const gh = G.physics!.groundProbe(this.pos.x, this.pos.y, this.pos.z, 0.4, 0.35, this.tune.footRadius, this.ground, this.form === 'squid');
+    if (gh.hit) { const t = G.paint!.sample(gh.face, gh.u, gh.v); this.groundTeam = gh.face < 0 || t === 0 ? 0 : (t - 1 === this.team ? 1 : 2); }
     else this.groundTeam = 0;
   }
 
   // ------------------------------------------------------------------ horizontal movement model
-  _horizontal(dt, isSquid, onEnemy) {
-    const P = PLAYER;
+  _horizontal(dt: number, isSquid: boolean, onEnemy: boolean): void {
+    const P = this.tune;
     // while a dualies dodge roll runs, the weapon runner owns horizontal velocity; in the post-roll lock you're a
     // planted turret (twins: dodgeVelocity is applied by update() after this)
     if (this.weaponRunner.dodgeVel(this.vel)) return;
@@ -422,9 +504,9 @@ export class Actor {
     const sp = Math.hypot(vx, vz);
     // ---- airborne: vector steering with light air control (momentum is kept)
     if (!this.grounded) {
-      let target, accel, decel;
+      let target: number, accel: number, decel: number;
       if (isSquid) { target = Math.max(P.squidDrySpeed, sp); accel = P.squidAirAccel; decel = P.squidAirDecel; }
-      else { target = Math.max(this.specialActive?.speed ?? this.weaponRunner.moveSpeed(), P.airMinSpeed); accel = P.airAccel; decel = P.airDecel; }
+      else { target = Math.max(this.specialActive?.speed ?? this.weaponRunner.moveSpeed() * runScale(P), P.airMinSpeed); accel = P.airAccel; decel = P.airDecel; }
       const tvx = mh > 0.01 ? (mv.x / mh) * target * mag : 0, tvz = mh > 0.01 ? (mv.z / mh) * target * mag : 0;
       const dvx = tvx - vx, dvz = tvz - vz, dl = Math.hypot(dvx, dvz);
       const rate = (mh > 0.01 ? accel : decel) * dt;
@@ -432,13 +514,14 @@ export class Actor {
       return;
     }
     // ---- grounded: speed + heading model
-    let vt, A, aIn, inKnee, outKnee, D, dMin, dKnee, W;
+    let vt: number, A: number, aIn: number, inKnee: number, outKnee: number, D: number, dMin: number, dKnee: number, W: number;
     if (isSquid && this.submerged) {
       vt = P.swimSpeed; A = P.swimAccel; aIn = P.swimAccelIn; inKnee = 3; outKnee = P.swimOutKnee; D = P.swimDecel; dMin = 0.5; dKnee = 4; W = P.swimTurn;
     } else if (isSquid) {
       vt = P.squidDrySpeed; A = P.squidAccel; aIn = 0.6; inKnee = 1; outKnee = 0.3; D = P.squidDecel; dMin = 0.5; dKnee = 2; W = P.squidTurn;
     } else {
-      vt = this.weaponRunner.moveSpeed(); A = P.runAccel; aIn = P.runAccelIn; inKnee = P.runInKnee; outKnee = P.runOutKnee;
+      // 무기 속도는 PLAYER 기준이라 튜닝 비율로 바꾼다(기본 튜닝이면 1)
+      vt = this.weaponRunner.moveSpeed() * runScale(P); A = P.runAccel; aIn = P.runAccelIn; inKnee = P.runInKnee; outKnee = P.runOutKnee;
       D = P.runDecel; dMin = P.runDecelMin; dKnee = P.runDecelKnee; W = P.turnRate;
       if (this.hardLand > 0) vt *= 1 - (1 - P.hardLandSlow) * this.hardLand;
     }
@@ -488,11 +571,11 @@ export class Actor {
   }
 
   // ------------------------------------------------------------------ character controller
-  _integrate(dt, isSquid, jumped) {
-    const P = PLAYER;
+  _integrate(dt: number, isSquid: boolean, jumped: boolean): void {
+    const P = this.tune;
     if (this.climbing) {
       this.pos.addScaledVector(this.vel, dt);
-      G.physics.collideBody(this.pos, P.radius, P.squidBodyLift, P.squidHeight, this.contacts, false, true);
+      G.physics!.collideBody(this.pos, P.radius, P.squidBodyLift, P.squidHeight, this.contacts, false, true);
       if (this.contacts.ceiling && this.vel.y > 0) this.vel.y = 0;
       this.grounded = false;
       this.airTime = 0;
@@ -502,12 +585,12 @@ export class Actor {
     // zipline: clinging to where the tether landed (weapon still usable). Kit weapons can hang the kid too: runner.kit.hang
     // (Sponge Mitts: stuck to a wall after a leap) — kid form only, and never while a special runs
     const kitHang = !this.specialActive && this.form === 'kid' && !!this.weaponRunner.kit?.hang;
-    if ((this.specialActive && this.specialActive.hang > 0) || kitHang) {
+    if ((this.specialActive && (this.specialActive.hang ?? 0) > 0) || kitHang) {
       this.vel.set(0, 0, 0); this.grounded = false; this.airTime = 0;
       return;
     }
     // off-limits tops (roofs, crane tops …): nobody can stand there — you slide off
-    const rb = wasGrounded && this.ground.hit && this.ground.block >= 0 ? G.level.blocks[this.ground.block] : null;
+    const rb = wasGrounded && this.ground.hit && this.ground.block >= 0 ? G.level!.blocks[this.ground.block] : null;
     if (rb && rb.roof) this._roofSlide(rb, dt); else if (this.roofT) { this.roofT = 0; this.roofDir = null; }
     // balancing on a railing: the feet settle onto its line (unless you're stepping off it)
     if (rb && rb.rail && !isSquid) this._railCentre(rb, dt);
@@ -529,7 +612,7 @@ export class Actor {
   // Standing on a roof block: pushed toward its nearest edge (a pitched top: downhill), picking up speed until you drop
   // off. The direction sticks for the whole slide (adjacent roof boxes would otherwise push back and forth at a seam);
   // blocked by a wall for a moment → turn 90° and try the next way out. Input still steers across the slide.
-  _roofSlide(b, dt) {
+  _roofSlide(b: Block, dt: number): void {
     const n = b.axes[1];
     if (!this.roofDir || !this.roofT) {
       this.roofDir = new THREE.Vector3(); this.roofStall = 0; this.roofP = this.pos.clone();
@@ -537,7 +620,7 @@ export class Actor {
       else {
         const ax = b.axes[0], az = b.axes[2], dx = this.pos.x - b.center.x, dz = this.pos.z - b.center.z;
         const lx = dx * ax.x + dz * ax.z, lz = dx * az.x + dz * az.z;
-        const s = (b.half.x - Math.abs(lx) < b.half.z - Math.abs(lz)) ? [ax, Math.sign(lx) || 1] : [az, Math.sign(lz) || 1];
+        const s: [THREE.Vector3, number] = (b.half.x - Math.abs(lx) < b.half.z - Math.abs(lz)) ? [ax, Math.sign(lx) || 1] : [az, Math.sign(lz) || 1];
         this.roofDir.set(s[0].x * s[1], 0, s[0].z * s[1]);
       }
     }
@@ -553,11 +636,11 @@ export class Actor {
   }
 
   // Body (walls/ceilings) then feet (ground stick / landing). `stick` = we were grounded and did not jump.
-  _resolve(isSquid, prevY, stick) {
-    const P = PLAYER;
+  _resolve(isSquid: boolean, prevY: number, stick: boolean): void {
+    const P = this.tune;
     const lift = isSquid ? P.squidBodyLift : P.stepUp;
     const height = isSquid ? P.squidHeight : P.height;
-    const c = G.physics.collideBody(this.pos, P.radius, lift, height, this.contacts, stick, isSquid);
+    const c = G.physics!.collideBody(this.pos, P.radius, lift, height, this.contacts, stick, isSquid);
     if (c.ceiling && this.vel.y > 0) this.vel.y = 0;
     if (c.wall) {
       const n = c.wallNormal;
@@ -569,7 +652,7 @@ export class Actor {
     const wasGrounded = this.grounded;
     let grounded = false;
     if (stick) {
-      G.physics.groundProbe(this.pos.x, this.pos.y, this.pos.z, up, P.stepDown, P.footRadius, gh, isSquid);
+      G.physics!.groundProbe(this.pos.x, this.pos.y, this.pos.z, up, P.stepDown, P.footRadius, gh, isSquid);
       if (!isSquid) this._railFeet(gh, this.pos.y - P.stepDown, this.pos.y + up);
       if (gh.hit) {
         const dy = gh.y - this.pos.y;
@@ -582,7 +665,7 @@ export class Actor {
       // landing: probe from the highest point this frame passed through (never tunnels), with ledge assist
       const top = Math.max(prevY, this.pos.y);
       const assist = isSquid ? P.squidStepUp : P.ledgeAssist;
-      G.physics.groundProbe(this.pos.x, this.pos.y, this.pos.z, (top - this.pos.y) + assist, 0.02, P.footRadius, gh, isSquid);
+      G.physics!.groundProbe(this.pos.x, this.pos.y, this.pos.z, (top - this.pos.y) + assist, 0.02, P.footRadius, gh, isSquid);
       if (!isSquid) this._railFeet(gh, this.pos.y - 0.02, top + assist);
       if (gh.hit && gh.y >= this.pos.y - 0.02 && (this.vel.y <= 0 || gh.y - this.pos.y < 0.02)) {
         // touching down from above is continuous; only a ledge-assist pop (feet were already below the top last
@@ -606,10 +689,10 @@ export class Actor {
   // feet are also held by any level rail top the flat footprint (a circle of footRadius) overlaps, within [lo, hi]:
   // hopping onto a railing lands wherever the feet cover it, and standing / walking along it holds. Squids fall through
   // rails (never called for them). Overwrites the probe result `gh` when the rail top is the higher support.
-  _railFeet(gh, lo, hi) {
-    const L = G.level;
+  _railFeet(gh: GroundHit, lo: number, hi: number): void {
+    const L = G.level!;
     if (!L.hasRails) return;
-    const x = this.pos.x, z = this.pos.z, fr = PLAYER.footRadius;
+    const x = this.pos.x, z = this.pos.z, fr = this.tune.footRadius;
     const ids = L.queryBlocks(x - fr - 0.05, z - fr - 0.05, x + fr + 0.05, z + fr + 0.05, this._railIds || (this._railIds = []));
     let best = null, bestY = gh.hit ? gh.y + 1e-3 : -Infinity;
     for (let i = 0; i < ids.length; i++) {
@@ -628,7 +711,7 @@ export class Actor {
 
   // Standing on a railing with the feet off its line: ease onto it (≤ 1.1 m/s across) — reads as balancing on the rail
   // instead of hovering beside it. Pushing the stick further off the line steps off as usual.
-  _railCentre(b, dt) {
+  _railCentre(b: Block, dt: number): void {
     const alongX = b.half.x >= b.half.z, ax = alongX ? b.axes[2] : b.axes[0], hw = alongX ? b.half.z : b.half.x;   // across the rail
     const off = (this.pos.x - b.center.x) * ax.x + (this.pos.z - b.center.z) * ax.z;
     const out = Math.abs(off) - Math.max(0, hw - 0.02);
@@ -639,8 +722,8 @@ export class Actor {
     this.pos.x -= ax.x * s; this.pos.z -= ax.z * s;
   }
 
-  _onLand(isSquid) {
-    const P = PLAYER;
+  _onLand(isSquid: boolean): void {
+    const P = this.tune;
     const speed = Math.max(0, -this.vel.y);
     this.landSpeed = speed;
     this.landT = 0;
@@ -655,9 +738,9 @@ export class Actor {
     }
   }
 
-  _spawnBarrier() {
-    const pad = G.level.spawnPads[this.enemyTeam];
-    const R = G.level.spawnBarrier;
+  _spawnBarrier(): void {
+    const pad = G.level!.spawnPads[this.enemyTeam];
+    const R = G.level!.spawnBarrier;
     const dx = this.pos.x - pad.x, dz = this.pos.z - pad.z;
     const d = Math.hypot(dx, dz);
     if (d < R && this.pos.y > pad.y - 1.0) {
@@ -669,8 +752,8 @@ export class Actor {
   }
 
   // ------------------------------------------------------------------ wall climb
-  _updateClimb(dt, isSquid) {
-    const P = PLAYER;
+  _updateClimb(dt: number, isSquid: boolean): void {
+    const P = this.tune;
     this.climbExit = Math.max(0, this.climbExit - dt);
     if (!isSquid || this.climbExit > 0) { if (this.climbing) this._setClimb(false); return; }
     const mv = this.intent.move;
@@ -681,9 +764,9 @@ export class Actor {
     if (dir.lengthSq() < 1e-6) return;
     dir.normalize();
     _v.copy(this.pos); _v.y += 0.3;
-    const h = G.physics.raycast(_v, dir, P.radius + 0.35, this.wallHit);
+    const h = G.physics!.raycast(_v, dir, P.radius + 0.35, this.wallHit);
     const isWall = h.hit && Math.abs(h.normal.y) < 0.5;
-    const inked = isWall && h.face >= 0 && G.paint.sample(h.face, h.u, h.v) - 1 === this.team;
+    const inked = isWall && h.face >= 0 && G.paint!.sample(h.face, h.u, h.v) - 1 === this.team;
     const into = isWall && mh > 0.01 ? -(mv.x * h.normal.x + mv.z * h.normal.z) / mh : 0;
     if (!this.climbing) {
       if (!(inked && into > P.climbAttachDot)) return;
@@ -705,8 +788,8 @@ export class Actor {
     this.wallN.copy(h.normal);
     // is there more of our ink above? (stop at the ink line instead of flying past it)
     _v.copy(this.pos); _v.y += 0.85;
-    const hu = G.physics.raycast(_v, dir, P.radius + 0.45, this._ledgeHit);
-    const capped = hu.hit && Math.abs(hu.normal.y) < 0.5 && !(hu.face >= 0 && G.paint.sample(hu.face, hu.u, hu.v) - 1 === this.team);
+    const hu = G.physics!.raycast(_v, dir, P.radius + 0.45, this._ledgeHit);
+    const capped = hu.hit && Math.abs(hu.normal.y) < 0.5 && !(hu.face >= 0 && G.paint!.sample(hu.face, hu.u, hu.v) - 1 === this.team);
     // climb speed eases in (no instant 0 → 7.5 m/s snap), cling when the stick is neutral, and eases toward the
     // ledge-pop speed as the top comes into reach (so the pop never yanks the squid's vertical speed)
     let want = capped ? 0 : P.climbSpeed * clamp(into, 0, 1) * mag;
@@ -723,7 +806,7 @@ export class Actor {
     this.anim.wallNormal.copy(n);
   }
 
-  _setClimb(on) {
+  _setClimb(on: boolean): void {
     if (this.climbing === on) return;
     this.climbing = on;
     if (!on) this.climbV = 0;
@@ -731,10 +814,10 @@ export class Actor {
   }
 
   // Reached the top of the wall: a controlled hop that clears the ledge by ledgePopClear and carries onto it.
-  _ledgePop(dir) {
-    const P = PLAYER;
+  _ledgePop(dir: THREE.Vector3): void {
+    const P = this.tune;
     _v.copy(this.pos).addScaledVector(dir, P.radius + 0.32); _v.y = this.pos.y + 1.4;
-    const t = G.physics.raycast(_v, DOWN, 2.0, this._ledgeHit, true);
+    const t = G.physics!.raycast(_v, DOWN, 2.0, this._ledgeHit, true);
     const top = t.hit && t.normal.y > WALKABLE ? t.point.y : this.pos.y + 0.3;
     const g = P.gravity * P.apexGravityMul;
     const rise = Math.max(0.25, top + P.ledgePopClear - this.pos.y);
@@ -751,18 +834,18 @@ export class Actor {
   // ------------------------------------------------------------------ super jump
   // Where a teammate super jumping to this actor lands: here — or, mid Ink Jet / Zipline, the take-off point; or, while
   // this actor is itself in a super jump's flight, where that jump comes down (never a point up in the sky)
-  jumpAnchor() {
+  jumpAnchor(): THREE.Vector3 {
     const s = this.specialActive;
     if (s && s.jumpBack && s.origin) return s.origin;
     const j = this.superJumpState;
     return j && j.phase === 'flight' ? j.to : this.pos;
   }
-  canSuperJump() { return this.alive && !this.superJumpState && !this.specialActive && G.match?.playing(); }
+  canSuperJump(): boolean { return this.alive && !this.superJumpState && !this.specialActive && !!G.match?.playing(); }
 
   // Launch toward an ally (or a fixed point). Charge in place as a glowing squid, then arc through the sky.
   // opts.instant: skip the ~0.75 s crouch charge and launch on the next frame; opts.home: an Ink Jet / Zipline jump
   // back to its take-off beacon (the beacon itself marks the landing, so no separate landing marker)
-  superJump(target, opts) {
+  superJump(target: Actor | THREE.Vector3, opts?: { instant?: boolean; home?: boolean }): boolean {
     if (!this.canSuperJump()) return false;
     this.superJumpState = { phase: 'charge', t: opts && opts.instant ? 0.75 : 0, target, from: new THREE.Vector3(), to: new THREE.Vector3(), marker: 0, home: !!(opts && opts.home) };
     this.form = 'squid';
@@ -773,8 +856,8 @@ export class Actor {
     return true;
   }
 
-  _updateSuperJump(dt) {
-    const s = this.superJumpState;
+  _updateSuperJump(dt: number): void {
+    const s = this.superJumpState!;
     s.t += dt;
     if (s.phase === 'charge') {
       this.vel.set(0, 0, 0);
@@ -782,7 +865,7 @@ export class Actor {
       this._probeGround();
       if (s.t > 0.75) {
         const tgt = s.target;
-        const isActor = !!(tgt && tgt.pos && tgt.pos.isVector3);
+        const isActor = !('isVector3' in tgt);   // 아군(Actor) 또는 고정 지점(Vector3)
         if (isActor && !tgt.alive) { this.superJumpState = null; return; }
         s.from.copy(this.pos);
         if (isActor) {
@@ -792,9 +875,9 @@ export class Actor {
           s.to.copy(tp);
           const dx = this.pos.x - tp.x, dz = this.pos.z - tp.z, d = Math.hypot(dx, dz) || 1;
           _v2.set(tp.x + (dx / d) * 1.1, tp.y + 0.6, tp.z + (dz / d) * 1.1);
-          const g = G.physics.raycast(_v2, DOWN, 2.5, this.groundHit);
-          if (g.hit && g.normal.y > 0.6 && !G.level.pointInside(_v.copy(g.point).setY(g.point.y + 0.5), 0.3)) s.to.copy(g.point);
-        } else s.to.copy(tgt);
+          const g = G.physics!.raycast(_v2, DOWN, 2.5, this.groundHit);
+          if (g.hit && g.normal.y > 0.6 && !G.level!.pointInside(_v.copy(g.point).setY(g.point.y + 0.5), 0.3)) s.to.copy(g.point);
+        } else s.to.copy(tgt as THREE.Vector3);
         s.phase = 'flight'; s.t = 0;
         s.dur = 1.15 + Math.min(0.6, s.from.distanceTo(s.to) / 80);
         this.invuln = Math.max(this.invuln, s.dur + 0.2);
@@ -805,7 +888,7 @@ export class Actor {
       return;
     }
     if (s.phase === 'flight') {
-      const k = Math.min(1, s.t / s.dur);
+      const k = Math.min(1, s.t / (s.dur ?? 1));
       // horizontal: ease-in-out; vertical: a quick launch and a steeper, faster drop onto the target
       const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
       const apex = 11 + s.from.distanceTo(s.to) * 0.08;
@@ -824,7 +907,7 @@ export class Actor {
         this.grounded = false;
         this._resolve(false, this.pos.y + 0.4, false);
         if (!this.grounded) { this.grounded = true; this._resolve(false, this.pos.y, true); if (!this.grounded) this.vel.y = -6; }
-        this.addTurf(G.paint.splat(_v.copy(this.pos).setY(this.pos.y + 0.3), 1.4, this.team, { seed: Math.random() }));
+        this.addTurf(G.paint!.splat(_v.copy(this.pos).setY(this.pos.y + 0.3), 1.4, this.team, { seed: Math.random() }));
         G.fx?.burst(this.pos, _v2.set(0, 1, 0), this.color, { count: 14, speed: 5, size: 0.09 });
         if (this.isLocal) emit('shake', { amount: 0.35 });
         rumble(this, 0.55, 0.45, 170);
@@ -834,18 +917,18 @@ export class Actor {
   }
 
   // ------------------------------------------------------------------ specials
-  _startSpecial() {
-    const id = SPECIALS[this.specialId] ? this.specialId : 'slam';
+  _startSpecial(): void {
+    const id = SPECIAL_DEFS[this.specialId] ? this.specialId : 'slam';
     this.special = 0;
     this.stats.specials++;
-    this.ink = PLAYER.inkMax;          // every special refills your tank
+    this.ink = this.tune.inkMax;          // every special refills your tank
     this.form = 'kid';
     this._setClimb(false);
     this.weaponRunner.endDodge();      // a twins / dualies roll (or its planted lock) never carries into the special
     emit('special:use', { actor: this, id });
     G.audio?.play('special_activate', { pos: this.isLocal ? undefined : this.pos, volume: this.isLocal ? 1 : 0.7 });
     rumble(this, 0.25, 0.45, 120);
-    if (id !== 'slam' && id !== 'storm') { G.specials.start(this, id); return; }
+    if (id !== 'slam' && id !== 'storm') { G.specials!.start(this, id); return; }
     if (id === 'slam') {
       this.specialActive = { id, t: 0, phase: 'rise', armor: true, body: true, startY: this.pos.y };
       this.vel.set(this.vel.x * 0.3, 11.5, this.vel.z * 0.3);
@@ -854,30 +937,30 @@ export class Actor {
     } else if (id === 'storm') {
       this.specialActive = { id, t: 0, phase: 'throw', armor: false, body: true };
       this.character.trigger('throw');
-      G.projectiles.throwStorm(this);
+      G.projectiles!.throwStorm(this);
     }
   }
 
-  _updateSpecial(dt) {
-    const s = this.specialActive;
-    if (s.id !== 'slam' && s.id !== 'storm') { G.specials.body(this, s, dt); return; }
+  _updateSpecial(dt: number): void {
+    const s = this.specialActive!;
+    if (s.id !== 'slam' && s.id !== 'storm') { G.specials!.body(this, s, dt); return; }
     s.t += dt;
-    const sp = SPECIALS[s.id];
     if (s.id === 'storm') {
       // brief throw animation, then control returns
       if (s.t > 0.35) this.specialActive = null;
       this.vel.x *= Math.exp(-6 * dt); this.vel.z *= Math.exp(-6 * dt);
       const stick = this.grounded;
-      if (!stick) this.vel.y -= PLAYER.gravity * dt; else this.vel.y = 0;
+      if (!stick) this.vel.y -= this.tune.gravity * dt; else this.vel.y = 0;
       const py = this.pos.y;
       this.pos.addScaledVector(this.vel, dt);
       this._resolve(false, py, stick);
       return;
     }
     // slam
+    const sp = SPECIALS.slam;
     const mv = this.intent.move;
     if (s.phase === 'rise') {
-      this.vel.y -= PLAYER.gravity * 0.9 * dt;
+      this.vel.y -= this.tune.gravity * 0.9 * dt;
       this.vel.x = damp(this.vel.x, mv.x * 2.5, 6, dt); this.vel.z = damp(this.vel.z, mv.z * 2.5, 6, dt);
       if (s.t > sp.rise) { s.phase = 'hang'; s.t = 0; this.vel.set(0, 0.6, 0); }
     } else if (s.phase === 'hang') {
@@ -897,15 +980,15 @@ export class Actor {
     }
   }
 
-  _slamImpact(sp) {
+  _slamImpact(sp: { radius: number; killRadius: number; damageMax: number; damageMin: number }): void {
     const c = this.pos;
     let area = 0;
-    area += G.paint.splat(_v.copy(c).setY(c.y + 0.3), sp.radius * 0.72, this.team, { seed: Math.random() });
+    area += G.paint!.splat(_v.copy(c).setY(c.y + 0.3), sp.radius * 0.72, this.team, { seed: Math.random() });
     for (let i = 0; i < 9; i++) {
       const a = (i / 9) * Math.PI * 2 + Math.random() * 0.3;
       const r = sp.radius * (0.55 + Math.random() * 0.3);
       _v.set(c.x + Math.cos(a) * r, c.y + 0.6, c.z + Math.sin(a) * r);
-      area += G.paint.splat(_v, 1.1 + Math.random() * 0.6, this.team, { seed: Math.random() });
+      area += G.paint!.splat(_v, 1.1 + Math.random() * 0.6, this.team, { seed: Math.random() });
     }
     this.addTurfNoSpecial(area);
     G.fx?.explosion(_v.copy(c).setY(c.y + 0.3), this.color, sp.radius);
@@ -919,17 +1002,17 @@ export class Actor {
       if (d > sp.radius) continue;
       const dmg = d < sp.killRadius ? sp.damageMax : sp.damageMin + (sp.damageMax - sp.damageMin) * 0.3 * (1 - (d - sp.killRadius) / (sp.radius - sp.killRadius));
       _v.copy(a.pos); _v.y += 0.8;
-      if (G.physics.los(_v2.copy(c).setY(c.y + 0.8), _v)) G.projectiles.applyHit(this, a, dmg, 'slam');
+      if (G.physics!.los(_v2.copy(c).setY(c.y + 0.8), _v)) G.projectiles!.applyHit(this, a, dmg, 'slam');
     }
   }
 
-  addTurfNoSpecial(area) { if (area > 0) { this.stats.turf += area; emit('turf', { actor: this, area }); } }
+  addTurfNoSpecial(area: number): void { if (area > 0) { this.stats.turf += area; emit('turf', { actor: this, area }); } }
 
   // ------------------------------------------------------------------ facing
   // Critically-damped angular spring with a rate cap: small corrections are quick, big turns sweep with a smooth
   // ease-in/out instead of an exponential snap. yawVel doubles as the animation's turnRate.
-  _face(dt, isSquid) {
-    const P = PLAYER;
+  _face(dt: number, isSquid: boolean): void {
+    const P = this.tune;
     const a = this.anim;
     const mv = this.intent.move;
     const mh = Math.hypot(mv.x, mv.z);
@@ -970,7 +1053,7 @@ export class Actor {
   }
 
   // ------------------------------------------------------------------ visuals
-  _finishFrame(dt) {
+  _finishFrame(dt: number): void {
     const a = this.anim;
     const isSquid = this.form === 'squid';
     // online proxies arrive already facing the owner's way (net/netmatch.js applyRemote)
@@ -986,18 +1069,18 @@ export class Actor {
     a.grounded = this.grounded;
     a.vy = this.vel.y;
     a.aimPitch = this.aimPitch;
-    a.firing = this.weaponRunner.firingPose() || !!(this.specialActive && this.specialActive.firing > 0);
+    a.firing = this.weaponRunner.firingPose() || !!(this.specialActive && (this.specialActive.firing ?? 0) > 0);
     a.charge = this.weaponRunner.charge;
     a.rolling = this.weaponRunner.rolling;
     a.subAim = !!this.weaponRunner.aimingSub || !!(this.specialActive && this.specialActive.raise);      // bomb cocked / orb held up
     a.form = !isSquid ? 'kid' : this.climbing ? 'climb' : this.submerged ? 'swim' : 'squid';
     if (this.specialActive && (this.specialActive.body || this.specialActive.noSquid)) a.form = 'kid';
     a.specialId = this.specialActive ? this.specialActive.id : null;
-    a.ink = this.ink / PLAYER.inkMax;
+    a.ink = this.ink / this.tune.inkMax;
     a.lowInk = this.ink < 18;
     a.special = this.specialFrac();
     a.invuln = this.invuln > 0;
-    a.hp = clamp(this.hp / PLAYER.hp, 0, 1);
+    a.hp = clamp(this.hp / this.tune.hp, 0, 1);
     a.inEnemyInk = !!this.onEnemy;
     a.surface = this.grounded ? this.groundTeam : 0;
     // visual step smoothing (critically damped, ~0.12 s) — proxies already carry the owner's smoothed height
@@ -1011,7 +1094,7 @@ export class Actor {
     ch.root.position.copy(this.pos);
     ch.root.position.y += this.smoothY + (this.specialActive?.seat || 0);   // riding the crab tank
     ch.root.rotation.y = this.yaw;
-    ch.setHurt(Math.max(this.hurtFlash, 1 - this.hp / PLAYER.hp) * (this.hp < PLAYER.hp ? 1 : 0), G.teamColors[this.enemyTeam]);
+    ch.setHurt(Math.max(this.hurtFlash, 1 - this.hp / this.tune.hp) * (this.hp < this.tune.hp ? 1 : 0), G.teamColors[this.enemyTeam]);
     ch.update(dt, a);
     this._events(a);
     // swim wake
@@ -1022,7 +1105,7 @@ export class Actor {
   }
 
   // state-change events for the FX / HUD / audio streams (docs/EVENTS.md)
-  _events(a) {
+  _events(a: Actor['anim']): void {
     const kidForm = this.form === 'squid' ? 'squid' : 'kid';
     if (kidForm !== this._evForm) { this._evForm = kidForm; emit('actor:form', { actor: this, form: kidForm, surface: this.groundTeam }); }
     const sub = a.form === 'swim' || a.form === 'climb';
@@ -1035,5 +1118,5 @@ export class Actor {
   }
 
   // Visual (smoothed) world position of the feet — cameras and name tags should follow this, not the raw pos.
-  visualPos(out) { return out.set(this.pos.x, this.pos.y + this.smoothY, this.pos.z); }
+  visualPos(out: THREE.Vector3): THREE.Vector3 { return out.set(this.pos.x, this.pos.y + this.smoothY, this.pos.z); }
 }

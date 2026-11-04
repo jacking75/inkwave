@@ -36,6 +36,8 @@ import { resolveLook } from './style/lookProfile.js';
 import { applyLookToDocument } from './style/lookDom.js';
 import { SfxWords } from './style/sfxWords.js';
 import { withProportion } from './game/cast/proportion.js';
+import { withCast } from './game/cast/castCharacter.js';
+import { CampaignPreview } from './campaign/preview.js';
 import { registerStoryThemes, isStoryTheme } from './world/themes-story.js';
 import { ACTION_CAMERA } from './game/cameraRig.js';
 import { ColorReturn } from './campaign/colorReturn.js';
@@ -227,7 +229,9 @@ class Game {
   declare _tmpC: THREE.Color;
   declare rig: CameraRig;
   declare words: SfxWords | null;
-  declare colorReturn: ColorReturn | null;   // 캠페인 세션만 가진다(개발용 ?colorreturn 제외). null = 전부 채색
+  declare colorReturn: ColorReturn | null;
+  // ?tune=campaign: 캠페인 전투·인물 연출 미리보기(오프라인 경기마다 만들고 경기 정리 때 끝낸다, 35번 R011~R020)
+  declare campaignPreview: CampaignPreview | null;   // 캠페인 세션만 가진다(개발용 ?colorreturn 제외). null = 전부 채색
   declare fxHooks?: ReturnType<typeof initFxHooks> | null;
   declare screenfx?: ScreenFX | null;
   declare showcase: Showcase;
@@ -237,6 +241,7 @@ class Game {
   declare fpsN: number;
   declare fps: number;
   declare _lastTs: number | undefined;
+  declare _rawDt?: number;   // 이번 프레임의 실시간 dt(캠페인 시간 배율 적용 전)
   declare api: MenuApi;
   declare bootMs: number;
   declare debug: DebugHooks;
@@ -453,7 +458,7 @@ class Game {
       loadModule('./audio/audio.js', true), loadModule('./audio/music.js', true),
     ]);
     // 귀여운 비율(R010): 모든 생성 경로가 이 클래스를 쓰므로 여기서 감싼다. 원본 룩이면 머리 배율 1이다.
-    this.CharacterClass = withProportion(charMod.Character, () => resolveLook(this.settings, this.touchMode).headScale);
+    this.CharacterClass = withCast(withProportion(charMod.Character, () => resolveLook(this.settings, this.touchMode).headScale));
     // 이야기 테마(R006): THEMES 표 끝에 inkwash·dawn을 더한다(기존 테마는 그대로)
     if (envMod.Environment?.THEMES) registerStoryThemes(envMod.Environment.THEMES);
     try { this.PropKit = (await import('./world/props.js')).PropKit; } catch (e) { console.error('[inkwave] prop kit failed to load', e); this.PropKit = null; }
@@ -557,7 +562,7 @@ class Game {
     // is indistinguishable from a real slowdown both to a player watching the counter and to anyone reading it over
     // a debugger, and it sent this investigation down several blind alleys.
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) { this.fps = 0; this.fpsAcc = 0; this.fpsN = 0; }
+      if (document.hidden) { this.fps = 0; this.fpsAcc = 0; this.fpsN = 0; this.campaignPreview?.pause(); }
       else { this._lastTs = undefined; this.timer.update(); }
     });
     G.mode = 'menu';
@@ -995,7 +1000,7 @@ class Game {
 
   // ---------------------------------------------------------------------------------------- attract mode
   _startAttract() {
-    if (this.match) this.match.dispose();
+    if (this.match) { this._stopCampaignPreview(); this.match.dispose(); }
     this.rig.dioFlip = false;
     G.projectiles!.clear(); G.subs!.clear(); G.specials!.clear(); G.fx!.clear?.(); G.paint!.clear(); this._clearDeathMarks();
     if (window.inkwaveNative?.performance?.menuAttract === false) {
@@ -1071,7 +1076,7 @@ class Game {
     // start buffering this round's match song and the final-minute song while the world loads
     G.music?.preload?.('battle'); if (!practice) G.music?.preload?.('battle_final');
     this.showcase.hide();
-    if (this.match) this.match.dispose();
+    if (this.match) { this._stopCampaignPreview(); this.match.dispose(); }
     G.projectiles!.clear(); G.subs!.clear(); G.specials!.clear(); G.fx!.clear?.(); G.paint!.clear(); this._clearDeathMarks();
     let map = MAPS.find((m) => m.id === opts.mapId) || MAPS[0];
     // offline never plays an online-only stage (the menus don't offer one; a stray ?autostart / api call falls back)
@@ -1100,6 +1105,8 @@ class Game {
     }));
     window.inkwaveNative?.performance?.mark('actors:setup:start');
     m.setup();
+    // 캠페인 미리보기는 셰이더 예열 전에 붙인다(잔향 소멸 셰이더가 예열에 들어간다)
+    if (TUNE_CAMPAIGN) this.campaignPreview = new CampaignPreview(m, G.scene!, this.uiRoot);
     window.inkwaveNative?.performance?.mark('actors:setup:end');
     await this._warmCharacters(m);
     window.inkwaveNative?.performance?.mark('actors:warm:end');
@@ -1116,6 +1123,8 @@ class Game {
     }
     this._fade(0, 500);
   }
+
+  _stopCampaignPreview() { this.campaignPreview?.stop(); this.campaignPreview = null; }
 
   _inPractice() { return !!(this.match && this.match.practice && G.mode === 'match'); }
 
@@ -1158,6 +1167,7 @@ class Game {
   practiceReset() {
     if (!this._inPractice()) return;
     const a = this.match!.local;
+    this.campaignPreview?.restart();
     G.projectiles!.clear(); G.subs!.clear(); G.specials!.clear(); G.fx!.clear?.(); G.paint!.clear(); this._clearDeathMarks();
     if (!a) return;
     a.respawn();
@@ -1173,7 +1183,7 @@ class Game {
     await this._fade(1, 350);
     G.music?.stop?.(0.3); this._musicTrack = null;
     this.showcase.hide();
-    if (this.match) this.match.dispose();
+    if (this.match) { this._stopCampaignPreview(); this.match.dispose(); }
     G.projectiles!.clear(); G.subs!.clear(); G.specials!.clear(); G.fx!.clear?.(); G.paint!.clear(); this._clearDeathMarks();
     const map = MAPS.find((m) => m.id === cfg.map) || MAPS[0];
     await this._buildWorld(map, cfg.mode);   // no-op when this stage (+ mode variant) is already built
@@ -1272,6 +1282,7 @@ class Game {
 
   pause() {
     if (!this.match || this.match.attract || this.match.paused) return;
+    this.campaignPreview?.pause();
     // only a live round (or its intro) can pause — never on top of time's up / judge / results
     if (this.match.state !== 'playing' && this.match.state !== 'intro') return;
     if (G.netm) {   // online: the match carries on underneath the menu
@@ -1464,6 +1475,10 @@ class Game {
     if (this.fpsAcc > 0.5) { this.fps = Math.round(this.fpsN / this.fpsAcc); this.fpsAcc = 0; this.fpsN = 0; }
     this._dynRes(dt);
     dt = Math.min(dt, 1 / 24);
+    // 캠페인 시간 배율(히트스톱·느린 시간): 시뮬레이션만 느려지고 말풍선·HUD는 실시간이다
+    const rawDt = dt;
+    if (G.campaign) dt = G.campaign.time.step(dt).dt;
+    this._rawDt = rawDt;
     if (this.colorReturn) { this.colorReturn.update(dt); this.R.setColorReturn(this.colorReturn.state()); }
     this._frame(dt);
   }
@@ -1536,6 +1551,7 @@ class Game {
     if (!m || !m.paused) G.fx!.update(dt, G.camera);
     if (!m || !m.paused) this.fxHooks?.update?.(dt);
     if (m && !m.paused && !m.attract) this._ageDeathMarks(dt);
+    if (this.campaignPreview) this.campaignPreview.update(dt, this._rawDt ?? dt, G.camera, !m || !!m.paused || m.state !== 'playing');
     this.screenfx?.update?.(dt, this);
     // the TAB map (also while splatted, planning a Super Jump): lift the splatted desaturation + ink flood off the stage
     // so the ink and the pins read

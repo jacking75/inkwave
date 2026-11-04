@@ -43,7 +43,7 @@
 
 `cargo`는 현재 `onlineOnly`, `noBots`, `noBoss`로 지정되어 있다. 첫 캠페인 범위에는 넣지 않는다. 해당 플래그를 지워 재사용하는 방식은 봇 이동과 보스 전투장의 검증을 건너뛰게 되므로 별도 확장 후보로 남긴다.
 
-근거는 [공통 설정과 콘텐츠 목록](../../src/config.ts), [캐릭터 상태](../../src/game/actor.js), [봇](../../src/game/bots.js), [보스 모드](../../src/boss/bossMode.js), [보스](../../src/boss/boss.js), [공격과 예고](../../src/boss/bossHazards.js), [게임 진행과 현재 보상](../../src/main.ts)이다.
+근거는 [공통 설정과 콘텐츠 목록](../../src/config.ts), [캐릭터 상태](../../src/game/actor.ts), [봇](../../src/game/bots.js), [보스 모드](../../src/boss/bossMode.js), [보스](../../src/boss/boss.js), [공격과 예고](../../src/boss/bossHazards.js), [게임 진행과 현재 보상](../../src/main.ts)이다.
 
 ## 3. 플레이어가 느껴야 할 핵심 재미
 

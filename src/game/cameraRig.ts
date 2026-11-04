@@ -129,6 +129,7 @@ export class CameraRig {
   declare profile: CameraProfile | null;
   declare surgeKickT: number;     // 남은 서지 FOV 킥 시간 s
   declare waveLevel: 0 | 1 | 2 | 3;
+  declare fovKickDeg: number; declare fovKickT: number;   // 일회성 FOV 킥(퍼펙트 잠수 −4도)
   declare shakeSeed: number;
   declare shoulder: number | undefined;
   declare blend: PoseBlend | null;
@@ -177,7 +178,7 @@ export class CameraRig {
     // recoil: pitch-only kick on an exact critically-damped spring (stable at any frame rate)
     this.kickS = new Spring(0);
     this._traumaIn = 0;            // pending trauma, fed in over a few frames so a shake never pops in on one frame
-    this.profile = null; this.surgeKickT = 0; this.waveLevel = 0;
+    this.profile = null; this.surgeKickT = 0; this.waveLevel = 0; this.fovKickDeg = 0; this.fovKickT = 0;
     this.shakeSeed = Math.random() * 100;
     // blending between modes
     this.blend = null;
@@ -214,7 +215,7 @@ export class CameraRig {
   setProfile(p: CameraProfile | null): void {
     this.profile = p;
     this.dist = p ? p.dist : 4.5;
-    this.surgeKickT = 0; this.waveLevel = 0;
+    this.surgeKickT = 0; this.waveLevel = 0; this.fovKickDeg = 0; this.fovKickT = 0;
   }
 
   get _motionOk(): boolean { return G.settings?.reduceMotion !== true; }
@@ -222,6 +223,8 @@ export class CameraRig {
   // 서지 동안 FOV를 넓힌다(멀미 설정이면 없음)
   kickSurge(seconds: number): void { if (this.profile && this._motionOk) this.surgeKickT = Math.max(this.surgeKickT, seconds); }
   setWaveLevel(level: 0 | 1 | 2 | 3): void { this.waveLevel = level; }
+  // deg도만큼 seconds초 동안 FOV를 당긴다(음수 = 좁힘). 프로필이 있을 때만이며 멀미 설정이면 없음
+  kickFov(deg: number, seconds: number): void { if (this.profile && this._motionOk) { this.fovKickDeg = deg; this.fovKickT = seconds; } }
   // 처치 펀치: 반동 스프링 + 짧은 흔들림. 멀미 설정이면 0이다.
   punch(kind: 'kill' | 'elite'): void {
     const p = this.profile;
@@ -499,6 +502,7 @@ export class CameraRig {
     if (P && this._motionOk) {
       if (this.surgeKickT > 0) { this.surgeKickT = Math.max(0, this.surgeKickT - dt); fk += P.fovKickSurge; }
       fk += P.fovKickWave[this.waveLevel];
+      if (this.fovKickT > 0) { this.fovKickT = Math.max(0, this.fovKickT - dt); fk += this.fovKickDeg; }
     }
     this.fovKick = damp(this.fovKick, fk, 5, dt);
     const charging = a.weaponRunner?.charging ? a.weaponRunner.charge! : 0;

@@ -27,6 +27,7 @@ import { bossSilhouette, bossEmblem, BOSS_GLYPH, BOSS_NAME, BOSS_EPITHET } from 
 import { WhatsNew } from './news.js';
 import type { MapDef } from '../config.js';
 import type { Settings } from '../core/ctx.js';
+import { CAST_LOOKS, type CastId, type ReactKind } from '../game/cast/cast.js';
 
 // ---------------------------------------------------------------- types
 // ui-util.js는 아직 JS라 h()의 props가 기본값 null에서 `null`로 추론된다. 같은 함수를 정확한 시그니처로 본다(실행은 그대로).
@@ -192,6 +193,7 @@ interface MenuShowcase {
   portrait?: (req: PortraitReq, cb: (cv: HTMLCanvasElement | null) => void) => PortraitHandle | undefined;
   setStyle?: (style: LookStyle, cause: string) => void;
   showLocker?: (style: LookStyle, color: ColorLike, weapon: string) => void;
+  castCheck?: (id: CastId | null, kind?: ReactKind | null) => string | null;
   showHub?: (style: LookStyle, color: ColorLike, weapon: string) => void;
 
   hide: () => void;
@@ -351,6 +353,9 @@ const WIPES = new Set(['loading>title', 'title>main', 'results>main', 'pause>mai
 const LIGHT = new Set(['main', 'mode', 'loadout', 'setup', 'locker', 'settings', 'howto', 'credits', 'pause', 'online', 'lobby']);
 // ?netmock=1 → an offline stand-in for G.net (src/net/mock.js) so the online screens work without the relay
 const NETMOCK = typeof location !== 'undefined' && new URLSearchParams(location.search).get('netmock') === '1';
+// 표정 검수(35번 R011): 라커에 인물(플레이어·모라·틸)과 사건 버튼을 더한다. 개발 확인용이다.
+const CASTCHECK = typeof location !== 'undefined' && new URLSearchParams(location.search).has('castcheck');
+const CASTCHECK_EVENTS: Array<[ReactKind, string]> = [['kill', '처치'], ['hurt', '피격'], ['bigHurt', '큰 피격'], ['perfect', '퍼펙트'], ['surge', '서지'], ['objective', '목표'], ['lowHp', '저체력'], ['waveUp', '물결↑'], ['waveDown', '물결↓'], ['idleLong', '멈춤']];
 // room codes (the session generates them from this set: no O/0, I/1)
 const CODE_ABC = 'BCEFGHJKLMNPQRTUVXYZ23456789';   // as session.js: no O/0, I/1, and no W/A/S/D (menu keys)
 const TEAM_LABEL = ['ALPHA', 'BRAVO'];
@@ -1921,10 +1926,36 @@ export class Menus {
     const sheet = h('div', { class: 'iw-lsheet' });
     const tag = h('div', { class: 'iw-ltag iw-in iw-in--down' }, h('span', { class: 'iw-ltag__blob', html: splatSVG({ seed: 44, cls: 'iw-fa', r: 60, arms: 9, drops: 3 }) }), nameRow, sheet);
 
+    // ---- 표정 검수(?castcheck): 인물을 고르고 같은 사건을 눌러 표정·대사를 비교한다
+    let castId: CastId = 'player';
+    const castLine = h('span', { class: 'iw-castcheck__line' });
+    const castRow = CASTCHECK ? h('div', { class: 'iw-castcheck', style: { position: 'absolute', left: '2vw', bottom: '2vh', display: 'flex', flexWrap: 'wrap', gap: '6px', maxWidth: '46vw', zIndex: 9 } }) : null;
+    if (castRow) {
+      const pick = (id: CastId) => {
+        castId = id;
+        const look = id === 'player' ? style : CAST_LOOKS[id as 'mora' | 'teal'].style;
+        const col = id === 'player' ? teamColor() : CAST_LOOKS[id as 'mora' | 'teal'].color;
+        if (sc && sc.showLocker) safeCall(() => sc.showLocker!(look, col, this._loadout().weapon));
+        safeCall(() => sc?.castCheck?.(id));
+        castLine.textContent = id;
+      };
+      for (const [id, label] of [['player', '플레이어'], ['mora', '모라'], ['teal', '틸']] as Array<[CastId, string]>) {
+        const b = h('button', { class: 'iw-btn iw-btn--small', 'data-cast': id }, label);
+        b.addEventListener('click', () => pick(id));
+        castRow.appendChild(b);
+      }
+      for (const [kind, label] of CASTCHECK_EVENTS) {
+        const b = h('button', { class: 'iw-btn iw-btn--small', 'data-react': kind }, label);
+        b.addEventListener('click', () => { const t = sc?.castCheck?.(castId, kind); castLine.textContent = `${castId} · ${kind}: ${t ?? '(표정만)'}`; });
+        castRow.appendChild(b);
+      }
+      castRow.appendChild(castLine);
+    }
+
     const el = h('div', { class: 'iw-screen iw-locker' },
       h('div', { class: 'iw-scrim-left' }),
       this._header('LOCKER', { sub: 'Choose your squidkid, then make it yours' }),
-      body, tag, spinHint,
+      body, tag, spinHint, ...(castRow ? [castRow] : []),
       this._prompts([['Enter', 'A', 'Wear'], [['Q', 'E'], null, 'Tabs'], ['R', null, 'Shuffle'], ['Esc', 'B', 'Done']]));
     el.querySelector('.iw-prompts')!.children[1].querySelector('.iw-padg')!.innerHTML = padGlyph('LB') + padGlyph('RB');
 
@@ -4113,7 +4144,7 @@ export class Menus {
       const n = h('span', { class: `iw-pstat ${cls}` }, h('i', { html: icon }), b, h('small', null, label));
       return { el: n, b };
     };
-    const sTurf = stat('iw-pstat--turf', GLYPHS.drop, 'TURF'), sSplat = stat('', SPLAT_ICON, 'SPLATS'), sDeath = stat('', DEATH_ICON, 'SPLATTED'), sSp = stat('iw-pstat--sp', specialIcon((G.local && G.local.specialId) || (this._weapons()[selfP.weapon] || {}).special), 'SPECIAL');
+    const sTurf = stat('iw-pstat--turf', GLYPHS.drop, 'TURF'), sSplat = stat('', SPLAT_ICON, 'SPLATS'), sDeath = stat('', DEATH_ICON, 'SPLATTED'), sSp = stat('iw-pstat--sp', specialIcon(((G.local && G.local.specialId) || (this._weapons()[selfP.weapon] || {}).special) as string), 'SPECIAL');
     const you = h('div', { class: 'iw-pyou' },
       h('span', { class: 'iw-pyou__av', html: SQUID }),
       h('div', { class: 'iw-pyou__id' }, h('small', null, 'YOUR MATCH'), h('b', null, selfP.name || 'You')),

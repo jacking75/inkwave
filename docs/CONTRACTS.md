@@ -39,7 +39,7 @@ c.update(dt, s)                   // every frame, s = AnimState below
 c.trigger(name, arg)              // one-shots: 'shoot' | 'flick' | 'throw' | 'land'(arg=impact speed m/s) | 'jump' | 'hit' | 'special_leap' | 'special_slam' | 'spawn' | 'charge_release'
                                   // 'hit' arg = { x, z, amp }: unit direction TOWARD the attacker in the character's root space
                                   //   (+z = facing, +x = the character's left); valueOf() → amp (0.4..1.2) for old numeric callers
-c.onEvent = (name, data) => {}    // set by actor.js; character.js calls it ('footstep' {foot, pos, speed}) → bus 'actor:<name>'
+c.onEvent = (name, data) => {}    // set by actor.ts; character.js calls it ('footstep' {foot, pos, speed}) → bus 'actor:<name>'
 c.setDance(name|null)             // looping non-gameplay anims: 'victory' | 'defeat' | 'menu_idle' | 'lobby_pose' ; null → gameplay
 c.setHurt(amount0to1, enemyColor) // enemy-ink splotches on the body/clothes (fades as amount → 0)
 c.setVisible(bool)
@@ -63,7 +63,7 @@ AnimState:
   lowInk,                // bool → tank blinks
   special,               // 0..1; at 1 the hair/tentacles glow & pulse (special ready)
   invuln,                // bool → gentle flashing (spawn protection)
-  // optional (supplied by actor.js since v1.1; character.js must tolerate their absence):
+  // optional (supplied by actor.ts since v1.1; character.js must tolerate their absence):
   turnRate,              // rad/s, + = turning left / CCW seen from above
   hp,                    // 0..1
   inEnemyInk,            // bool

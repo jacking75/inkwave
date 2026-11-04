@@ -37,8 +37,13 @@ export const OUTFITS = [
   { shirt: '#ebe4d6', shorts: '#41608f', shoe: '#f2f1ec', sole: '#d9cbb0', sock: '#f7f7f4', strap: '#39404f', pattern: 7 },
   { shirt: '#f2f2ef', shorts: '#23262d', shoe: '#23262d', sole: '#f2f1ec', sock: '#f7f7f4', strap: '#23262d', pattern: 8 },
   { shirt: '#1f2a44', shorts: '#1f2a44', shoe: '#f2f1ec', sole: '#1f2a44', sock: '#f7f7f4', strap: '#161b29', pattern: 9 },
+  // 35번 R014: 모라의 황토 작업복·틸의 회색 후드 조끼(색 조합이다. 옷 형태는 기존 티셔츠 재단을 쓴다)
+  { shirt: '#c79a4e', shorts: '#8a6a34', shoe: '#4a3a2a', sole: '#2b2622', sock: '#e6e0d0', strap: '#6b4f2a', pattern: 0 },
+  { shirt: '#8e949d', shorts: '#3b4048', shoe: '#2a2d33', sole: '#e9e7e1', sock: '#2a2d33', strap: '#5c626b', pattern: 2 },
 ];
-export const OUTFIT_NAMES = ['Basic Ringer', 'Night Pinstripe', 'Raglan Runner', 'Chevron Tee', 'Breton Stripe', 'Splatter Tee', 'Splat Camo', 'Dip-Dye Tee', 'Pro Jersey', 'Track Top'];
+// 시드 파생·무작위 외형이 고르는 의상 수(35번 R014 이전의 10벌). 뒤의 의상은 인물(모라·틸)과 라커 선택 전용이다.
+const SEED_OUTFITS = 10;
+export const OUTFIT_NAMES = ['Basic Ringer', 'Night Pinstripe', 'Raglan Runner', 'Chevron Tee', 'Breton Stripe', 'Splatter Tee', 'Splat Camo', 'Dip-Dye Tee', 'Pro Jersey', 'Track Top', 'Work Overalls', 'Hoodie Vest'];
 
 // ---- eyes: iris gradient [top, bottom] ---------------------------------------------------------------------------
 export const IRIS = [
@@ -68,7 +73,8 @@ export const BROWS = ['classic', 'bold', 'arched', 'straight'];
 export const BROW_NAMES = ['Classic', 'Bold', 'Arched', 'Straight'];
 
 // ---- named full looks ("characters") the locker can offer one-click -----------------------------------------------
-export const PRESETS = [
+export interface LookPreset { id: string; name: string; blurb: string; style: Required<StyleInput> }
+export const PRESETS: LookPreset[] = [
   { id: 'rookie', name: 'Rookie', blurb: 'Fresh off the ferry, ringer tee and long tentacles.', style: { hair: 0, skin: 0, outfit: 0, eyes: 0, hat: 0, brows: 0 } },
   { id: 'dash', name: 'Dash', blurb: 'Track-top sprinter with a spiky quiff.', style: { hair: 1, skin: 5, outfit: 9, eyes: 1, hat: 0, brows: 1 } },
   { id: 'pip', name: 'Pip', blurb: 'Twin tails, breton stripes, always first to the ferry deck.', style: { hair: 2, skin: 4, outfit: 4, eyes: 4, hat: 0, brows: 2 } },
@@ -79,14 +85,23 @@ export const PRESETS = [
   { id: 'suki', name: 'Suki', blurb: 'Side-swept and too cool for the lobby.', style: { hair: 7, skin: 8, outfit: 1, eyes: 6, hat: 0, brows: 2 } },
   { id: 'kelp', name: 'Kelp', blurb: 'Beanie season, all season.', style: { hair: 3, skin: 2, outfit: 2, eyes: 3, hat: 2, brows: 0 } },
   { id: 'skipper', name: 'Skipper', blurb: 'Snapback, raglan, harbour regular.', style: { hair: 0, skin: 5, outfit: 3, eyes: 0, hat: 1, brows: 1 } },
+  // 35번 3.2절 플레이어 기본 프리셋(R014)
+  { id: 'tide', name: 'Tide', blurb: 'Short tentacles, round cheeks, big bright eyes.', style: { hair: 3, skin: 4, outfit: 3, eyes: 1, hat: 0, brows: 0 } },
+  { id: 'pebble', name: 'Pebble', blurb: 'Short swoop, freckles and a beanie.', style: { hair: 7, skin: 1, outfit: 2, eyes: 5, hat: 2, brows: 3 } },
+  { id: 'coral-jr', name: 'Coral Jr.', blurb: 'Twin tails and a snaggle-tooth grin.', style: { hair: 2, skin: 5, outfit: 4, eyes: 4, hat: 0, brows: 2 } },
 ];
 
-const wrap = (v, n) => ((Math.round(v) % n) + n) % n;
+// 저장·전달되는 외형이다. 빠진 값은 resolveStyle이 이름 시드로 채운다. 다른 키(이전 판·호스트가 더한 값)도 그대로 둔다.
+export type StyleInput = { hair?: number; skin?: number; outfit?: number; eyes?: number; hat?: number; brows?: number };
+export type ResolvedStyle = { hair: number; skin: number; outfit: number; eyes: number; hat: number; brows: number };
+
+const wrap = (v: number, n: number): number => ((Math.round(v) % n) + n) % n;
 /** Normalise a (possibly partial / out-of-range) style to valid indices; unspecified fields derive from the seed. */
-export function resolveStyle(st = {}, seed = 0) {
+export function resolveStyle(st: StyleInput = {}, seed = 0): ResolvedStyle {
   const hair = wrap(st.hair ?? seed % HAIR_STYLES, HAIR_STYLES);
   const skin = wrap(st.skin ?? (seed >> 3) % SKIN_TONES.length, SKIN_TONES.length);
-  const outfit = wrap(st.outfit ?? (hair + skin + (seed >> 6)) % OUTFITS.length, OUTFITS.length);
+  // 이름에서 파생하는 의상은 처음 10벌 안에서만 고른다(표 끝에 의상을 더해도 저장된 파생 외형이 바뀌지 않게)
+  const outfit = wrap(st.outfit ?? (hair + skin + (seed >> 6)) % SEED_OUTFITS, OUTFITS.length);
   const eyes = wrap(st.eyes ?? (seed >> 9) % IRIS.length, IRIS.length);
   const hat = wrap(st.hat ?? 0, HATS.length);
   const brows = wrap(st.brows ?? 0, BROWS.length);
@@ -94,16 +109,16 @@ export function resolveStyle(st = {}, seed = 0) {
 }
 
 /** A complete random look (bots, "shuffle" in the locker). rng() → [0, 1). About a third of rolls wear headgear. */
-export function randomStyle(rng = Math.random) {
-  const pick = (n) => Math.min(n - 1, (rng() * n) | 0);
+export function randomStyle(rng: () => number = Math.random): ResolvedStyle {
+  const pick = (n: number): number => Math.min(n - 1, (rng() * n) | 0);
   return {
-    hair: pick(HAIR_STYLES), skin: pick(SKIN_TONES.length), outfit: pick(OUTFITS.length), eyes: pick(IRIS.length),
+    hair: pick(HAIR_STYLES), skin: pick(SKIN_TONES.length), outfit: pick(SEED_OUTFITS), eyes: pick(IRIS.length),
     hat: rng() < 0.34 ? 1 + pick(HATS.length - 1) : 0, brows: pick(BROWS.length),
   };
 }
 
 /** Swatch colours for UI chips: { skin, eyes: [a, b], shirt, shorts, ... } of a (resolved) style. */
-export function styleSwatch(st) {
+export function styleSwatch(st: StyleInput) {
   const s = resolveStyle(st);
   const o = OUTFITS[s.outfit];
   return { skin: SKIN_TONES[s.skin], eyes: IRIS[s.eyes], shirt: o.shirt, shorts: o.shorts, shoe: o.shoe, sock: o.sock, strap: o.strap };
@@ -113,7 +128,12 @@ export function styleSwatch(st) {
  * Write a resolved style's colours into a character uniform bundle (makeCharUniforms()): outfit colourway + pattern,
  * iris gradient, and the optional face uniforms. The Character constructor calls this (see docs/HALYARD.md request).
  */
-export function applyStyleUniforms(u, st) {
+interface ColorUniform { value: { set(hex: string): unknown } }
+export interface StyleUniforms {
+  uShirt: ColorUniform; uShorts: ColorUniform; uShoe: ColorUniform; uSole: ColorUniform; uSock: ColorUniform; uStrap: ColorUniform;
+  uPattern: { value: number }; uIris: ColorUniform; uIris2: ColorUniform;
+}
+export function applyStyleUniforms(u: StyleUniforms, st: ResolvedStyle): void {
   const o = OUTFITS[st.outfit] || OUTFITS[0];
   u.uShirt.value.set(o.shirt); u.uShorts.value.set(o.shorts); u.uShoe.value.set(o.shoe);
   u.uSole.value.set(o.sole); u.uSock.value.set(o.sock); u.uStrap.value.set(o.strap); u.uPattern.value = o.pattern;
