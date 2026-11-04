@@ -5,8 +5,8 @@
 <h1 align="center">INKWAVE</h1>
 
 <p align="center">
-  브라우저에서 즐기는 스플래툰 스타일의 독창적인 4대4 영역 쟁탈 슈팅 게임이다.<br>
-  바닥을 칠하고, 아군 잉크 속을 헤엄치며, 상대 팀보다 넓은 영역을 차지한다.
+  <b>되찾는 물결</b> — 색을 잃은 항구를 잉크로 되살리는 1인 스토리 액션 캠페인이 중심이며 항구 대전 모드를 함께 제공한다.<br>
+  바닥을 칠하고, 잉크 속을 헤엄치며, 적의 공격을 읽고 되받아쳐 항구에 색을 되돌린다. 항구 대전에서는 기존 4대4 영역 쟁탈을 즐긴다.
 </p>
 
 <p align="center">
@@ -105,11 +105,14 @@ Windows에는 **Visual Studio IDE 전체가 필요하지 않다.** Tauri의 공�
 | `npm run desktop:typecheck` | 새 TypeScript 호스트 연결과 준비 도구를 검사한다. 앱을 기동하지 않는다. 기존 게임 전체의 TypeScript 이전 완료를 뜻하지 않는다. |
 | `npm run desktop:prepare` | 타입 검사 후 `.desktop-dist/`에 웹 자산과 호스트 연결을 생성한다. 기존 `dist/`와 원본 자산은 수정하지 않는다. |
 | `npm run desktop:check` | 웹 자산 준비 후 Rust를 최대 두 작업으로 검사한다. 앱은 기동하지 않지만 컴파일·다운로드 비용은 발생할 수 있다. |
-| `npm run serve` | 기존 웹 개발 서버를 시작한다. 일반 웹은 기존 표현·설정을 사용한다. |
+| `npm run dev` | 타입 검사(`tsc --noEmit`) 통과 후 `.web-dev/`를 조립하고 포트 8490 웹 서버와 변경 감시를 시작한다. `.ts`는 esbuild로 변환하고 `.js`는 그대로 복사한다. 반영은 새로고침이며 타입 오류가 나면 직전 출력이 남고 화면에 붉은 상자로 알린다. |
+| `npm run serve` | `npm run dev`와 같은 경로를 감시 없이 한 번 조립해 띄운다. |
+| `npm run typecheck` | 게임 클라이언트(`tsconfig.json`)와 웹 개발 도구(`tools/client/`)의 타입 검사이다. |
+| `npm run compile` | `.web-dev/`만 조립한다(서버 없음). Node 도구 `tools/light-shots.mjs`·`stage-shots.mjs`는 이 출력을 읽는다. |
 | `npm run package` | Tauri 릴리스와 Windows NSIS 설치 파일을 만든다. 출력은 `src-tauri/target/release/` 아래이며 현재 패키징 검증은 미실행이다. |
 | `npm run check` | 기존 JavaScript 구문 검사이다. TypeScript 타입 검사나 게임 동작 검증을 대신하지 않는다. |
 | `npm run check-maps` | 기존 맵 정합성 검사이다. 실제 이동·완주·성능 검증을 대신하지 않는다. |
-| `npm run build` | 기존 웹 파일을 `dist/`에 수집한다. Tauri 앱 생성이나 TypeScript 컴파일을 수행하지 않는다. |
+| `npm run build` | `npm run compile` 뒤 컴파일 출력과 웹 파일을 `dist/`에 수집한다. Tauri 앱은 만들지 않는다. |
 | `npm run smoke`, `npm run botlab`, `npm run net-test` | 게임을 기동하는 자동 검사이다. 이번 성능 검사에서는 실행하지 않았다. |
 
 수정 후 검사도 먼저 스크립트 내용을 확인하고 앱을 기동하지 않는 검사부터 수행한다. 빌드 성공과 실제 성능·패드 조작 검증은 별도로 판정한다. Tauri로 바꿨다는 이유만으로 실행을 재개하지 않는다.
@@ -120,7 +123,7 @@ Windows에는 **Visual Studio IDE 전체가 필요하지 않다.** Tauri의 공�
 
 ## 동작 원리
 
-- **텍스처 공간에 잉크를 칠한다.** 칠할 수 있는 각 표면은 하나의 4K 텍스처 아틀라스 안에 자기 영역을 갖는다. GPU가 이 영역에 잉크 자국을 그리는 동안 CPU의 저해상도 격자는 영역 점수와 게임 판정에 사용하는 조회 결과를 동기화한다. 레벨 셰이더는 잉크 고유의 높이, 광택, 젖은 정도를 반영해 표면 위에 잉크를 덧입힌다. [`src/world/paint.js`](src/world/paint.js)와 [`src/world/inkShading.js`](src/world/inkShading.js)를 참고한다.
+- **텍스처 공간에 잉크를 칠한다.** 칠할 수 있는 각 표면은 하나의 4K 텍스처 아틀라스 안에 자기 영역을 갖는다. GPU가 이 영역에 잉크 자국을 그리는 동안 CPU의 저해상도 격자는 영역 점수와 게임 판정에 사용하는 조회 결과를 동기화한다. 레벨 셰이더는 잉크 고유의 높이, 광택, 젖은 정도를 반영해 표면 위에 잉크를 덧입힌다. [`src/world/paint.js`](src/world/paint.js)와 [`src/world/inkShading.js`](src/world/inkShading.ts)를 참고한다.
 - **스테이지를 데이터로 정의한다.** 지형 데이터는 경기장 절반을 구성하는 상자와 경사로 목록이다. 나머지 절반은 이를 180° 회전해 만들므로 두 팀은 항상 동일한 조건의 지형에서 플레이한다. 주변광 차폐는 `tools/bake-ao.mjs`로 오프라인에서 미리 계산한다. [`src/world/maps.js`](src/world/maps.js)를 참고한다.
 - **캐릭터를 전적으로 절차적으로 생성한다.** 지오메트리, 재질, 뼈대 60개로 구성된 리그, 이동·오징어 형태·무기 자세·부가 움직임을 포함한 모든 애니메이션을 코드로 정의한다. 스프링 기반 자세 시스템이 움직임을 구동한다. [`docs/RIG.md`](docs/RIG.md)를 참고한다.
 - **시스템은 이벤트로 소통한다.** 무기, 캐릭터, 경기 시스템이 타입이 정의된 이벤트를 발생시키고 효과, HUD, 오디오 시스템이 이를 구독한다. 이벤트와 시스템 사이의 규약은 [`docs/EVENTS.md`](docs/EVENTS.md)와 [`docs/CONTRACTS.md`](docs/CONTRACTS.md)에 정리되어 있다.

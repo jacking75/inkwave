@@ -22,7 +22,7 @@ import { chromePath, gpuArgs } from './chrome.mjs';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MAPS, TIMES, TEAM_PALETTES } from '../src/config.js';
+import { MAPS, TIMES, TEAM_PALETTES } from '../.web-dev/src/config.js';   // compiled output: npm run compile first
 
 // ------------------------------------------------------------------------------------------------ camera table
 // World metres: arena floor y = 0, sea y = -1.6, Team Alpha spawns at -Z. The sun sits in the west / south-west for

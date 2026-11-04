@@ -2,16 +2,17 @@
 // Everything is a markup string (cheap to clone via innerHTML) using currentColor / CSS classes for team ink:
 //   .iw-fa = accent/team A ink, .iw-fb = accent/team B ink (see ui.css).
 import { esc, splatShape, blobPath } from './ui-util.js';
+import { GAME_TITLE, GAME_SUBTITLE } from '../config.js';
 
 const K = '#15121c';        // outline ink
 const DK = '#2b2735';       // dark plastic
 const LT = '#e4e8ef';       // light metal/plastic
 const O = `stroke="${K}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"`;
 
-const svg = (body, vb = '0 0 64 64', cls = '') => `<svg class="iw-ico ${cls}" viewBox="${vb}" aria-hidden="true">${body}</svg>`;
+const svg = (body: string, vb = '0 0 64 64', cls = '') => `<svg class="iw-ico ${cls}" viewBox="${vb}" aria-hidden="true">${body}</svg>`;
 
 // ------------------------------------------------------------------ weapons / subs / specials (two-tone, ink = currentColor)
-export const WEAPON_ICONS = {
+export const WEAPON_ICONS: Record<string, string> = {
   shooter: svg(`<g ${O}>
       <path d="M17 37 L13.5 53.5 Q13 57 16.5 57 L22.5 57 Q25.5 57 26 54 L29 38 Z" fill="${DK}"/>
       <rect x="17.5" y="7.5" width="18" height="17" rx="7" fill="#f4f8ff"/>
@@ -156,7 +157,7 @@ export const WEAPON_ICONS = {
     <path d="M11 29.5 L33 29.5" stroke="#fff" stroke-opacity=".6" stroke-width="2.6" stroke-linecap="round"/>`),
 };
 
-export const SUB_ICONS = {
+export const SUB_ICONS: Record<string, string> = {
   bomb: svg(`<g ${O}>
       <rect x="26.5" y="6" width="11" height="10" rx="3" fill="${DK}"/>
       <path d="M32 13 C38 13 53 39 53 46 C53 53 46 56.5 32 56.5 C18 56.5 11 53 11 46 C11 39 26 13 32 13 Z" fill="currentColor"/>
@@ -282,7 +283,7 @@ export const SUB_ICONS = {
     <path d="M18 27 Q20.5 21.5 26 19.5" stroke="#fff" stroke-opacity=".45" stroke-width="3" fill="none" stroke-linecap="round"/>`),
 };
 
-export const SPECIAL_ICONS = {
+export const SPECIAL_ICONS: Record<string, string> = {
   slam: svg(`<g ${O}>
       <ellipse cx="32" cy="51" rx="25" ry="7" fill="none" stroke="currentColor" stroke-width="4.6"/>
       <ellipse cx="32" cy="51" rx="25" ry="7" fill="none" stroke-width="1.4"/>
@@ -304,7 +305,7 @@ export const SPECIAL_ICONS = {
   // Bomb Barrage: a volley of splat bombs dropping in (falling streaks above a cluster of three)
   barrage: svg(`<g stroke-linecap="round"><path d="M12 3 L12 11 M32 2 L32 8 M52 3 L52 11" stroke="${K}" stroke-width="6.5"/><path d="M12 3 L12 11 M32 2 L32 8 M52 3 L52 11" stroke="currentColor" stroke-width="2.8"/></g>` +
     [[16.5, 34, 0.48, -14], [47.5, 34, 0.48, 14], [32, 42, 0.62, 0]].map(([x, y, s, r]) => {
-      const w = (v) => (v / s).toFixed(2);
+      const w = (v: number) => (v / s).toFixed(2);
       return `<g transform="translate(${x} ${y}) rotate(${r}) scale(${s}) translate(-32 -36)">
       <g stroke="${K}" stroke-width="${w(3)}" stroke-linejoin="round"><rect x="26.5" y="6" width="11" height="10" rx="3" fill="${DK}"/>
         <path d="M32 13 C38 13 53 39 53 46 C53 53 46 56.5 32 56.5 C18 56.5 11 53 11 46 C11 39 26 13 32 13 Z" fill="currentColor"/></g>
@@ -545,15 +546,15 @@ export const DEATH_ICON = svg(`<g ${O} stroke-width="3.4">
   <path d="M21.5 31.5 L29 39 M29 31.5 L21.5 39 M35 31.5 L42.5 39 M42.5 31.5 L35 39" stroke="${K}" stroke-width="3.6" stroke-linecap="round"/>`);
 
 // ------------------------------------------------------------------ input glyphs
-const PAD_FACE = { A: '#3fc46e', B: '#ff4f5a', X: '#3c8cff', Y: '#ffc31d' };
+const PAD_FACE: Record<string, string> = { A: '#3fc46e', B: '#ff4f5a', X: '#3c8cff', Y: '#ffc31d' };
 /** Keycap. `k` is the label ('W', 'SHIFT', 'SPACE', ...). */
-export function keycap(k) {
+export function keycap(k: string | number): string {
   const s = String(k);
   const wide = s.length > 2 ? ' iw-key--wide' : '';
   return `<kbd class="iw-key${wide}">${esc(s === ' ' ? 'SPACE' : s)}</kbd>`;
 }
 /** Mouse glyph: which = 'L' | 'R' | 'M' (move) | 'W' (wheel) */
-export function mouseGlyph(which = 'L') {
+export function mouseGlyph(which = 'L'): string {
   const l = which === 'L' ? 'var(--a, #ff8a14)' : '#fff';
   const r = which === 'R' ? 'var(--a, #ff8a14)' : '#fff';
   const arrows = which === 'M' ? `<g stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3 32 L-3 32 M0 29 L-3 32 L0 35"/><path d="M45 32 L51 32 M48 29 L51 32 L48 35"/></g>` : '';
@@ -564,7 +565,7 @@ export function mouseGlyph(which = 'L') {
     <rect x="21.5" y="11" width="5" height="9" rx="2.5" fill="${K}"/></svg></span>`;
 }
 /** Gamepad glyph: 'A' 'B' 'X' 'Y' 'LB' 'RB' 'LT' 'RT' 'LS' 'RS' 'View' 'Start' 'DPad' */
-export function padGlyph(b) {
+export function padGlyph(b: string): string {
   if (PAD_FACE[b]) return `<span class="iw-pad iw-pad--face" style="--pc:${PAD_FACE[b]}">${b}</span>`;
   if (b === 'LB' || b === 'RB') return `<span class="iw-pad iw-pad--bumper">${b}</span>`;
   if (b === 'LT' || b === 'RT') return `<span class="iw-pad iw-pad--trigger">${b}</span>`;
@@ -575,7 +576,7 @@ export function padGlyph(b) {
   return `<span class="iw-pad iw-pad--bumper">${esc(b)}</span>`;
 }
 /** Renders "Hold [SHIFT] to swim" → text with keycaps. `{A}` renders a gamepad glyph. */
-export function richText(str) {
+export function richText(str: string): string {
   return esc(str)
     .replace(/\[([^\]]{1,10})\]/g, (_, k) => (k === 'LMB' ? mouseGlyph('L') : k === 'RMB' ? mouseGlyph('R') : keycap(k)))
     .replace(/\{([A-Za-z]{1,5})\}/g, (_, k) => padGlyph(k));
@@ -583,7 +584,7 @@ export function richText(str) {
 
 // ------------------------------------------------------------------ logo
 /** Big display logo: letters + ink splat + animated drips. size: 'xl' | 'md' | 'sm' */
-export function logoMarkup(title = 'INKWAVE', subtitle = 'Turf Riot', size = 'xl') {
+export function logoMarkup(title = GAME_TITLE, subtitle = GAME_SUBTITLE, size = 'xl'): string {
   const letters = [...title].map((ch, i) => `<span class="iw-logo__l" style="--i:${i}" data-l="${esc(ch)}">${esc(ch)}</span>`).join('');
   const s = splatShape(300, 110, 88, { seed: 23, arms: 11, drops: 9, armLen: 0.55 });
   // drips hanging off the splat, grow + drop
@@ -606,7 +607,7 @@ export function logoMarkup(title = 'INKWAVE', subtitle = 'Turf Riot', size = 'xl
 
 // ------------------------------------------------------------------ map thumbnails
 /** Stylised top-down illustration of an arena. theme: 'day' | 'sunset' */
-export function mapThumb(map, seed = 3) {
+export function mapThumb(map: { theme?: string } | null | undefined, seed = 3): string {
   const sunset = map && map.theme === 'sunset';
   const id = 'm' + Math.floor(Math.random() * 1e9).toString(36);
   const sea = sunset ? ['#ffb36b', '#e0607e', '#5b3b9a'] : ['#7fe3f5', '#2fb1e6', '#1e76cf'];
@@ -616,7 +617,7 @@ export function mapThumb(map, seed = 3) {
   const blockTop = sunset ? '#f6dcc2' : '#fffaf0';
   const sa = splatShape(0, 0, 1, { seed: seed * 3 + 1, arms: 8, drops: 0 });
   const sb = splatShape(0, 0, 1, { seed: seed * 5 + 2, arms: 9, drops: 0 });
-  const splat = (cls, shape, x, y, r, rot) => `<path class="${cls}" transform="translate(${x} ${y}) rotate(${rot}) scale(${r})" d="${shape.core}"/>`;
+  const splat = (cls: string, shape: ReturnType<typeof splatShape>, x: number, y: number, r: number, rot: number) => `<path class="${cls}" transform="translate(${x} ${y}) rotate(${rot}) scale(${r})" d="${shape.core}"/>`;
   const waves = Array.from({ length: 7 }, (_, i) => {
     const y = 14 + i * 29; const x = (i % 2) * 22;
     return `<path d="M${x - 10} ${y} q10 -6 20 0 t20 0 M${x + 250} ${y + 8} q10 -6 20 0 t20 0" stroke="#fff" stroke-opacity="${sunset ? 0.35 : 0.5}" stroke-width="3" fill="none" stroke-linecap="round"/>`;
@@ -687,10 +688,10 @@ export const RULE_ART = {
 };
 
 // ------------------------------------------------------------------ helpers
-export const weaponIcon = (idOrKind) => WEAPON_ICONS[idOrKind] || WEAPON_ICONS.shooter;
+export const weaponIcon = (idOrKind: string): string => WEAPON_ICONS[idOrKind] || WEAPON_ICONS.shooter;
 // Bomb Barrage variants: three of the sub's own icon falling, under the barrage's motion streaks
 {
-  const inner = (svgStr) => svgStr.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+  const inner = (svgStr: string) => svgStr.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
   const streaks = `<g stroke-linecap="round"><path d="M12 3 L12 11 M32 2 L32 8 M52 3 L52 11" stroke="${K}" stroke-width="6.5"/><path d="M12 3 L12 11 M32 2 L32 8 M52 3 L52 11" stroke="currentColor" stroke-width="2.8"/></g>`;
   for (const [id, sub] of [['barrage_sticky', 'sticky'], ['barrage_burst', 'burst'], ['barrage_seeker', 'seeker'], ['barrage_mist', 'mist']]) {
     const body = inner(SUB_ICONS[sub] || SUB_ICONS.bomb);
@@ -698,4 +699,4 @@ export const weaponIcon = (idOrKind) => WEAPON_ICONS[idOrKind] || WEAPON_ICONS.s
       .map(([x, y, sc, r]) => `<g transform="translate(${x} ${y}) rotate(${r}) scale(${sc}) translate(-32 -32)">${body}</g>`).join(''));
   }
 }
-export const specialIcon = (id) => SPECIAL_ICONS[id] || SPECIAL_ICONS.slam;
+export const specialIcon = (id: string): string => SPECIAL_ICONS[id] || SPECIAL_ICONS.slam;

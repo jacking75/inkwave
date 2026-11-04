@@ -1,7 +1,7 @@
 // Shared tuning + content definitions. Every module reads from here; nothing here imports anything.
 
 export const GAME_TITLE = 'INKWAVE';
-export const GAME_SUBTITLE = 'Turf Riot';
+export const GAME_SUBTITLE = '되찾는 물결';
 export const VERSION = '1.0.0';
 
 // Team ink palettes. Team 0 ("Alpha") is always the local player's team; a palette is picked per match.
@@ -304,7 +304,7 @@ export const WEAPON_ORDER = ['shooter', 'twins', 'brolly', 'blaster', 'spinner',
 // retired weapon → the one that replaced it (saved loadouts, links)
 export const WEAPON_SUCCESSOR = { dualies: 'twins', splatling: 'spinner', slosher: 'bucket' };
 // effective reach (m) for aim assist, the in-range reticle and bots
-export function weaponRange(w) {
+export function weaponRange(w: { kind: string; rangeMax?: number; reach?: number; range?: number }): number | undefined {
   switch (w.kind) {
     case 'charger': case 'spinner': return w.rangeMax;
     case 'roller': return 6;
@@ -510,9 +510,14 @@ export const DIFFICULTY = {
 // Every stage can be played by day or at dusk: `times` maps the time of day to an environment theme (`theme` is the
 // stage's day look, kept for older callers). Pick with mapTheme(map, time).
 export const TIMES = ['day', 'dusk'];
-export const mapTheme = (map, time = 'day') => (map && map.times && map.times[time]) || (map && map.theme) || 'day';
+export const mapTheme = (map: MapDef | null | undefined, time = 'day'): string => (map && map.times && map.times[time]) || (map && map.theme) || 'day';
 
-export const MAPS = [
+// 스테이지 정의이다. layout은 MAP_LAYOUTS 키가 id와 다를 때, thumb는 부팅 시 생성하는 썸네일 SVG이다.
+export interface MapDef {
+  id: string; name: string; blurb: string; theme: string; times: Record<string, string>;
+  onlineOnly?: boolean; noBots?: boolean; noBoss?: boolean; layout?: string; thumb?: string;
+}
+export const MAPS: MapDef[] = [
   { id: 'tidewater', name: 'Tidewater Plaza', blurb: 'A Victorian seaside square: fight round the Jubilee clock tower, under the colonnade and along the promenade.', theme: 'day', times: { day: 'day', dusk: 'sunset' } },
   { id: 'kelpline', name: 'Kelpline Terminal', blurb: 'A container terminal at shift change: a gantry crane straddles the pier between two moored ships. Mind the water.', theme: 'day', times: { day: 'day', dusk: 'sunset' } },
   { id: 'halyard', name: 'Halyard Marina', blurb: 'Floating docks, a tug on blocks and a car ferry moored across the middle. Mind the water.', theme: 'golden', times: { day: 'golden', dusk: 'sunset' } },
@@ -528,15 +533,15 @@ export const MAPS = [
 //   noBots      humans only: "fill with bots" is forced off, a match needs 2+ players with one on each side, and a player
 //               who leaves mid-match is removed instead of handed to a bot; the menu backdrop runs without bots too
 //   noBoss      never a Boss Battle stage (a boss room switches away from it)
-export const mapById = (id) => MAPS.find((m) => m.id === id) || null;
-export const mapNoBots = (id) => !!mapById(id)?.noBots;
-export const mapBossOk = (id) => !!mapById(id) && !mapById(id).noBoss;
-export const mapOfflineOk = (id) => !!mapById(id) && !mapById(id).onlineOnly;
+export const mapById = (id: string): MapDef | null => MAPS.find((m) => m.id === id) || null;
+export const mapNoBots = (id: string): boolean => !!mapById(id)?.noBots;
+export const mapBossOk = (id: string): boolean => !!mapById(id) && !mapById(id)!.noBoss;
+export const mapOfflineOk = (id: string): boolean => !!mapById(id) && !mapById(id)!.onlineOnly;
 export const OFFLINE_MAPS = MAPS.filter((m) => !m.onlineOnly);
 // a boss-eligible stage to fall back to (the preferred one if it qualifies)
-export const bossFallbackMap = (prefer) => (mapBossOk(prefer) ? prefer : (MAPS.find((m) => !m.noBoss && !m.onlineOnly) || MAPS[0]).id);
+export const bossFallbackMap = (prefer: string): string => (mapBossOk(prefer) ? prefer : (MAPS.find((m) => !m.noBoss && !m.onlineOnly) || MAPS[0]).id);
 // Why a humans-only room can't start yet (null when it can, or when the stage allows bots): lobby = { map, players }
-export function noBotsStartBlock(lobby) {
+export function noBotsStartBlock(lobby: { map: string; players?: Array<{ team: number }> } | null | undefined): string | null {
   if (!lobby || !mapNoBots(lobby.map)) return null;
   const ps = lobby.players || [];
   if (ps.length < 2) return 'Needs 2+ players — no bots on this stage';
@@ -551,7 +556,7 @@ export const BOT_NAMES = [
 
 // ---- Progression ----
 export const PROGRESSION = {
-  xpForLevel: (lvl) => 800 + lvl * 350,
+  xpForLevel: (lvl: number) => 800 + lvl * 350,
   xpWin: 1200, xpLose: 500, xpPerTurfPoint: 1.0, xpPerSplat: 40,
   // Zone Control (5 min, so more turf gets inked than in a 3 min Turf War): turf counts for less, ink laid on the live
   // zone counts extra, and a knockout win pays a flat bonus — a typical match lands close to a Turf War's XP
@@ -609,24 +614,37 @@ export const DEFAULT_SETTINGS = {
   touchControls: 'auto',    // on-screen controls: 'auto' (decide by device) | 'on' | 'off'
   touchSensitivity: 1.0,    // touch look multiplier 0.2..3
   touchInvertY: false,      // kept separate from invertY: the natural touch mapping is usually the opposite of the mouse's
+  // 그림책 리디자인(35번 6.3절). 기존 키의 의미는 바꾸지 않는다.
+  look: 'storybook' as LookId,  // 'storybook'(잉크 그림책 룩) | 'classic'(원본 룩). 툰 음영은 다시 시작 후 적용된다
+  halftone: true,           // 그림자 하프톤 점
+  outlineWidth: 1 as OutlineWidth,   // 외곽선 두께 배율 0.8 | 1 | 1.3
+  speechBubbles: true,      // 머리 위 말풍선
+  mascot: true,             // 잉크 방울 마스코트 「퐁」
+  reduceMotion: false,      // 시간 정지·카메라 킥·펀치를 끈다(멀미 대응)
+  koreanVoice: true,        // 절차 합성 "찍찍 목소리"
 };
+export type LookId = 'storybook' | 'classic';
+export type OutlineWidth = 0.8 | 1 | 1.3;
 
 // The renderer's view of the quality tier. Touch devices default to `low` for its MEMORY footprint (small atlas,
 // small shadow map) — that part is load-bearing on a phone — but its image settings are calibrated for a desktop
 // monitor: pixelRatio 0.75 and msaa 0 together render the scene at three-quarters of CSS resolution with no
 // anti-aliasing at all, which on a 3x phone screen is a field of jaggies. Sharpen those two knobs only; the
 // storage-related fields (paintAtlas, shadowSize, particles) stay exactly as the tier defines them.
-export function rendererQuality(settings, touch) {
-  const q = QUALITY[settings?.quality] || QUALITY.high;
+export function rendererQuality(settings: { quality?: string } | null | undefined, touch: boolean): QualityPreset {
+  const q: QualityPreset = QUALITY[settings?.quality as QualityId] || QUALITY.high;   // 모르는 값이면 high이다
   if (!touch) return q;
   return { ...q, pixelRatio: Math.max(q.pixelRatio, TOUCH.minPixelRatio), msaa: Math.max(q.msaa, TOUCH.minMsaa) };
 }
 
 // Quality presets consumed by the renderer + fx.
-export const QUALITY = {
+export type QualityId = 'low' | 'medium' | 'high' | 'ultra';
+// lines·halftone: 그림책 룩의 외곽선·하프톤을 이 등급에서 그릴지이다(src/style/lookProfile.ts).
+export interface QualityPreset { pixelRatio: number; shadowSize: number; msaa: number; bloom: boolean; ao: boolean; paintAtlas: number; particles: number; lines: boolean; halftone: boolean }
+export const QUALITY: Record<QualityId, QualityPreset> = {
   // pixelRatio = cap on devicePixelRatio (Retina screens render at up to this density)
-  low:    { pixelRatio: 0.75, shadowSize: 1024, msaa: 0, bloom: false, ao: false, paintAtlas: 2048, particles: 0.4 },
-  medium: { pixelRatio: 1.0,  shadowSize: 2048, msaa: 2, bloom: true,  ao: false, paintAtlas: 2048, particles: 0.7 },
-  high:   { pixelRatio: 1.5,  shadowSize: 4096, msaa: 4, bloom: true,  ao: true,  paintAtlas: 4096, particles: 1.0 },
-  ultra:  { pixelRatio: 2.0,  shadowSize: 4096, msaa: 4, bloom: true,  ao: true,  paintAtlas: 4096, particles: 1.0 },
+  low:    { pixelRatio: 0.75, shadowSize: 1024, msaa: 0, bloom: false, ao: false, paintAtlas: 2048, particles: 0.4, lines: true, halftone: false },
+  medium: { pixelRatio: 1.0,  shadowSize: 2048, msaa: 2, bloom: true,  ao: false, paintAtlas: 2048, particles: 0.7, lines: true, halftone: true },
+  high:   { pixelRatio: 1.5,  shadowSize: 4096, msaa: 4, bloom: true,  ao: true,  paintAtlas: 4096, particles: 1.0, lines: true, halftone: true },
+  ultra:  { pixelRatio: 2.0,  shadowSize: 4096, msaa: 4, bloom: true,  ao: true,  paintAtlas: 4096, particles: 1.0, lines: true, halftone: true },
 };

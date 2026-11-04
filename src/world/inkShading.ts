@@ -21,7 +21,15 @@ import * as THREE from 'three';
 
 export const INK_RIPPLES = 24;
 
-export function inkUniforms() {
+export interface InkUniforms {
+  uInkClock: { value: number };
+  uRip: { value: THREE.Vector4[] };
+  uRipP: { value: THREE.Vector4[] };
+}
+// paint.js가 넘기는 잉크 시계와 물결 표(INK_RIPPLES × 4 Float32Array)이다.
+export interface InkRippleSource { clock?: number; rip?: Float32Array | null; ripP?: Float32Array | null }
+
+export function inkUniforms(): InkUniforms {
   return {
     uInkClock: { value: 0 },
     // ripples: xyz + birth time (paint clock) · amplitude (m), wavelength (m), speed (m/s), life (s)
@@ -31,12 +39,12 @@ export function inkUniforms() {
 }
 
 // Per draw: paint clock + the ripple table (paint.rip / paint.ripP are Float32Arrays of INK_RIPPLES × 4).
-export function inkBeforeRender(U, P) {
+export function inkBeforeRender(U: Partial<InkUniforms>, P: InkRippleSource): void {
   if (!U.uInkClock) return;
   U.uInkClock.value = P.clock || 0;
   const A = P.rip, B = P.ripP;
   if (!A || !B) return;
-  const ra = U.uRip.value, rb = U.uRipP.value;
+  const ra = U.uRip!.value, rb = U.uRipP!.value;   // inkUniforms()가 세 유니폼을 함께 만든다
   for (let i = 0; i < INK_RIPPLES; i++) {
     const o = i * 4;
     ra[i].set(A[o], A[o + 1], A[o + 2], A[o + 3]);
@@ -47,6 +55,7 @@ export function inkBeforeRender(U, P) {
 // ---------------------------------------------------------------------------------------------------- fragment pars
 // (after levelMaterial's own uniforms / varyings / noise helpers; uPaint, uTexel, uAtlasSize, uGel … are declared there)
 export const INK_PARS = /* glsl */`
+#define IW_INK_LAYER 1   // toon ramp (src/style/toonLighting.ts) blends back to smooth lighting by ink coverage
 uniform float uInkClock;
 uniform vec4 uRip[${INK_RIPPLES}];
 uniform vec4 uRipP[${INK_RIPPLES}];

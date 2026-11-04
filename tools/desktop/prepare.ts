@@ -31,7 +31,7 @@ await build({
 });
 // 분할 모듈을 같은 깊이에 두어 기존 ../../assets 상대 URL 계약을 유지한다.
 await build({
-  absWorkingDir: root, entryPoints: ['src/main.js'],
+  absWorkingDir: root, entryPoints: ['src/main.ts'],
   outdir: path.join(output, 'src/bundle'), entryNames: 'main', chunkNames: '[name]-[hash]',
   bundle: true, splitting: true, platform: 'browser', format: 'esm', target: 'es2022',
   external: ['three', 'three/*'],

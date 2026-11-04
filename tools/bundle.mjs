@@ -41,7 +41,7 @@ const threePaths = {
 };
 
 const result = await build({
-  entryPoints: [path.join(ROOT, 'src/main.js')],
+  entryPoints: [path.join(ROOT, 'src/main.ts')],
   outfile: path.join(dist, BUNDLE),
   bundle: true,
   format: 'esm',

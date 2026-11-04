@@ -28,22 +28,122 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { G, damp, lerp, rng } from '../core/ctx.js';
 import { WEAPONS } from '../config.js';
+import { resolveLook } from '../style/lookProfile.js';
+import type { Character } from './character.js';
+import type { LobbySet } from './lobbySet.js';
+
+// ================================================================================================ types
+// 타입만 둔다(실행 코드 없음). 캐릭터 외형은 키 → 번호(hair·skin·outfit·eyes …)이다.
+type LookStyle = Record<string, number>;
+/** main.js가 넘기는 캐릭터 클래스(withProportion으로 감싼 Character)이다. */
+type CharacterCtor = typeof Character;
+/** 색 인자: THREE.Color 또는 THREE.Color가 받는 hex 문자열·숫자이다. */
+type ColorArg = THREE.Color | string | number;
+/** 쇼케이스가 G.game(main.js 게임 객체)에서 읽는 부분이다. */
+interface ShowcaseGameView { profile?: { style?: LookStyle | null; weapon?: string }; texlib?: LobbySetOpts['texlib'] }
+/** LobbySet's constructor options (lobbySet.js: { quality, texlib }) */
+type LobbySetOpts = NonNullable<ConstructorParameters<typeof LobbySet>[1]>;
+/** Character.bones (built in Character._buildRig: bone name → THREE.Bone) */
+type Bones = Record<string, THREE.Bone>;
+/** 데스크톱 호스트 다리(desktop/performance.ts)에서 쇼케이스가 부르는 부분이다. */
+type NativeBridge = NonNullable<Window['inkwaveNative']> & { performance?: { shouldWarmShowcase(mode: string | null, portraitCount: number): boolean } };
+type WeaponTable = Record<string, (typeof WEAPONS)[keyof typeof WEAPONS]>;
+type ShowMode = 'loadout' | 'locker' | 'results' | 'hub' | 'lobby';
+/** 선반 윤곽 한 줄: 반지름·높이·법선(r, y 성분). 잉크 막 윤곽은 위에서부터의 호 길이 s를 더한다. */
+interface ProfileRow { r: number; y: number; nr: number; ny: number }
+interface InkRow extends ProfileRow { s: number }
+interface InkProfile { rows: InkRow[]; sRim: number; sTopEnd: number; sMax: number; R: number }
+interface Drip { th: number; w: number; L: number; u?: number }
+interface DripOpts { front?: number; w0: number; w1: number; L0: number; L1: number; longChance: number }
+interface InkCoatOpts { T0: number; Dt?: number; lip?: number; depth?: number; seed?: number; du: number; duF: number; NB?: number }
+/** 방울·종이가 내려앉는 원판(zs: 타원 판의 z 배율). */
+interface Deck { x: number; z: number; r: number; y: number; zs?: number }
+interface Climb { s0: number; s1: number; y0: number; y1: number; h: number }
+interface SwimPath { pts: THREE.Vector3[]; cum: Float32Array; len: number; climbs: Climb[] }
+/** Character.update(dt, s)에 넘기는 애니메이션 상태이다(docs/CONTRACTS.md §1). */
+interface AnimState {
+  time: number; speed: number; localMove: { x: number; z: number }; grounded: boolean; vy: number; aimPitch: number; firing: boolean;
+  charge: number; rolling: boolean; form: string; wallNormal: THREE.Vector3; ink: number; lowInk: boolean; special: number; invuln: boolean;
+}
+type Slot = (typeof SLOTS)[number];
+/** pedestal / podium drum dimensions (PED adds the pedestal radius R) */
+type DrumParams = typeof DRUM;
+/** 받침대·시상대에 서는 캐릭터: Character에 쇼케이스가 붙이는 필드(_a는 생성 직후, _slot·_land·_landed는 결과 화면에서). */
+type StageChar = Character & { _a: AnimState; _y?: number; _slot?: Slot; _land?: number; _landed?: boolean };
+interface LookChange { style: LookStyle; cause: string; kind: 'dip' | 'pop'; t0: number; swapped: boolean; landed: boolean; spin: number; dove: boolean }
+interface LookNext { style: LookStyle; cause: string; kind: 'dip' | 'pop' }
+interface PedShot { fy: number; yaw: number; pitch: number; dist: number; fov: number; sx: number; sy: number; roll: number }
+interface UIShot { panelR: number; titleR: number; titleB: number; bandB: number }
+interface UIBox { l: number; r: number; t: number; b: number; next: number; W?: number; H?: number }
+interface UIState { panelR: number; titleR: number; titleB: number; bandB: number; s: UIShot | null; W: number; H: number; next: number; stamp: number; hub?: UIBox; lob?: UIBox }
+interface DomRect { l: number; t: number; r: number; b: number }
+type MoodName = keyof typeof MOODS;
+type Mood = (typeof MOODS)[MoodName];
+interface LobEmote { dance: string; v: number; dur: number; hop: number; t0?: number; trig?: string }
+// lobby set (src/game/lobbySet.js): the parts of LobbySet the showcase uses
+interface Spot { pos: THREE.Vector3; yaw: number }
+interface SetCamera { pos: THREE.Vector3; target: THREE.Vector3; fov: number; near?: number; far?: number }
+interface ShowcaseSet {
+  root: THREE.Object3D; ready: Promise<unknown>; spots: Spot[]; hubSpot: Spot; camera: SetCamera; hubCamera: SetCamera;
+  environment?: THREE.Texture | null; environmentIntensity?: number; fog?: THREE.Fog | THREE.FogExp2 | null; background?: THREE.Color | null;
+  lanes(i: number): THREE.Vector3[]; exitPath(i: number): THREE.Vector3[];
+  setTeamColors?(a: THREE.Color, b: THREE.Color): void; setQuality?(q: string): void; update?(dt: number, t: number): void; dispose(): void;
+}
+/** a mark: 0..7 (front row 0..3, rivals 4..7), 'hub' (the hub spot) or none */
+type Mark = number | 'hub' | null;
+type ShotKind = 'lobby' | 'hub';
+interface LobActBase { t0?: number; flag?: number; delay?: number; end?: boolean }
+type LobAct = LobActBase & ({ kind: 'hop' | 'pop' | 'ready' | 'unready' } | { kind: 'emote'; name: string } | { kind: 'jumpout'; launch: boolean });
+interface Leap { p0: THREE.Vector3; p1: THREE.Vector3; T: number; H: number; yaw0: number; yaw1: number }
+/** A lobby player (G.net.lobby.players, docs/NET.md) as far as the line-up reads it. */
+interface LobbyPlayerIn { id: string; name?: string; team?: number; you?: boolean; host?: boolean; ready?: boolean; weapon?: string; style?: LookStyle | null }
+interface LobMember {
+  id: string; name: string; you: boolean; host: boolean; ready: boolean; weapon: string; style: LookStyle; skey: string;
+  team: number; wantTeam: number; mark: Mark; at: Mark; dest: Mark; c: Character | null; a: AnimState; kind: string | null;
+  phase: string; t0: number; delay: number; flag: number; enter: string | null; fresh: boolean; path: SwimPath | null; s: number; v: number;
+  onEnd: string | null; leap: Leap | null; dive: { yaw: number } | null; after: string | null;
+  pos: THREE.Vector3; yaw: number; y: number; sy: number; vis: number; plateH: number; trailS: number; hy: number; popAnt: number; puddle: boolean;
+  act: LobAct | null; q: LobAct[]; leaving: boolean; dead: boolean;
+  danceIdle: string; idleT: number; gT: number; gY: number; gV: number; gTarget: number; gHold: number;
+  pop: THREE.Object3D | null; popT: number; yawOff: number;
+}
+/** a member whose kid exists (checked by the caller) */
+type LobKid = LobMember & { c: Character };
+interface LobPose { y: number; sy: number; twirl: number; pitch: number; air: boolean; vy: number }
+interface LobFit { key: string; fov: number; sx: number; sy: number }
+interface LobFrame { pos: THREE.Vector3; tgt: THREE.Vector3; fov: number; sx: number; sy: number }
+interface LobbyState {
+  scene: THREE.Scene; kids: THREE.Group; fxRoot: THREE.Group; ink: THREE.MeshPhysicalMaterial[];
+  contact: THREE.InstancedMesh<THREE.PlaneGeometry, THREE.ShaderMaterial>; cam: THREE.PerspectiveCamera;
+  set: ShowcaseSet | null; ready: boolean; failed: boolean; quality: string | null; k: number; t: number; gone: number;
+  fx: InkFX[]; sparks: Sparkles; trail: InkTrail;
+  members: Map<string, LobMember>; colors: THREE.Color[]; myTeam: number | null; room: boolean; initial: boolean;
+  decks: Deck[]; fits: Record<string, LobFit>; shot: ShotKind | null; shotFrom: ShotKind | null; shotT: number;
+  cs: { fov: number; sx: number; sy: number } | null; setT: number; launchT: number; seq: number; nextIn: number; reduced: boolean;
+  kFront: number; bg: THREE.Color; U: UIBox | null;
+  preload?: boolean; groundY?: number; sentCols?: string;
+}
+/** screen anchor for a DOM nameplate (filled by lobbyAnchor / lobbySlotAnchor) */
+interface LobbyAnchor { x?: number; y?: number; behind?: boolean; s?: number; vis?: number; row?: number; slot?: number }
+interface PortraitReq { style: LookStyle; color: ColorArg; kind: string; size: number; weapon: string }
+type PortraitCb = (cv: HTMLCanvasElement | null) => void;
+interface PortraitJob { key: string; req: PortraitReq; cbs: PortraitCb[] }
 
 // ================================================================================================ helpers
 const TAU = Math.PI * 2;
-const c01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
-const sstep = (a, b, x) => { const t = c01((x - a) / (b - a)); return t * t * (3 - 2 * t); };
-const eOut3 = (t) => { t = 1 - c01(t); return 1 - t * t * t; };
-const eInOut = (t) => { t = c01(t); return t * t * t * (t * (t * 6 - 15) + 10); };
-const backOut = (t, k = 1.70158) => { t = c01(t) - 1; return 1 + t * t * ((k + 1) * t + k); };
-const smin = (a, b, k) => { const h = c01(0.5 + 0.5 * (b - a) / k); return lerp(b, a, h) - k * h * (1 - h); };
+const c01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+const sstep = (a: number, b: number, x: number) => { const t = c01((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+const eOut3 = (t: number) => { t = 1 - c01(t); return 1 - t * t * t; };
+const eInOut = (t: number) => { t = c01(t); return t * t * t * (t * (t * 6 - 15) + 10); };
+const backOut = (t: number, k = 1.70158) => { t = c01(t) - 1; return 1 + t * t * ((k + 1) * t + k); };
+const smin = (a: number, b: number, k: number) => { const h = c01(0.5 + 0.5 * (b - a) / k); return lerp(b, a, h) - k * h * (1 - h); };
 // damped oscillation after an impulse at t = 0 (0 → swings → settles to 0)
-const wobble = (t, f = 17, z = 7) => (t < 0 ? 0 : Math.exp(-t * z) * Math.sin(t * f));
+const wobble = (t: number, f = 17, z = 7) => (t < 0 ? 0 : Math.exp(-t * z) * Math.sin(t * f));
 // fast attack / slower release pulse, peak ≈ 0.75
-const punch = (t, a = 22, r = 4.2) => (t < 0 ? 0 : (1 - Math.exp(-t * a)) * Math.exp(-t * r));
+const punch = (t: number, a = 22, r = 4.2) => (t < 0 ? 0 : (1 - Math.exp(-t * a)) * Math.exp(-t * r));
 const UPV = new THREE.Vector3(0, 1, 0);
-const wrapA = (a) => { a %= TAU; return a > Math.PI ? a - TAU : a < -Math.PI ? a + TAU : a; };
-const dampAngle = (a, b, l, dt) => a + wrapA(b - a) * (1 - Math.exp(-l * dt));
+const wrapA = (a: number) => { a %= TAU; return a > Math.PI ? a - TAU : a < -Math.PI ? a + TAU : a; };
+const dampAngle = (a: number, b: number, l: number, dt: number) => a + wrapA(b - a) * (1 - Math.exp(-l * dt));
 
 // Loadout pedestal and results podium dimensions (metres; y = 0 is the pedestal/drum top before the ink coat).
 const PED = { R: 0.64, bevel: 0.09, groove: { y: -0.235, h: 0.021, d: 0.022 }, flange: { y: -0.5, out: 0.075, b: 0.04 }, bottom: -3.0, ink: 0.014 };
@@ -55,28 +155,28 @@ const SLOTS = [
   { x: 1.34, z: -0.14, R: 0.63, top: 0.46, yaw: -0.2 },
   { x: 2.55, z: -0.36, R: 0.56, top: 0.22, yaw: -0.34 },
 ];
-const CHAR_H = 1.62; // squidkid height incl. hair
+let CHAR_H = 1.62; // squidkid height incl. hair (그림책 룩은 머리 비율만큼 높인다: Showcase 생성자)
 const LOAD_FOCUS_Y = 0.76; // camera aims here on the loadout character (feet at 0)
-const PEDESTAL = new Set(['loadout', 'locker']); // modes that stand one squidkid on the ink pedestal
-const OVERLAY = new Set(['loadout', 'locker', 'results']); // studio modes drawn over the live world
+const PEDESTAL = new Set<string | null>(['loadout', 'locker']); // modes that stand one squidkid on the ink pedestal
+const OVERLAY = new Set<string | null>(['loadout', 'locker', 'results']); // studio modes drawn over the live world
 // Online hub + room: staged in the LobbySet (src/game/lobbySet.js), drawn full-frame (see the lobby set section).
-const SET_MODES = new Set(['hub', 'lobby']);
+const SET_MODES = new Set<string | null>(['hub', 'lobby']);
 const SET_FADE = 0.45;        // set ⇄ world / pedestal / podium cross-dissolve (s)
 const GLIDE = 1.7;            // hub ⇄ room camera glide (s)
 const HUB_ID = '__hub';       // your kid while you are not in a room
-const PLATE_H = 1.64;         // nameplate anchor above the feet (m): just over a kid's head
+let PLATE_H = 1.64;           // nameplate anchor above the feet (m): just over a kid's head (그림책 룩 1.70: 35번 R010)
 // squid travel: cruise speed, acceleration, braking, root lift over the asphalt (the swim pose sinks into the ink),
 // trail blob spacing, and the leap onto the mark (span, time, height)
 // (the leap keeps > 3 m/s across the ground so the character flies it as a dolphin arc, mantle along the path)
 const SWIM = { v: 10, acc: 26, brake: 13, lift: 0.1, gap: 0.07, leap: 2.3, T: 0.5, H: 0.62 };
 // lobby emotes → character dances (danceVar forces the variant; t0 starts mid-dance)
-const LOB_EMOTES = {
+const LOB_EMOTES: Record<string, LobEmote> = {
   booyah: { dance: 'victory', v: 0, dur: 2.9, hop: 0.32 },
   wave: { dance: 'victory', v: 2, dur: 2.35, hop: 0 },
   dance: { dance: 'victory', v: 1, dur: 3.4, hop: 0 },
   flex: { dance: 'victory', v: 0, t0: 2.86, dur: 1.55, hop: 0.12, trig: 'hairflip' },
 };
-const sameStyle = (a, b) => {
+const sameStyle = (a: LookStyle | null | undefined, b: LookStyle | null | undefined) => {
   if (!a || !b) return false;
   for (const k in a) if (a[k] !== b[k]) return false;
   for (const k in b) if (a[k] !== b[k]) return false;
@@ -85,8 +185,8 @@ const sameStyle = (a, b) => {
 
 // ================================================================================================ geometry
 // Lathe outline strips of [r, y] → rows {r, y, nr, ny}: normals smooth inside a strip, hard between strips.
-function stripRows(strips) {
-  const rows = [];
+function stripRows(strips: number[][][]): ProfileRow[] {
+  const rows: ProfileRow[] = [];
   for (const st of strips) {
     for (let i = 0; i < st.length; i++) {
       const a = st[Math.max(0, i - 1)], b = st[Math.min(st.length - 1, i + 1)];
@@ -97,15 +197,15 @@ function stripRows(strips) {
   }
   return rows;
 }
-function arcPts(out, cx, cy, rad, a0, a1, n, skipFirst) {
+function arcPts(out: number[][], cx: number, cy: number, rad: number, a0: number, a1: number, n: number, skipFirst?: boolean) {
   for (let i = skipFirst ? 1 : 0; i <= n; i++) { const a = a0 + (a1 - a0) * (i / n); out.push([cx + Math.cos(a) * rad, cy + Math.sin(a) * rad]); }
 }
 
 // Chunky drum outline: flat top → big rounded bevel → side with a rounded light groove → hard step out onto a bevelled
 // flange → long skirt (runs off-screen / into the UI scrim, so the stage never shows a floating bottom edge).
-function drumOutline(R, P) {
+function drumOutline(R: number, P: DrumParams) {
   const b = P.bevel, gv = P.groove, fl = P.flange;
-  const top = [];
+  const top: number[][] = [];
   for (let i = 0; i < 8; i++) top.push([(R - b) * (i / 8), 0]);
   arcPts(top, R - b, -b, b, Math.PI / 2, 0, 18);
   top.push([R, gv.y + gv.h + 0.022]);
@@ -119,7 +219,7 @@ function drumOutline(R, P) {
 }
 
 // Lathe mesh with a vertical shade gradient (vertex colour) and a glow-spill attribute around the groove light.
-function latheGeometry(rows, segs, groove) {
+function latheGeometry(rows: ProfileRow[], segs: number, groove: DrumParams['groove']) {
   const nR = rows.length, nV = nR * segs;
   const pos = new Float32Array(nV * 3), nor = new Float32Array(nV * 3), col = new Float32Array(nV * 3), glw = new Float32Array(nV);
   for (let i = 0; i < nR; i++) {
@@ -136,7 +236,7 @@ function latheGeometry(rows, segs, groove) {
       glw[k] = glow;
     }
   }
-  const idx = [];
+  const idx: number[] = [];
   for (let i = 0; i < nR - 1; i++) {
     for (let j = 0; j < segs; j++) {
       const a = i * segs + j, b = i * segs + ((j + 1) % segs), c = (i + 1) * segs + j, d = (i + 1) * segs + ((j + 1) % segs);
@@ -153,7 +253,7 @@ function latheGeometry(rows, segs, groove) {
 }
 
 // Drum body + the light tube sitting in its groove, merged (one draw call: the tube is black diffuse + full glow).
-function drumGeometry(R, P, segs) {
+function drumGeometry(R: number, P: DrumParams, segs: number) {
   const body = latheGeometry(drumOutline(R, P), segs, P.groove);
   const tube = P.groove.h * 0.8;
   const ring = new THREE.TorusGeometry(R - P.groove.d + tube, tube, 10, segs).rotateX(Math.PI / 2);
@@ -168,18 +268,18 @@ function drumGeometry(R, P, segs) {
 }
 
 // Ink coat profile (no groove/flange: drips bridge over the groove) with arclength s.
-function inkProfile(R, b, depth) {
-  const st = [];
+function inkProfile(R: number, b: number, depth: number): InkProfile {
+  const st: number[][] = [];
   for (let i = 0; i < 12; i++) st.push([(R - b) * (i / 12), 0]);
   arcPts(st, R - b, -b, b, Math.PI / 2, 0, 22);
   const nRim = st.length - 1;
   for (let i = 1; i <= 36; i++) st.push([R, -b - depth * (i / 36)]);
-  const rows = stripRows([st]);
+  const rows = stripRows([st]) as InkRow[];   // s is filled in right below
   rows[0].s = 0;
   for (let i = 1; i < rows.length; i++) rows[i].s = rows[i - 1].s + Math.hypot(rows[i].r - rows[i - 1].r, rows[i].y - rows[i - 1].y);
   return { rows, sRim: rows[nRim].s, sTopEnd: R - b, sMax: rows[rows.length - 1].s, R };
 }
-function profAt(P, s, o) {
+function profAt(P: InkProfile, s: number, o: ProfileRow) {
   const rows = P.rows;
   let lo = 0, hi = rows.length - 1;
   if (s <= 0) { lo = 0; hi = 1; s = 0; } else if (s >= rows[hi].s) { lo = hi - 1; s = rows[hi].s; }
@@ -195,20 +295,20 @@ function profAt(P, s, o) {
 // Built on the (u = arclength around, s = arclength down the profile) plane: the coat region is the smooth union of a
 // wavy lip and one capsule per drip (signed distance), each column of the grid ends exactly on that outline, and the
 // thickness rolls off to zero with a quarter-round profile near the outline (so every edge reads as a liquid bead).
-function inkCoatGeometry(R, b, drips, o) {
+function inkCoatGeometry(R: number, b: number, drips: Drip[], o: InkCoatOpts) {
   const P = inkProfile(R, b, o.depth || 0.45);
   const rnd = rng(o.seed || 1);
   const k1 = rnd() * TAU, k2 = rnd() * TAU, k3 = rnd() * TAU, k4 = rnd() * TAU;
   const circ = TAU * R;
   const T0 = o.T0, Dt = o.Dt || 0.016;
   for (const d of drips) d.u = d.th * R;
-  const lip = (th) => Math.max(0.01, (o.lip || 0.03) + 0.011 * Math.sin(3 * th + k1) + 0.007 * Math.sin(7 * th + k2) + 0.004 * Math.sin(13 * th + k3));
-  const sdf = (u, s) => {
+  const lip = (th: number) => Math.max(0.01, (o.lip || 0.03) + 0.011 * Math.sin(3 * th + k1) + 0.007 * Math.sin(7 * th + k2) + 0.004 * Math.sin(13 * th + k3));
+  const sdf = (u: number, s: number) => {
     const th = u / R;
     let d = s - (P.sRim + lip(th));
     for (let i = 0; i < drips.length; i++) {
       const D = drips[i];
-      let du = u - D.u; du -= Math.round(du / circ) * circ;
+      let du = u - D.u!; du -= Math.round(du / circ) * circ;
       if (Math.abs(du) > D.w + 0.06) continue;
       const hw = D.w * 0.5, s0 = P.sRim - 0.04, s1 = P.sRim + D.L - hw;
       const cs = s < s0 ? s0 : s > s1 ? s1 : s;
@@ -217,7 +317,7 @@ function inkCoatGeometry(R, b, drips, o) {
     return d;
   };
   // columns: coarse all round, fine across every drip
-  const th = [];
+  const th: number[] = [];
   const nC = Math.ceil(circ / o.du);
   for (let j = 0; j < nC; j++) th.push((j / nC) * TAU);
   for (const D of drips) {
@@ -239,7 +339,7 @@ function inkCoatGeometry(R, b, drips, o) {
     sEnd[j] = lo;
   }
   // rows: flat top, bevel (dense), then drip part scaled per column and packed toward the tip
-  const rowsA = [];
+  const rowsA: number[] = [];
   const nTop = 9, nBev = 14;
   for (let i = 0; i < nTop; i++) rowsA.push(P.sTopEnd * (i / nTop));
   for (let i = 0; i < nBev; i++) rowsA.push(P.sTopEnd + (P.sRim - P.sTopEnd) * (i / nBev));
@@ -249,7 +349,7 @@ function inkCoatGeometry(R, b, drips, o) {
   for (let j = 0; j < NC; j++) {
     const a = cols[j], sa = Math.sin(a), ca = Math.cos(a), u = a * R;
     for (let i = 0; i < NRow; i++) {
-      let s;
+      let s: number;
       if (i < NA) s = rowsA[i];
       else { const f = (i - NA) / NB; s = P.sRim + (sEnd[j] - P.sRim) * (1 - Math.pow(1 - f, 1.55)); }
       const sd = sdf(u, s);
@@ -257,7 +357,7 @@ function inkCoatGeometry(R, b, drips, o) {
       let tk = T0 * (1 + 0.5 * c01((s - P.sRim - 0.03) / 0.2));
       for (let q = 0; q < drips.length; q++) {
         const D = drips[q];
-        let du = u - D.u; du -= Math.round(du / circ) * circ;
+        let du = u - D.u!; du -= Math.round(du / circ) * circ;
         if (Math.abs(du) > D.w) continue;
         const hw = D.w * 0.5, sc = P.sRim + D.L - hw * 1.1;
         const e = ((s - sc) / (hw * 0.95)) ** 2 + (du / (hw * 0.8)) ** 2;
@@ -271,7 +371,7 @@ function inkCoatGeometry(R, b, drips, o) {
       pos[k] = rr * sa; pos[k + 1] = pr.y + pr.ny * t; pos[k + 2] = rr * ca;
     }
   }
-  const idx = [];
+  const idx: number[] = [];
   for (let j = 0; j < NC; j++) {
     const jn = (j + 1) % NC;
     for (let i = 0; i < NRow - 1; i++) {
@@ -287,11 +387,11 @@ function inkCoatGeometry(R, b, drips, o) {
 }
 
 // Drip layout: golden-angle spread with jitter; `front` limits them to the camera-facing half.
-function makeDrips(seed, n, o) {
+function makeDrips(seed: number, n: number, o: DripOpts) {
   const rnd = rng(seed);
-  const out = [];
+  const out: Drip[] = [];
   for (let i = 0; i < n; i++) {
-    let th;
+    let th: number;
     if (o.front) th = (i / (n - 1) - 0.5) * o.front * 2 + (rnd() - 0.5) * (o.front / n);
     else th = i * 2.39996 + (rnd() - 0.5) * 0.25;
     const long = rnd() < o.longChance;
@@ -303,16 +403,16 @@ function makeDrips(seed, n, o) {
 // Flat ink splat decal (domed centre, wavy rim, satellite droplets). Radius ≈ 1, dome height ≈ 0.16.
 function splatGeometry() {
   const rnd = rng(77);
-  const parts = [];
-  const dome = (cx, cz, R, amp, N, rings, h) => {
+  const parts: THREE.BufferGeometry[] = [];
+  const dome = (cx: number, cz: number, R: number, amp: number, N: number, rings: number, h: number) => {
     const k = [rnd() * TAU, rnd() * TAU, rnd() * TAU];
-    const rad = (a) => R * (1 + amp * (0.55 * Math.sin(5 * a + k[0]) + 0.3 * Math.sin(9 * a + k[1]) + 0.15 * Math.sin(14 * a + k[2])));
+    const rad = (a: number) => R * (1 + amp * (0.55 * Math.sin(5 * a + k[0]) + 0.3 * Math.sin(9 * a + k[1]) + 0.15 * Math.sin(14 * a + k[2])));
     const pos = [cx, h, cz];
     for (let r = 1; r <= rings; r++) {
       const f = r / rings;
       for (let i = 0; i < N; i++) { const a = (i / N) * TAU, rr = rad(a) * f; pos.push(cx + Math.sin(a) * rr, h * Math.pow(Math.max(0, 1 - f * f), 0.7) + 0.004, cz + Math.cos(a) * rr); }
     }
-    const idx = [];
+    const idx: number[] = [];
     for (let i = 0; i < N; i++) idx.push(0, 1 + i, 1 + ((i + 1) % N));
     for (let r = 1; r < rings; r++) {
       const o0 = 1 + (r - 1) * N, o1 = 1 + r * N;
@@ -348,7 +448,21 @@ const Q_FLAT = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0
 
 // Ink blobs (splash droplets, arcing ink bombs, drizzle, floating bubbles) + landing splats + ripple rings.
 class InkFX {
-  constructor(root, mat, rand) {
+  declare rand: () => number;
+  declare N: number;
+  declare mesh: THREE.InstancedMesh<THREE.IcosahedronGeometry, THREE.Material>;
+  declare P: Float32Array; declare V: Float32Array;
+  declare R: Float32Array; declare A: Float32Array; declare L: Float32Array; declare S: Float32Array;
+  declare K: Uint8Array;
+  declare SN: number;
+  declare splats: THREE.InstancedMesh<THREE.BufferGeometry, THREE.Material>;
+  declare SP: Float32Array; declare SS: Float32Array; declare SY: Float32Array;
+  declare SA: Float32Array; declare SL: Float32Array; declare sNext: number;
+  declare RN: number;
+  declare rings: THREE.InstancedMesh<THREE.TorusGeometry, THREE.Material>;
+  declare RP: Float32Array; declare R0: Float32Array; declare R1: Float32Array;
+  declare RA: Float32Array; declare RL: Float32Array; declare rNext: number;
+  constructor(root: THREE.Object3D, mat: THREE.Material, rand: () => number) {
     this.rand = rand;
     const N = (this.N = 150);
     this.mesh = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 2), mat, N);
@@ -373,7 +487,7 @@ class InkFX {
     this.mesh.renderOrder = 1;
   }
   _slot() { for (let i = 0; i < this.N; i++) if (!this.K[i]) return i; return -1; }
-  drop(x, y, z, vx, vy, vz, r, kind = 1, life = 6) {
+  drop(x: number, y: number, z: number, vx: number, vy: number, vz: number, r: number, kind = 1, life = 6) {
     const i = this._slot(); if (i < 0) return -1;
     const i3 = i * 3;
     this.P[i3] = x; this.P[i3 + 1] = y; this.P[i3 + 2] = z;
@@ -381,22 +495,22 @@ class InkFX {
     this.R[i] = r; this.A[i] = 0; this.L[i] = life; this.S[i] = this.rand() * TAU; this.K[i] = kind;
     return i;
   }
-  bubble(x, y, z, r, rise, life) {
+  bubble(x: number, y: number, z: number, r: number, rise: number, life: number) {
     const i = this.drop(x, y, z, x, rise, z, r, 3, life);
     return i;
   }
-  splat(x, y, z, size, life) {
+  splat(x: number, y: number, z: number, size: number, life: number) {
     const j = this.sNext; this.sNext = (j + 1) % this.SN;
     this.SP[j * 3] = x; this.SP[j * 3 + 1] = y + 0.0008 + (j % 7) * 0.00035; this.SP[j * 3 + 2] = z;
     this.SS[j] = size; this.SY[j] = this.rand() * TAU; this.SA[j] = 0; this.SL[j] = life;
   }
-  ripple(x, y, z, r0, r1, life) {
+  ripple(x: number, y: number, z: number, r0: number, r1: number, life: number) {
     const j = this.rNext; this.rNext = (j + 1) % this.RN;
     this.RP[j * 3] = x; this.RP[j * 3 + 1] = y + 0.002; this.RP[j * 3 + 2] = z;
     this.R0[j] = r0; this.R1[j] = r1; this.RA[j] = 0; this.RL[j] = life;
   }
   // crown splash around a point on a deck (e.g. feet landing / a squidkid bursting out of the ink)
-  crown(x, y, z, power, n, ring = 0.2) {
+  crown(x: number, y: number, z: number, power: number, n: number, ring = 0.2) {
     const rnd = this.rand;
     for (let i = 0; i < n; i++) {
       const a = (i / n) * TAU + rnd() * 0.45;
@@ -409,7 +523,7 @@ class InkFX {
     this.K.fill(0); this.SA.fill(1e9); this.RA.fill(1e9);
     for (const m of [this.mesh, this.splats, this.rings]) { for (let i = 0; i < m.instanceMatrix.count; i++) m.setMatrixAt(i, ZERO_M); m.count = 0; m.instanceMatrix.needsUpdate = true; }
   }
-  _land(i, k, x, y, z) {
+  _land(i: number, k: number, x: number, y: number, z: number) {
     const r = this.R[i], rnd = this.rand;
     if (k === 1) this.splat(x, y, z, r * 2.5, 1.4 + rnd() * 0.9);
     else if (k === 4) { this.splat(x, y, z, r * 2.1, 1.1 + rnd() * 0.5); this.ripple(x, y, z, 0.02, 0.2 + r * 3, 0.5); }
@@ -423,7 +537,7 @@ class InkFX {
       }
     }
   }
-  update(dt, decks) {
+  update(dt: number, decks: Deck[]) {
     const P = this.P, V = this.V;
     let top = -1;
     for (let i = 0; i < this.N; i++) {
@@ -511,12 +625,24 @@ class InkFX {
     this.splats.instanceMatrix.needsUpdate = true;
     this.rings.instanceMatrix.needsUpdate = true;
   }
-  _span(A, L, n, top) { for (let j = n - 1; j > top; j--) if (A[j] < L[j]) return j + 1; return top + 1; }
+  _span(A: Float32Array, L: Float32Array, n: number, top: number) { for (let j = n - 1; j > top; j--) if (A[j] < L[j]) return j + 1; return top + 1; }
 }
 
 // Paper + foil confetti: cannon bursts and a falling rain; tumbles with flutter and settles on the podium tops.
 class Confetti {
-  constructor(scene, rand) {
+  declare rand: () => number;
+  declare NP: number; declare NF: number; declare N: number;
+  declare paper: THREE.InstancedMesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial>;
+  declare foil: THREE.InstancedMesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial>;
+  declare P: Float32Array; declare V: Float32Array; declare AX: Float32Array;
+  declare ANG: Float32Array; declare SPIN: Float32Array; declare PH: Float32Array; declare FQ: Float32Array;
+  declare SW: Float32Array; declare SH: Float32Array; declare AGE: Float32Array; declare LIFE: Float32Array;
+  declare YAW: Float32Array; declare REST: Float32Array;
+  declare ST: Uint8Array;
+  declare acc: number;
+  declare palette: THREE.Color[];
+  declare foils: THREE.Color[];
+  constructor(scene: THREE.Object3D, rand: () => number) {
     this.rand = rand;
     const geo = confettiGeometry();
     this.NP = 280; this.NF = 72;
@@ -538,17 +664,17 @@ class Confetti {
     this.palette = [new THREE.Color(), new THREE.Color(), new THREE.Color(), new THREE.Color()];
     this.foils = [new THREE.Color(1.0, 0.72, 0.28), new THREE.Color(0.86, 0.88, 0.92), new THREE.Color()];
   }
-  setColor(team) {
+  setColor(team: THREE.Color) {
     const p = this.palette;
     p[0].copy(team); p[1].setRGB(0.92, 0.92, 0.95); p[2].setRGB(1.0, 0.66, 0.08); p[3].copy(team).lerp(p[1], 0.55);
     this.foils[2].copy(team).lerp(this.foils[1], 0.25);
   }
-  _slot(foil) {
+  _slot(foil: boolean) {
     const a = foil ? this.NP : 0, b = foil ? this.N : this.NP;
     for (let i = a; i < b; i++) if (!this.ST[i]) return i;
     return -1;
   }
-  spawn(x, y, z, vx, vy, vz, foil) {
+  spawn(x: number, y: number, z: number, vx: number, vy: number, vz: number, foil: boolean) {
     const i = this._slot(foil); if (i < 0) return;
     const rnd = this.rand, i3 = i * 3;
     this.P[i3] = x; this.P[i3 + 1] = y; this.P[i3 + 2] = z;
@@ -561,14 +687,14 @@ class Confetti {
     this.SW[i] = (foil ? 0.034 : 0.03) * s; this.SH[i] = (foil ? 0.034 : 0.064) * s;
     this.AGE[i] = 0; this.LIFE[i] = 11 + rnd() * 4; this.ST[i] = 1;
     this.YAW[i] = rnd() * TAU; this.REST[i] = 4 + rnd() * 5;
-    if (foil) { this.foil.setColorAt(i - this.NP, this.foils[(rnd() * 3) | 0]); this.foil.instanceColor.needsUpdate = true; }
+    if (foil) { this.foil.setColorAt(i - this.NP, this.foils[(rnd() * 3) | 0]); this.foil.instanceColor!.needsUpdate = true; }
     else {
       const u = rnd();
       this.paper.setColorAt(i, this.palette[u < 0.46 ? 0 : u < 0.72 ? 1 : u < 0.86 ? 2 : 3]);
-      this.paper.instanceColor.needsUpdate = true;
+      this.paper.instanceColor!.needsUpdate = true;
     }
   }
-  burst(x, y, z, dx, dy, dz, n, speed, spread) {
+  burst(x: number, y: number, z: number, dx: number, dy: number, dz: number, n: number, speed: number, spread: number) {
     const rnd = this.rand;
     for (let i = 0; i < n; i++) {
       _v.set(dx + (rnd() - 0.5) * spread, dy + (rnd() - 0.5) * spread * 0.6, dz + (rnd() - 0.5) * spread).normalize();
@@ -576,7 +702,7 @@ class Confetti {
       this.spawn(x + (rnd() - 0.5) * 0.3, y + (rnd() - 0.5) * 0.3, z + (rnd() - 0.5) * 0.3, _v.x * sp, _v.y * sp, _v.z * sp, rnd() < 0.2);
     }
   }
-  rain(dt, rate, x0, x1, z0, z1, y) {
+  rain(dt: number, rate: number, x0: number, x1: number, z0: number, z1: number, y: number) {
     this.acc += dt * rate;
     const rnd = this.rand;
     while (this.acc >= 1) {
@@ -588,7 +714,7 @@ class Confetti {
     this.ST.fill(0); this.acc = 0;
     for (const m of [this.paper, this.foil]) { for (let i = 0; i < m.instanceMatrix.count; i++) m.setMatrixAt(i, ZERO_M); m.count = 0; m.instanceMatrix.needsUpdate = true; }
   }
-  update(dt, decks) {
+  update(dt: number, decks: Deck[]) {
     const P = this.P, V = this.V;
     let topP = -1, topF = -1;
     const kd = Math.exp(-2.9 * dt);
@@ -637,7 +763,12 @@ class Confetti {
 
 // Twinkling star glints (camera-facing, bright core + 4 rays).
 class Sparkles {
-  constructor(root, mat, rand) {
+  declare rand: () => number;
+  declare N: number;
+  declare mesh: THREE.InstancedMesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
+  declare P: Float32Array; declare A: Float32Array; declare L: Float32Array; declare S: Float32Array;
+  declare next: number; declare acc: number;
+  constructor(root: THREE.Object3D, mat: THREE.ShaderMaterial, rand: () => number) {
     this.rand = rand;
     const N = (this.N = 36);
     this.mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), mat, N);
@@ -648,14 +779,14 @@ class Sparkles {
     this.P = new Float32Array(N * 3); this.A = new Float32Array(N).fill(1e9); this.L = new Float32Array(N); this.S = new Float32Array(N);
     this.next = 0; this.acc = 0;
   }
-  spawn(x, y, z, size, color, life) {
+  spawn(x: number, y: number, z: number, size: number, color: THREE.Color, life: number) {
     const i = this.next; this.next = (i + 1) % this.N;
     this.P[i * 3] = x; this.P[i * 3 + 1] = y; this.P[i * 3 + 2] = z;
     this.A[i] = 0; this.L[i] = life; this.S[i] = size;
-    this.mesh.setColorAt(i, color); this.mesh.instanceColor.needsUpdate = true;
+    this.mesh.setColorAt(i, color); this.mesh.instanceColor!.needsUpdate = true;
   }
   clear() { this.A.fill(1e9); this.acc = 0; for (let i = 0; i < this.N; i++) this.mesh.setMatrixAt(i, ZERO_M); this.mesh.count = 0; this.mesh.instanceMatrix.needsUpdate = true; }
-  update(dt) {
+  update(dt: number) {
     let top = -1;
     for (let i = 0; i < this.N; i++) {
       if (this.A[i] >= this.L[i]) continue;
@@ -678,7 +809,12 @@ class Sparkles {
 // swimmer's team colour per instance), overlapping into one streak. Each swells in behind the squid, then soaks into
 // the asphalt (narrower, thinner) and is gone after a few seconds.
 class InkTrail {
-  constructor(root) {
+  declare N: number;
+  declare mat: THREE.MeshPhysicalMaterial;
+  declare mesh: THREE.InstancedMesh<THREE.SphereGeometry, THREE.MeshPhysicalMaterial>;
+  declare P: Float32Array; declare Y: Float32Array; declare W: Float32Array; declare Ln: Float32Array;
+  declare A: Float32Array; declare L: Float32Array; declare next: number;
+  constructor(root: THREE.Object3D) {
     const N = (this.N = 520);
     const geo = new THREE.SphereGeometry(1, 16, 5, 0, TAU, 0, Math.PI / 2);   // a dome: flat underside on the ground
     // wet but coloured: at the grazing angles a lane is seen at, a full clearcoat just mirrors the sky and reads white
@@ -691,14 +827,14 @@ class InkTrail {
     this.P = new Float32Array(N * 3); this.Y = new Float32Array(N); this.W = new Float32Array(N); this.Ln = new Float32Array(N);
     this.A = new Float32Array(N).fill(1e9); this.L = new Float32Array(N); this.next = 0;
   }
-  add(x, y, z, yaw, w, len, color, life) {
+  add(x: number, y: number, z: number, yaw: number, w: number, len: number, color: THREE.Color, life: number) {
     const i = this.next; this.next = (i + 1) % this.N;
     this.P[i * 3] = x; this.P[i * 3 + 1] = y + 0.0015 + (i % 5) * 0.0003; this.P[i * 3 + 2] = z;
     this.Y[i] = yaw; this.W[i] = w; this.Ln[i] = len; this.A[i] = 0; this.L[i] = life;
-    this.mesh.setColorAt(i, color); this.mesh.instanceColor.needsUpdate = true;
+    this.mesh.setColorAt(i, color); this.mesh.instanceColor!.needsUpdate = true;
   }
   clear() { this.A.fill(1e9); for (let i = 0; i < this.N; i++) this.mesh.setMatrixAt(i, ZERO_M); this.mesh.count = 0; this.mesh.instanceMatrix.needsUpdate = true; }
-  update(dt) {
+  update(dt: number) {
     let top = -1;
     for (let i = 0; i < this.N; i++) {
       if (this.A[i] >= this.L[i]) continue;
@@ -723,7 +859,7 @@ class InkTrail {
 // Swim paths (set polylines → arc-length tables). Plan shape: centripetal Catmull-Rom through the points in xz,
 // resampled every ~8 cm; heights come from the polyline itself, so a flight of stairs stays a straight rise, which the
 // swimmer takes as one hop (climbs[]). pathAt() → the ground point + plan direction at arc length s, and the hop.
-function polyY(pts, q) {
+function polyY(pts: THREE.Vector3[], q: THREE.Vector3) {
   let best = 1e9, y = pts[0].y;
   for (let i = 0; i < pts.length - 1; i++) {
     const a = pts[i], b = pts[i + 1], dx = b.x - a.x, dz = b.z - a.z, l2 = dx * dx + dz * dz;
@@ -733,7 +869,7 @@ function polyY(pts, q) {
   }
   return y;
 }
-function makePath(raw, avoid) {
+function makePath(raw: THREE.Vector3[], avoid: THREE.Vector3[] | null): SwimPath {
   const pts = [raw[0].clone()];
   for (const p of raw) if (p.distanceTo(pts[pts.length - 1]) > 0.03) pts.push(p.clone());
   if (pts.length < 2) pts.push(pts[0].clone().add(new THREE.Vector3(0, 0, 0.05)));
@@ -763,8 +899,8 @@ function makePath(raw, avoid) {
   const cum = new Float32Array(sp.length);
   for (let i = 1; i < sp.length; i++) cum[i] = cum[i - 1] + Math.hypot(sp[i].x - sp[i - 1].x, sp[i].z - sp[i - 1].z);
   // climbs: runs of steep samples (merged across small gaps), padded, flown as one hop arc
-  const climbs = [];
-  let run = null;
+  const climbs: { a: number; b: number }[] = [];
+  let run: { a: number; b: number } | null = null;
   for (let i = 1; i < sp.length; i++) {
     const dh = cum[i] - cum[i - 1], dy = sp[i].y - sp[i - 1].y;
     if (Math.abs(dy) > 0.004 && Math.abs(dy) > 0.3 * dh) {
@@ -772,8 +908,8 @@ function makePath(raw, avoid) {
     }
   }
   const len = cum[sp.length - 1];
-  const P = { pts: sp, cum, len, climbs: [] };
-  const hops = [];
+  const P: SwimPath = { pts: sp, cum, len, climbs: [] };
+  const hops: Climb[] = [];
   for (const r of climbs) {   // (P.climbs is still empty here, so pathAt gives plain ground heights)
     const s0 = Math.max(0, r.a - 0.3), s1 = Math.min(len, r.b + 0.25);
     pathAt(P, s0, _v); const y0 = _v.y;
@@ -785,7 +921,7 @@ function makePath(raw, avoid) {
 }
 // → the ground point at arc length s in `out` (and the plan direction in `dir`); returns the hop height above the
 // ground line when s is inside a climb (out.y is then the straight line between the climb's ends), else null
-function pathAt(P, s, out, dir) {
+function pathAt(P: SwimPath, s: number, out: THREE.Vector3, dir?: THREE.Vector3): number | null {
   const c = P.cum, n = c.length;
   s = Math.max(0, Math.min(P.len, s));
   let lo = 0, hi = n - 1;
@@ -808,7 +944,7 @@ function pathAt(P, s, out, dir) {
 }
 
 // ================================================================================================ materials
-function makeBodyMaterial(glowUniform) {
+function makeBodyMaterial(glowUniform: { value: THREE.Color }) {
   const m = new THREE.MeshPhysicalMaterial({ color: 0x38306a, roughness: 0.36, metalness: 0, clearcoat: 0.85, clearcoatRoughness: 0.16, vertexColors: true });
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uGlow = glowUniform;
@@ -921,8 +1057,61 @@ const MOODS = {
 
 // ================================================================================================ Showcase
 export class Showcase {
-  constructor(renderer, CharacterClass) {
-    this.r = renderer;
+  declare r: THREE.WebGLRenderer;
+  declare CharacterClass: CharacterCtor;
+  declare scene: THREE.Scene;
+  declare camera: THREE.PerspectiveCamera;
+  declare mode: ShowMode | null;
+  declare chars: StageChar[];
+  declare color: THREE.Color;
+  declare won: boolean;
+  declare t: number; declare fadeIn: number; declare _out: number; declare _outDur: number; declare _lastMode: ShowMode | null;
+  declare lob: LobbyState | null; declare _ffFrame: boolean;
+  declare spin: number; declare spinVel: number; declare sinceDrag: number; declare drag: { x: number; t: number } | null;
+  declare weapon: string | null; declare hopT: number; declare hopWeapon: string | null; declare pop: THREE.Object3D | null;
+  declare ui: UIState;
+  declare decks: Deck[];
+  declare rand: () => number;
+  declare _tgt: THREE.Vector3; declare _clr: THREE.Color; declare _dbs: THREE.Vector2; declare _c: THREE.Color;
+  declare _c2: THREE.Color; declare _pv: THREE.Vector3;
+  declare _rt: THREE.WebGLRenderTarget | null;
+  declare emit: { spark: number; bubble: number };
+  declare fxRoot: THREE.Group;
+  declare glowU: { value: THREE.Color };
+  declare inkMat: THREE.MeshPhysicalMaterial;
+  declare bodyMat: THREE.MeshPhysicalMaterial;
+  declare fx: InkFX;
+  declare confetti: Confetti;
+  declare sparks: Sparkles;
+  declare contact: THREE.InstancedMesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
+  declare compMat: THREE.ShaderMaterial;
+  declare compQuad: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  declare compScene: THREE.Scene;
+  declare compCam: THREE.OrthographicCamera;
+  declare stageL: { group: THREE.Group; parts: THREE.Mesh[] } | null;
+  declare stageR: { group: THREE.Group; drums: THREE.Group[] } | null;
+  declare style: LookStyle | null; declare look: LookChange | null; declare lookNext: LookNext | null; declare emT0: number; declare danceBack: number;
+  declare shotFrom: ShowMode | null; declare shotT: number; declare _shotA: PedShot; declare _shotB: PedShot;
+  declare _pq: PortraitJob[]; declare _pcache: Map<string, HTMLCanvasElement>; declare _prt: THREE.WebGLRenderTarget | null;
+  declare _prt8: THREE.WebGLRenderTarget | null; declare _pbuf: Uint8Array | null; declare _pcam: THREE.PerspectiveCamera | null;
+  // lights (_buildLights)
+  declare key: THREE.DirectionalLight; declare rimA: THREE.DirectionalLight; declare rimB: THREE.DirectionalLight;
+  declare fill: THREE.DirectionalLight; declare hemi: THREE.HemisphereLight;
+  declare mood?: Mood;
+  // pedestal choreography (_showPedestal) · results (showResults)
+  declare phase: string; declare landT: number; declare emerged: boolean; declare popT: number;
+  declare slots: Slot[]; declare events: { cannon: number; bombs: number };
+  // warm-up · portraits · camera helpers (set on first use)
+  declare _warmChar?: Character | null; declare _warmState?: 'busy' | 'done';
+  declare _pres?: THREE.ShaderMaterial; declare _presScene?: THREE.Scene; declare _pflight?: number; declare portraitMs?: number;
+  declare _fdt?: number; declare _fa?: LobFrame; declare _fb?: LobFrame;
+  /** audits: overrides the lobby set camera */
+  declare debugCam?: { pos: THREE.Vector3; target: THREE.Vector3; fov?: number } | null;
+  constructor(renderer: THREE.WebGLRenderer | null, CharacterClass: CharacterCtor) {
+    this.r = renderer!;   // main.js builds the showcase after the renderer (G.renderer)
+    // 귀여운 비율(35번 R010): 머리 뼈 1.16배만큼 키·이름표 높이를 올린다(원본 룩은 1.62 / 1.64 그대로)
+    const headUp = (resolveLook(G.settings, false).headScale - 1) * 0.375;
+    CHAR_H = 1.62 + headUp; PLATE_H = 1.64 + headUp;
     this.CharacterClass = CharacterClass;
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(26, 1, 0.05, 90);
@@ -967,7 +1156,7 @@ export class Showcase {
     this.stageL = null; this.stageR = null; // built lazily (first show)
     // locker: current look, an in-flight look change (+ one queued behind it), camera framing blend between modes
     this.style = null; this.look = null; this.lookNext = null; this.emT0 = 0; this.danceBack = -1;
-    this.shotFrom = null; this.shotT = 9; this._shotA = {}; this._shotB = {};
+    this.shotFrom = null; this.shotT = 9; this._shotA = {} as PedShot; this._shotB = {} as PedShot;   // filled by _pedestalShot before use
     // portraits
     this._pq = []; this._pcache = new Map(); this._prt = null; this._prt8 = null; this._pbuf = null; this._pcam = null;
     this._bindDrag();
@@ -989,7 +1178,7 @@ export class Showcase {
     s.add(this.hemi);
   }
 
-  _aimLights(focus, spread, mood) {
+  _aimLights(focus: THREE.Vector3, spread: number, mood: MoodName) {
     const M = MOODS[mood];
     const f = focus;
     this.key.position.set(f.x - 3.4 * spread, f.y + 5.4 * spread, f.z + 4.6 * spread); this.key.target.position.copy(f);
@@ -1016,7 +1205,7 @@ export class Showcase {
     this.glowU.value.copy(this.color).multiplyScalar(1 / mx).lerp(this._c.setRGB(1, 1, 1), 0.3).multiplyScalar(M.glow);
   }
 
-  _setColor(color) {
+  _setColor(color: THREE.Color) {
     this.color.copy(color);
     this.inkMat.color.copy(color);
     this.inkMat.sheenColor.copy(color).lerp(this._c.setRGB(1, 1, 1), 0.55);
@@ -1091,23 +1280,23 @@ export class Showcase {
     this._out = 0;
   }
 
-  _anim() {
+  _anim(): AnimState {
     return { time: 0, speed: 0, localMove: { x: 0, z: 0 }, grounded: true, vy: 0, aimPitch: 0, firing: false, charge: 0, rolling: false, form: 'kid', wallNormal: new THREE.Vector3(0, 0, 1), ink: 1, lowInk: false, special: 0, invuln: false };
   }
 
   /** The saved player look (main.js keeps the profile; menus save to it) — the default for pedestal kids. */
-  _profileStyle() {
-    const st = G.game?.profile?.style;
+  _profileStyle(): LookStyle {
+    const st = (G.game as ShowcaseGameView | undefined)?.profile?.style;
     return st && typeof st === 'object' ? { ...st } : { hair: 0, skin: 1 };
   }
 
-  showLoadout(weapon, color, style) { this._showPedestal('loadout', weapon, color, style); }
-  showLocker(style, color, weapon) { this._showPedestal('locker', weapon || this.weapon || G.game?.profile?.weapon || 'shooter', color, style); }
+  showLoadout(weapon: string, color: ColorArg | null | undefined, style?: LookStyle | null) { this._showPedestal('loadout', weapon, color, style); }
+  showLocker(style: LookStyle | null | undefined, color: ColorArg | null | undefined, weapon?: string | null) { this._showPedestal('locker', weapon || this.weapon || (G.game as ShowcaseGameView | undefined)?.profile?.weapon || 'shooter', color, style); }
   /** Online hub (menus.js 'online'): your kid on the pedestal right of the create / join cards. */
-  showHub(style, color, weapon) { this._showPedestal('hub', weapon || this.weapon || G.game?.profile?.weapon || 'shooter', color, style); }
+  // showHub: the later definition (lobby set section) wins, as it did in JS — the dead pedestal one-liner was removed here
 
-  _showPedestal(mode, weapon, color, style) {
-    if (!color || !color.isColor) color = new THREE.Color(color || this.color);
+  _showPedestal(mode: ShowMode, weapon: string, color: ColorArg | null | undefined, style?: LookStyle | null) {
+    if (!color || !(color as THREE.Color).isColor) color = new THREE.Color(color || this.color);
     const look = style ? { ...style } : this._profileStyle();
     const onStage = PEDESTAL.has(this.mode) && this.chars.length;
     const resume = !onStage && this._out > 0 && PEDESTAL.has(this._lastMode) && this.chars.length;
@@ -1116,7 +1305,7 @@ export class Showcase {
     if (fresh) {
       this._clear();
       if (!this.stageL) this.stageL = this._buildLoadoutStage();
-      const c = new this.CharacterClass({ color: color.clone(), weapon, style: { ...look }, name: 'preview', isLocal: false });
+      const c = new this.CharacterClass({ color: (color as THREE.Color).clone(), weapon, style: { ...look }, name: 'preview', isLocal: false }) as StageChar;   // _a is set right here
       c._a = this._anim(); c._a.grounded = false;
       c._y = -1.6; c.root.position.set(0, -1.6, 0);
       this.scene.add(c.root);
@@ -1140,7 +1329,7 @@ export class Showcase {
     this.mode = mode;
     this._lastMode = mode;
     this._aimLights(this._tgt.set(0, 0.8, 0), 1, 'loadout');
-    this._setColor(color);
+    this._setColor(color as THREE.Color);
     const c = this.chars[0];
     c.setColor(color);
     if (!fresh) {
@@ -1156,7 +1345,7 @@ export class Showcase {
   }
 
   /** Change the pedestal kid's look with a reaction. cause: 'hair' | 'eyes' | 'skin' | 'outfit' | 'preset' | 'random'. */
-  setStyle(style, cause = 'swap') {
+  setStyle(style: LookStyle, cause = 'swap') {
     const look = { ...style };
     if (!PEDESTAL.has(this.mode) || !this.chars.length) { this.style = look; return; }
     const want = (this.lookNext && this.lookNext.style) || (this.look && this.look.style) || this.style;
@@ -1169,7 +1358,7 @@ export class Showcase {
     this._startLook(look, cause, kind);
   }
 
-  _startLook(style, cause, kind) {
+  _startLook(style: LookStyle, cause: string, kind: 'dip' | 'pop') {
     // full turns only (they end where they started, so nothing has to unwind): outfit spins one way, hair the other
     const spin = cause === 'outfit' ? TAU : cause === 'hair' ? -TAU : 0;
     this.look = { style, cause, kind, t0: this.t, swapped: false, landed: false, spin, dove: false };
@@ -1178,9 +1367,9 @@ export class Showcase {
   }
 
   /** Replace the pedestal kid with one wearing `style` (pre-warmed off-screen so it appears mid-pose, not T-posed). */
-  _swapChar(style, dance = 'lobby_pose') {
+  _swapChar(style: LookStyle, dance: string | null = 'lobby_pose') {
     const old = this.chars[0];
-    const c = new this.CharacterClass({ color: this.color.clone(), weapon: this.weapon || 'shooter', style: { ...style }, name: 'preview', isLocal: false });
+    const c = new this.CharacterClass({ color: this.color.clone(), weapon: this.weapon || 'shooter', style: { ...style }, name: 'preview', isLocal: false }) as StageChar;   // _a is set right here
     c._a = old ? old._a : this._anim();
     if (old) { c.root.position.copy(old.root.position); c.root.rotation.copy(old.root.rotation); c.root.scale.copy(old.root.scale); }
     if (dance) {
@@ -1198,21 +1387,21 @@ export class Showcase {
     return c;
   }
 
-  showResults(team, won, color, styles) {
+  showResults(team: number, won: boolean, color: THREE.Color | null, styles: { weapon: string; style: LookStyle; name: string }[]) {
     this._clear();
     if (!this.stageR) this.stageR = this._buildResultsStage();
     this.mode = 'results';
     this._lastMode = 'results';
     this.won = !!won;
     this.t = 0; this.fadeIn = 0;
-    this._setColor(color);
+    this._setColor(color!);   // main.js passes the team colour (G.teamColors, set while a match exists)
     this.stageR.group.visible = true;
     const n = Math.min(styles.length, SLOTS.length);
     this.slots = SLOTS.slice(0, Math.max(1, n));
     this.stageR.drums.forEach((d, i) => { d.visible = i < this.slots.length; d.position.y = -9; });
     for (let i = 0; i < n; i++) {
       const st = styles[i], S = SLOTS[i];
-      const c = new this.CharacterClass({ color: color.clone(), weapon: st.weapon, style: st.style, name: st.name, isLocal: false });
+      const c = new this.CharacterClass({ color: color!.clone(), weapon: st.weapon, style: st.style, name: st.name, isLocal: false }) as StageChar;   // _a / _slot / _land / _landed are set right here
       c._a = this._anim();
       c._slot = S;
       c._land = this.won ? 0.46 + i * 0.13 + (i === 3 ? 0.05 : 0) : -1;
@@ -1242,7 +1431,7 @@ export class Showcase {
     this.mode = null; this._clear();
     for (const st of [this.stageL, this.stageR]) {
       if (!st) continue;
-      st.group.traverse((o) => o.geometry?.dispose());
+      st.group.traverse((o) => (o as THREE.Object3D & { geometry?: THREE.BufferGeometry }).geometry?.dispose());
       this.scene.remove(st.group);
     }
     this.stageL = this.stageR = null;
@@ -1251,10 +1440,10 @@ export class Showcase {
   }
 
   // ---------------------------------------------------------------------------------------------- update
-  update(dt) {
+  update(dt: number) {
     dt = Math.min(dt || 0, 0.1);
     this._ffFrame = this.fullFrame;   // what main.js saw at the top of this frame (it didn't draw the world if true)
-    if (!this._warmState && G.env && (window.inkwaveNative?.performance?.shouldWarmShowcase(this.mode, this._pq.length) ?? true)) this._warmup();
+    if (!this._warmState && G.env && ((window.inkwaveNative as NativeBridge | undefined)?.performance?.shouldWarmShowcase(this.mode, this._pq.length) ?? true)) this._warmup();
     this._updateSet(dt);
     let mode = OVERLAY.has(this.mode) ? this.mode : null;
     if (!mode && this._out > 0) {
@@ -1275,15 +1464,15 @@ export class Showcase {
     if (this.contact.instanceColor) this.contact.instanceColor.needsUpdate = true;
   }
 
-  _contactAt(i, x, y, z, size, alpha) {
+  _contactAt(i: number, x: number, y: number, z: number, size: number, alpha: number) {
     _m4.makeScale(size, 1, size).setPosition(x, y, z);
     this.contact.setMatrixAt(i, _m4);
     this.contact.setColorAt(i, this._c.setRGB(alpha, 0, 0));
     if (this.contact.count < i + 1) this.contact.count = i + 1;
   }
 
-  _updateLoadout(dt) {
-    const t = this.t, st = this.stageL, rnd = this.rand;
+  _updateLoadout(dt: number) {
+    const t = this.t, st = this.stageL!, rnd = this.rand;
     // pedestal rises in
     const stageY = -0.95 * (1 - backOut(t / 0.6, 1.25));
     st.group.position.y = stageY;
@@ -1312,7 +1501,7 @@ export class Showcase {
     const L = this.look;
     if (this.phase === 'dip') {
       // costume change: hop, turn squid at the apex and dive into the pedestal ink; the new look bursts back out
-      const tl = t - L.t0, ant = 0.09, T = 0.4, H = 0.22, y1 = -1.5;
+      const tl = t - L!.t0, ant = 0.09, T = 0.4, H = 0.22, y1 = -1.5;
       if (tl < ant) { sy = 1 - 0.12 * Math.sin((Math.PI * 0.5 * tl) / ant); }
       else {
         const x = Math.min(1, (tl - ant) / T);
@@ -1322,16 +1511,16 @@ export class Showcase {
         twirl = 1.2 * eInOut(x);
         c._a.form = x > 0.3 ? 'squid' : 'kid';
         sy = 1 + 0.12 * c01(vy / 3) - 0.06 * c01(-vy / 6);
-        if (!L.dove && y < 0 && vy < 0) {
-          L.dove = true;
+        if (!L!.dove && y < 0 && vy < 0) {
+          L!.dove = true;
           this.fx.crown(0, PED.ink, 0, 1.1, 22, 0.22);
           this.fx.ripple(0, PED.ink, 0, 0.1, 0.7, 0.7);
           G.audio?.play?.('squid_in', { volume: 0.7 });
         }
         if (x >= 1) {
-          c = this._swapChar(L.style, null);
+          c = this._swapChar(L!.style, null);
           c._a.form = 'kid'; c._a.grounded = false;
-          L.swapped = true;
+          L!.swapped = true;
           this.phase = 'emerge'; this.emT0 = t - 0.02; this.emerged = false;
           y = y1; air = true; twirl = 0;
         }
@@ -1456,7 +1645,7 @@ export class Showcase {
   }
 
   // a ring of glints around the kid (look changes)
-  _sparkleBurst(n) {
+  _sparkleBurst(n: number) {
     const rnd = this.rand;
     for (let i = 0; i < n; i++) {
       const ang = (i / n) * TAU + rnd() * 0.5, rr = 0.34 + rnd() * 0.28;
@@ -1465,13 +1654,13 @@ export class Showcase {
     }
   }
 
-  _updateResults(dt) {
+  _updateResults(dt: number) {
     const t = this.t, rnd = this.rand, won = this.won;
     const slots = this.slots;
     // drums rise from under the UI band, centre first
     this.decks.length = slots.length;
     for (let i = 0; i < slots.length; i++) {
-      const S = slots[i], d = this.stageR.drums[i];
+      const S = slots[i], d = this.stageR!.drums[i];
       const k = backOut((t - 0.04 * i) / 0.72, 1.15);
       d.position.set(S.x, S.top - 2.4 * (1 - k), S.z);
       const dk = this.decks[i] || (this.decks[i] = { x: 0, z: 0, r: 0, y: 0 });
@@ -1479,12 +1668,12 @@ export class Showcase {
     }
     // squidkids: winners drop in one by one and splash down; losers ride the drums up, already slumped
     for (let i = 0; i < this.chars.length; i++) {
-      const c = this.chars[i], S = c._slot, a = c._a, dk = this.decks[i];
+      const c = this.chars[i], S = c._slot!, a = c._a, dk = this.decks[i];
       a.time = G.time;
       let y = dk.y - DRUM.ink * 0.5, sy = 1, air = false, vy = 0;
       if (won) {
         const T = 0.5, H = 3.1, g = (2 * H) / (T * T);
-        const tf = t - (c._land - T);
+        const tf = t - (c._land! - T);
         if (tf < 0) { c.root.visible = false; }
         else if (tf < T) {
           c.root.visible = true; air = true;
@@ -1497,7 +1686,7 @@ export class Showcase {
             c.trigger('land', 9); c.setDance('victory');
             this.fx.crown(S.x, dk.y, S.z, i === 0 ? 1.15 : 0.95, i === 0 ? 24 : 16, 0.24);
           }
-          sy = 1 - 0.15 * wobble(t - c._land, 14, 6);
+          sy = 1 - 0.15 * wobble(t - c._land!, 14, 6);
         }
       }
       a.grounded = !air; a.vy = vy;
@@ -1576,7 +1765,7 @@ export class Showcase {
   // the online hub opens straight onto the set instead of the arena while it loads. Kept until it's first shown.
   preloadLobby() { if (!this.lob) this._lobEnsure().preload = true; }
 
-  _lobEnsure() {
+  _lobEnsure(): LobbyState {
     if (this.lob) return this.lob;
     const scene = new THREE.Scene();
     const kids = new THREE.Group(), fxRoot = new THREE.Group();
@@ -1586,7 +1775,7 @@ export class Showcase {
     contact.frustumCulled = false; contact.count = 0; contact.renderOrder = 1;
     for (let i = 0; i < 10; i++) { contact.setMatrixAt(i, ZERO_M); contact.setColorAt(i, this._c.setRGB(0, 0, 0)); }
     fxRoot.add(contact);
-    const L = (this.lob = {
+    const L: LobbyState = (this.lob = {
       scene, kids, fxRoot, ink, contact, cam: new THREE.PerspectiveCamera(30, 1, 0.08, 240),
       set: null, ready: false, failed: false, quality: null, k: 0, t: 0, gone: 0,
       fx: [new InkFX(fxRoot, ink[0], this.rand), new InkFX(fxRoot, ink[1], this.rand)],
@@ -1601,11 +1790,11 @@ export class Showcase {
 
   // The set module loads lazily; everything it will draw (the alley, a squidkid in both forms under its lights, the FX)
   // is compiled off the critical path before it may dissolve in, so its first frame never hitches.
-  _lobLoad(L) {
+  _lobLoad(L: LobbyState) {
     import('./lobbySet.js').then(async (mod) => {
       if (this.lob !== L) return;
       const q = G.settings?.quality || 'high';
-      const set = new mod.LobbySet(this.r, { quality: q, texlib: G.game?.texlib || null });
+      const set = new mod.LobbySet(this.r, { quality: q, texlib: (G.game as ShowcaseGameView | undefined)?.texlib || null });
       L.set = set; L.quality = q;
       L.scene.add(set.root);
       await set.ready;
@@ -1628,7 +1817,7 @@ export class Showcase {
     }).catch((e) => { console.error('[showcase] lobby set', e); L.failed = true; });
   }
 
-  _lobEnv(L) {
+  _lobEnv(L: LobbyState) {
     const S = L.set;
     L.scene.environment = (S && S.environment) || G.env?.envMap || null;
     L.scene.environmentIntensity = S && S.environmentIntensity != null ? S.environmentIntensity : 0.5;
@@ -1637,9 +1826,9 @@ export class Showcase {
   }
 
   // droplets land on the dock (a disc over the rivals' marks) or the asphalt
-  _lobDecks(L) {
-    const sp = L.set.spots, F = sp.slice(0, 4), B = sp.slice(4, 8);
-    const avg = (a, k) => a.reduce((s, p) => s + p.pos[k], 0) / a.length;
+  _lobDecks(L: LobbyState) {
+    const sp = L.set!.spots, F = sp.slice(0, 4), B = sp.slice(4, 8);
+    const avg = (a: Spot[], k: 'x' | 'y' | 'z') => a.reduce((s, p) => s + p.pos[k], 0) / a.length;
     const bx = avg(B, 'x'), bz = avg(B, 'z');
     let br = 0;
     for (const p of B) br = Math.max(br, Math.hypot(p.pos.x - bx, p.pos.z - bz));
@@ -1662,14 +1851,14 @@ export class Showcase {
     L.scene.clear();
   }
 
-  _enterSetMode(mode) {
+  _enterSetMode(mode: ShowMode) {
     // a studio overlay on screen (pedestal / podium) dissolves away over the set instead of cutting
     if (OVERLAY.has(this.mode) && this.chars.length) { this._lastMode = this.mode; this._out = this._outDur = SET_FADE; }
     this.mode = mode;
   }
 
-  _lobShot(kind) {
-    const L = this.lob;
+  _lobShot(kind: ShotKind) {
+    const L = this.lob!;
     if (L.shot === kind) return;
     // on screen: glide between the framings; otherwise cut (the set dissolves in already framed)
     if (L.shot && L.k > 0.05 && !L.reduced) { L.shotFrom = L.shot; L.shotT = 0; } else L.shotFrom = null;
@@ -1677,18 +1866,18 @@ export class Showcase {
   }
 
   /** Online hub (menus.js 'online'): your kid on the set's hub spot, framed right of the create / join cards. */
-  showHub(style, color, weapon) {
+  showHub(style: LookStyle | null | undefined, color: ColorArg | null | undefined, weapon?: string | null) {
     const L = this._lobEnsure();
-    if (!color || !color.isColor) color = new THREE.Color(color || this.color);
+    if (!color || !(color as THREE.Color).isColor) color = new THREE.Color(color || this.color);
     const look = style ? { ...style } : this._profileStyle();
-    weapon = weapon || G.game?.profile?.weapon || 'shooter';
+    weapon = weapon || (G.game as ShowcaseGameView | undefined)?.profile?.weapon || 'shooter';
     this._enterSetMode('hub');
     this._lobShot('hub');
     if (this.ui.hub) this.ui.hub.next = 0;
     L.setT = -1; L.launchT = -1;
     if (!L.room) {
       L.myTeam = 0;
-      L.colors[0].copy(color);
+      L.colors[0].copy(color as THREE.Color);
       const rv = G.teamColors && G.teamColors[1];
       if (rv) L.colors[1].set(rv.isColor ? rv : new THREE.Color(rv));
       this._lobColors(true);
@@ -1713,7 +1902,7 @@ export class Showcase {
 
   /** opts.reduced: prefers-reduced-motion (no camera drift or glides). opts.quick is accepted for compatibility: coming
    *  back to a room whose line-up is parked here (locker, a match) always finds everyone already standing. */
-  showLobby(players, colors, opts = {}) {
+  showLobby(players: LobbyPlayerIn[] | null | undefined, colors: ColorArg[] | null | undefined, opts: { reduced?: boolean; quick?: boolean } = {}) {
     const L = this._lobEnsure();
     L.reduced = !!opts.reduced;
     if (this.mode !== 'lobby') {
@@ -1736,20 +1925,20 @@ export class Showcase {
     L.initial = false;
   }
 
-  updateLobby(players, colors) {
+  updateLobby(players: LobbyPlayerIn[] | null | undefined, colors: ColorArg[] | null | undefined) {
     const L = this.lob;
     if (!L || !L.room) return;
     let palette = false;
     if (colors && colors.length >= 2) {
       for (let t = 0; t < 2; t++) {
-        const nc = this._c.set(colors[t].isColor ? colors[t] : new THREE.Color(colors[t]));
+        const nc = this._c.set((colors[t] as THREE.Color).isColor ? colors[t] : new THREE.Color(colors[t]));
         if (!L.colors[t].equals(nc)) { L.colors[t].copy(nc); palette = true; }
       }
     }
     let recolor = palette;
     const list = Array.isArray(players) ? players.filter((p) => p && p.id != null) : [];
     const me = list.find((p) => p.you);
-    const teamOf = (p) => (p.team === 1 ? 1 : 0);
+    const teamOf = (p: LobbyPlayerIn) => (p.team === 1 ? 1 : 0);
     const myTeam = me ? teamOf(me) : (L.myTeam ?? 0);
     const flip = L.myTeam != null && !L.initial && myTeam !== L.myTeam;
     if (myTeam !== L.myTeam) recolor = true;
@@ -1759,11 +1948,11 @@ export class Showcase {
       const H = L.members.get(HUB_ID);
       if (H && !H.dead) { L.members.delete(HUB_ID); H.id = me.id; L.members.set(me.id, H); }
     }
-    const seen = new Set();
+    const seen = new Set<string>();
     for (const p of list) {
       seen.add(p.id);
       const team = p.you || teamOf(p) === myTeam ? 0 : 1;
-      let M = L.members.get(p.id);
+      let M: LobMember | null | undefined = L.members.get(p.id);
       if (M && M.dead) { L.members.delete(p.id); M = null; }
       const skey = styleKey(p.style);
       if (!M) {
@@ -1783,16 +1972,16 @@ export class Showcase {
 
   // weapon / look / ready changes: a reaction on a kid standing on its mark; silent (already on at its entrance)
   // while it's off stage; queued (played once it lands) while it's travelling
-  _lobChange(M, weapon, style, ready, skey = styleKey(style)) {
-    const onStage = this._lobStanding(M) && this.lob.k > 0.05;
-    const hidden = !M.c || !M.c.root.visible || M.phase === 'wait' || M.phase === 'off' || M.phase === 'launched' || this.lob.k <= 0.05;
+  _lobChange(M: LobMember, weapon: string | undefined, style: LookStyle | null | undefined, ready: boolean, skey = styleKey(style)) {
+    const onStage = this._lobStanding(M) && this.lob!.k > 0.05;
+    const hidden = !M.c || !M.c.root.visible || M.phase === 'wait' || M.phase === 'off' || M.phase === 'launched' || this.lob!.k <= 0.05;
     if (weapon && weapon !== M.weapon) {
       M.weapon = weapon;
       if (hidden) { if (M.c) { M.kind = weaponKind(M.weapon); M.c.setWeapon(M.kind); } } else this._lobAct(M, { kind: 'hop' });
     }
     if (style && skey !== M.skey) {
       M.skey = skey; M.style = { ...style };
-      if (hidden) { if (M.c) { this.lob.kids.remove(M.c.root); M.c.dispose?.(); M.c = null; if (M.phase !== 'wait' && M.phase !== 'off' && M.phase !== 'launched') this._lobArrive(M, 'stand', 0); } }
+      if (hidden) { if (M.c) { this.lob!.kids.remove(M.c.root); M.c.dispose?.(); M.c = null; if (M.phase !== 'wait' && M.phase !== 'off' && M.phase !== 'launched') this._lobArrive(M, 'stand', 0); } }
       else this._lobAct(M, { kind: 'pop' });
     }
     if (ready !== M.ready) {
@@ -1802,8 +1991,8 @@ export class Showcase {
     }
   }
 
-  _lobNew(p, skey) {
-    const L = this.lob;
+  _lobNew(p: LobbyPlayerIn, skey: string): LobMember {
+    const L = this.lob!;
     return {
       id: p.id, name: p.name || 'Squidkid', you: !!p.you, host: !!p.host, ready: !!p.ready, weapon: p.weapon || 'shooter',
       style: p.style ? { ...p.style } : {}, skey, team: 0, wantTeam: 0, mark: null, at: null, dest: null, c: null, a: this._anim(), kind: null,
@@ -1815,18 +2004,18 @@ export class Showcase {
     };
   }
 
-  _lobSpot(mark) {
+  _lobSpot(mark: Mark): Spot | null {
     const S = this.lob && this.lob.set;
     if (!S || mark == null) return null;
     return mark === 'hub' ? S.hubSpot : S.spots[mark] || null;
   }
-  _lobRowColor(team) { const L = this.lob, t = L.myTeam === 1 ? 1 : 0; return L.colors[team ? 1 - t : t]; }
-  _lobStanding(M) { return !!(M.c && M.c.root.visible && (M.phase === 'idle' || M.phase === 'land')); }
+  _lobRowColor(team: number) { const L = this.lob!, t = L.myTeam === 1 ? 1 : 0; return L.colors[team ? 1 - t : t]; }
+  _lobStanding(M: LobMember): M is LobKid { return !!(M.c && M.c.root.visible && (M.phase === 'idle' || M.phase === 'land')); }
 
   // team colours → ink materials (by row), the set's own dressing; kids too on a palette change (`kids`) — a side swap
   // shows on each kid as it dives through the ink instead
   _lobColors(kids = false) {
-    const L = this.lob;
+    const L = this.lob!;
     const a = this._lobRowColor(0), b = this._lobRowColor(1);
     for (let i = 0; i < 2; i++) {
       const c = i ? b : a;
@@ -1839,24 +2028,24 @@ export class Showcase {
     if (kids) for (const M of L.members.values()) if (M.c && !M.dead) M.c.setColor(this._lobRowColor(M.team));
   }
 
-  _lobChar(M) {
+  _lobChar(M: LobMember) {
     const kind = weaponKind(M.weapon);
     const c = new this.CharacterClass({ color: this._lobRowColor(M.team).clone(), weapon: kind, style: { ...M.style }, name: M.name || 'Squidkid', isLocal: false });
     c.root.rotation.order = 'YXZ';
     c.setDance(M.ready ? 'lobby_pose' : M.danceIdle);
     c.root.visible = false;
-    this.lob.kids.add(c.root);
+    this.lob!.kids.add(c.root);
     M.c = c; M.kind = kind;
     return c;
   }
 
   // slots: you = front centre (mark 0); everyone keeps their mark while their team is unchanged; newcomers fill
   // centre-out (the set orders its spots front 0..3, rivals 4..7)
-  _lobSlots(flip) {
-    const L = this.lob;
-    const taken = [[null, null, null, null], [null, null, null, null]];
+  _lobSlots(flip: boolean) {
+    const L = this.lob!;
+    const taken: (LobMember | null)[][] = [[null, null, null, null], [null, null, null, null]];
     const live = [...L.members.values()].filter((M) => !M.leaving && !M.dead && M.id !== HUB_ID);
-    const cur = (M) => (typeof M.dest === 'number' ? M.dest : typeof M.mark === 'number' ? M.mark : null);
+    const cur = (M: LobMember) => (typeof M.dest === 'number' ? M.dest : typeof M.mark === 'number' ? M.mark : null);
     for (const M of live) if (M.you) { taken[0][0] = M; this._lobMove(M, 0, flip, 0); }
     for (const M of live) {
       if (M.you) continue;
@@ -1876,8 +2065,8 @@ export class Showcase {
     }
   }
 
-  _lobMove(M, mark, flip, k) {
-    const L = this.lob;
+  _lobMove(M: LobMember, mark: number | null, flip: boolean, k: number) {
+    const L = this.lob!;
     const first = M.fresh;
     if (!first && M.mark === mark && !flip) return;
     M.fresh = false;
@@ -1904,17 +2093,17 @@ export class Showcase {
     // travelling (swim / leap / pop / dive): it finishes the trip, then heads for the new mark (see _lobStep 'land')
   }
 
-  _lobArrive(M, how, delay) {
+  _lobArrive(M: LobMember, how: string, delay: number) {
     M.phase = 'wait'; M.enter = how; M.delay = delay; M.act = null; M.q.length = 0; M.vis = 0; M.path = null;
     if (M.c) M.c.root.visible = false;
-    if (how === 'stand' && this.lob.ready) this._lobBegin(M);
+    if (how === 'stand' && this.lob!.ready) this._lobBegin(M);
   }
 
-  _lobHide(M) { M.phase = 'off'; M.vis = 0; M.path = null; if (M.c) M.c.root.visible = false; }
+  _lobHide(M: LobMember) { M.phase = 'off'; M.vis = 0; M.path = null; if (M.c) M.c.root.visible = false; }
 
-  _lobLeave(M) {
+  _lobLeave(M: LobMember) {
     M.leaving = true;
-    const L = this.lob;
+    const L = this.lob!;
     if (!M.c || !M.c.root.visible || M.phase === 'wait' || M.phase === 'off' || M.phase === 'launched' || L.k <= 0.05) { this._lobDispose(M); return; }
     if (M.phase === 'swim' && M.onEnd !== 'gone' && M.path) {
       // turned back mid-arrival: swim out the way it came
@@ -1929,21 +2118,21 @@ export class Showcase {
     // leaping / popping / diving: it leaves as soon as it has landed (see _lobIdle)
   }
 
-  _lobDispose(M) {
+  _lobDispose(M: LobMember) {
     M.dead = true;
-    if (M.c) { this.lob.kids.remove(M.c.root); M.c.dispose?.(); M.c = null; }
-    if (this.lob.members.get(M.id) === M) this.lob.members.delete(M.id);
+    if (M.c) { this.lob!.kids.remove(M.c.root); M.c.dispose?.(); M.c = null; }
+    if (this.lob!.members.get(M.id) === M) this.lob!.members.delete(M.id);
   }
 
   // A standing kid sets off: turns toward where it's going, hops and dives into its own ink, then (see _lobAfterDive)
   // swims the route ('leave' → out of the alley · 'switch' → to its new mark) or surfaces on its new mark ('duck').
   // 'vanish': the room dissolving around you as you leave it (dives and is gone).
-  _lobDepart(M, how, delay = 0) {
-    const L = this.lob, S = L.set;
+  _lobDepart(M: LobMember, how: string, delay = 0) {
+    const L = this.lob!, S = L.set;
     M.after = how; M.phase = 'dive'; M.t0 = L.t + delay; M.flag = 0; M.act = null; M.q.length = 0; M.path = null;
     let yaw = M.yaw;
     if (S && (how === 'leave' || how === 'switch')) {
-      const raw = how === 'leave' ? S.exitPath(M.at) : this._lobRoute(M.at, M.mark);
+      const raw = how === 'leave' ? S.exitPath(M.at as number) : this._lobRoute(M.at, M.mark as number);   // standing on a numbered mark
       if (raw && raw.length) {
         raw[0] = M.pos.clone();
         M.path = makePath(raw, this._lobAvoid(M));
@@ -1956,10 +2145,10 @@ export class Showcase {
 
   // mark → mark along the set's own corridors: out along the old mark's exit path until it meets the new mark's lane
   // (same level: the dock is only climbed by its stairs), then in along that lane
-  _lobRoute(from, to) {
-    const S = this.lob.set;
+  _lobRoute(from: Mark, to: number): THREE.Vector3[] {
+    const S = this.lob!.set!;
     if (typeof from !== 'number') return [this._lobSpot(from)?.pos.clone() || new THREE.Vector3(), S.spots[to].pos.clone()];
-    const dense = (pts) => {
+    const dense = (pts: THREE.Vector3[]) => {
       const out = [pts[0].clone()];
       for (let i = 1; i < pts.length; i++) {
         const a = pts[i - 1], b = pts[i], n = Math.max(1, Math.ceil(a.distanceTo(b) / 0.5));
@@ -1983,20 +2172,20 @@ export class Showcase {
   }
 
   // kids standing on their marks, for swimmers to steer round
-  _lobAvoid(M) {
-    const out = [];
-    for (const N of this.lob.members.values()) if (N !== M && !N.dead && this._lobStanding(N)) out.push(N.pos);
+  _lobAvoid(M: LobMember) {
+    const out: THREE.Vector3[] = [];
+    for (const N of this.lob!.members.values()) if (N !== M && !N.dead && this._lobStanding(N)) out.push(N.pos);
     return out;
   }
 
   /** Queue a one-shot on a member (weapon hop, look pop, ready flourish, emote, launch). `now` pre-empts. */
-  _lobAct(M, act, now = false) {
+  _lobAct(M: LobMember, act: LobAct, now = false) {
     if (act.kind === 'hop' || act.kind === 'pop') { const i = M.q.findIndex((a) => a.kind === act.kind); if (i >= 0) M.q.splice(i, 1); }
     if (now) { M.q.length = 0; M.act = null; }
     M.q.push(act);
   }
 
-  lobbyEmote(id, name) {
+  lobbyEmote(id: string, name: string) {
     const M = this.lob && this.lob.members.get(id);
     if (!M || M.dead || M.leaving || !LOB_EMOTES[name] || !this._lobStanding(M)) return;
     const i = M.q.findIndex((a) => a.kind === 'emote');
@@ -2025,7 +2214,7 @@ export class Showcase {
     const L = this.lob;
     if (!L || this.mode !== 'lobby') return 0;
     let k = 0;
-    const ms = [...L.members.values()].filter((M) => !M.dead && !M.leaving && this._lobStanding(M) && typeof M.mark === 'number')
+    const ms = [...L.members.values()].filter((M): M is LobKid & { mark: number } => !M.dead && !M.leaving && this._lobStanding(M) && typeof M.mark === 'number')
       .sort((a, b) => a.mark - b.mark);
     for (const M of ms) { M.q.length = 0; M.act = null; M.phase = 'idle'; M.q.push({ kind: 'jumpout', launch: true, delay: 0.07 * k++ }); }
     L.launchT = L.t;
@@ -2053,7 +2242,7 @@ export class Showcase {
     if (this.mode === 'lobby') this.hide();
   }
 
-  lobbyAnchor(id, out = {}) {
+  lobbyAnchor(id: string, out: LobbyAnchor = {}) {
     const L = this.lob;
     if (!L || !L.ready || L.k <= 0.02 || this.mode !== 'lobby') return null;
     const M = L.members.get(id);
@@ -2062,7 +2251,7 @@ export class Showcase {
     return this._lobProject(_v, out, M.vis, M.team, typeof M.mark === 'number' ? M.mark & 3 : 0);
   }
 
-  lobbySlotAnchor(row, i, out = {}) {
+  lobbySlotAnchor(row: number, i: number, out: LobbyAnchor = {}) {
     const L = this.lob;
     if (!L || !L.ready || L.k <= 0.02 || this.mode !== 'lobby' || !L.room) return null;
     const mark = row * 4 + i, S = this._lobSpot(mark);
@@ -2074,23 +2263,23 @@ export class Showcase {
   }
 
   // screen point for a DOM plate; hidden when it would sit under a UI panel (swimmers pass behind them in the distance)
-  _lobProject(p, out, vis, row, slot) {
-    const cam = this.lob.cam, W = innerWidth, H = innerHeight;
+  _lobProject(p: THREE.Vector3, out: LobbyAnchor, vis: number, row: number, slot: number) {
+    const cam = this.lob!.cam, W = innerWidth, H = innerHeight;
     _s.copy(p);
     _v.copy(p).project(cam);
     out.x = (_v.x + 1) * 0.5 * W; out.y = (1 - _v.y) * 0.5 * H;
     out.behind = _v.z > 1;
     _d.setFromMatrixColumn(cam.matrixWorld, 0);
     _s.add(_d).project(cam);
-    out.s = Math.abs(_s.x - _v.x) * 0.5 * W / Math.max(1, this.lob.kFront);
-    const U = this.lob.U;
+    out.s = Math.abs(_s.x - _v.x) * 0.5 * W / Math.max(1, this.lob!.kFront);
+    const U = this.lob!.U;
     const inside = !U || (out.x > U.l + 24 && out.x < U.r - 24 && out.y > U.t + 20 && out.y < U.b + 30);
     out.vis = inside ? vis : 0; out.row = row; out.slot = slot;
     return out;
   }
 
   // ---------------------------------------------------------------------------------------------- lobby set: update
-  _updateSet(dt) {
+  _updateSet(dt: number) {
     const L = this.lob;
     if (!L) return;
     const on = SET_MODES.has(this.mode);
@@ -2110,10 +2299,10 @@ export class Showcase {
     if (!L.ready) return;
     const S = L.set;
     const q = G.settings?.quality;
-    if (q && q !== L.quality) { L.quality = q; S.setQuality?.(q); }
+    if (q && q !== L.quality) { L.quality = q; S!.setQuality?.(q); }
     L.t += dt;
     L.shotT += dt;
-    S.update?.(dt, L.t);
+    S!.update?.(dt, L.t);
     // members (kids + contact shadows)
     let ci = 0;
     for (const M of [...L.members.values()]) {
@@ -2133,24 +2322,24 @@ export class Showcase {
     L.trail.update(dt);
   }
 
-  _lobContact(i, x, y, z, size, alpha) {
-    const C = this.lob.contact;
+  _lobContact(i: number, x: number, y: number, z: number, size: number, alpha: number) {
+    const C = this.lob!.contact;
     _m4.makeScale(size, 1, size).setPosition(x, y, z);
     C.setMatrixAt(i, _m4);
     C.setColorAt(i, this._c.setRGB(alpha, 0, 0));
   }
 
   // start an entrance ('stand' · 'pop' out of a puddle · 'swim' in from the alley mouth)
-  _lobBegin(M) {
-    const L = this.lob, S = this._lobSpot(M.mark);
+  _lobBegin(M: LobMember) {
+    const L = this.lob!, S = this._lobSpot(M.mark);
     if (!S) return;
     if (!M.c) this._lobChar(M);
-    const c = M.c, a = M.a, how = M.enter;
+    const c = M.c!, a = M.a, how = M.enter;   // made just above
     M.dest = M.mark; M.flag = 0; M.t0 = L.t; M.y = 0; M.sy = 1; M.act = null;
     M.team = typeof M.mark === 'number' ? M.mark >> 2 : 0;
     c.setColor(this._lobRowColor(M.team));
     if (how === 'swim') {
-      const P = (M.path = makePath(L.set.lanes(M.mark), this._lobAvoid(M)));
+      const P = (M.path = makePath(L.set!.lanes(M.mark as number), this._lobAvoid(M)));   // swims in to a room mark
       M.s = 0; M.v = SWIM.v * 0.8; M.onEnd = 'leap'; M.trailS = 0;
       const h = pathAt(P, 0, M.pos, _d);
       M.yaw = Math.atan2(_d.x, _d.z); M.hy = h || 0;
@@ -2176,8 +2365,8 @@ export class Showcase {
   }
 
   // settle a (re)placed kid's springs / feet / squid pose off-screen so its first visible frame is already alive
-  _lobWarm(M, y) {
-    const c = M.c, a = M.a;
+  _lobWarm(M: LobMember, y: number) {
+    const c = M.c!, a = M.a;
     c.root.position.set(M.pos.x, M.pos.y + y, M.pos.z);
     c.root.rotation.set(0, M.yaw, 0);
     c.root.scale.set(1, 1, 1);
@@ -2185,8 +2374,8 @@ export class Showcase {
     c.root.visible = true;
   }
 
-  _lobStep(M, dt) {
-    const L = this.lob, t = L.t;
+  _lobStep(M: LobMember, dt: number) {
+    const L = this.lob!, t = L.t;
     if (M.dead || M.phase === 'off' || M.phase === 'launched') return;
     if (M.phase === 'wait') {
       if (M.mark == null) return;
@@ -2206,7 +2395,7 @@ export class Showcase {
     const tau = t - M.t0;
     if (M.phase === 'swim') {
       // ---- low fast swim along the path; hops the stairs; brakes into the leap (or a surfacing / the alley mouth)
-      const P = M.path;
+      const P = M.path!;
       const sEnd = M.onEnd === 'leap' ? Math.max(0, P.len - SWIM.leap) : P.len;
       const vEnd = M.onEnd === 'leap' ? 4.6 : M.onEnd === 'pop' ? 1.2 : SWIM.v;
       const cap = Math.sqrt(vEnd * vEnd + 2 * SWIM.brake * Math.max(0, sEnd - M.s));
@@ -2241,7 +2430,7 @@ export class Showcase {
       if (M.s >= sEnd - 1e-4) this._lobSwimEnd(M, fx);
     } else if (M.phase === 'leap') {
       // ---- out of the ink: a squid arc that pops into the kid past the apex, turning to camera, splash-down on the mark
-      const Lp = M.leap, x = c01(tau / Lp.T);
+      const Lp = M.leap!, x = c01(tau / Lp.T);
       M.pos.lerpVectors(Lp.p0, Lp.p1, x);
       y = 4 * Lp.H * x * (1 - x); vy = (4 * Lp.H * (1 - 2 * x)) / Lp.T + (Lp.p1.y - Lp.p0.y) / Lp.T;
       air = x < 1;
@@ -2282,7 +2471,7 @@ export class Showcase {
       }
     } else if (M.phase === 'dive') {
       // ---- turn toward the way out, crouch, hop and dive into its own ink
-      const D = M.dive;
+      const D = M.dive!;
       if (tau >= -0.05) M.yaw = dampAngle(M.yaw, D.yaw, 11, dt);
       const at = tau - 0.16, ant = 0.08, T = 0.36, Hh = 0.3;
       if (at < 0) { /* turning */ }
@@ -2311,18 +2500,18 @@ export class Showcase {
       M.plateH = damp(M.plateH, PLATE_H, 8, dt);
     }
     if (M.phase === 'idle') {
-      const r = this._lobIdle(M, t, dt, fx);
-      if (M.dead || M.phase === 'launched') return;
+      const r = this._lobIdle(M as LobKid, t, dt, fx);   // M.c checked above
+      if (M.dead || (M.phase as string) === 'launched') return;   // _lobIdle may have launched it
       if (r) { y = r.y; sy = r.sy; twirl = r.twirl; pitch = r.pitch; air = r.air; vy = r.vy; }
     }
     this._lobPose(M, y, sy, twirl, pitch, air, vy, dt);
   }
 
   // hold the last pose for the frame a phase handed over mid-step (keeps the kid drawn where it was)
-  _lobPoseKeep(M, dt) { if (M.c && M.c.root.visible) this._lobPose(M, M.y, M.sy, 0, 0, true, 0, dt); }
+  _lobPoseKeep(M: LobMember, dt: number) { if (M.c && M.c.root.visible) this._lobPose(M, M.y, M.sy, 0, 0, true, 0, dt); }
 
-  _lobSwimEnd(M, fx) {
-    const L = this.lob;
+  _lobSwimEnd(M: LobMember, fx: InkFX) {
+    const L = this.lob!;
     if (M.onEnd === 'leap') {
       const S = this._lobSpot(M.mark) || this._lobSpot(M.dest);
       if (!S) return;
@@ -2339,16 +2528,16 @@ export class Showcase {
       M.phase = 'pop'; M.t0 = L.t; M.flag = 0; M.puddle = false; M.popAnt = 0.08; M.dest = M.mark;
     } else {
       // out of the alley: gone (or, if it changed its mind on the way out, straight back in)
-      M.c.root.visible = false; M.vis = 0; M.path = null;
+      M.c!.root.visible = false; M.vis = 0; M.path = null;
       if (M.leaving) this._lobDispose(M); else this._lobArrive(M, 'swim', 0.35);
     }
   }
 
-  _lobAfterDive(M, fx) {
-    const L = this.lob, how = M.after;
+  _lobAfterDive(M: LobMember, fx: InkFX) {
+    const L = this.lob!, how = M.after;
     // a team change shows as it hits the ink: the squid comes out of the splash in its new colour
     M.team = typeof M.mark === 'number' ? M.mark >> 2 : 0;
-    M.c.setColor(this._lobRowColor(M.team));
+    M.c!.setColor(this._lobRowColor(M.team));
     fx = L.fx[M.team ? 1 : 0];
     fx.crown(M.pos.x, M.pos.y, M.pos.z, 1.0, 18, 0.18);
     fx.splat(M.pos.x, M.pos.y, M.pos.z, 0.3, 1.8);
@@ -2369,8 +2558,8 @@ export class Showcase {
     M.dest = how === 'leave' ? null : M.mark;
   }
 
-  _lobLanded(M, fx, amp) {
-    const L = this.lob, c = M.c;
+  _lobLanded(M: LobMember, fx: InkFX, amp: number) {
+    const L = this.lob!, c = M.c!;
     M.phase = 'land'; M.t0 = L.t; M.at = M.dest = M.mark; M.vis = 1; M.leap = null; M.path = null; M.popAnt = 0.3;
     M.a.form = 'kid';
     c.trigger('land', amp);
@@ -2382,22 +2571,22 @@ export class Showcase {
   }
 
   // a kid lands: the others glance over at it
-  _lobNotice(M) {
-    for (const N of this.lob.members.values()) {
+  _lobNotice(M: LobMember) {
+    for (const N of this.lob!.members.values()) {
       if (N === M || N.dead || N.phase !== 'idle' || N.act || this.rand() < 0.25) continue;
       N.gTarget = this._lobYawTo(N, M.pos); N.gHold = 1; N.gT = 1.2 + this.rand() * 0.8;
     }
   }
 
   // yaw (kid space) toward a world point, clamped to a head turn
-  _lobYawTo(M, p) {
+  _lobYawTo(M: LobMember, p: THREE.Vector3) {
     const yaw = M.c ? M.c.root.rotation.y : M.yaw;
     const dx = p.x - M.pos.x, dz = p.z - M.pos.z;
     const kx = dx * Math.cos(yaw) - dz * Math.sin(yaw), kz = dx * Math.sin(yaw) + dz * Math.cos(yaw);
     return Math.max(-1, Math.min(1, Math.atan2(kx, kz)));
   }
 
-  _lobInkBurst(M, fx, n) {
+  _lobInkBurst(M: LobMember, fx: InkFX, n: number) {
     const r = this.rand, y = M.pos.y + M.y + 0.2;
     for (let i = 0; i < n; i++) {
       const g = r() * TAU, sp = 0.6 + r() * 1.1;
@@ -2406,16 +2595,16 @@ export class Showcase {
   }
 
   // idle life + one-shots (hop / pop / ready / unready / emote / jumpout); returns the pose offsets
-  _lobIdle(M, t, dt, fx) {
+  _lobIdle(M: LobKid, t: number, dt: number, fx: InkFX): LobPose | null {
     const c = M.c, a = M.a, P = M.pos;
     let y = 0, sy = 1, twirl = 0, pitch = 0, air = false, vy = 0;
     // pending business once back on the ground: leave, or head for a mark it was reassigned to on the way in
     if (!M.act) {
       if (M.leaving) { this._lobDepart(M, 'leave'); return null; }
-      if (M.mark != null && M.mark !== M.at && this.lob.k > 0.05) { this._lobDepart(M, typeof M.at === 'number' && typeof M.mark === 'number' ? 'switch' : 'duck'); return null; }
+      if (M.mark != null && M.mark !== M.at && this.lob!.k > 0.05) { this._lobDepart(M, typeof M.at === 'number' && typeof M.mark === 'number' ? 'switch' : 'duck'); return null; }
     }
     if (!M.act && M.q.length) {
-      M.act = M.q.shift();
+      M.act = M.q.shift()!;   // q is non-empty here
       M.act.t0 = t + (M.act.delay || 0);
       M.act.flag = 0;
       if (M.act.kind === 'emote') {
@@ -2427,7 +2616,7 @@ export class Showcase {
       } else if (M.act.kind === 'ready') c.trigger('jump');
     }
     const A = M.act;
-    const at = A ? t - A.t0 : 0;
+    const at = A ? t - A.t0! : 0;   // t0 is stamped when an act starts
     if (A && at >= 0) {
       if (A.kind === 'hop') {
         // weapon swap: crouch, spin-hop, the new weapon pops into the hand mid-air, splash on landing
@@ -2447,7 +2636,7 @@ export class Showcase {
             if (M.pop) { M.pop.scale.setScalar(0.001); M.popT = t; }
             c.trigger('jump');
           }
-        } else if (A.flag < 2) {
+        } else if (A.flag! < 2) {
           A.flag = 2; c.trigger('land', 6); fx.crown(P.x, P.y, P.z, 0.9, 18, 0.26); M.act = null;
         }
       } else if (A.kind === 'pop') {
@@ -2458,7 +2647,7 @@ export class Showcase {
           if (!A.flag) { A.flag = 1; this._lobSwap(M); fx.crown(P.x, P.y, P.z, 0.85, 18, 0.3); this._lobSparkle(M, 9); M.c.trigger('jump'); }
           const x = (at - ant) / T;
           if (x < 1) { y = 4 * H * x * (1 - x); vy = (4 * H * (1 - 2 * x)) / T; air = true; twirl = TAU * eInOut(x); sy = 1 + 0.1 * c01(vy / 2.2) - 0.05 * c01(-vy / 2.2); }
-          else if (A.flag < 2) { A.flag = 2; M.c.trigger('land', 5); fx.crown(P.x, P.y, P.z, 0.5, 10, 0.3); M.c.trigger('wink'); }
+          else if (A.flag! < 2) { A.flag = 2; M.c.trigger('land', 5); fx.crown(P.x, P.y, P.z, 0.5, 10, 0.3); M.c.trigger('wink'); }
           if (x > 1.35) M.act = null;
         }
       } else if (A.kind === 'ready') {
@@ -2508,9 +2697,9 @@ export class Showcase {
   }
 
   // yaw (kid space) toward the nearest neighbour (the other team counts a little further away)
-  _lobGlance(M) {
-    let best = null, bd = 1e9;
-    for (const N of this.lob.members.values()) {
+  _lobGlance(M: LobMember) {
+    let best: LobMember | null = null, bd = 1e9;
+    for (const N of this.lob!.members.values()) {
       if (N === M || N.dead || !N.c || !N.c.root.visible) continue;
       const d = Math.hypot(N.pos.x - M.pos.x, N.pos.z - M.pos.z) + (N.team !== M.team ? 0.8 : 0) + this.rand() * 0.9;
       if (d < bd) { bd = d; best = N; }
@@ -2518,15 +2707,15 @@ export class Showcase {
     return best ? this._lobYawTo(M, best.pos) : (this.rand() - 0.5) * 0.9;
   }
 
-  _lobPose(M, y, sy, twirl, pitch, air, vy, dt) {
+  _lobPose(M: LobMember, y: number, sy: number, twirl: number, pitch: number, air: boolean, vy: number, dt: number) {
     const c = M.c, a = M.a;
     if (!c) return;          // released during this step (left / re-dressed / hidden): nothing left to pose
     a.grounded = !air; a.vy = vy;
     M.y = y; M.sy = sy;
     if (M.pop) {
-      const k = backOut((this.lob.t - M.popT) / 0.34, 2.4);
+      const k = backOut((this.lob!.t - M.popT) / 0.34, 2.4);
       M.pop.scale.setScalar(Math.max(0.001, k));
-      if (this.lob.t - M.popT > 0.34) { M.pop.scale.setScalar(1); M.pop = null; }
+      if (this.lob!.t - M.popT > 0.34) { M.pop.scale.setScalar(1); M.pop = null; }
     }
     const sxz = 1 / Math.sqrt(sy);
     c.root.position.set(M.pos.x, M.pos.y + y, M.pos.z);
@@ -2539,14 +2728,14 @@ export class Showcase {
     const k = 60, z = 11;
     M.gV += (k * (M.gTarget - M.gY) - z * M.gV) * dt;
     M.gY += M.gV * dt;
-    if (Math.abs(M.gY) > 0.002 && c.bones?.head && a.form === 'kid') {
+    if (Math.abs(M.gY) > 0.002 && (c.bones as Bones)?.head && a.form === 'kid') {
       _q2.setFromAxisAngle(UPV, M.gY * 0.62);
-      c.bones.head.quaternion.premultiply(_q2);
+      (c.bones as Bones).head.quaternion.premultiply(_q2);
     }
   }
 
   // a new look: rebuild the kid mid-squash (pre-warmed so it never shows a rest pose)
-  _lobSwap(M) {
+  _lobSwap(M: LobMember) {
     const old = M.c;
     const c = new this.CharacterClass({ color: this._lobRowColor(M.team).clone(), weapon: weaponKind(M.weapon), style: { ...M.style }, name: M.name || 'Squidkid', isLocal: false });
     c.root.rotation.order = 'YXZ';
@@ -2556,14 +2745,14 @@ export class Showcase {
     const a = M.a, g = a.grounded;
     for (let i = 0; i < 12; i++) { a.time += 1 / 30; c.update(1 / 30, a); }
     a.grounded = g;
-    if (old) { c.danceT = old.danceT; this.lob.kids.remove(old.root); old.dispose?.(); }
+    if (old) { c.danceT = old.danceT; this.lob!.kids.remove(old.root); old.dispose?.(); }
     if (M.pop) M.pop = null;
-    this.lob.kids.add(c.root);
+    this.lob!.kids.add(c.root);
     M.c = c;
   }
 
-  _lobSparkle(M, n) {
-    const rnd = this.rand, P = M.pos, L = this.lob;
+  _lobSparkle(M: LobMember, n: number) {
+    const rnd = this.rand, P = M.pos, L = this.lob!;
     for (let i = 0; i < n; i++) {
       const ang = (i / n) * TAU + rnd() * 0.5, rr = 0.3 + rnd() * 0.3;
       const col = rnd() < 0.45 ? this._c.copy(this._lobRowColor(M.team)).lerp(_c1.setRGB(1, 1, 1), 0.35) : this._c.setRGB(1, 0.96, 0.84);
@@ -2576,14 +2765,14 @@ export class Showcase {
   // them clear of its walls): the fit is a zoom (fov) plus a lens shift that puts the subject inside the free area
   // between the UI panels — all eight marks with nameplate room for the room, your kid right of the cards for the hub.
   // Hub ⇄ room glides between the two; a slow handheld drift on top.
-  _lobCamera(W, H) {
-    const L = this.lob, t = L.t;
+  _lobCamera(W: number, H: number) {
+    const L = this.lob!, t = L.t;
     const D = this.debugCam;   // audits: { pos, target, fov } overrides the framing
     if (D) { this._placeLook(L.cam, D.pos, D.target, D.fov || 30, W * 0.5, H * 0.5, W, H); return; }
     const A = this._lobFrame(L.shot || 'lobby', W, H, this._fa || (this._fa = { pos: new THREE.Vector3(), tgt: new THREE.Vector3(), fov: 30, sx: 0, sy: 0 }));
     const gliding = L.shotFrom && L.shotT < GLIDE;
     if (gliding) {
-      const B = this._lobFrame(L.shotFrom, W, H, this._fb || (this._fb = { pos: new THREE.Vector3(), tgt: new THREE.Vector3(), fov: 30, sx: 0, sy: 0 }));
+      const B = this._lobFrame(L.shotFrom!, W, H, this._fb || (this._fb = { pos: new THREE.Vector3(), tgt: new THREE.Vector3(), fov: 30, sx: 0, sy: 0 }));
       const k = eInOut(L.shotT / GLIDE);
       A.pos.lerpVectors(B.pos, A.pos, k); A.tgt.lerpVectors(B.tgt, A.tgt, k);
       A.fov = lerp(B.fov, A.fov, k); A.sx = lerp(B.sx, A.sx, k); A.sy = lerp(B.sy, A.sy, k);
@@ -2609,7 +2798,7 @@ export class Showcase {
     this._placeLook(L.cam, A.pos, A.tgt, fov, cs.sx, cs.sy, W, H);
   }
 
-  _placeLook(cam, pos, tgt, fov, sx, sy, W, H) {
+  _placeLook(cam: THREE.PerspectiveCamera, pos: THREE.Vector3, tgt: THREE.Vector3, fov: number, sx: number, sy: number, W: number, H: number) {
     const C = this.lob && this.lob.set && this.lob.set.camera;
     cam.fov = fov;
     cam.position.copy(pos);
@@ -2621,8 +2810,8 @@ export class Showcase {
   }
 
   // framing for 'lobby' | 'hub' → o { pos, tgt, fov, sx, sy } (cached per layout)
-  _lobFrame(kind, W, H, o) {
-    const L = this.lob, S = L.set, C = kind === 'hub' ? S.hubCamera : S.camera;
+  _lobFrame(kind: ShotKind, W: number, H: number, o: LobFrame) {
+    const L = this.lob!, S = L.set!, C = kind === 'hub' ? S.hubCamera : S.camera;
     const U = kind === 'hub' ? this._measureHub(W, H) : this._measureLobby(W, H);
     if (kind === 'lobby') L.U = U;
     const key = `${W}x${H}:${Math.round(U.l)}:${Math.round(U.r)}:${Math.round(U.t)}:${Math.round(U.b)}`;
@@ -2631,13 +2820,13 @@ export class Showcase {
       const cam = L.cam;
       this._placeLook(cam, C.pos, C.target, C.fov, W * 0.5, H * 0.5, W, H);
       const bb = [1e9, -1e9, 1e9, -1e9];
-      const add = (x, y, z) => {
+      const add = (x: number, y: number, z: number) => {
         _v.set(x, y, z).project(cam);
         const px = (_v.x + 1) * 0.5 * W, py = (1 - _v.y) * 0.5 * H;
         bb[0] = Math.min(bb[0], px); bb[1] = Math.max(bb[1], px); bb[2] = Math.min(bb[2], py); bb[3] = Math.max(bb[3], py);
       };
       const u = Math.min(W * 0.01, H * 0.017778);
-      let z, cx, cy;
+      let z: number, cx: number, cy: number;
       if (kind === 'hub') {
         const p = S.hubSpot.pos;
         add(p.x - 0.42, p.y, p.z); add(p.x + 0.42, p.y, p.z); add(p.x, p.y + CHAR_H, p.z); add(p.x, p.y - 0.05, p.z + 0.35);
@@ -2674,8 +2863,8 @@ export class Showcase {
     return o;
   }
 
-  _measureLobby(W, H) {
-    const U = this.ui, L = this.lob;
+  _measureLobby(W: number, H: number) {
+    const U = this.ui, L = this.lob!;
     const u = Math.min(W * 0.01, H * 0.017778);
     if (!U.lob) U.lob = { l: 0, r: W, t: 0, b: H, next: 0 };
     const R = U.lob;
@@ -2693,8 +2882,8 @@ export class Showcase {
     return R;
   }
 
-  _measureHub(W, H) {
-    const U = this.ui, L = this.lob;
+  _measureHub(W: number, H: number) {
+    const U = this.ui, L = this.lob!;
     const u = Math.min(W * 0.01, H * 0.017778);
     if (!U.hub) U.hub = { l: 0, r: W, t: 0, b: H, next: 0 };
     const R = U.hub;
@@ -2714,7 +2903,7 @@ export class Showcase {
 
   // ---------------------------------------------------------------------------------------------- framing
   // Free screen areas come from the live DOM (layout boxes, transform-free) with stylesheet-formula fallbacks.
-  _measureUI(W, H) {
+  _measureUI(W: number, H: number) {
     const U = this.ui;
     const u = Math.min(W * 0.01, H * 0.017778);
     if (U.W !== W || U.H !== H) { U.W = W; U.H = H; U.next = 0; }
@@ -2723,12 +2912,12 @@ export class Showcase {
       U.next = this.t < 0.4 ? this.t + 0.1 : this.t < 1.5 ? this.t + 0.35 : this.t < 9 ? this.t + 0.2 : 1e9;
       U.panelR = 3.6 * u + Math.min(52 * u, 0.54 * W);
       U.titleR = 3.8 * u + 33.2 * u; U.titleB = 12.3 * u; U.bandB = 0.42 * H;
-      const box = (sel) => {
-        const list = document.querySelectorAll(sel);
+      const box = (sel: string): DomRect | null => {
+        const list = document.querySelectorAll<HTMLElement>(sel);
         const el = list[list.length - 1];
         if (!el || !el.offsetParent) return null;
         let x = 0, y = 0;
-        for (let e = el; e; e = e.offsetParent) { x += e.offsetLeft; y += e.offsetTop; }
+        for (let e: HTMLElement | null = el; e; e = e.offsetParent as HTMLElement | null) { x += e.offsetLeft; y += e.offsetTop; }
         return { l: x, t: y, r: x + el.offsetWidth, b: y + el.offsetHeight };
       };
       if (PEDESTAL.has(this.mode) || PEDESTAL.has(this._lastMode)) {
@@ -2754,7 +2943,7 @@ export class Showcase {
   }
 
   // Orbit the focus point, aim at it, then lens-shift so the focus lands on screen pixel (sx, sy).
-  _place(focus, yaw, pitch, dist, fov, sx, sy, W, H, roll = 0) {
+  _place(focus: THREE.Vector3, yaw: number, pitch: number, dist: number, fov: number, sx: number, sy: number, W: number, H: number, roll = 0) {
     const cam = this.camera, cp = Math.cos(pitch);
     cam.fov = fov;
     cam.position.set(focus.x + dist * Math.sin(yaw) * cp, focus.y - dist * Math.sin(pitch), focus.z + dist * Math.cos(yaw) * cp);
@@ -2768,7 +2957,7 @@ export class Showcase {
 
   // Pedestal framing for a mode → o { fy, yaw, pitch, dist, fov, sx, sy, roll }. Loadout: whole kid + pedestal in the free
   // area right of the panel. Locker: closer, a touch lower angle, the kid fills more of the frame (the look is the point).
-  _pedestalShot(mode, W, H, U, o) {
+  _pedestalShot(mode: ShowMode, W: number, H: number, U: UIShot, o: PedShot) {
     const t = this.t, locker = mode === 'locker', hub = mode === 'hub';
     const fov = locker ? 23 : 25, tanH = Math.tan((fov * Math.PI) / 360);
     const freeL = U.panelR + W * 0.012, freeR = W * 0.985, freeW = Math.max(W * 0.18, freeR - freeL);
@@ -2790,19 +2979,19 @@ export class Showcase {
     return o;
   }
 
-  _cameraPedestal(mode, W, H) {
+  _cameraPedestal(mode: ShowMode, W: number, H: number) {
     const U = this._measureUI(W, H);
     const A = this._pedestalShot(mode, W, H, U, this._shotA);
     // switching loadout ⇄ locker keeps the kid on stage and glides the camera between the two framings
     if (this.shotFrom && this.shotT < 0.75) {
       const B = this._pedestalShot(this.shotFrom, W, H, U, this._shotB);
       const k = eInOut(this.shotT / 0.75);
-      for (const key of ['fy', 'yaw', 'pitch', 'dist', 'fov', 'sx', 'sy', 'roll']) A[key] = lerp(B[key], A[key], k);
+      for (const key of ['fy', 'yaw', 'pitch', 'dist', 'fov', 'sx', 'sy', 'roll'] as const) A[key] = lerp(B[key], A[key], k);
     }
     this._place(this._tgt.set(0, A.fy, 0), A.yaw, A.pitch, A.dist, A.fov, A.sx, A.sy, W, H, A.roll);
   }
 
-  _cameraResults(W, H) {
+  _cameraResults(W: number, H: number) {
     const U = this._measureUI(W, H), t = this.t, won = this.won;
     const fov = 22, tanH = Math.tan((fov * Math.PI) / 360);
     const S0 = this.slots[0];
@@ -2840,7 +3029,7 @@ export class Showcase {
   // Studio portraits for menu tiles: the kid is posed in this same scene (same lights → the character shaders are already
   // compiled, and portraits match the pedestal look), rendered into a small MSAA HDR target, tone mapped + sRGB encoded
   // by a resolve pass (straight alpha, transparent background) and read back into a 2D canvas. One per frame; cached.
-  portrait(req, cb) {
+  portrait(req: PortraitReq, cb: PortraitCb) {
     const key = [req.kind || 'head', req.size | 0 || 128, '#' + this._c2.set(req.color || this.color).getHexString(), req.weapon || '',
       ...Object.keys(req.style || {}).sort().map((k) => `${k}:${req.style[k]}`)].join('|');
     const hit = this._pcache.get(key);
@@ -2859,26 +3048,26 @@ export class Showcase {
     const job = this._pq.shift();
     if (!job) return;
     const t0 = performance.now();
-    let read = null;
+    let read: Promise<HTMLCanvasElement> | null = null;
     try { read = this._renderPortrait(job.req); } catch (e) { console.error('[showcase] portrait', e); }
     this.portraitMs = performance.now() - t0;
-    const finish = (cv) => {
-      if (cv) { this._pcache.set(job.key, cv); if (this._pcache.size > 96) this._pcache.delete(this._pcache.keys().next().value); }
+    const finish = (cv: HTMLCanvasElement | null) => {
+      if (cv) { this._pcache.set(job.key, cv); if (this._pcache.size > 96) this._pcache.delete(this._pcache.keys().next().value!); }
       for (const cb of job.cbs) { try { cb(cv ? copyCanvas(cv) : null); } catch (e) { console.error('[showcase] portrait cb', e); } }
     };
     if (!read) { finish(null); return; }
     this._pflight = (this._pflight || 0) + 1;
-    read.then((cv) => { this._pflight--; finish(cv); }, (e) => { this._pflight--; console.error('[showcase] portrait read', e); finish(null); });
+    read.then((cv) => { this._pflight!--; finish(cv); }, (e) => { this._pflight!--; console.error('[showcase] portrait read', e); finish(null); });
   }
 
-  _renderPortrait(req) {
+  _renderPortrait(req: PortraitReq) {
     const r = this.r, S = Math.max(32, Math.min(512, req.size | 0 || 128)), kind = req.kind || 'head';
     this._renderPortraitSetup(S);
     // isolate the portrait kid in the showcase scene (lights stay)
     return this._renderPortraitRun(req, S, kind, r);
   }
 
-  _renderPortraitSetup(S) {
+  _renderPortraitSetup(S: number) {
     if (!this._prt || this._prt.width !== S) {
       this._prt?.dispose(); this._prt8?.dispose();
       this._prt = new THREE.WebGLRenderTarget(S, S, { type: THREE.HalfFloatType, samples: 4 });
@@ -2919,9 +3108,9 @@ export class Showcase {
     }
   }
 
-  _renderPortraitRun(req, S, kind, r) {
-    const hidden = [];
-    for (const o of this.scene.children) if (o.visible && !o.isLight) { o.visible = false; hidden.push(o); }
+  _renderPortraitRun(req: PortraitReq, S: number, kind: string, r: THREE.WebGLRenderer) {
+    const hidden: THREE.Object3D[] = [];
+    for (const o of this.scene.children) if (o.visible && !(o as THREE.Object3D & { isLight?: boolean }).isLight) { o.visible = false; hidden.push(o); }
     const col = this._c2.set(req.color || this.color);
     const idle = !OVERLAY.has(this.mode) && !(this._out > 0);   // studio lights are free (the set has its own)
     const keep = this._c.copy(this.color);
@@ -2936,7 +3125,7 @@ export class Showcase {
     const cam = this._pcam || (this._pcam = new THREE.PerspectiveCamera(18, 1, 0.05, 40));
     // three-quarter view from the kid's right (the key-lit side); tiles put a name label over the bottom ~25 %, so
     // the subject sits a little high in frame
-    let fy, span, yaw = -0.4, pitch = -0.06, fx = 0, fz = 0;
+    let fy: number, span: number, yaw = -0.4, pitch = -0.06, fx = 0, fz = 0;
     const fov = 18;
     if (kind === 'body') { fy = 0.72; span = 1.74; yaw = -0.3; pitch = -0.07; }
     else {
@@ -2964,14 +3153,14 @@ export class Showcase {
     r.setClearColor(0x000000, 0);
     r.clear(true, true, false);
     r.render(this.scene, cam);
-    this._pres.uniforms.tMap.value = this._prt.texture;
-    this._pres.uniforms.uExposure.value = r.toneMappingExposure;
+    this._pres!.uniforms.tMap.value = this._prt!.texture;   // both made by _renderPortraitSetup
+    this._pres!.uniforms.uExposure.value = r.toneMappingExposure;
     r.setRenderTarget(this._prt8);
-    r.render(this._presScene, this.compCam);
+    r.render(this._presScene!, this.compCam);
     // async read-back (PBO + fence): no GPU pipeline stall; the next portrait may reuse the target right away
     const buf = new Uint8Array(S * S * 4);
-    const read = r.readRenderTargetPixelsAsync ? r.readRenderTargetPixelsAsync(this._prt8, 0, 0, S, S, buf) : Promise.resolve(r.readRenderTargetPixels(this._prt8, 0, 0, S, S, buf));
-    this._pres.uniforms.tMap.value = null;
+    const read = r.readRenderTargetPixelsAsync ? r.readRenderTargetPixelsAsync(this._prt8!, 0, 0, S, S, buf) : Promise.resolve(r.readRenderTargetPixels(this._prt8!, 0, 0, S, S, buf));
+    this._pres!.uniforms.tMap.value = null;
     r.setRenderTarget(prevRT);
     r.setClearColor(this._clr, prevAlpha);
     r.autoClear = prevAuto;
@@ -2983,7 +3172,7 @@ export class Showcase {
     return read.then(() => {
       const cv = document.createElement('canvas');
       cv.width = cv.height = S;
-      const ctx = cv.getContext('2d');
+      const ctx = cv.getContext('2d')!;
       const img = ctx.createImageData(S, S);
       const row = S * 4;
       for (let y = 0; y < S; y++) img.data.set(buf.subarray((S - 1 - y) * row, (S - y) * row), y * row);
@@ -3010,11 +3199,11 @@ export class Showcase {
       this._renderPortraitSetup(128);
       const done = () => {
         if (this._warmChar) { this.scene.remove(this._warmChar.root); this._warmChar.dispose?.(); this._warmChar = null; }
-        if (!PEDESTAL.has(this.mode)) this.stageL.group.visible = stageWas && PEDESTAL.has(this.mode);
+        if (!PEDESTAL.has(this.mode)) this.stageL!.group.visible = stageWas && PEDESTAL.has(this.mode);
         this._warmState = 'done';
       };
       const p1 = r.compileAsync ? r.compileAsync(this.scene, this.camera) : Promise.resolve(r.compile(this.scene, this.camera));
-      const p2 = r.compileAsync ? r.compileAsync(this._presScene, this.compCam) : Promise.resolve(r.compile(this._presScene, this.compCam));
+      const p2 = r.compileAsync ? r.compileAsync(this._presScene!, this.compCam) : Promise.resolve(r.compile(this._presScene!, this.compCam));
       Promise.all([p1, p2]).then(done, (e) => { console.warn('[showcase] warm-up', e); done(); });
     } catch (e) { console.warn('[showcase] warm-up', e); this._warmState = 'done'; }
   }
@@ -3030,11 +3219,14 @@ export class Showcase {
     // the composer's buffers are single-sampled on Apple GPUs (SMAA runs there instead), but the showcase is composited
     // after the post chain, so it keeps its own 4× target to stay anti-aliased
     const want = (G.post?.q?.msaa ?? 4) > 0 ? G.post?.samples || 4 : 0;
-    if (b && b.isWebGLRenderTarget && b.depthBuffer && (b.samples || 0) >= want && b.texture.type !== THREE.UnsignedByteType && Math.abs(b.width - w) <= 1 && Math.abs(b.height - h) <= 1) {
+    // 그림책 룩: 외곽선(Renderer.stylize)이 깊이를 읽으므로 DepthTexture가 있는 타깃만 쓴다
+    const depth = !!G.post?.style;
+    if (b && b.isWebGLRenderTarget && b.depthBuffer && (!depth || !!b.depthTexture) && (b.samples || 0) >= want && b.texture.type !== THREE.UnsignedByteType && Math.abs(b.width - w) <= 1 && Math.abs(b.height - h) <= 1) {
       if (this._rt) { this._rt.dispose(); this._rt = null; }
       return b;
     }
-    if (!this._rt) this._rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: want ? 4 : 0 });
+    if (this._rt && !!this._rt.depthTexture !== depth) { this._rt.dispose(); this._rt = null; }
+    if (!this._rt) this._rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: want ? 4 : 0, depthTexture: depth ? new THREE.DepthTexture(w, h) : null });
     else if (this._rt.width !== w || this._rt.height !== h) this._rt.setSize(w, h);
     return this._rt;
   }
@@ -3056,16 +3248,17 @@ export class Showcase {
     const target = this._target();
     if (setA > 0) {
       this._lobCamera(W, H);
-      this._lobEnv(L);
+      this._lobEnv(L!);   // setA > 0 only with a ready set
       r.shadowMap.needsUpdate = true;
       r.setRenderTarget(target);
-      r.setClearColor(L.bg, 1);
+      r.setClearColor(L!.bg, 1);
       r.clear(true, true, false);
-      r.render(L.scene, L.cam);
+      r.render(L!.scene, L!.cam);
       r.setRenderTarget(prevRT);
+      const lobTex = G.post?.stylize(target, L!.scene, L!.cam) ?? target.texture;   // 그림책 룩(35번 R002·R003)
       const covered = this._ffFrame;   // nothing was drawn under us this frame
       if (covered) { r.setClearColor(0x000000, 1); r.clear(true, false, false); }
-      this.compMat.uniforms.tMap.value = target.texture;
+      this.compMat.uniforms.tMap.value = lobTex;
       this.compMat.uniforms.uOpacity.value = covered ? 1 : eInOut(setA);
       r.render(this.compScene, this.compCam);
     }
@@ -3080,7 +3273,7 @@ export class Showcase {
       r.clear(true, true, false);
       r.render(this.scene, this.camera);
       r.setRenderTarget(prevRT);
-      this.compMat.uniforms.tMap.value = target.texture;
+      this.compMat.uniforms.tMap.value = G.post?.stylize(target, this.scene, this.camera) ?? target.texture;
       this.compMat.uniforms.uOpacity.value = opacity;
       r.render(this.compScene, this.compCam);
     }
@@ -3091,19 +3284,19 @@ export class Showcase {
 }
 const _c1 = new THREE.Color();
 // a live layout box (offset chain: transform-free, so mid-animation panels measure where they will rest)
-function domBox(sel) {
-  const list = document.querySelectorAll(sel);
+function domBox(sel: string): DomRect | null {
+  const list = document.querySelectorAll<HTMLElement>(sel);
   const el = list[list.length - 1];
   if (!el || !el.offsetParent) return null;
   let x = 0, y = 0;
-  for (let e = el; e; e = e.offsetParent) { x += e.offsetLeft; y += e.offsetTop; }
+  for (let e: HTMLElement | null = el; e; e = e.offsetParent as HTMLElement | null) { x += e.offsetLeft; y += e.offsetTop; }
   return { l: x, t: y, r: x + el.offsetWidth, b: y + el.offsetHeight };
 }
-const styleKey = (st) => (st && typeof st === 'object' ? Object.keys(st).sort().map((k) => `${k}:${st[k]}`).join('|') : '');
-const weaponKind = (id) => (WEAPONS[id] && WEAPONS[id].kind) || id || 'shooter';
-function copyCanvas(src) {
+const styleKey = (st: LookStyle | null | undefined) => (st && typeof st === 'object' ? Object.keys(st).sort().map((k) => `${k}:${st[k]}`).join('|') : '');
+const weaponKind = (id: string) => ((WEAPONS as WeaponTable)[id] && (WEAPONS as WeaponTable)[id].kind) || id || 'shooter';
+function copyCanvas(src: HTMLCanvasElement) {
   const d = document.createElement('canvas');
   d.width = src.width; d.height = src.height;
-  d.getContext('2d').drawImage(src, 0, 0);
+  d.getContext('2d')!.drawImage(src, 0, 0);
   return d;
 }

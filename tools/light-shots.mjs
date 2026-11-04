@@ -10,7 +10,7 @@ import puppeteer from 'puppeteer-core';
 import { chromePath, gpuArgs } from './chrome.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { MAPS, TIMES } from '../src/config.js';
+import { MAPS, TIMES } from '../.web-dev/src/config.js';   // compiled output: npm run compile first
 
 // Cameras (world metres; floor y = 0, Alpha spawns at -Z, sun in the south-west quadrant for every theme).
 //   hero  = the stage-select 3/4 aerial;  play = third-person over a kid's shoulder, looking toward the sun-side lane;

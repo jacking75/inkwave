@@ -12,9 +12,15 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { DEFAULT_SETTINGS, rendererQuality } from '../config.js';
 import { G } from './ctx.js';
 import { shouldUseTouch } from './touch.js';
+import { resolveLook, type LookProfile } from '../style/lookProfile.js';
+import { applyToonLighting } from '../style/toonLighting.js';
+import { StylePass, type ColorReturnState, type LineMode } from '../style/stylePass.js';
 
 // 렌더러가 읽는 설정 필드이다(전체 설정은 config.js의 DEFAULT_SETTINGS).
 export type RendererSettings = typeof DEFAULT_SETTINGS & { shadows?: boolean; bloom?: boolean };
+
+// ?lines=prepass|depthTex 로 외곽선 깊이 경로를 강제한다(검증용). 없으면 자동 선택이다.
+const LINE_OVERRIDE = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('lines') : null;
 type Quality = ReturnType<typeof rendererQuality>;
 // 환경 테마가 권하는 색 보정(environment.js THEMES[*].grade)이다.
 interface ThemeGrade {
@@ -111,8 +117,17 @@ export class Renderer {
   declare grade: ShaderPass;
   declare _gradeSrc: ThemeGrade | null;
   declare extraPass: ShaderPass | undefined;
+  declare look: LookProfile;
+  declare style: StylePass | null;
+  declare lineMode: LineMode | null;   // 외곽선 깊이 출처(StylePass 주석). 그림책 룩이 아니면 null
+  declare _depthTexOk: boolean;        // 컴포저 타깃에 DepthTexture를 붙일 수 있는지(첫 확인 뒤 고정)
+  declare _colorReturn: ColorReturnState | null;
+  declare _overlayStyle: StylePass | null;          // 쇼케이스(로비 세트·받침대·결과) 층에 쓰는 StylePass
+  declare _overlayRT: THREE.WebGLRenderTarget | null;
 
   constructor(container: HTMLElement, settings: RendererSettings) {
+    // 툰 램프는 셰이더를 하나라도 만들기 전에 청크를 패치해야 한다(다시 시작 후 적용)
+    applyToonLighting(resolveLook(settings, shouldUseTouch(settings)));
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', stencil: false }));
     // Shader status checks make every compile synchronous (the main thread waits on the GPU process for the link
     // result): a mid-game compile then stalls input, netcode and all. Players run without them; ?shadercheck (the
@@ -133,6 +148,9 @@ export class Renderer {
     this.settings = settings;
     this.touch = shouldUseTouch(settings);
     this.q = rendererQuality(settings, this.touch);
+    this.look = resolveLook(settings, this.touch);
+    this.style = null; this.lineMode = null; this._depthTexOk = LINE_OVERRIDE !== 'prepass'; this._colorReturn = null;
+    this._overlayStyle = null; this._overlayRT = null;
     this._w = 0; this._h = 0;
   }
 
@@ -145,6 +163,7 @@ export class Renderer {
   _buildComposer(): void {
     const r = this.renderer, q = this.q, scene = this.scene!, camera = this.camera!;
     if (this.composer) { this.composer.renderTarget1.dispose(); this.composer.renderTarget2.dispose(); }
+    this.style?.dispose();
     this.dynScale = this.dynScale || 1;
     const pr = Math.min(window.devicePixelRatio || 1, q.pixelRatio) * this.dynScale;
     r.setPixelRatio(pr);
@@ -157,6 +176,10 @@ export class Renderer {
     this.noMSAA = this.appleGPU || this.touch;
     this.samples = this.noMSAA ? 0 : q.msaa || 0;
     const rt = new THREE.WebGLRenderTarget(w * pr, h * pr, { type: THREE.HalfFloatType, samples: this.samples });
+    // 그림책 룩: GTAO가 없으면 StylePass가 장면 타깃의 깊이를 읽는다(clone()한 두 번째 타깃도 자기 DepthTexture를 가진다)
+    const storybook = this.look.id === 'storybook';
+    const depthTex = storybook && !q.ao && this._depthTexOk;
+    if (depthTex) rt.depthTexture = new THREE.DepthTexture(w * pr, h * pr);
     const comp = (this.composer = new EffectComposer(r, rt));
     comp.setPixelRatio(pr);
     comp.setSize(w, h);
@@ -174,6 +197,15 @@ export class Renderer {
       if (this.appleGPU) { const set = ao.setSize.bind(ao); ao.setSize = (sw: number, sh: number) => set(Math.ceil(sw / 2), Math.ceil(sh / 2)); }
       comp.addPass(ao);
     }
+    this.style = null; this.lineMode = null;
+    if (storybook) {
+      const sp = (this.style = new StylePass());
+      this.lineMode = this.gtao ? 'gtao' : depthTex ? 'depthTex' : 'prepass';
+      sp.configure(this.lineMode, scene, camera, this.gtao ? this.gtao.depthTexture : null);
+      sp.setProfile(this.look);
+      sp.setColorReturn(this._colorReturn);
+      comp.addPass(sp);
+    }
     this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), ...BLOOM);
     this.bloom.enabled = !!(q.bloom && this.settings.bloom);
     comp.addPass(this.bloom);
@@ -188,6 +220,41 @@ export class Renderer {
     r.shadowMap.enabled = this.settings.shadows !== false;
     this._w = w; this._h = h;
     this.grade.uniforms.uAspect.value = w / h;
+    if (depthTex && !this._depthTexComplete(rt)) { this._depthTexOk = false; this._buildComposer(); }
+  }
+
+  // 깊이 텍스처를 붙인 (멀티샘플) 타깃이 완전한 프레임버퍼인지 확인한다. 불완전하면 선행 패스 경로로 다시 만든다.
+  _depthTexComplete(rt: THREE.WebGLRenderTarget): boolean {
+    const r = this.renderer, gl = r.getContext(), prev = r.getRenderTarget();
+    r.setRenderTarget(rt);
+    const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    r.setRenderTarget(prev);
+    if (!ok) console.warn('[inkwave] depth texture target incomplete — outlines use the depth prepass');
+    return ok;
+  }
+
+  // 쇼케이스처럼 컴포저 밖에서 그린 HDR 층에도 같은 룩(외곽선·종이·하프톤)을 입힌다(35번 R002: 메뉴·로비 세트도 같은 프로필).
+  // src는 DepthTexture가 붙은 타깃이어야 하며 결과는 src와 같은 크기의 단일 샘플 HDR 텍스처이다. 그림책 룩이 아니거나
+  // 깊이가 없으면 src.texture를 그대로 돌려준다. 색 회복은 걸지 않는다(메뉴는 언제나 전부 채색).
+  stylize(src: THREE.WebGLRenderTarget, scene: THREE.Scene, camera: THREE.PerspectiveCamera): THREE.Texture {
+    if (this.look.id !== 'storybook' || !src.depthTexture) return src.texture;
+    const sp = this._overlayStyle || (this._overlayStyle = new StylePass());
+    sp.configure('depthTex', scene, camera);
+    sp.setProfile(this.look);
+    let rt = this._overlayRT;
+    if (!rt) rt = this._overlayRT = new THREE.WebGLRenderTarget(src.width, src.height, { type: THREE.HalfFloatType });
+    else if (rt.width !== src.width || rt.height !== src.height) rt.setSize(src.width, src.height);
+    sp.setSize(src.width, src.height);
+    const prev = this.renderer.getRenderTarget();
+    sp.render(this.renderer, rt, src, 0, false);
+    this.renderer.setRenderTarget(prev);
+    return rt.texture;
+  }
+
+  // 색 회복 상태(R005). null = 전부 채색이며 대전·연습·보스·메뉴는 언제나 null이다.
+  setColorReturn(state: ColorReturnState | null): void {
+    this._colorReturn = state;
+    this.style?.setColorReturn(state);
   }
 
   // Install (or replace) the screen-FX post pass; kept across quality/setting rebuilds.
@@ -197,10 +264,14 @@ export class Renderer {
   }
 
   applySettings(settings: RendererSettings): void {
-    const prevQ = this.q;
+    const prevQ = this.q, prevLook = this.look;
     this.settings = settings;
     this.touch = shouldUseTouch(settings);
     this.q = rendererQuality(settings, this.touch);
+    this.look = resolveLook(settings, this.touch);
+    // 룩 전환(그림책 ↔ 원본)은 패스 구성이 바뀌므로 다시 만들고, 같은 룩의 수치 변경은 StylePass에 바로 넣는다
+    if (prevLook.id !== this.look.id && prevQ === this.q) this._buildComposer();
+    else this.style?.setProfile(this.look);
     const shadowChanged = this.renderer.shadowMap.enabled !== (settings.shadows !== false);
     if (prevQ !== this.q || shadowChanged) {
       if (prevQ !== this.q) this.dynScale = 1;
@@ -259,6 +330,13 @@ export class Renderer {
       const bl = gr.bloom || BLOOM;
       this.bloom.strength = bl[0]; this.bloom.radius = bl[1]; this.bloom.threshold = bl[2];
     }
-    this.composer.render();
+    // 그림책 룩은 환경광(PMREM)을 낮춘다: 반사가 툰 음영을 흐리게 하므로. 테마가 정한 값은 그대로 두고 이 렌더에만 곱한다
+    const scene = this.scene, envScale = this.look.toon.envScale;
+    if (scene && envScale !== 1) {
+      const ei = scene.environmentIntensity;
+      scene.environmentIntensity = ei * envScale;
+      this.composer.render();
+      scene.environmentIntensity = ei;
+    } else this.composer.render();
   }
 }

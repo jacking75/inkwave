@@ -10,6 +10,48 @@
 import * as THREE from 'three';
 import { G, clamp, damp, lerp, dampAngle } from '../core/ctx.js';
 import { Hit } from './physics.js';
+import type { Actor } from './actor.js';
+
+// 시네마틱 경로(cinematic())이다. 위치는 from→to, 시선은 lookFrom→lookTo로 dur초 동안 ease in-out으로 옮긴다.
+// 액션 카메라 프로필(35번 R009): 캠페인처럼 빨라진 이동·연출에서만 쓴다. null이면 기존 수치 그대로이다.
+//   dist 붐 길이 m · shoulder 기본 어깨 오프셋 m(벽 검사는 기존 근접 오프셋과 같다) · fovKickSurge 서지 중 FOV 킥 도
+//   fovKickWave 물결 단계 0~3의 FOV 킥 도 · punchKill/punchElite 처치 시 카메라 펀치(반동 스프링 입력)
+export interface CameraProfile {
+  dist: number; shoulder: number; fovKickSurge: number; fovKickWave: [number, number, number, number];
+  punchKill: number; punchElite: number;
+}
+export const ACTION_CAMERA: CameraProfile = { dist: 4.2, shoulder: 0.35, fovKickSurge: 6, fovKickWave: [0, 1, 2, 3], punchKill: 0.18, punchElite: 0.32 };
+// 보스 등장 같은 연속 컷 한 장(playShots)
+export interface CameraShot { from: THREE.Vector3; to: THREE.Vector3; lookFrom: THREE.Vector3; lookTo: THREE.Vector3; dur: number }
+
+export interface CameraPath {
+  from: THREE.Vector3; to: THREE.Vector3; lookFrom: THREE.Vector3; lookTo: THREE.Vector3;
+  t: number; dur: number;
+  onDone: (() => void) | null | undefined;
+}
+// 사망 관전(spectate)이다. pos는 쓰러진 자리, from은 그때 피해자 위치, actor는 쓰러뜨린 상대이다(없거나 퇴장하면 null).
+// 카메라가 따라가는 대상(follow)이다. Actor가 이 형태를 만족한다. 카메라가 실제로 읽는 멤버만 둔다.
+// actor.js는 이 값들을 reset()에서 채우므로 JS 추론 타입이 '| undefined'이다. 그래서 선택 멤버로 받는다.
+export interface CameraFollowTarget {
+  pos: THREE.Vector3; vel: THREE.Vector3;
+  form?: string; anim: { form: string };
+  grounded?: boolean; climbing?: boolean;
+  landT?: number; landSpeed?: number;
+  specialActive?: unknown;
+  superJumpState?: { phase: string; t: number; dur?: number; from: THREE.Vector3; to: THREE.Vector3 } | null;
+  weaponRunner?: { charging?: boolean; charge?: number } | null;
+  visualPos?(out: THREE.Vector3): THREE.Vector3;
+}
+export interface CameraSpectate { actor: Actor | null; pos: THREE.Vector3; from: THREE.Vector3; }
+export interface CameraOrbit { center: THREE.Vector3; radius: number; height: number; speed: number; phase: number; }
+export type CameraMode = 'orbit' | 'follow' | 'spectate' | 'path' | 'overview';
+// 맵 디오라마가 맞추는 스테이지 경계이다(Level.bounds).
+interface DioBounds { minX: number; maxX: number; minZ: number; maxZ: number; }
+interface DioState {
+  layout: unknown; aspect: number; d: number; zShift: number;
+  pos: THREE.Vector3; quat: THREE.Quaternion; target: THREE.Vector3; yaw: number; pitch: number;
+}
+interface PoseBlend { t: number; dur: number; pos: THREE.Vector3; quat: THREE.Quaternion; fov: number; active?: boolean; }
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _fwd = new THREE.Vector3(), _back = new THREE.Vector3();
 const _right = new THREE.Vector3(), _q = new THREE.Quaternion(), _m4 = new THREE.Matrix4(), _dT = new THREE.Vector3();
@@ -22,9 +64,11 @@ const _hit = new Hit();
 
 // Critically-damped spring (exact integration — stable and frame-rate independent).
 class Spring {
+  declare x: number;
+  declare v: number;
   constructor(x = 0) { this.x = x; this.v = 0; }
-  reset(x) { this.x = x; this.v = 0; }
-  step(target, omega, dt) {
+  reset(x: number): void { this.x = x; this.v = 0; }
+  step(target: number, omega: number, dt: number): number {
     const d = this.x - target, e = Math.exp(-omega * dt), k = (this.v + omega * d) * dt;
     this.x = target + (d + k) * e;
     this.v = (this.v - omega * k) * e;
@@ -34,18 +78,73 @@ class Spring {
 
 // Damped spring for zeta < 1, sub-stepped so each explicit step stays tiny: stable and frame-rate independent at any dt.
 // (A single explicit step per frame diverged below ~27 fps into a frame-alternating jitter that read as flicker.)
-function stepDamped(o, target, omega, zeta, dt) {
+function stepDamped(o: { x: number; v: number }, target: number, omega: number, zeta: number, dt: number): number {
   const n = Math.max(1, Math.ceil((omega * dt) / 0.12)), h = dt / n;
   for (let i = 0; i < n; i++) { o.v += (-omega * omega * (o.x - target) - 2 * zeta * omega * o.v) * h; o.x += o.v * h; }
   return o.x;
 }
 
 // smooth pseudo-noise in [-1, 1]: two low incommensurate sines, no high partials (those alias into flicker at 30-60 fps)
-const nz = (t, p) => Math.sin(t + p) * 0.62 + Math.sin(t * 1.87 + p * 1.7) * 0.38;
-const easeInOut = (k) => (k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
+const nz = (t: number, p: number): number => Math.sin(t + p) * 0.62 + Math.sin(t * 1.87 + p * 1.7) * 0.38;
+const easeInOut = (k: number): number => (k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
 
 export class CameraRig {
-  constructor(camera) {
+  declare camera: THREE.PerspectiveCamera;
+  declare mode: CameraMode;
+  declare yaw: number;
+  declare pitch: number;
+  declare pivot: THREE.Vector3;
+  declare pivotY: number;
+  declare dist: number;
+  declare curDist: number;
+  declare fovKick: number;
+  declare trauma: number;
+  declare shakeScale: number;
+  declare target: CameraFollowTarget | null;
+  declare spectate: CameraSpectate | null;
+  declare path: CameraPath | null;
+  declare orbitP: CameraOrbit | undefined;
+  declare lookAt: THREE.Vector3;
+  declare baseFov: number;
+  declare zoom: number;
+  declare time: number;
+  declare kick: number;
+  declare sx: Spring;
+  declare sy: Spring;
+  declare sz: Spring;
+  declare boom: Spring;
+  declare hgt: Spring;
+  declare dipS: { x: number; v: number };
+  declare side: Spring;
+  declare lensLift: Spring;
+  declare wantDist: number;
+  declare _lastTY: number | null;
+  declare _takeoffY: number | undefined;
+  declare _vyF: number | undefined;
+  declare _landSeen: number;
+  declare _sjWasFlight: boolean;
+  declare _sjLandT: number;
+  declare kickS: Spring;
+  declare _traumaIn: number;
+  declare profile: CameraProfile | null;
+  declare surgeKickT: number;     // 남은 서지 FOV 킥 시간 s
+  declare waveLevel: 0 | 1 | 2 | 3;
+  declare shakeSeed: number;
+  declare shoulder: number | undefined;
+  declare blend: PoseBlend | null;
+  declare _prevMode: CameraMode;
+  declare _prevTarget: CameraFollowTarget | null;
+  declare spectateT: number;
+  declare mapOpen: boolean;
+  declare mapK: number;
+  declare gameCam: THREE.PerspectiveCamera;
+  declare dioLook: { x: number; y: number };
+  declare dioFlip: boolean | undefined;
+  declare _dio: DioState;
+  declare _fitCam: THREE.PerspectiveCamera | undefined;
+  declare _ov: Spring[] | undefined;
+  declare _ovFresh: boolean | undefined;
+  constructor(camera: THREE.PerspectiveCamera) {
     this.camera = camera;
     this.mode = 'orbit';
     this.yaw = 0; this.pitch = -0.1;
@@ -78,6 +177,7 @@ export class CameraRig {
     // recoil: pitch-only kick on an exact critically-damped spring (stable at any frame rate)
     this.kickS = new Spring(0);
     this._traumaIn = 0;            // pending trauma, fed in over a few frames so a shake never pops in on one frame
+    this.profile = null; this.surgeKickT = 0; this.waveLevel = 0;
     this.shakeSeed = Math.random() * 100;
     // blending between modes
     this.blend = null;
@@ -92,25 +192,56 @@ export class CameraRig {
     this._dio = { layout: null, aspect: 0, d: 150, zShift: 0, pos: new THREE.Vector3(), quat: new THREE.Quaternion(), target: new THREE.Vector3(), yaw: 0, pitch: 0 };
   }
 
-  setMap(open) { this.mapOpen = !!open; }
+  setMap(open: unknown): void { this.mapOpen = !!open; }
 
   // Visual recoil: a pitch impulse on a critically-damped spring (smooth ~45 ms rise, ~0.15 s settle) — only the heavy
   // single shots send it. No sideways pattern: yaw kicks read as the camera shaking. The aim is taken from the rendered
   // camera, so this is real (tiny) recoil.
-  recoil(amount) {
+  recoil(amount: number): void {
     this.kickS.v = Math.min(this.kickS.v + amount * 55, 3);
   }
 
   // Trauma shake. The noise runs on continuous time (no reseeding mid-shake, which jumped the view on one frame) and
   // new trauma is fed in over ~2-3 frames instead of being added in one step.
-  addShake(amount, pos) {
+  addShake(amount: number, pos?: THREE.Vector3 | null): void {
     let a = amount;
     if (pos) { const d = pos.distanceTo(this.camera.position); a *= clamp(1 - (d - 4) / 22, 0, 1); }
     if (a <= 0) return;
     this._traumaIn = Math.min(1 - this.trauma, this._traumaIn + a * 0.75);
   }
 
-  follow(actor, snap = false) {
+  // 액션 프로필(R009). null = 기존 수치(대전·연습·보스·온라인). 캠페인 세션이 시작·종료 때 설정한다.
+  setProfile(p: CameraProfile | null): void {
+    this.profile = p;
+    this.dist = p ? p.dist : 4.5;
+    this.surgeKickT = 0; this.waveLevel = 0;
+  }
+
+  get _motionOk(): boolean { return G.settings?.reduceMotion !== true; }
+
+  // 서지 동안 FOV를 넓힌다(멀미 설정이면 없음)
+  kickSurge(seconds: number): void { if (this.profile && this._motionOk) this.surgeKickT = Math.max(this.surgeKickT, seconds); }
+  setWaveLevel(level: 0 | 1 | 2 | 3): void { this.waveLevel = level; }
+  // 처치 펀치: 반동 스프링 + 짧은 흔들림. 멀미 설정이면 0이다.
+  punch(kind: 'kill' | 'elite'): void {
+    const p = this.profile;
+    if (!p || !this._motionOk) return;
+    const a = kind === 'elite' ? p.punchElite : p.punchKill;
+    this.recoil(a * 0.012);
+    this.addShake(a);
+  }
+
+  // 컷 여러 장을 이어 재생한다(보스 등장 3컷, R027 패널이 재사용). 끝나면 onDone. 빈 목록이면 바로 onDone이다.
+  playShots(shots: CameraShot[], onDone?: () => void): void {
+    const next = (i: number): void => {
+      if (i >= shots.length) { onDone?.(); return; }
+      const s = shots[i];
+      this.cinematic(s.from, s.to, s.lookFrom, s.lookTo, s.dur, () => next(i + 1));
+    };
+    next(0);
+  }
+
+  follow(actor: CameraFollowTarget, snap = false): void {
     this.mode = 'follow';
     this.target = actor;
     if (snap) {
@@ -128,22 +259,22 @@ export class CameraRig {
   }
 
   // Cinematic: move along a smooth arc from->to while looking from lookFrom->lookTo.
-  cinematic(from, to, lookFrom, lookTo, dur, onDone) {
+  cinematic(from: THREE.Vector3, to: THREE.Vector3, lookFrom: THREE.Vector3, lookTo: THREE.Vector3, dur: number, onDone?: () => void): void {
     this.mode = 'path';
     this.path = { from: from.clone(), to: to.clone(), lookFrom: lookFrom.clone(), lookTo: lookTo.clone(), t: 0, dur, onDone };
   }
 
-  orbit(center, radius, height, speed = 0.05, phase = 0) {
+  orbit(center: THREE.Vector3, radius: number, height: number, speed = 0.05, phase = 0): void {
     this.mode = 'orbit';
     this.orbitP = { center: center.clone(), radius, height, speed, phase };
   }
 
-  overview() {
+  overview(): void {
     this.mode = 'overview';
   }
 
   // Pose blend from the current rendered camera into whatever the new mode computes (ease in-out).
-  _startBlend(dur) {
+  _startBlend(dur: number): void {
     const cam = this.camera;
     if (!this.blend) this.blend = { t: 0, dur, pos: new THREE.Vector3(), quat: new THREE.Quaternion(), fov: 0 };
     this.blend.t = 0; this.blend.dur = dur;
@@ -151,7 +282,7 @@ export class CameraRig {
     this.blend.active = true;
   }
 
-  _modeChanged(prev, next) {
+  _modeChanged(prev: CameraMode, next: CameraMode): void {
     this.spectateT = 0;
     if (next === 'overview') this._ovFresh = true;
     if (G.match?.attract || !prev) return;                   // attract mode cuts between shots on purpose
@@ -164,7 +295,7 @@ export class CameraRig {
     if (dur > 0) this._startBlend(dur);
   }
 
-  update(dt) {
+  update(dt: number): void {
     this.time += dt;
     if (!Number.isFinite(this.pivot.x + this.pivot.y + this.pivot.z + this.pivotY + this.curDist + this.sx.x + this.sy.x + this.sz.x + this.boom.x + this.dipS.x + this.kickS.x + this.trauma)) {
       this.pivot.set(0, 2, 0); this.pivotY = 2; this.curDist = this.dist;
@@ -243,7 +374,7 @@ export class CameraRig {
   }
 
   // ---- map diorama pose ---------------------------------------------------------------------------------------------
-  _diorama(dt) {
+  _diorama(dt: number): void {
     const D = this._dio, L = G.level;
     if (!L) return;
     const B = L.bounds, aspect = this.camera.aspect;
@@ -256,7 +387,7 @@ export class CameraRig {
     D.target.copy(_dT);
   }
 
-  _dioPose(d, zShift, B, yaw, pitch, outPos, outQuat) {
+  _dioPose(d: number, zShift: number, B: DioBounds, yaw: number, pitch: number, outPos: THREE.Vector3, outQuat: THREE.Quaternion): void {
     _dT.set((B.minX + B.maxX) / 2, 0, (B.minZ + B.maxZ) / 2 + zShift);
     const cp = Math.cos(pitch);
     outPos.set(_dT.x - Math.sin(yaw) * cp * d, Math.sin(pitch) * d, _dT.z - Math.cos(yaw) * cp * d);
@@ -265,14 +396,14 @@ export class CameraRig {
   }
 
   // distance + look offset that fit the whole stage (bounds box, floor to rooftops) into the free screen area
-  _fitDiorama(B, aspect) {
+  _fitDiorama(B: DioBounds, aspect: number): void {
     const D = this._dio;
     const c = this._fitCam || (this._fitCam = new THREE.PerspectiveCamera());
     c.fov = DIO_FOV; c.aspect = aspect; c.near = 1; c.far = 6000; c.updateProjectionMatrix();
     const pts = [];
     for (const x of [B.minX, B.maxX]) for (const z of [B.minZ, B.maxZ]) for (const y of [-1.2, 6]) pts.push(new THREE.Vector3(x, y, z));
     const yLo = -0.72, yHi = 0.74, xLim = 0.92;
-    const place = (d, zs) => { this._dioPose(d, zs, B, 0, DIO_PITCH, c.position, c.quaternion); c.updateMatrixWorld(true); };
+    const place = (d: number, zs: number) => { this._dioPose(d, zs, B, 0, DIO_PITCH, c.position, c.quaternion); c.updateMatrixWorld(true); };
     let zShift = 0, d = 150;
     for (let pass = 0; pass < 4; pass++) {
       let lo = 20, hi = 1500;
@@ -293,13 +424,13 @@ export class CameraRig {
     D.d = d; D.zShift = zShift;
   }
 
-  forward(out) {
+  forward(out: THREE.Vector3): THREE.Vector3 {
     const cp = Math.cos(this.pitch);
     return out.set(Math.sin(this.yaw) * cp, Math.sin(this.pitch), Math.cos(this.yaw) * cp);
   }
 
-  _follow(dt) {
-    const a = this.target, cam = this.camera;
+  _follow(dt: number): void {
+    const a = this.target!, cam = this.camera;
     const squid = a.form === 'squid';
     const af = a.anim.form;
     const swim = af === 'swim' || af === 'climb';
@@ -329,7 +460,7 @@ export class CameraRig {
     // vertical velocity for the feed-forward, low-passed: a raw per-frame difference turned tiny contact wobbles and
     // uneven frame times into a vertical buzz
     const fresh = this._lastTY === null || dt <= 0;
-    const vyRaw = fresh ? 0 : clamp((ty - this._lastTY) / dt, -30, 30);
+    const vyRaw = fresh ? 0 : clamp((ty - this._lastTY!) / dt, -30, 30);
     this._lastTY = ty;
     this._vyF = fresh ? 0 : damp(this._vyF || 0, vyRaw, 30, dt);
     const vyT = this._vyF;
@@ -343,7 +474,7 @@ export class CameraRig {
     this.sy.step(ty + vyT * leadV * 2 / omegaV, omegaV, dt);
     // ---- landing dip (lightly under-damped: one soft settle with weight, no bob)
     if (a.landT !== undefined) {
-      if (a.landT < this._landSeen - 1e-6 && a.landSpeed > 4) this.dipS.v -= clamp((a.landSpeed - 4) * 0.045, 0, 0.45);
+      if (a.landT < this._landSeen - 1e-6 && a.landSpeed! > 4) this.dipS.v -= clamp((a.landSpeed! - 4) * 0.045, 0, 0.45);
       this._landSeen = a.landT;
     }
     const dip = clamp(stepDamped(this.dipS, 0, 13, 0.82, dt), -0.3, 0.12);
@@ -354,7 +485,7 @@ export class CameraRig {
     if (flying) {
       const dx = sj.to.x - sj.from.x, dz = sj.to.z - sj.from.z;
       if (dx * dx + dz * dz > 1) this.yaw = dampAngle(this.yaw, Math.atan2(dx, dz), 3.5, dt);
-      const k = clamp(sj.t / sj.dur, 0, 1);
+      const k = clamp(sj.t / sj.dur!, 0, 1);
       this.pitch = damp(this.pitch, lerp(-0.3, -0.75, clamp((k - 0.35) / 0.5, 0, 1)), 4, dt);
       this._sjWasFlight = true;
     } else if (this._sjWasFlight) { this._sjWasFlight = false; this._sjLandT = 0; }
@@ -364,8 +495,13 @@ export class CameraRig {
     if (swim) fk = clamp((hs - 6) * 1.1, 0, 7);
     else if (flying) fk = 6;
     else if (!a.grounded && a.vel.y > 2) fk = 1.2;
+    const P = this.profile;
+    if (P && this._motionOk) {
+      if (this.surgeKickT > 0) { this.surgeKickT = Math.max(0, this.surgeKickT - dt); fk += P.fovKickSurge; }
+      fk += P.fovKickWave[this.waveLevel];
+    }
     this.fovKick = damp(this.fovKick, fk, 5, dt);
-    const charging = a.weaponRunner?.charging ? a.weaponRunner.charge : 0;
+    const charging = a.weaponRunner?.charging ? a.weaponRunner.charge! : 0;
     this.zoom = damp(this.zoom, charging > 0.99 ? 14 : charging * 6, 8, dt);
     // ---- boom length: soft probe, fast in / slow out
     let want = (squid ? 4.1 : this.dist) - charging * 0.6;
@@ -373,7 +509,7 @@ export class CameraRig {
     if (flying) want += 1.2;
     this.wantDist = damp(this.wantDist, want, 6, dt);
     _back.copy(fwd).negate();
-    G.physics.cameraProbe(this.pivot, _back, this.wantDist, 0.62, _probe);
+    G.physics!.cameraProbe(this.pivot, _back, this.wantDist, 0.62, _probe);
     const tgt = _probe.soft;
     // fast in / slow out. The lens may trail a fast-closing obstacle for a few frames (bounded to 1.2 m past the line of
     // sight — back faces cull and the level's see-through dither covers the brief occlusion) instead of popping.
@@ -393,7 +529,7 @@ export class CameraRig {
     // ---- over-the-shoulder when the boom is forced short (wall right behind you): ease the lens to the right so your
     // head never sits on the crosshair; never slide it into a wall on that side
     const closeK = clamp((2.8 - this.curDist) / 1.8, 0, 1);
-    let shT = 0.55 * closeK * closeK * (3 - 2 * closeK);
+    let shT = Math.max(this.profile?.shoulder ?? 0, 0.55 * closeK * closeK * (3 - 2 * closeK));
     if (shT > 0.01 && G.physics) {
       const hr = G.physics.raycast(cam.position, _right, shT + 0.25, _hit, true);
       if (hr.hit) shT = Math.max(0, hr.dist - 0.25);
@@ -411,8 +547,8 @@ export class CameraRig {
     if (Math.abs(this.kick) > 1e-6) cam.rotateX(this.kick);
   }
 
-  _spectate(dt) {
-    const s = this.spectate, cam = this.camera;
+  _spectate(dt: number): void {
+    const s = this.spectate!, cam = this.camera;
     this.spectateT += dt;
     // first ~0.8 s: hold on the spot where you were splatted; then turn to watch whoever did it
     const killer = s.actor && s.actor.alive ? s.actor : null;
@@ -436,8 +572,8 @@ export class CameraRig {
     this.zoom = damp(this.zoom, 0, 6, dt);
   }
 
-  _path(dt) {
-    const p = this.path, cam = this.camera;
+  _path(dt: number): void {
+    const p = this.path!, cam = this.camera;
     p.t += dt;
     const k = clamp(p.t / p.dur, 0, 1);
     const e = easeInOut(k);
@@ -450,8 +586,8 @@ export class CameraRig {
     if (k >= 1 && p.onDone) { const cb = p.onDone; p.onDone = null; cb(); }
   }
 
-  _orbit(dt) {
-    const o = this.orbitP, cam = this.camera;
+  _orbit(dt: number): void {
+    const o = this.orbitP!, cam = this.camera;
     const a = o.phase + this.time * o.speed;
     _v.set(o.center.x + Math.sin(a) * o.radius, o.center.y + o.height + Math.sin(this.time * 0.13) * 1.2, o.center.z + Math.cos(a) * o.radius);
     cam.position.lerp(_v, 1 - Math.exp(-2 * dt));
@@ -460,7 +596,7 @@ export class CameraRig {
     this.fovKick = 0; this.zoom = 0;
   }
 
-  _overview(dt) {
+  _overview(dt: number): void {
     const cam = this.camera;
     // crane up to the judge view on critically-damped springs (starts from rest — no lurch)
     if (!this._ov || this._ovFresh) { this._ov = [new Spring(cam.position.x), new Spring(cam.position.y), new Spring(cam.position.z)]; this._ovFresh = false; }

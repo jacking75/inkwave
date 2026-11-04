@@ -1,6 +1,7 @@
 // INKWAVE — boot, main loop and game-flow orchestration (menus ⇄ attract mode ⇄ matches ⇄ results).
 import * as THREE from 'three';
 import { G, on, emit, clamp, damp } from './core/ctx.js';
+import type { GameContext, Settings } from './core/ctx.js';
 import { Renderer } from './core/renderer.js';
 import { Input } from './core/input.js';
 import { TouchControls, shouldUseTouch, isTouchDevice } from './core/touch.js';
@@ -30,18 +31,76 @@ import { Minimap } from './game/minimap.js';
 import { Showcase } from './game/showcase.js';
 import { ZoneMarks } from './fx/zoneMarks.js';
 import { BOSS_MODE } from './boss/bossMode.js';
+// 스토리·액션 리디자인(35번): 룩·비율·이야기 테마·의성어·액션 카메라·색 회복
+import { resolveLook } from './style/lookProfile.js';
+import { applyLookToDocument } from './style/lookDom.js';
+import { SfxWords } from './style/sfxWords.js';
+import { withProportion } from './game/cast/proportion.js';
+import { registerStoryThemes, isStoryTheme } from './world/themes-story.js';
+import { ACTION_CAMERA } from './game/cameraRig.js';
+import { ColorReturn } from './campaign/colorReturn.js';
+import type { MapDef } from './config.js';
+import type { Actor } from './game/actor.js';
+import type { Character } from './game/character.js';
+import type { PropKit } from './world/props.js';
+import type { HUD } from './ui/hud.js';
+import type { Menus } from './ui/menus.js';
+import type { DioramaOverlay } from './ui/diorama.js';
+import type { initFxHooks } from './fx/fxHooks.js';
+import type { ScreenFX } from './fx/screenfx.js';
+import type { createTextureLibrary } from './world/texlib.js';
+import type { AudioEngine } from './audio/audio.js';
+import type { NetMatch } from './net/netmatch.js';
+import type { NetSession } from './net/session.js';
+import type { Boss } from './boss/boss.js';
+
+// 데스크톱 호스트(desktop/bootstrap.ts)가 주입하는 다리 중 이 파일이 쓰는 부분과 개발·감사용 전역이다.
+interface DesktopPerformancePolicy {
+  proceduralTextures: boolean; menuAttract: boolean; preloadLobby: boolean; warmupAll: boolean; warmCharacterVariants: boolean;
+  mark(name: string): void;
+  warmVisible(roots: THREE.Object3D[], group: THREE.Group, renderer: THREE.WebGLRenderer, camera: THREE.Camera, scene: THREE.Scene, target: THREE.WebGLRenderTarget): Promise<void>;
+  frameCap(requested: number, menu: boolean): number;
+  configureSettings(settings: Record<string, unknown>, stored: Record<string, unknown> | null): void;
+}
+interface DesktopBridge {
+  performance: DesktopPerformancePolicy;
+  isFullScreen(): boolean;
+  setFullScreen(on: boolean): void;
+  onFullScreenChange(listener: (on: boolean) => void): () => void;
+}
+declare global {
+  interface Window {
+    inkwaveNative?: DesktopBridge;
+    __beacon?: (kind: string, message: string) => void;
+    __progLog?: string[];
+    __perfLab?: unknown;
+    __inkwave?: Game;
+    __G?: GameContext;
+  }
+}
 
 const params = new URLSearchParams(location.search);
 // dev-only: ?devstage lets an online-only stage (config onlineOnly — Cargo Terminal) boot as the backdrop and be walked
 // solo offline (never with bots); without it such a stage only ever loads for an online match
 const DEV_STAGE = params.has('devstage');
-const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+// ?theme=inkwash|dawn: 이야기 테마를 시간대 대신 쓴다(캠페인 세션 전 확인용, 35번 R006)
+const THEME_OVERRIDE = isStoryTheme(params.get('theme')) ? params.get('theme') : null;
+// ?tune=campaign: 캠페인 전용 조정(액션 카메라 등)을 연습·대전에서 미리 켠다(35번 R009·R016)
+const TUNE_CAMPAIGN = params.get('tune') === 'campaign';
+// 바뀌면 렌더러의 룩 프로필(StylePass)을 다시 적용하는 설정 키
+const LOOK_KEYS = ['look', 'halftone', 'outlineWidth', 'colorblind'] as const;
+const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
 const REFRESH_RATES = [30, 48, 50, 60, 75, 90, 100, 120, 144, 165, 240]; // common display rates (Hz)
 
 // ------------------------------------------------------------------------------------------ persistence
-function loadJSON(key, def) { try { const v = JSON.parse(localStorage.getItem(key)); return v ? { ...def, ...v } : { ...def }; } catch { return { ...def }; } }
-function saveJSON(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* private mode */ } }
-const DEFAULT_PROFILE = { name: 'Player', level: 1, xp: 0, wins: 0, matches: 0, totalTurf: 0, weapon: 'shooter' };
+function loadJSON<T extends object>(key: string, def: T): T { try { const v = JSON.parse(localStorage.getItem(key) as string); return v ? { ...def, ...v } : { ...def }; } catch { return { ...def }; } }
+function saveJSON(key: string, v: unknown) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* private mode */ } }
+// 저장된 대전 프로필(localStorage 'inkwave.profile')이다. style·sub·special은 로드아웃·로커에서 고른 값이다.
+interface Profile {
+  name: string; level: number; xp: number; wins: number; matches: number; totalTurf: number; weapon: string;
+  style?: Record<string, number> | null; sub?: string | null; special?: string | null;
+}
+const DEFAULT_PROFILE: Profile = { name: 'Player', level: 1, xp: 0, wins: 0, matches: 0, totalTurf: 0, weapon: 'shooter' };
 
 // Modules that may fall back to a stub when their file is missing. Written as literal import() calls on purpose: a
 // single `import(someVariable)` cannot be resolved by a bundler, so it survives into a bundled build and makes the
@@ -57,7 +116,12 @@ const LOADERS = {
   './audio/music.js': () => import('./audio/music.js'),
 };
 
-async function loadModule(path, stubName) {
+type LoaderPath = keyof typeof LOADERS;
+type Loaded<P extends LoaderPath> = Awaited<ReturnType<(typeof LOADERS)[P]>>;
+// stubName이 true면 실패 시 dev/stubs.js가 같은 이름의 대역을 준다. 아니면 빈 모듈이 오므로 export가 없을 수 있다.
+function loadModule<P extends LoaderPath>(path: P, stubName: true): Promise<Loaded<P>>;
+function loadModule<P extends LoaderPath>(path: P, stubName?: false): Promise<Partial<Loaded<P>>>;
+async function loadModule(path: LoaderPath, stubName?: boolean): Promise<unknown> {
   try { return await LOADERS[path](); }
   catch (e) {
     console.error(`[inkwave] failed to load ${path} — using stub`, e);
@@ -66,17 +130,183 @@ async function loadModule(path, stubName) {
   }
 }
 
+// 설정 표는 키 리터럴로 추론되지만 저장값·URL·메뉴·네트워크에서 오는 키는 임의 문자열이다(없는 키는 || 기본값으로 받는다).
+type Lookup<T> = Record<string, T[keyof T]>;
+type GpuLimit = 'MAX_VERTEX_UNIFORM_VECTORS' | 'MAX_FRAGMENT_UNIFORM_VECTORS' | 'MAX_VERTEX_TEXTURE_IMAGE_UNITS' | 'MAX_TEXTURE_IMAGE_UNITS'
+  | 'MAX_VARYING_VECTORS' | 'MAX_TEXTURE_SIZE' | 'MAX_VERTEX_ATTRIBS' | 'MAX_SAMPLES';
+type Palette = typeof COLORBLIND_PALETTE;
+type LevelMaterial = ReturnType<typeof createLevelMaterial>;
+// levelMaterial.js의 실제 계약이다(JS 추론은 muralTexture = null 기본값 때문에 null만 받는 것으로 본다).
+type LevelMaterialFactory = (paintTexture: THREE.Texture, atlasSize: number, muralTexture: THREE.Texture | null, opts?: object) => LevelMaterial;
+type BotActor = Actor & { bot?: { update(): void } };
+// hud.js의 JS 추론이 null 기본값·구조 분해 기본값 때문에 좁게 잡는 매개변수를 실제 호출 계약으로 넓힌다.
+type GameHUD = HUD & {
+  damage(amount: number, color: string, angle?: number | null): void;
+  showSplatted(card?: { by?: string | null; byColor?: string; respawn?: number; attacker?: Actor | null; cause?: string }): void;
+};
+type ResultsData = NonNullable<Parameters<Menus['showResults']>[0]>;
+type BossResultsData = ResultsData & { boss: { maxHp?: number } };
+// Match.result의 세 형태(영역 판정·Zone Control·Boss Battle)를 함께 읽는 보기이다.
+interface MatchResult {
+  mode?: string; winner: number; coverage: number[]; reason?: string; overtime?: boolean;
+  boss?: { name: string; win: boolean; time: number; hp: number; maxHp: number; phase: number };
+}
+// 호스트가 방송한 온라인 대전 시작 설정(net/session.js의 'start' 메시지) 중 이 파일이 읽는 부분이다.
+interface NetMatchConfig { map: string; time: string; mode: string; duration: number; difficulty: string; palette: number; roster: unknown }
+// 메뉴(ui/menus)가 호출하는 게임 API이다(_menuApi()가 만든다).
+interface MenuApi {
+  version: string;
+  weapons: typeof WEAPONS; weaponOrder: typeof WEAPON_ORDER; specials: typeof SPECIALS; specialOrder: typeof SPECIAL_ORDER; sub: typeof SUB.bomb; subs: typeof SUBS; subOrder: typeof SUB_ORDER; maps: typeof MAPS; difficulties: typeof DIFFICULTY;
+  getSettings(): Settings;
+  setSettings(partial: Partial<Settings>): void;
+  getProfile(): Profile & { played: number; xpToNext: number };
+  setProfileName(n: string): void;
+  setProfileStyle(st: Record<string, number> | null): void;
+  getLoadout(): { weapon: string; sub: string; special: string };
+  setLoadout(loadout: { weapon?: string; sub?: string; special?: string }): void;
+  startMatch(o?: MatchRequest): Promise<void>;
+  startPractice(o?: { mapId?: string }): Promise<void>;
+  isPractice(): boolean;
+  practiceInfo(): { map: string; weapon: string | undefined; sub: string | undefined; special: string | undefined } | null;
+  practiceReset(): void;
+  practiceNewStage(): Promise<void>;
+  quitPractice(): Promise<void>;
+  resumeMatch(): void;
+  netBackToLobby(): void;
+  quitMatch(): Promise<void>;
+  rematch(): Promise<void>;
+  toMainMenu(): Promise<void>;
+  onScreenChange(s: string | null): void;
+  playSound(n: string): void;
+}
+type LoopHandle = ReturnType<AudioEngine['loop']> & { _v?: number };
+// startMatch()가 정한 대전 조건이다(재대전은 이 값을 그대로 다시 쓴다).
+interface MatchOpts { mapId: string; time: string; difficulty: string; mode: 'turf' | 'zones' | 'boss'; duration?: number; theme?: string }
+// startMatch()가 받는 요청이다(메뉴·?autostart·연습).
+interface MatchRequest { mapId?: string; time?: string; difficulty?: string; mode?: string; duration?: number; practice?: boolean }
+// 처치 표식 풀의 한 칸이다. HUD·TAB 지도가 같은 기록을 읽는다.
+interface DeathMark {
+  on: boolean; id: number; x: number; y: number; z: number; team: number; name: string; ally: boolean; local: boolean;
+  t: number; k: number; sx: number; sy: number; sc: number; vis: boolean; mx: number; my: number;
+}
+// 방의 팔레트 번호(TEAM_PALETTES 인덱스)이다. 로비 상태 중 이 파일이 읽는 부분이다.
+interface LobbyPalette { palette: number }
+interface VsyncTrack { last: number; buf: number[]; ms: number }
+interface PerfStats { sim: number; render: number; calls: number; tris: number; tail: number; minimap: number; maxFt: number; slowN?: number; frames?: number }
+// 감사용 콘솔 훅(window.__inkwave.debug)이다.
+interface DebugHooks {
+  endMatch(t?: number): void; paintRandom(n?: number): void; freeze(): void; unfreeze(): void; step(ms?: number): void;
+  key(code: string, down: boolean): void; fire(on: boolean): void; freezeBots(): void;
+}
+
 class Game {
+  declare settings: Settings;
+  declare touchMode: boolean;
+  declare memK: number;
+  declare profile: Profile;
+  declare uiRoot: HTMLElement;
+  declare fadeEl: HTMLElement | null;
+  declare menus: Menus | null;
+  declare hud: GameHUD | null;
+  declare diorama: DioramaOverlay | null;
+  declare bootMarks: [string, number][];
+  declare R: Renderer;
+  declare input: Input & { onUnlock?: () => void };
+  declare touch?: TouchControls;
+  declare _onHide: () => void;
+  declare _relock?: boolean;
+  declare CharacterClass: typeof Character;
+  declare PropKit: typeof PropKit | null;
+  declare time: 'day' | 'dusk';
+  declare theme: string;
+  declare murals: Awaited<ReturnType<typeof createMuralTexture>>;
+  declare texlib: Awaited<ReturnType<typeof createTextureLibrary>> | null;
+  declare zoneMarks: ZoneMarks;
+  declare _fxHit?: Hit;
+  declare _tmpV: THREE.Vector3;
+  declare _tmpC: THREE.Color;
+  declare rig: CameraRig;
+  declare words: SfxWords | null;
+  declare colorReturn: ColorReturn | null;   // 캠페인 세션만 가진다(개발용 ?colorreturn 제외). null = 전부 채색
+  declare fxHooks?: ReturnType<typeof initFxHooks> | null;
+  declare screenfx?: ScreenFX | null;
+  declare showcase: Showcase;
+  declare _warmMeshes: THREE.Mesh[] | null;
+  declare timer: THREE.Timer;
+  declare fpsAcc: number;
+  declare fpsN: number;
+  declare fps: number;
+  declare _lastTs: number | undefined;
+  declare api: MenuApi;
+  declare bootMs: number;
+  declare debug: DebugHooks;
+  declare frozen?: boolean;
+  declare _skipRender?: boolean;
+  declare worldKey?: string;
+  declare mapDef: MapDef;
+  declare _building: boolean;
+  declare levelMesh: THREE.Mesh;
+  declare grateMesh: THREE.Mesh;
+  declare levelMat: LevelMaterial;
+  declare grateMat: LevelMaterial;
+  declare decor: Decor;
+  declare props: PropKit | null;
+  declare layoutId: string;
+  declare swimWake?: SwimWake;
+  declare minimap: Minimap;
+  declare palette: Palette;
+  declare _hudTucked?: boolean;
+  declare _musicTrack?: string | null;
+  declare _audioOn?: boolean;
+  declare _fog0?: { near: number; far: number } | null;
+  declare _dmgV?: THREE.Vector3;
+  declare _lowInkFlash: number;
+  declare deathMarks?: DeathMark[];
+  declare _dmId?: number;
+  declare match: Match | null;
+  declare attractT: number;
+  declare shotT: number;
+  declare shotIdx: number;
+  declare _attractFollow?: Actor;
+  declare lastMatchOpts: MatchOpts | null;
+  declare hudPrompt: string | null;
+  declare _hintT: number;
+  declare _hints: { specialT?: number; shot?: boolean };
+  declare _netEndT?: ReturnType<typeof setTimeout>;
+  declare _netEnding: boolean;
+  declare _vs?: VsyncTrack;
+  declare _dyn?: { acc: number; n: number; t: number; fast: number; ups: number };
+  declare _musicHealT?: number;
+  declare _lf?: THREE.Vector3;
+  declare _frameN?: number;
+  declare perf?: PerfStats;
+  declare _playT: number;
+  declare _pbT: number;
+  declare _pbSent?: boolean;
+  declare _amb?: LoopHandle;
+  declare _ambV?: number;
+  declare _gullT?: number;
+  declare _gullP?: THREE.Vector3;
+  declare _ambP?: THREE.Vector3;
+  declare _gustT?: number;
+  declare _clinks: number;
+  declare _clinkT: number;
+  declare _hornT?: number;
+  declare _loops?: Record<string, LoopHandle | null | undefined>;
+  declare _stickT?: number;
+  declare _mv?: THREE.Vector3;
+
   async boot() {
     const t0 = performance.now();
     // real top-down thumbnails for the stage cards, generated from each layout's geometry
-    for (const m of MAPS) { try { m.thumb = layoutThumbSVG(MAP_LAYOUTS[m.layout || m.id], m.theme); } catch (e) { console.warn('thumb', m.id, e); } }
+    for (const m of MAPS) { try { m.thumb = layoutThumbSVG((MAP_LAYOUTS as Lookup<typeof MAP_LAYOUTS>)[m.layout || m.id], m.theme); } catch (e) { console.warn('thumb', m.id, e); } }
     this.settings = G.settings = loadJSON('inkwave.settings', DEFAULT_SETTINGS);
+    applyLookToDocument(this.settings);
     // The RAW stored blob, read before anything below can save the merged defaults back. The fov migration two lines
     // down persists the whole object, so afterwards "the player never chose a value" and "we just wrote the default"
     // are indistinguishable — which is exactly how the touch quality tier below silently failed to apply.
-    let storedRaw = null;
-    try { storedRaw = JSON.parse(localStorage.getItem('inkwave.settings')); } catch { /* private mode */ }
+    let storedRaw: Record<string, unknown> | null = null;
+    try { storedRaw = JSON.parse(localStorage.getItem('inkwave.settings') as string); } catch { /* private mode */ }
     // 세션 정책의 구현은 TypeScript 호스트가 소유한다. 기존 웹 기본값은 유지한다.
     const desktopPerformance = window.inkwaveNative?.performance;
     // desktop app: the window's fullscreen state is owned by the native shell; mirror it into settings for the menu
@@ -115,24 +345,24 @@ class Game {
     // ?quality=low|medium|high|ultra — an explicit override for device testing. Beats localStorage, so a tier can be
     // pinned from the URL without clearing site data on a phone you cannot reach with a console.
     const qOverride = params.get('quality');
-    if (qOverride && QUALITY[qOverride]) this.settings.quality = qOverride;
+    if (qOverride && (QUALITY as Lookup<typeof QUALITY>)[qOverride]) this.settings.quality = qOverride;
     desktopPerformance?.configureSettings(this.settings, storedRaw);
     this.profile = loadJSON('inkwave.profile', DEFAULT_PROFILE);
-    if (WEAPON_SUCCESSOR[this.profile.weapon]) this.profile.weapon = WEAPON_SUCCESSOR[this.profile.weapon];   // retired weapons
-    const app = document.getElementById('app');
-    this.uiRoot = document.getElementById('ui-root');
+    if ((WEAPON_SUCCESSOR as Lookup<typeof WEAPON_SUCCESSOR>)[this.profile.weapon]) this.profile.weapon = (WEAPON_SUCCESSOR as Lookup<typeof WEAPON_SUCCESSOR>)[this.profile.weapon];   // retired weapons
+    const app = document.getElementById('app')!;
+    this.uiRoot = document.getElementById('ui-root')!;
     this.fadeEl = document.getElementById('fade');
 
     // UI first so the loading screen shows immediately
     const [menusMod, hudMod] = await Promise.all([loadModule('./ui/menus.js'), loadModule('./ui/hud.js')]);
     this.menus = G.menus = menusMod.Menus ? new menusMod.Menus(this.uiRoot, this._menuApi()) : null;
-    this.hud = G.hud = hudMod.HUD ? new hudMod.HUD(this.uiRoot, { playSound: (n, o) => G.audio?.play(n, o) }) : null;
+    this.hud = G.hud = hudMod.HUD ? new hudMod.HUD(this.uiRoot, { playSound: (n: string, o?: object) => G.audio?.play(n, o) }) : null;
     // map diorama pins/finish live inside the HUD layer (under every other HUD element)
     try { const { DioramaOverlay } = await import('./ui/diorama.js'); this.diorama = new DioramaOverlay(this.hud ? this.hud.el : this.uiRoot); } catch (e) { console.error('[inkwave] diorama', e); this.diorama = null; }
     this.hud?.setVisible(false);
     this.menus?.show('loading');
     this.bootMarks = [];
-    const progress = async (p, label) => { this.bootMarks.push([label, Math.round(performance.now() - t0)]); this.menus?.setLoading(p, label); await nextFrame(); };
+    const progress = async (p: number, label: string) => { this.bootMarks.push([label, Math.round(performance.now() - t0)]); this.menus?.setLoading(p, label); await nextFrame(); };
     await progress(0.05, 'Mixing ink…');
 
     // renderer / scene
@@ -143,7 +373,7 @@ class Game {
     try {
       const gl = this.R.renderer.getContext();
       const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-      const get = (k) => { const v = gl.getParameter(gl[k]); return Array.isArray(v) ? v.length : v; };
+      const get = (k: GpuLimit) => { const v = gl.getParameter((gl as WebGL2RenderingContext)[k]); return Array.isArray(v) ? v.length : v; };
       window.__beacon?.('gpu', JSON.stringify({
         renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
         webgl2: typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext,
@@ -155,7 +385,7 @@ class Game {
         attrs: get('MAX_VERTEX_ATTRIBS'), samples: get('MAX_SAMPLES'),
         dpr: devicePixelRatio, screen: `${innerWidth}x${innerHeight}`, quality: this.settings.quality,
       }));
-    } catch (e) { window.__beacon?.('gpu-probe-failed', e.message); }
+    } catch (e) { window.__beacon?.('gpu-probe-failed', (e as Error).message); }
     // A lost context is the likeliest explanation for createShader() returning null, and it is silent otherwise.
     this.R.renderer.domElement.addEventListener('webglcontextlost', (e) => { window.__beacon?.('context-lost', 'webglcontextlost fired'); }, false);
     // ?proglog records every shader program in creation order. Attached here — the moment the renderer exists and
@@ -163,16 +393,16 @@ class Game {
     // told apart from a healthy one by where its list stops.
     if (params.has('proglog')) {
       const info = this.R.renderer.info;
-      const push = info.programs.push.bind(info.programs);
+      const push = info.programs!.push.bind(info.programs);
       window.__progLog = [];
-      info.programs.push = (...a) => { window.__progLog.push(a[0]?.name || '(unnamed)'); return push(...a); };
+      info.programs!.push = (...a: THREE.WebGLProgram[]) => { window.__progLog!.push(a[0]?.name || '(unnamed)'); return push(...a); };
     }
     const scene = (G.scene = new THREE.Scene());
     const camera = (G.camera = new THREE.PerspectiveCamera(this.settings.fov, innerWidth / innerHeight, 0.15, 6500));
     camera.position.set(0, 40, -60);
     this.R.setScene(scene, camera);
     this.input = G.input = new Input(this.R.renderer.domElement);
-    this.input.onKey = (e, repeat) => this._onKey(e, repeat);
+    this.input.onKey = (e: KeyboardEvent, repeat: boolean) => this._onKey(e, repeat);
     this.input.onUnlock = () => this._onPointerUnlock();
     // On-screen controls. All their listeners are on `window` with geometric hit-testing (see core/touch.js), so the
     // layer itself is purely visual and never intercepts a menu tap.
@@ -192,7 +422,7 @@ class Game {
           const el = document.documentElement;
           if (document.fullscreenElement || !el.requestFullscreen) return;
           el.requestFullscreen({ navigationUI: 'hide' })
-            .then(() => { screen.orientation?.lock?.('landscape')?.catch?.(() => {}); })
+            .then(() => { (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> })?.lock?.('landscape')?.catch?.(() => {}); })
             .catch(() => { /* refused — stay armed and try again on the next gesture */ });
         };
         // Stay armed until a request actually succeeds, and re-arm whenever fullscreen is left. A one-shot listener
@@ -222,7 +452,10 @@ class Game {
       loadModule('./game/character.js', true), loadModule('./fx/fx.js', true), loadModule('./world/environment.js', true),
       loadModule('./audio/audio.js', true), loadModule('./audio/music.js', true),
     ]);
-    this.CharacterClass = charMod.Character;
+    // 귀여운 비율(R010): 모든 생성 경로가 이 클래스를 쓰므로 여기서 감싼다. 원본 룩이면 머리 배율 1이다.
+    this.CharacterClass = withProportion(charMod.Character, () => resolveLook(this.settings, this.touchMode).headScale);
+    // 이야기 테마(R006): THEMES 표 끝에 inkwash·dawn을 더한다(기존 테마는 그대로)
+    if (envMod.Environment?.THEMES) registerStoryThemes(envMod.Environment.THEMES);
     try { this.PropKit = (await import('./world/props.js')).PropKit; } catch (e) { console.error('[inkwave] prop kit failed to load', e); this.PropKit = null; }
     G.audio = audioMod.audio; G.music = musicMod.music;
     await progress(0.15, 'Building the plaza…');
@@ -233,8 +466,8 @@ class Game {
     let map = MAPS.find((m) => m.id === pm) || MAPS[0];
     if (!mapOfflineOk(map.id) && !DEV_STAGE) { console.info(`[inkwave] ${map.name} is online only — booting ${OFFLINE_MAPS[0].name}`); map = OFFLINE_MAPS[0]; }
     this.time = params.get('time') === 'dusk' || params.get('map') === 'sunset' ? 'dusk' : (this.settings.timeOfDay === 'dusk' ? 'dusk' : 'day');
-    this.theme = mapTheme(map, this.time);
-    const q = QUALITY[this.settings.quality] || QUALITY.high;
+    this.theme = THEME_OVERRIDE ?? mapTheme(map, this.time);
+    const q = (QUALITY as Lookup<typeof QUALITY>)[this.settings.quality] || QUALITY.high;
     this.murals = await createMuralTexture();
     try {
       const { createTextureLibrary } = await import('./world/texlib.js');
@@ -243,8 +476,8 @@ class Game {
     await this._buildWorld(map);
     this.zoneMarks = new ZoneMarks(scene);   // Zone Control ground markings: build / clear themselves on 'match:state'
     await progress(0.4, 'Filling the harbor…');
-    const B = G.level.bounds;
-    G.env = new envMod.Environment(G.renderer, scene, { bounds: B, theme: this.theme, shadowSize: q.shadowSize, footprint: this._footprint(G.level), forceDeckField: this.touchMode });
+    const B = G.level!.bounds;
+    G.env = new envMod.Environment(G.renderer, scene, { bounds: B, theme: this.theme, shadowSize: q.shadowSize, footprint: this._footprint(G.level!), forceDeckField: this.touchMode });
     if (G.env.envMap) scene.environment = G.env.envMap;
     // sky-fill balance (scene.environmentIntensity, hemisphere) + per-theme exposure are the environment theme's job
     // (Environment.setTheme), so a stage/time looks the same booted into or switched to mid-session
@@ -256,23 +489,38 @@ class Game {
     G.fx = new fxMod.FX(scene, { quality: q });
     G.fx.setLighting?.(G.env.getSkyColors?.());
     this._applyNight();
-    G.fx.setCollider?.((from, to) => { const h = G.physics.segment(from, to, this._fxHit || (this._fxHit = new Hit()), true); return h.hit ? { point: h.point, normal: h.normal } : null; });
-    G.fx.onDropletLand = (point, normal, color, size) => {
+    G.fx.setCollider?.((from: THREE.Vector3, to: THREE.Vector3) => { const h = G.physics!.segment(from, to, this._fxHit || (this._fxHit = new Hit()), true); return h.hit ? { point: h.point, normal: h.normal } : null; });
+    G.fx.onDropletLand = (point: THREE.Vector3, normal: THREE.Vector3, color: THREE.Color, size: number) => {
       if (G.netm) return;   // online: turf only comes from replicated splats, never from local-only cosmetic droplets
       const team = this._teamOfColor(color);
       if (team < 0) return;
-      G.paint.splat(this._tmpV.copy(point).addScaledVector(normal, 0.05), clamp(size * 2.4, 0.12, 0.45), team, { seed: Math.random() });
+      G.paint!.splat(this._tmpV.copy(point).addScaledVector(normal, 0.05), clamp(size * 2.4, 0.12, 0.45), team, { seed: Math.random() });
     };
     this._tmpV = new THREE.Vector3(); this._tmpC = new THREE.Color();
     this.rig = new CameraRig(camera);
     G.post = this.R; G.game = this; G.rig = this.rig;
+    // 액션 카메라(R009)는 캠페인 세션 전용이다. 세션 전에는 ?tune=campaign으로 연습·대전에서 미리 체감한다.
+    if (TUNE_CAMPAIGN) {
+      this.rig.setProfile(ACTION_CAMERA);
+      on('hit', (e: { attacker?: Actor | null; killed?: boolean }) => { if (e.killed && e.attacker === G.local) this.rig.punch('kill'); });
+    }
+    // 의성어 라벨(R008): HUD와 같은 ui-root 레이어
+    this.words = new SfxWords(this.uiRoot);
+    // 색 회복(R005): 캠페인 세션이 소유한다. ?colorreturn은 세션 전 확인용으로 현재 경기에 색 잃은 상태를 건다.
+    this.colorReturn = null;
+    if (params.has('colorreturn')) {
+      const look = resolveLook(this.settings, this.touchMode);
+      this.colorReturn = new ColorReturn(look.colorReturn);
+      this.colorReturn.enter(Number(params.get('colorreturn')) || 0);
+      on('color:restore', (e: { x: number; y: number; z: number; r: number }) => this.colorReturn?.restore(e.x, e.y, e.z, e.r));
+    }
     // optional modules owned by the VFX / screen-FX work streams (absent = skipped)
     try { const m = await import('./fx/fxHooks.js'); this.fxHooks = m.initFxHooks?.(G) || null; } catch (e) { if (!/Failed to fetch|Cannot find module|404/i.test(String(e))) console.error('[inkwave] fxHooks', e); }
     try { const m = await import('./fx/screenfx.js'); this.screenfx = m.ScreenFX ? new m.ScreenFX(this.R, G) : null; } catch (e) { if (!/Failed to fetch|Cannot find module|404/i.test(String(e))) console.error('[inkwave] screenfx', e); }
     this.showcase = new Showcase(G.renderer, this.CharacterClass);
     // online session (G.net) — the menus' online screens and startNetMatch/netMatchGo/netMatchEnd below drive it
     try { (await import('./net/session.js')).installNet(); } catch (e) { console.error('[inkwave] net', e); }
-    G.net?.on?.('lobby', ({ lobby }) => this._roomPalette(lobby));
+    G.net?.on?.('lobby', ({ lobby }: { lobby: LobbyPalette | null }) => this._roomPalette(lobby));
     await progress(0.7, 'Tuning the tentacles…');
 
     this._setPalette(this._pickPalette());
@@ -320,14 +568,14 @@ class Game {
     requestAnimationFrame((t) => this._loop(t));
     if (params.has('autostart')) {
       const pm = params.get('mode');
-      this.api.startMatch({ mapId: map.id, difficulty: params.get('difficulty') || this.settings.difficulty, duration: +params.get('autostart') || undefined, mode: pm === 'boss' || pm === 'zones' ? pm : 'turf' });
+      this.api.startMatch({ mapId: map.id, difficulty: params.get('difficulty') || this.settings.difficulty, duration: +params.get('autostart')! || undefined, mode: pm === 'boss' || pm === 'zones' ? pm : 'turf' });
     }
     this.bootMs = Math.round(performance.now() - t0);
     window.__inkwave = this; // debug/audit hook
     window.__G = G;
     this.debug = {
       endMatch: (t = 0.5) => { if (this.match && !this.match.attract) this.match.time = t; },
-      paintRandom: (n = 400) => { const v = new THREE.Vector3(); for (let i = 0; i < n; i++) { v.set((Math.random() - 0.5) * 48, 0.4, (Math.random() - 0.5) * 86); G.paint.splat(v, 0.8 + Math.random() * 1.4, Math.random() < 0.5 ? 0 : 1); } },
+      paintRandom: (n = 400) => { const v = new THREE.Vector3(); for (let i = 0; i < n; i++) { v.set((Math.random() - 0.5) * 48, 0.4, (Math.random() - 0.5) * 86); G.paint!.splat(v, 0.8 + Math.random() * 1.4, Math.random() < 0.5 ? 0 : 1); } },
       // deterministic stepping for audits: freeze(), then step(ms) advances the sim at a fixed 60 Hz and renders once
       freeze: () => { this.frozen = true; },
       unfreeze: () => { this.frozen = false; this.timer.update(this._lastTs); },
@@ -340,24 +588,24 @@ class Game {
       },
       key: (code, down) => { if (down) { this.input.keys.add(code); this.input.pressed.add(code); } else this.input.keys.delete(code); },
       fire: (on) => { this.input.mouse.left = on; },
-      freezeBots: () => { for (const a of G.actors) if (a.bot && !a.isLocal) a.bot.update = () => { a.intent.move.set(0, 0, 0); a.intent.fire = false; }; },
+      freezeBots: () => { for (const a of G.actors as BotActor[]) if (a.bot && !a.isLocal) a.bot.update = () => { a.intent.move.set(0, 0, 0); a.intent.fire = false; }; },
     };
   }
 
   // Build (or rebuild) everything that depends on the stage layout: level, collision, paint atlas, surface material,
   // decor, navigation graph and minimap. Environment/FX/projectiles persist across stages.
   // mode: 'turf' | 'zones' — a stage with Zone Control-only pieces (variants.js) builds a separate world for that mode
-  async _buildWorld(map, mode = 'turf') {
-    const scene = G.scene;
+  async _buildWorld(map: MapDef, mode = 'turf') {
+    const scene = G.scene!;
     const layoutId = map.layout || map.id;
-    const worldKey = variantKey(layoutId, MAP_LAYOUTS[layoutId], dressingFor(layoutId), mode);
+    const worldKey = variantKey(layoutId, (MAP_LAYOUTS as Lookup<typeof MAP_LAYOUTS>)[layoutId], dressingFor(layoutId), mode);
     if (this.worldKey === worldKey) { this.mapDef = map; return; }
     // the rebuild awaits (lightmap fetch) between swapping G.level and G.paint: hold the simulation until every
     // stage-dependent system matches, or a frame in between raycasts the new level and samples the old paint atlas
     this._building = true;
     try { await this._buildWorldNow(map, scene, layoutId, mode, worldKey); } finally { this._building = false; }
   }
-  async _buildWorldNow(map, scene, layoutId, mode = 'turf', worldKey = layoutId) {
+  async _buildWorldNow(map: MapDef, scene: THREE.Scene, layoutId: string, mode = 'turf', worldKey = layoutId) {
     this.zoneMarks?.clear();   // zone markings belong to the old stage's faces
     if (this.levelMesh) { scene.remove(this.levelMesh, this.grateMesh); this.levelMesh.geometry.dispose(); this.grateMesh?.geometry.dispose(); this.levelMat.dispose(); this.grateMat?.dispose(); }
     if (this.decor) { scene.remove(this.decor.group); }
@@ -365,7 +613,7 @@ class Game {
     G.paint?.dispose();
     this.layoutId = layoutId; this.worldKey = worldKey;
     this.mapDef = map;
-    const q = QUALITY[this.settings.quality] || QUALITY.high;
+    const q = (QUALITY as Lookup<typeof QUALITY>)[this.settings.quality] || QUALITY.high;
     // set dressing first: solid props hand back collision boxes that become part of the level (physics, nav, paint)
     const colliders = [];
     if (this.PropKit) {
@@ -379,22 +627,22 @@ class Game {
         this.props.build();
       } catch (e) { console.error('[inkwave] props failed', e); this.props = null; }
     }
-    const level = (G.level = new Level(layoutFor(MAP_LAYOUTS[layoutId], mode), colliders));
+    const level = (G.level = new Level(layoutFor((MAP_LAYOUTS as Lookup<typeof MAP_LAYOUTS>)[layoutId], mode), colliders));
     G.physics = new Physics(level);
     const lightmap = await this._loadLightmap(level, worldKey);
     G.paint = new PaintSystem(G.renderer, level, { atlasSize: Math.max(512, Math.round(q.paintAtlas * this.memK)), maxDensity: q.paintAtlas >= 4096 ? 30 : 18 });
     this.murals.userData.setStage?.(layoutId);   // stage decals (murals.js) before the material reads the table
-    this.levelMat = createLevelMaterial(G.paint.texture, G.paint.size, this.murals, { lightmap, texlib: this.texlib });
+    this.levelMat = (createLevelMaterial as LevelMaterialFactory)(G.paint.texture!, G.paint.size, this.murals, { lightmap, texlib: this.texlib });
     (this.swimWake || (this.swimWake = new SwimWake())).reset();
     this.levelMesh = new THREE.Mesh(level.buildGeometry(G.paint.size), this.levelMat);
     this.levelMesh.castShadow = true; this.levelMesh.receiveShadow = true;
     this.levelMesh.name = 'level';
     scene.add(this.levelMesh);
     // grates: same surface shader, cut-out holes, no ink (they cast no shadow; the mesh is too fine for the shadow map)
-    this.grateMat = createLevelMaterial(G.paint.texture, G.paint.size, this.murals, { grate: true, lightmap, texlib: this.texlib });
+    this.grateMat = (createLevelMaterial as LevelMaterialFactory)(G.paint.texture!, G.paint.size, this.murals, { grate: true, lightmap, texlib: this.texlib });
     const gg = level.buildGeometry(G.paint.size, (b) => b.grate);
     this.grateMesh = new THREE.Mesh(gg, this.grateMat);
-    this.grateMesh.receiveShadow = true; this.grateMesh.visible = gg.index.count > 0;
+    this.grateMesh.receiveShadow = true; this.grateMesh.visible = gg.index!.count > 0;
     scene.add(this.grateMesh);
     this.decor = new Decor(scene, level);
     G.nav = new NavGraph(level, G.physics);
@@ -405,7 +653,7 @@ class Game {
   }
 
   // Baked AO (tools/bake-ao.mjs). Applied only when the bake matches this exact layout.
-  async _loadLightmap(level, layoutId) {
+  async _loadLightmap(level: Level, layoutId: string) {
     try {
       const meta = await (await fetch(`assets/lightmaps/${layoutId}.json`, { cache: 'no-cache' })).json();
       level.layoutLightmap(meta.ppm, meta.size);
@@ -416,7 +664,7 @@ class Game {
       tex.anisotropy = 4;
       return tex;
     } catch (e) {
-      console.warn('[inkwave] no lightmap for', layoutId, e.message);
+      console.warn('[inkwave] no lightmap for', layoutId, (e as Error).message);
       for (const f of level.faces) f.light = null;
       return null;
     }
@@ -424,7 +672,7 @@ class Game {
 
   // deck slabs (top at deck level, bottom in the sea) for the environment: axis-aligned boxes and boxes turned about Y
   // (obox) as oriented rects — centre (cx, cz), half extents (hx, hz), local x axis (ax, az) — plus their XZ AABB
-  _footprint(level) {
+  _footprint(level: Level) {
     return level.blocks.filter((b) => (b.aligned || Math.abs(b.axes[1].y) > 0.9999) && b.aabbMax.y < 0.01 && b.aabbMax.y > -2.5 && b.aabbMin.y < -1)
       .map((b) => ({ minX: b.aabbMin.x, maxX: b.aabbMax.x, minZ: b.aabbMin.z, maxZ: b.aabbMax.z,
         ...(b.aligned ? {} : { cx: b.center.x, cz: b.center.z, hx: b.half.x, hz: b.half.z, ax: b.axes[0].x, az: b.axes[0].z }) }));
@@ -435,13 +683,13 @@ class Game {
     const p = new THREE.Vector3(0, -30, 0), n = new THREE.Vector3(0, 1, 0);
     const c = G.teamColors[0];
     try {
-      G.fx.burst(p, n, c, { count: 4 }); G.fx.ring(p, n, c, {}); G.fx.explosion(p, c, 2); G.fx.splatted(p, c);
-      G.fx.wake(p, n, c, 5); G.fx.muzzle(p, n, c); G.fx.spawnFlash(p, c);
+      G.fx!.burst(p, n, c, { count: 4 }); G.fx!.ring(p, n, c, {}); G.fx!.explosion(p, c, 2); G.fx!.splatted(p, c);
+      G.fx!.wake(p, n, c, 5); G.fx!.muzzle(p, n, c); G.fx!.spawnFlash(p, c);
     } catch (e) { console.warn('fx warmup', e); }
     // materials made lazily on first use (a thrown bomb's) get an off-screen stand-in so the boot compile covers them
     try {
       const g = new THREE.SphereGeometry(0.1, 8, 6);
-      this._warmMeshes = [0, 1].map((t) => { const m = new THREE.Mesh(g, G.projectiles._bombMat(t)); m.position.copy(p); m.castShadow = true; G.scene.add(m); return m; });
+      this._warmMeshes = [0, 1].map((t) => { const m = new THREE.Mesh(g, G.projectiles!._bombMat(t)); m.position.copy(p); m.castShadow = true; G.scene!.add(m); return m; });
     } catch (e) { console.warn('bomb warmup', e); }
   }
 
@@ -455,12 +703,12 @@ class Game {
     return p;
   }
   paletteIndex() { const i = TEAM_PALETTES.indexOf(this.palette); return i >= 0 ? i : (Math.random() * TEAM_PALETTES.length) | 0; }
-  _roomPalette(l) {
+  _roomPalette(l: LobbyPalette | null | undefined) {
     if (this.settings.colorblind || G.mode === 'match' || !l) return;
     const p = TEAM_PALETTES[l.palette];
     if (p && p !== this.palette) this._setPalette(p);
   }
-  _setPalette(p) {
+  _setPalette(p: Palette) {
     this.palette = p;
     G.teamHex = [p.a, p.b];
     G.teamColors = [new THREE.Color(p.a), new THREE.Color(p.b)];
@@ -472,19 +720,19 @@ class Game {
     this.levelMat.userData.uniforms.uInkGlow.value = { sunset: 0.2, golden: 0.1 }[this.theme] ?? 0.07;
     this.decor.setTeamColors(G.teamColors);
     this.props?.setTeamColors?.(G.teamColors[0], G.teamColors[1]);
-    G.projectiles.refreshColors();
+    G.projectiles!.refreshColors();
     for (const a of G.actors) a.character.setColor(G.teamColors[a.team]);
     this.minimap.version = -1;
     this.menus?.setAccent?.(p.a, p.b);
   }
-  _teamOfColor(color) {
+  _teamOfColor(color: THREE.Color) {
     const c = color.isColor ? color : this._tmpC.set(color);
-    for (let t = 0; t < 2; t++) { const k = G.teamColors[t]; if (Math.abs(k.r - c.r) + Math.abs(k.g - c.g) + Math.abs(k.b - c.b) < 0.05) return t; }
+    for (let t = 0; t < 2; t++) { const k = G.teamColors[t]!; if (Math.abs(k.r - c.r) + Math.abs(k.g - c.g) + Math.abs(k.b - c.b) < 0.05) return t; }
     return -1;
   }
 
   // ---------------------------------------------------------------------------------------- menus api
-  _menuApi() {
+  _menuApi(): MenuApi {
     const self = this;
     const api = (this.api = {
       version: VERSION,
@@ -501,11 +749,11 @@ class Game {
       getLoadout: () => ({ weapon: self.profile.weapon || 'shooter', sub: self._subFor(self.profile.weapon), special: self._specialFor(self.profile.weapon) }),
       setLoadout: ({ weapon, sub, special }) => {
         if (weapon !== undefined) {
-          if (!WEAPONS[weapon]) return;
+          if (!(WEAPONS as Lookup<typeof WEAPONS>)[weapon]) return;
           self.profile.weapon = weapon;
         }
-        if (sub !== undefined) self.profile.sub = SUBS[sub] ? sub : null;
-        if (special !== undefined) self.profile.special = SPECIALS[special] ? special : null;
+        if (sub !== undefined) self.profile.sub = (SUBS as Lookup<typeof SUBS>)[sub] ? sub : null;
+        if (special !== undefined) self.profile.special = (SPECIALS as Lookup<typeof SPECIALS>)[special] ? special : null;
         saveJSON('inkwave.profile', self.profile);
         if (self.menus?.current === 'loadout' && weapon !== undefined) self.showcase.showLoadout(weapon, G.teamColors[0], self.profile.style);
         self._applyPracticeLoadout();   // in practice the new kit is in your hands straight away
@@ -514,7 +762,7 @@ class Game {
       // practice: solo on a random stage (no enemies, no clock); the loadout can be changed mid-session
       startPractice: (o) => self.startPractice(o),
       isPractice: () => self._inPractice(),
-      practiceInfo: () => (self._inPractice() ? { map: self.mapDef.name, weapon: self.match.local?.weaponId, sub: self.match.local?.subId, special: self.match.local?.specialId } : null),
+      practiceInfo: () => (self._inPractice() ? { map: self.mapDef.name, weapon: self.match!.local?.weaponId, sub: self.match!.local?.subId, special: self.match!.local?.specialId } : null),
       practiceReset: () => self.practiceReset(),
       practiceNewStage: () => self.startPractice(),
       quitPractice: () => self.quitToMenu('loadout'),
@@ -531,25 +779,26 @@ class Game {
   }
 
   // the loadout's sub: the one picked in the loadout, else the weapon's own default
-  _subFor(weapon) { return (SUBS[this.profile.sub] && this.profile.sub) || (WEAPONS[weapon || 'shooter'] || WEAPONS.shooter).sub || 'bomb'; }
+  _subFor(weapon: string) { return ((SUBS as Lookup<typeof SUBS>)[this.profile.sub as string] && this.profile.sub) || ((WEAPONS as Lookup<typeof WEAPONS>)[weapon || 'shooter'] || WEAPONS.shooter).sub || 'bomb'; }
   // the loadout's special: the one picked in the loadout, else the weapon's own
-  _specialFor(weapon) { return (SPECIALS[this.profile.special] && this.profile.special) || (WEAPONS[weapon || 'shooter'] || WEAPONS.shooter).special || 'slam'; }
+  _specialFor(weapon: string) { return ((SPECIALS as Lookup<typeof SPECIALS>)[this.profile.special as string] && this.profile.special) || ((WEAPONS as Lookup<typeof WEAPONS>)[weapon || 'shooter'] || WEAPONS.shooter).special || 'slam'; }
 
-  _setSettings(partial) {
+  _setSettings(partial: Partial<Settings>) {
     Object.assign(this.settings, partial);
     // An explicit pick must outrank the touch-device default (see boot()). Tracked separately per setting: choosing a
     // quality says nothing about whether the player wants shadows.
     if ('quality' in partial) this.settings.qualityChosen = true;
     if ('shadows' in partial) this.settings.shadowsChosen = true;
     saveJSON('inkwave.settings', this.settings);
-    if ('quality' in partial || 'shadows' in partial || 'bloom' in partial) this.R?.applySettings(this.settings);
+    if ('quality' in partial || 'shadows' in partial || 'bloom' in partial || LOOK_KEYS.some((k) => k in partial)) this.R?.applySettings(this.settings);
+    if ('look' in partial) applyLookToDocument(this.settings);
     if ('fullscreen' in partial && window.inkwaveNative) window.inkwaveNative.setFullScreen(!!partial.fullscreen);
     if ('master' in partial || 'music' in partial || 'sfx' in partial) this._applyAudioVolumes();
     if ('colorblind' in partial && G.mode !== 'match') this._setPalette(this._pickPalette());
   }
   _applyAudioVolumes() { G.audio?.setVolumes?.({ master: this.settings.master, music: this.settings.music, sfx: this.settings.sfx }); }
 
-  _onScreen(s) {
+  _onScreen(s: string | null) {
     // the loadout opened mid-practice sits over the live stage: tuck the HUD away while it's up
     if (G.mode === 'match' && this.hud) {
       const hide = s === 'loadout';
@@ -564,7 +813,7 @@ class Game {
       }
     }
   }
-  _playMusic(t) {
+  _playMusic(t: string | null) {
     this._musicTrack = t;
     try {
       G.music?.play(t, { fade: 1.2 });
@@ -574,7 +823,7 @@ class Game {
   }
 
   // ---------------------------------------------------------------------------------------- input routing
-  _onKey(e, repeat) {
+  _onKey(e: KeyboardEvent, repeat: boolean) {
     // first gesture unlocks audio
     if (!this._audioOn) { this._audioOn = true; G.audio?.init?.(); this._applyAudioVolumes(); this._playMusic(this.menus?.current === 'title' || !this.menus ? 'title' : 'menu'); }
     if (G.mode === 'match' && this.match && !this.match.paused && !this.menus?.current) {
@@ -593,7 +842,7 @@ class Game {
   }
   // pull the fog back while the view is overhead (the stage is ~150 m away up there), restore it exactly after
   _dioFog() {
-    const f = G.scene?.fog, k = this.rig.mapK;
+    const f = G.scene?.fog as THREE.Fog | null | undefined, k = this.rig.mapK;
     if (!f || !f.isFog) return;
     if (k > 0) {
       if (!this._fog0) this._fog0 = { near: f.near, far: f.far };
@@ -619,7 +868,7 @@ class Game {
       let ang = null;
       if (attacker && attacker !== victim) {
         const v = this._dmgV || (this._dmgV = new THREE.Vector3());
-        v.copy(attacker.pos); v.y += 1; v.project(G.camera);
+        v.copy(attacker.pos); v.y += 1; v.project(G.camera!);
         let dx = v.x, dy = -v.y;
         const behind = v.z > 1;
         if (behind) { dx = -dx; dy = -dy; }
@@ -675,7 +924,7 @@ class Game {
       if (actor.isLocal && !this.match?.attract) { G.audio?.play('special_ready'); }
     });
     on('special:use', ({ actor, id }) => {
-      if (actor.isLocal && !this.match?.attract) this.hud?.banner('special', SPECIALS[id].name.toUpperCase() + '!');
+      if (actor.isLocal && !this.match?.attract) this.hud?.banner('special', (SPECIALS as Lookup<typeof SPECIALS>)[id].name.toUpperCase() + '!');
     });
     on('shake', ({ amount, pos }) => { if (!this.match?.attract) this.rig.addShake(amount, pos); });
     on('recoil', ({ amount }) => { if (!this.match?.attract) this.rig.recoil(amount); });
@@ -684,7 +933,7 @@ class Game {
     on('actor:footstep', ({ actor, surface, pos, speed }) => {
       if (!actor || !actor.alive || actor.form === 'squid') return;
       const p = pos || actor.pos;
-      if (!actor.isLocal && G.camera.position.distanceToSquared(p) > 18 * 18) return;
+      if (!actor.isLocal && G.camera!.position.distanceToSquared(p) > 18 * 18) return;
       const name = surface === 1 ? 'step_ink' : surface === 2 ? 'step_enemy' : 'step_dry';
       const vol = (actor.isLocal ? 0.7 : 0.45) * Math.min(1, 0.45 + (speed || actor.anim.speed || 0) / 8);
       G.audio?.play(name, { pos: actor.isLocal ? undefined : p, volume: vol });
@@ -697,7 +946,7 @@ class Game {
       if (state === 'playing') {
         if (!match.practice) { this.hud?.banner('go'); G.audio?.play('go_horn'); }
         if (match.mode !== 'boss') this._playMusic('battle');   // boss mode: the boss audio director scores it by phase
-        if (this.match.local) { this.rig.follow(this.match.local, true); }
+        if (this.match!.local) { this.rig.follow(this.match!.local, true); }
       }
       if (state === 'finish') {
         const bossWon = match.mode === 'boss' && match.boss?.dead;   // the defeat already had its moment (boss:defeat)
@@ -723,7 +972,7 @@ class Game {
     return this.deathMarks || (this.deathMarks = G.deathMarks = Array.from({ length: 12 }, () => (
       { on: false, id: 0, x: 0, y: 0, z: 0, team: 0, name: '', ally: false, local: false, t: 0, k: 0, sx: 0, sy: 0, sc: 1, vis: false, mx: 0, my: 0 })));
   }
-  _addDeathMark(victim) {
+  _addDeathMark(victim: Actor) {
     const pool = this._deathPool();
     let d = pool.find((o) => !o.on);
     if (!d) d = pool.reduce((o, b) => (b.t > o.t ? b : o));   // all showing: recycle the oldest
@@ -733,7 +982,7 @@ class Game {
     d.x = p.x; d.y = Math.max(p.y, PLAYER.waterY + 0.1); d.z = p.z;   // lost at sea: on the water where they went in
     d.team = victim.team; d.name = victim.name || ''; d.local = !!victim.isLocal;
   }
-  _ageDeathMarks(dt) {
+  _ageDeathMarks(dt: number) {
     const life = MATCH.deathMarkLife ?? 5, fade = MATCH.deathMarkFade ?? 1.3;
     for (const d of this._deathPool()) {
       if (!d.on) continue;
@@ -748,7 +997,7 @@ class Game {
   _startAttract() {
     if (this.match) this.match.dispose();
     this.rig.dioFlip = false;
-    G.projectiles.clear(); G.subs.clear(); G.specials.clear(); G.fx.clear?.(); G.paint.clear(); this._clearDeathMarks();
+    G.projectiles!.clear(); G.subs!.clear(); G.specials!.clear(); G.fx!.clear?.(); G.paint!.clear(); this._clearDeathMarks();
     if (window.inkwaveNative?.performance?.menuAttract === false) {
       this.match = G.match = null;
       return;
@@ -770,12 +1019,12 @@ class Game {
     if (s === 'orbit') this.rig.orbit(new THREE.Vector3(0, 1, 0), 34, 17, 0.05, Math.random() * 6);
     else if (s === 'orbit2') this.rig.orbit(new THREE.Vector3(0, 2, -8), 18, 7, -0.07, Math.random() * 6);
     else {
-      const alive = this.match.actors.filter((a) => a.alive);
+      const alive = this.match!.actors.filter((a) => a.alive);
       const a = alive[(Math.random() * alive.length) | 0];
       if (a) { this.rig.follow(a, true); this.rig.yaw = a.yaw; this.rig.pitch = -0.28; this._attractFollow = a; }
     }
   }
-  _updateAttract(dt) {
+  _updateAttract(dt: number) {
     this.attractT += dt; this.shotT -= dt;
     if (this.menus?.current === 'title') { if (this.rig.mode !== 'orbit') this.rig.orbit(new THREE.Vector3(0, 1, 0), 34, 17, 0.05, 0); }
     else if (this.shotT <= 0) this._attractShot();
@@ -784,7 +1033,7 @@ class Game {
       if (!a.alive) this.shotT = Math.min(this.shotT, 0.5);
       this.rig.yaw = G.time > 0 ? this.rig.yaw + (((a.yaw - this.rig.yaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI) * (1 - Math.exp(-2 * dt)) : a.yaw;
     }
-    const cov = G.paint.coverage();
+    const cov = G.paint!.coverage();
     if (this.attractT > 110 || cov[0] + cov[1] > 0.72) {
       this._fade(1, 400).then(() => { this._setPalette(this._pickPalette()); this._startAttract(); this._fade(0, 600); });
       this.attractT = -999;
@@ -801,9 +1050,9 @@ class Game {
     for (const m of [this.levelMat, this.grateMat]) setLevelLamps(m, G.level, k);
   }
 
-  async startMatch(o = {}) {
+  async startMatch(o: MatchRequest = {}) {
     const practice = !!o.practice;
-    const opts = {
+    const opts: MatchOpts = {
       mapId: o.mapId === 'sunset' ? 'tidewater' : (o.mapId || this.mapDef.id),
       time: o.mapId === 'sunset' ? 'dusk' : (o.time || this.time || 'day'),
       difficulty: o.difficulty || this.settings.difficulty,
@@ -823,7 +1072,7 @@ class Game {
     G.music?.preload?.('battle'); if (!practice) G.music?.preload?.('battle_final');
     this.showcase.hide();
     if (this.match) this.match.dispose();
-    G.projectiles.clear(); G.subs.clear(); G.specials.clear(); G.fx.clear?.(); G.paint.clear(); this._clearDeathMarks();
+    G.projectiles!.clear(); G.subs!.clear(); G.specials!.clear(); G.fx!.clear?.(); G.paint!.clear(); this._clearDeathMarks();
     let map = MAPS.find((m) => m.id === opts.mapId) || MAPS[0];
     // offline never plays an online-only stage (the menus don't offer one; a stray ?autostart / api call falls back)
     if (!mapOfflineOk(map.id) && !DEV_STAGE) {
@@ -833,13 +1082,13 @@ class Game {
     }
     if (opts.mode === 'boss' && !mapBossOk(map.id)) opts.mode = 'turf';
     await this._buildWorld(map, opts.mode);   // no-op when this stage (+ mode variant) is already built
-    const theme = mapTheme(map, opts.time);
+    const theme = (isStoryTheme(opts.theme) ? opts.theme : null) ?? THEME_OVERRIDE ?? mapTheme(map, opts.time);
     this.time = opts.time === 'dusk' ? 'dusk' : 'day';
     if (theme !== this.theme) {
       this.theme = theme;
-      G.env.setTheme?.(theme);
-      if (G.env.envMap) G.scene.environment = G.env.envMap;
-      G.fx.setLighting?.(G.env.getSkyColors?.());
+      G.env!.setTheme?.(theme);
+      if (G.env!.envMap) G.scene!.environment = G.env!.envMap;
+      G.fx!.setLighting?.(G.env!.getSkyColors?.());
     }
     this._applyNight();   // after any stage rebuild too (new prop kit / decor)
     this.mapDef = map;
@@ -871,7 +1120,7 @@ class Game {
   _inPractice() { return !!(this.match && this.match.practice && G.mode === 'match'); }
 
   // a random stage (a different one from the current, when there's a choice)
-  startPractice(o = {}) {
+  startPractice(o: { mapId?: string } = {}) {
     const pool = OFFLINE_MAPS.filter((m) => m.id !== this.mapDef?.id);   // (never an online-only stage)
     const map = (o.mapId && OFFLINE_MAPS.find((m) => m.id === o.mapId)) || pool[(Math.random() * pool.length) | 0] || OFFLINE_MAPS[0];
     return this.startMatch({ mapId: map.id, practice: true });
@@ -879,7 +1128,7 @@ class Game {
 
   // practice: open the loadout screen straight from play (Esc on it drops you back in)
   openPracticeLoadout() {
-    const m = this.match;
+    const m = this.match!;
     if (!this._inPractice() || m.paused || m.state !== 'playing') return;
     m.paused = true;
     this.input.exitLock();
@@ -891,11 +1140,11 @@ class Game {
   // equip the profile's loadout on the practising player (called whenever the loadout changes)
   _applyPracticeLoadout() {
     if (!this._inPractice()) return;
-    const a = this.match.local;
+    const a = this.match!.local;
     if (!a) return;
     const w = this.profile.weapon || 'shooter', sub = this._subFor(w), sp = this._specialFor(w);
     if (a.weaponId !== w || a.specialId !== sp) {
-      G.specials.end(a, 'swap');
+      G.specials!.end(a, 'swap');
       a.specialActive = null;
       if (a.weaponId !== w) a.setWeapon(w);
       a.setSpecial(sp);
@@ -908,8 +1157,8 @@ class Game {
   // practice: wipe the stage clean and drop back in at spawn with full ink and special
   practiceReset() {
     if (!this._inPractice()) return;
-    const a = this.match.local;
-    G.projectiles.clear(); G.subs.clear(); G.specials.clear(); G.fx.clear?.(); G.paint.clear(); this._clearDeathMarks();
+    const a = this.match!.local;
+    G.projectiles!.clear(); G.subs!.clear(); G.specials!.clear(); G.fx!.clear?.(); G.paint!.clear(); this._clearDeathMarks();
     if (!a) return;
     a.respawn();
     a.special = a.specialCost();
@@ -918,30 +1167,30 @@ class Game {
 
   // ---- online (src/net/session.js drives these) -----------------------------------------------------------------
   // Build the host's match: same stage / time / palette / roster on every client; the intro starts on netMatchGo.
-  async startNetMatch(cfg, nm) {
+  async startNetMatch(cfg: NetMatchConfig, nm: NetMatch) {
     G.audio?.init?.();
     this.menus?.show(null);
     await this._fade(1, 350);
     G.music?.stop?.(0.3); this._musicTrack = null;
     this.showcase.hide();
     if (this.match) this.match.dispose();
-    G.projectiles.clear(); G.subs.clear(); G.specials.clear(); G.fx.clear?.(); G.paint.clear(); this._clearDeathMarks();
+    G.projectiles!.clear(); G.subs!.clear(); G.specials!.clear(); G.fx!.clear?.(); G.paint!.clear(); this._clearDeathMarks();
     const map = MAPS.find((m) => m.id === cfg.map) || MAPS[0];
     await this._buildWorld(map, cfg.mode);   // no-op when this stage (+ mode variant) is already built
-    const theme = mapTheme(map, cfg.time);
+    const theme = THEME_OVERRIDE ?? mapTheme(map, cfg.time);
     this.time = cfg.time === 'dusk' ? 'dusk' : 'day';
     if (theme !== this.theme) {
       this.theme = theme;
-      G.env.setTheme?.(theme);
-      if (G.env.envMap) G.scene.environment = G.env.envMap;
-      G.fx.setLighting?.(G.env.getSkyColors?.());
+      G.env!.setTheme?.(theme);
+      if (G.env!.envMap) G.scene!.environment = G.env!.envMap;
+      G.fx!.setLighting?.(G.env!.getSkyColors?.());
     }
     this._applyNight();
     this.mapDef = map;
     this._setPalette(this.settings.colorblind ? COLORBLIND_PALETTE : TEAM_PALETTES[cfg.palette] || TEAM_PALETTES[0]);
     const m = (this.match = G.match = new Match({
       attract: false, duration: cfg.duration, difficulty: cfg.difficulty, mode: cfg.mode, CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
-      roster: cfg.roster, myId: G.net.myId, host: G.net.isHost, autopilot: params.has('autopilot'),
+      roster: cfg.roster, myId: G.net!.myId, host: G.net!.isHost, autopilot: params.has('autopilot'),
     }));
     m.setup();
     await this._warmCharacters(m);   // before 'ready': nobody starts until every shader a squidkid can use is compiled
@@ -959,14 +1208,14 @@ class Game {
   // Compile every shader variant a squidkid can use this match (all detail tiers, their cross-fades, squid form,
   // weapons) and build every kid's tier meshes while the screen is still faded out, so none of it lands mid-match.
   // Programs are shared, so after the first kid of each weapon the rest are a few ms each.
-  async _warmCharacters(m) {
+  async _warmCharacters(m: Match) {
     const policy = window.inkwaveNative?.performance;
     if (!m.opts.roster && !m.boss && policy?.warmCharacterVariants === false) {
-      await policy.warmVisible(m.actors.map(a => a.character.root), new THREE.Group(), G.renderer, G.camera, G.scene, G.post.composer.readBuffer);
+      await policy.warmVisible(m.actors.map(a => a.character.root), new THREE.Group(), G.renderer!, G.camera!, G.scene!, G.post!.composer.readBuffer);
       return;
     }
     const jobs = m.actors.map((a) => a.character?.warmAll ? Promise.resolve(a.character.warmAll()).catch((e) => console.warn('[inkwave] warm', e)) : null).filter(Boolean);
-    if (m.boss) jobs.push(Promise.resolve(m.boss.model.ready).then(() => Promise.all(m.boss.warm().map((o) => G.renderer.compileAsync(o, G.camera, G.scene)))).catch((e) => console.warn('[inkwave] boss warm', e)));
+    if (m.boss) jobs.push(Promise.resolve(m.boss.model.ready).then(() => Promise.all(m.boss!.warm().map((o) => G.renderer!.compileAsync(o, G.camera!, G.scene)))).catch((e) => console.warn('[inkwave] boss warm', e)));
     if (jobs.length) await Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 8000))]);   // never hang a load
   }
   netMatchGo() {
@@ -997,14 +1246,14 @@ class Game {
     } finally { this._netEnding = false; }
   }
   // the room went away mid-match (connection lost): back to the menus with the reason
-  netMatchAborted(reason) {
+  netMatchAborted(reason?: string) {
     this.quitToMenu().then(() => { if (reason) this.menus?.toast?.(reason); });
   }
 
   _intro() {
-    if (this.match.boss) { this._bossIntro(this.match.boss); return; }
-    const L = G.level;
-    const local = this.match.local;
+    if (this.match!.boss) { this._bossIntro(this.match!.boss); return; }
+    const L = G.level!;
+    const local = this.match!.local;
     const team = local ? local.team : 0, pad = L.spawnPads[team];
     const sgn = team === 0 ? 1 : -1;     // the layout is a 180° mirror: Bravo's shot is Alpha's rotated about the centre
     // sweep from high over the enemy base down behind the player (a stage can open on its own hero shot instead)
@@ -1068,15 +1317,15 @@ class Game {
   // Boss Battle intro: sweep in over the arena as HULLBREAKER bursts out of its home ground (boss time 1.8 s), hold on the
   // roar while the title card plays, then swing back down behind the squad's pad for GO. Chained on the rig's own
   // clock (not timers), so it stays in step with the boss under freeze/step audits.
-  _bossIntro(b) {
-    const pad = G.level.spawnPads[0], B = b.pos, fy = b.yaw;
+  _bossIntro(b: Boss) {
+    const pad = G.level!.spawnPads[0], B = b.pos, fy = b.yaw;
     const fx = Math.sin(fy), fz = Math.cos(fy), sx = fz, sz = -fx;       // its forward (toward the squad) and a side
     const reveal = new THREE.Vector3(B.x + fx * 15 + sx * 5, B.y + 4.6, B.z + fz * 15 + sz * 5);
     const push = new THREE.Vector3(B.x + fx * 12 + sx * 3.2, B.y + 3.4, B.z + fz * 12 + sz * 3.2);
     const behind = new THREE.Vector3(pad.x, pad.y + 2.6, pad.z - 5.2);
     const chest = new THREE.Vector3(B.x, B.y + 2.6, B.z), head = new THREE.Vector3(B.x, B.y + 3.4, B.z);
     const high = new THREE.Vector3(pad.x + 6, pad.y + 17, pad.z + 4), mid = new THREE.Vector3((pad.x + B.x) / 2, 0, (pad.z + B.z) / 2);
-    const m = this.match;
+    const m = this.match!;
     this.rig.cinematic(high, reveal, mid, chest, 1.9, () => {
       if (this.match !== m || m.state !== 'intro') return;
       this.rig.cinematic(reveal, push, chest, head, 3.0, () => {
@@ -1091,17 +1340,17 @@ class Game {
     this._playMusic(null);
   }
   // round over: circle the boss (sinking, or roaring over a squad that ran out of time)
-  _bossFinishCam(b) {
-    const c = new THREE.Vector3(b.pos.x, b.pos.y + 2.2, b.pos.z), cam = G.camera.position;
+  _bossFinishCam(b: Boss) {
+    const c = new THREE.Vector3(b.pos.x, b.pos.y + 2.2, b.pos.z), cam = G.camera!.position;
     this.rig.orbit(c, 15, 5.5, 0.09, Math.atan2(cam.x - c.x, cam.z - c.z));
   }
   // Boss Battle results: no turf judge — straight to VICTORY / DEFEAT with the fight's numbers
   async _bossResults() {
-    const m = this.match, R = m.result, bo = R.boss || {};
+    const m = this.match!, R: MatchResult = m.result!, bo: Partial<NonNullable<MatchResult['boss']>> = R.boss || {};
     this.hud?.hideSplatted?.();
     await new Promise((r) => setTimeout(r, 400));
     if (this.match !== m) return;
-    const won = !!bo.win, cov = R.coverage || G.paint.coverage();
+    const won = !!bo.win, cov = R.coverage || G.paint!.coverage();
     m.setState('results');
     this.hud?.setVisible(false);
     const local = m.local, p = this.profile;
@@ -1111,9 +1360,9 @@ class Game {
     p.xp += gained; p.matches++; if (won) p.wins++; p.totalTurf += turf;
     while (p.xp >= PROGRESSION.xpForLevel(p.level)) { p.xp -= PROGRESSION.xpForLevel(p.level); p.level++; }
     saveJSON('inkwave.profile', p);
-    const data = {
+    const data: BossResultsData = {
       mode: 'boss', win: won, percents: [cov[0] * 100, cov[1] * 100], colors: [G.teamHex[0], G.teamHex[1]], teamNames: this.palette.names || TEAM_NAMES,
-      boss: { name: bo.name, defeated: won, time: bo.time, hpLeft: bo.maxHp ? bo.hp / bo.maxHp : 0, phase: bo.phase, maxHp: bo.maxHp },
+      boss: { name: bo.name, defeated: won, time: bo.time, hpLeft: bo.maxHp ? bo.hp! / bo.maxHp : 0, phase: bo.phase, maxHp: bo.maxHp },
       players: m.actors.map((a) => ({ name: a.name, team: 0, weapon: a.weaponId, turf: Math.round(a.stats.turf), damage: Math.round(a.stats.bossDmg || 0), weakHits: a.stats.weakHits || 0, splats: a.stats.splats, deaths: a.stats.deaths, isSelf: a.isLocal, bot: !!a.isBot })),
       xp: { gained, levelBefore: before.level, levelAfter: p.level, xpBefore: before.xp, xpAfter: p.xp, xpToNextBefore: before.toNext, xpToNextAfter: PROGRESSION.xpForLevel(p.level) },
       mapName: this.mapDef.name,
@@ -1125,28 +1374,28 @@ class Game {
     this.menus?.showResults(data);
     this.menus?.show('results');
     G.audio?.play(won ? 'victory_fanfare' : 'defeat_jingle');
-    if (G.netm && G.net.isHost) this._netEndT = setTimeout(() => { G.netm?.sendEnd(); this.netMatchEnd(); }, 12000);
+    if (G.netm && G.net!.isHost) this._netEndT = setTimeout(() => { G.netm?.sendEnd(); this.netMatchEnd(); }, 12000);
   }
 
   async _judge() {
-    const m = this.match;
+    const m = this.match!;
     if (m.result?.mode === 'boss') return this._bossResults();
     this.hud?.hideSplatted?.();
     this.rig.overview();
     this.hud?.setVisible(true);
-    const cov = m.result.coverage;
+    const cov = m.result!.coverage;
     // Zone Control: the final counts (the scores) and each team's leftover penalty (shown apart, like the HUD's "+N"), winner and how it was won
     let zr = null;
-    if (m.mode === 'zones' && m.zones && m.result.mode === 'zones') {
+    if (m.mode === 'zones' && m.zones && m.result!.mode === 'zones') {
       const zs = m.zones.state();
-      zr = { counts: [...zs.count], penalty: zs.penalty.map((p) => Math.max(0, Math.ceil(p - 1e-6))), winner: m.result.winner, reason: m.result.reason || 'time', overtime: !!m.result.overtime, overtimeT: zs.overtimeT };
+      zr = { counts: [...zs.count], penalty: zs.penalty.map((p) => Math.max(0, Math.ceil(p - 1e-6))), winner: m.result!.winner, reason: (m.result as MatchResult).reason || 'time', overtime: !!(m.result as MatchResult).overtime, overtimeT: zs.overtimeT };
     }
     const judgeP = zr
       ? this.hud?.judge({ mode: 'zones', colors: [G.teamHex[0], G.teamHex[1]], names: this.palette.names || TEAM_NAMES, counts: zr.counts, penalty: zr.penalty, winner: zr.winner, reason: zr.reason, overtime: zr.overtime, percents: [cov[0] * 100, cov[1] * 100] })
       : this.hud?.judge({ colors: [G.teamHex[0], G.teamHex[1]], percents: [cov[0] * 100, cov[1] * 100], names: this.palette.names || TEAM_NAMES });
     await (judgeP || new Promise((r) => setTimeout(r, 4000)));
     const myTeam = m.local ? m.local.team : 0;
-    const won = m.result.winner === myTeam;
+    const won = m.result!.winner === myTeam;
     m.setState('results');
     this.hud?.setVisible(false);
     // profile / XP
@@ -1154,20 +1403,20 @@ class Game {
     const p = this.profile;
     const turf = Math.round(local.stats.turf);
     let gained = Math.round((won ? PROGRESSION.xpWin : PROGRESSION.xpLose) + turf * PROGRESSION.xpPerTurfPoint + local.stats.splats * PROGRESSION.xpPerSplat);
-    let xpParts = null;
+    let xpParts: [string, number][] | null = null;
     if (zr) {
       // Zone Control: less per point of turf (a 5 min match), extra for ink laid on the live zone, a knockout bonus
       const ZX = PROGRESSION.zones || { turfScale: 0.6, xpPerZoneTurfPoint: 1, xpKnockout: 300 };
       const zoneTurf = Math.round(local.stats.zoneTurf || 0);
-      xpParts = [[won ? 'WIN BONUS' : 'MATCH', won ? PROGRESSION.xpWin : PROGRESSION.xpLose], ['TURF', Math.round(turf * PROGRESSION.xpPerTurfPoint * ZX.turfScale)],
-        ['ZONE INK', Math.round(zoneTurf * ZX.xpPerZoneTurfPoint)], ['SPLATS', Math.round(local.stats.splats * PROGRESSION.xpPerSplat)], ['KNOCKOUT', won && zr.reason === 'knockout' ? ZX.xpKnockout : 0]].filter(([, v], i) => i < 2 || v > 0);
+      xpParts = ([[won ? 'WIN BONUS' : 'MATCH', won ? PROGRESSION.xpWin : PROGRESSION.xpLose], ['TURF', Math.round(turf * PROGRESSION.xpPerTurfPoint * ZX.turfScale)],
+        ['ZONE INK', Math.round(zoneTurf * ZX.xpPerZoneTurfPoint)], ['SPLATS', Math.round(local.stats.splats * PROGRESSION.xpPerSplat)], ['KNOCKOUT', won && zr.reason === 'knockout' ? ZX.xpKnockout : 0]] satisfies [string, number][]).filter(([, v], i) => i < 2 || v > 0);
       gained = xpParts.reduce((a, [, v]) => a + v, 0);
     }
     const before = { level: p.level, xp: p.xp, toNext: PROGRESSION.xpForLevel(p.level) };
     p.xp += gained; p.matches++; if (won) p.wins++; p.totalTurf += turf;
     while (p.xp >= PROGRESSION.xpForLevel(p.level)) { p.xp -= PROGRESSION.xpForLevel(p.level); p.level++; }
     saveJSON('inkwave.profile', p);
-    const data = {
+    const data: ResultsData = {
       win: won, percents: [cov[0] * 100, cov[1] * 100], colors: [G.teamHex[0], G.teamHex[1]], teamNames: this.palette.names || TEAM_NAMES,
       players: m.actors.map((a) => ({ name: a.name, team: a.team, weapon: a.weaponId, turf: Math.round(a.stats.turf), splats: a.stats.splats, deaths: a.stats.deaths, isSelf: a.isLocal, bot: !!a.isBot, ...(zr ? { zoneTurf: Math.round(a.stats.zoneTurf || 0) } : {}) })),
       xp: { gained, levelBefore: before.level, levelAfter: p.level, xpBefore: before.xp, xpAfter: p.xp, xpToNextBefore: before.toNext, xpToNextAfter: PROGRESSION.xpForLevel(p.level), ...(xpParts ? { parts: xpParts } : {}) },
@@ -1184,12 +1433,12 @@ class Game {
     setTimeout(() => this._playMusic(won ? 'results_win' : 'results_lose'), 2600);
     // online: the host brings the room back to the lobby once everyone has seen the results
     if (G.netm) {
-      if (G.net.isHost) this._netEndT = setTimeout(() => { G.netm?.sendEnd(); this.netMatchEnd(); }, 12000);
+      if (G.net!.isHost) this._netEndT = setTimeout(() => { G.netm?.sendEnd(); this.netMatchEnd(); }, 12000);
     }
   }
 
-  _fade(to, ms) {
-    return new Promise((r) => {
+  _fade(to: number, ms: number) {
+    return new Promise<void>((r) => {
       const el = this.fadeEl;
       if (!el) return r();
       el.style.transition = `opacity ${ms}ms ease`;
@@ -1202,7 +1451,7 @@ class Game {
   // ---------------------------------------------------------------------------------------- loop
   // ts is the rAF (vsync) timestamp: stepping the sim by vsync-to-vsync intervals instead of callback times keeps motion
   // even on 120 Hz displays. settings.fpsCap (0 = display rate) skips vsyncs so frames land on a steady cadence.
-  _loop(ts) {
+  _loop(ts: number) {
     requestAnimationFrame((t) => this._loop(t));
     this._trackVsync(ts);
     const requestedCap = this.settings.fpsCap || 0;
@@ -1215,14 +1464,15 @@ class Game {
     if (this.fpsAcc > 0.5) { this.fps = Math.round(this.fpsN / this.fpsAcc); this.fpsAcc = 0; this.fpsN = 0; }
     this._dynRes(dt);
     dt = Math.min(dt, 1 / 24);
+    if (this.colorReturn) { this.colorReturn.update(dt); this.R.setColorReturn(this.colorReturn.state()); }
     this._frame(dt);
   }
 
   // Display refresh estimate: 10th percentile of raw rAF intervals (rAF fires every vsync while frames keep up, and
   // keeps doing so under an fps cap because capped frames are skipped here, not in the browser).
-  _trackVsync(ts) {
+  _trackVsync(ts: number) {
     if (ts === undefined) return;
-    const v = this._vs || (this._vs = { last: ts, buf: [], ms: 1000 / 60 });
+    const v: VsyncTrack = this._vs || (this._vs = { last: ts, buf: [], ms: 1000 / 60 });
     const d = ts - v.last; v.last = ts;
     if (d > 2 && d < 50) v.buf.push(d);
     if (v.buf.length >= 90) {
@@ -1242,7 +1492,7 @@ class Game {
   // hold the frame target: when a 4 s window of a live round averages over ~112% of it (frames missing vsync, which
   // on a 120 Hz display reads as 8/16 ms judder), drop render density one notch. Stepping back up needs 12 s locked
   // at the target, and a down-step re-arms that allowance — see below.
-  _dynRes(dt) {
+  _dynRes(dt: number) {
     if (dt <= 0 || dt > 0.25) return;
     const d = this._dyn || (this._dyn = { acc: 0, n: 0, t: 0, fast: 0, ups: 0 });
     d.acc += dt; d.n++; d.t += dt;
@@ -1262,15 +1512,15 @@ class Game {
     else d.fast = 0;
   }
 
-  _frame(dt) {
+  _frame(dt: number) {
     const tA = performance.now();
-    G.renderer.info.reset();
+    G.renderer!.info.reset();
     G.time += dt;
     this.input.pollPad();
     this.input.pollTouch();
     this.touch?.update();          // gate the on-screen controls on "in a match, no menu open"
     this._padMenus();
-    G.net?.update?.(dt);
+    (G.net as { update?(dt: number): void } | null | undefined)?.update?.(dt);
     const m = this.match;
     // the online lobby / hub stand in their own full-frame set (showcase): the attract match behind them is neither
     // simulated nor drawn while it's covered — it resumes exactly where it was when the set fades away
@@ -1279,11 +1529,11 @@ class Game {
       m.updateController(dt);
       const sub = dt > 1 / 45 ? 2 : 1; // substep physics on slow frames
       for (let i = 0; i < sub; i++) m.update(dt / sub);
-      if (!m.paused) { G.projectiles.update(dt); G.subs.update(dt); G.specials.update(dt); }
+      if (!m.paused) { G.projectiles!.update(dt); G.subs!.update(dt); G.specials!.update(dt); }
       if (m.attract) this._updateAttract(dt);
       else if (m.state === 'playing' && m.local?.alive && this.rig.mode !== 'follow' && this.rig.mode !== 'path') this.rig.follow(m.local, true);
     }
-    if (!m || !m.paused) G.fx.update(dt, G.camera);
+    if (!m || !m.paused) G.fx!.update(dt, G.camera);
     if (!m || !m.paused) this.fxHooks?.update?.(dt);
     if (m && !m.paused && !m.attract) this._ageDeathMarks(dt);
     this.screenfx?.update?.(dt, this);
@@ -1295,7 +1545,7 @@ class Game {
       const e = Math.min(1, mk / 0.8), k = 1 - e * e * (3 - 2 * e);
       fxU.uDesat.value *= k; fxU.uFlood.value.w = k > 0.02 ? fxU.uFlood.value.w * k : 0;
     }
-    G.env.update?.(dt, G.camera);
+    G.env!.update?.(dt, G.camera);
     this.decor.update(dt);
     this.props?.update?.(dt, G.time);
     // map diorama: held map key during live play (or while waiting to respawn) swoops the view overhead — but not while
@@ -1310,28 +1560,28 @@ class Game {
     // bomb arc preview
     const loc = m?.local;
     const orbReady = !!(loc && loc.specialActive && loc.specialActive.id === 'booyah' && loc.specialActive.charge >= 1);
-    G.projectiles.updateArc(loc, !!(loc && loc.alive && (loc.weaponRunner.aimingSub || orbReady) && m.state === 'playing' && !m.paused));
+    G.projectiles!.updateArc(loc, !!(loc && loc.alive && (loc.weaponRunner.aimingSub || orbReady) && m.state === 'playing' && !m.paused));
     const tB = performance.now();
     // paint → atlas, shader uniforms
-    G.paint.flush(dt);
+    G.paint!.flush(dt);
     this.levelMat.userData.uniforms.uTime.value = G.time;
     // see-through window toward the local player
     {
       const lu = this.levelMat.userData.uniforms;
       const on = !!(m && !m.attract && loc && loc.alive && this.rig.mode === 'follow' && this.rig.target === loc && (this.rig.mapK ?? 0) < 0.3);
       lu.uSeeOn.value = damp(lu.uSeeOn.value, on ? 1 : 0, 10, dt);
-      lu.uSeeA.value.copy(G.camera.position);
+      lu.uSeeA.value.copy(G.camera!.position);
       if (loc) lu.uSeeB.value.set(loc.pos.x, loc.pos.y + (loc.form === 'squid' ? 0.4 : 1.0), loc.pos.z);
       if (this.grateMat) { const gu = this.grateMat.userData.uniforms; gu.uSeeOn.value = lu.uSeeOn.value; gu.uSeeA.value.copy(lu.uSeeA.value); gu.uSeeB.value.copy(lu.uSeeB.value); }
     }
     if (this.grateMat) this.grateMat.userData.uniforms.uTime.value = G.time;
     // swimmers' wakes in the ink surface
-    if (this.swimWake && (!m || !m.paused)) this.swimWake.update(dt, this.levelMat.userData.uniforms, G.camera.position);
+    if (this.swimWake && (!m || !m.paused)) this.swimWake.update(dt, this.levelMat.userData.uniforms, G.camera!.position);
     // music self-heal: a live, unpaused round never sits in silence because a recording was left paused
     if (m && !m.paused && !m.attract && G.mode === 'match' && (this._musicHealT = (this._musicHealT || 0) + dt) > 1) {
       this._musicHealT = 0;
       const ct = G.music?.current;
-      if (ct && ct.el && ct.el.paused && !ct.stopped && !ct.el.ended && (m.state === 'playing' || m.state === 'intro')) G.music.resume();
+      if (ct && ct.el && ct.el.paused && !ct.stopped && !ct.el.ended && (m.state === 'playing' || m.state === 'intro')) G.music!.resume();
     }
     this.showcase.update(dt);
     this._updateLocalLoops(dt);
@@ -1348,7 +1598,7 @@ class Game {
     if (loc) g.uHurtColor.value.copy(G.teamColors[loc.enemyTeam]);
     // shadows: every frame (half-rate updates made moving shadows — your own, right under the crosshair — judder);
     // only the low preset halves it
-    const sm = G.renderer.shadowMap;
+    const sm = G.renderer!.shadowMap;
     sm.autoUpdate = false;
     this._frameN = (this._frameN || 0) + 1;
     if (this.settings.quality !== 'low' || (this._frameN & 1)) sm.needsUpdate = true;
@@ -1360,7 +1610,7 @@ class Game {
     const tC = performance.now();
     const ps = this.perf || (this.perf = { sim: 0, render: 0, calls: 0, tris: 0, tail: 0, minimap: 0, maxFt: 0 });
     ps.sim += (tB - tA - ps.sim) * 0.05; ps.render += (tC - tB - ps.render) * 0.05;
-    ps.calls = G.renderer.info.render.calls; ps.tris = G.renderer.info.render.triangles;
+    ps.calls = G.renderer!.info.render.calls; ps.tris = G.renderer!.info.render.triangles;
     // HUD
     if (m && !m.attract && this.hud && (m.state === 'playing' || m.state === 'intro' || m.state === 'finish')) this._updateHud(dt);
     this.menus?.update?.(dt);
@@ -1397,7 +1647,7 @@ class Game {
   // Sent repeatedly, not once. A phone's frame rate drifts as it heats and as memory fills, and a single sample cannot
   // tell a device that is simply this fast from one that started fast and then throttled — which is the difference
   // between optimising the renderer and optimising nothing at all.
-  _perfBeacon(dt) {
+  _perfBeacon(dt: number) {
     // The perf lab drives this build and reports its own, finer-grained results; two reporters would fight over the
     // same counters (this one clears the worst-frame statistics every time it sends).
     if (!window.__beacon || window.__perfLab) return;
@@ -1409,7 +1659,7 @@ class Game {
     this._pbT = 0; this._pbSent = true;
     const p = this.perf; if (!p) return;
     const R = this.R, cv = R.renderer.domElement, q = R.q || {};
-    const ms2 = (v) => +v.toFixed(2);
+    const ms2 = (v: number) => +v.toFixed(2);
     try {
       window.__beacon('perf', JSON.stringify({
         fps: this.fps, quality: this.settings.quality, state: m.state,
@@ -1429,7 +1679,7 @@ class Game {
 
   // continuous sounds tied to the local player's state (swim gurgle, wall climb, enemy-ink sizzle)
   // harbour soundscape: continuous sea wash + occasional gull cries out over the water
-  _updateAmbience(dt) {
+  _updateAmbience(dt: number) {
     if (!this._audioOn || !G.audio?.loop) return;
     if (!this._amb) this._amb = G.audio.loop('harbor_ambience', { volume: 0.55 });
     // in the lobby's alley the harbour is only a distant wash (and no gulls overhead)
@@ -1440,7 +1690,7 @@ class Game {
     this._gullT = (this._gullT ?? 4) - dt;
     if (this._gullT <= 0) {
       this._gullT = 7 + Math.random() * 12;
-      const B = G.level.bounds, a = Math.random() * Math.PI * 2;
+      const B = G.level!.bounds, a = Math.random() * Math.PI * 2;
       const p = this._gullP || (this._gullP = new THREE.Vector3());
       p.set(Math.cos(a) * (B.maxX + 25), 12 + Math.random() * 8, Math.sin(a) * (B.maxZ + 20));
       G.audio.play('gull', { pos: p, volume: 0.6 + Math.random() * 0.4, pitch: 0.9 + Math.random() * 0.25 });
@@ -1465,10 +1715,10 @@ class Game {
     }
   }
 
-  _updateLocalLoops(dt) {
+  _updateLocalLoops(dt: number) {
     const m = this.match, a = m && !m.attract && !m.paused ? m.local : null;
     const L = this._loops || (this._loops = {});
-    const want = (name, on, vol, pitch = 1) => {
+    const want = (name: string, on: boolean, vol: number, pitch = 1) => {
       if (on && !L[name]) L[name] = G.audio?.loop?.(name, { volume: 0 });
       const h = L[name];
       if (!h) return;
@@ -1488,7 +1738,7 @@ class Game {
     if (!inp.pad) return;
     const pp = inp.padPressed;
     if (this.menus?.current) {
-      const nav = (d) => this.menus.nav?.(d);
+      const nav = (d: Parameters<Menus['nav']>[0]) => this.menus!.nav?.(d);
       if (pp.has(12)) nav('up'); if (pp.has(13)) nav('down'); if (pp.has(14)) nav('left'); if (pp.has(15)) nav('right');
       if (pp.has(0)) nav('accept'); if (pp.has(1)) nav('back'); if (pp.has(2)) nav('alt');   // X: locker shuffle etc.
       if (pp.has(4)) nav('tab_prev'); if (pp.has(5)) nav('tab_next');
@@ -1505,8 +1755,8 @@ class Game {
     else if (G.mode === 'match' && pp.has(8) && this.match?.practice) this.openPracticeLoadout();
   }
 
-  _updateHud(dt) {
-    const m = this.match, a = m.local, cam = G.camera;
+  _updateHud(dt: number) {
+    const m = this.match!, a = m.local!, cam = G.camera!;
     const tmm = performance.now();
     this.minimap.update(dt);
     // The minimap is timed on its own as well as inside `tail`: it is the one part of the frame that was found to cost
@@ -1514,7 +1764,7 @@ class Game {
     if (this.perf) this.perf.minimap += (performance.now() - tmm - this.perf.minimap) * 0.05;
     const w = a.weapon;
     // crosshair spread = the weapon's live cone (first-shot accurate, blooms with sustained fire / in the air)
-    const vHalf = (G.camera.fov * Math.PI) / 360;
+    const vHalf = (G.camera!.fov * Math.PI) / 360;
     const coneDeg = a.weaponRunner.spread ?? (w.kind === 'shooter' ? 5.5 : w.kind === 'blaster' ? 1.2 : 0);
     const spread = w.kind === 'roller' ? 28 : w.kind === 'brush' ? 22 : Math.min(90, (Math.tan((coneDeg * Math.PI) / 180) / Math.tan(vHalf)) * (innerHeight / 2));
     const players = [];
@@ -1570,7 +1820,7 @@ class Game {
     const strikeAim = !!(a.specialActive && a.specialActive.id === 'strike' && a.specialActive.aiming);
     // "Yeah!" cheers → screen positions over the cheering player (anyone on screen)
     const cheers = [];
-    for (const c of G.specials.cheers) {
+    for (const c of G.specials!.cheers) {
       const o = c.a;
       v.set(o.pos.x, o.pos.y + (o.smoothY || 0) + 2.25, o.pos.z).project(cam);
       if (v.z > 1 || Math.abs(v.x) > 1.1 || Math.abs(v.y) > 1.1) continue;
@@ -1590,7 +1840,7 @@ class Game {
       d.sc = clamp(1.12 - dist / 60, 0.56, 1);
       this.minimap.toCanvas(d.x, d.z, t); d.mx = t.x / this.minimap.w; d.my = t.y / this.minimap.h;
     }
-    if (a.specialActive && m.state === 'playing' && a.alive) prompt = G.specials.prompt(a) || prompt;
+    if (a.specialActive && m.state === 'playing' && a.alive) prompt = G.specials!.prompt(a) || prompt;
     else if (m.state === 'playing' && a.alive && m.actors.some((o) => o !== a && o.team === a.team && o.specialActive?.id === 'booyah' && !o.specialActive.thrown)) prompt = 'A teammate is charging a Cheer Orb — press C to cheer it on!';
     // Built once. The HUD wants [your team, theirs], and this used to get there by calling teamSummary() a second
     // time and reversing that — two filtered, mapped, allocated summaries of the same eight actors every frame just
@@ -1602,7 +1852,7 @@ class Game {
       teams,   // HUD: [your team, theirs]
       ink: a.ink / PLAYER.inkMax, inkLow: a.ink < 18 || (this._lowInkFlash > 0), subCost: a.specialActive?.kind === 'barrage' ? 0 : (a.sub || SUB.bomb).inkCost / PLAYER.inkMax, subKind: (a.specialActive?.kind === 'barrage' ? a.specialActive.bomb : a.sub || SUB.bomb).kind,
       poisoned: a.status.poison > 0, tracked: a.status.track > 0,
-      special: a.specialActive ? G.specials.remaining(a) : a.specialFrac(), specialReady: a.specialReady(), specialActive: !!a.specialActive, specialId: a.specialId,
+      special: a.specialActive ? G.specials!.remaining(a) : a.specialFrac(), specialReady: a.specialReady(), specialActive: !!a.specialActive, specialId: a.specialId,
       hp: a.hp / PLAYER.hp,
       weapon: a.weaponId, charge: a.weaponRunner.charge,
       twin: w.kind === 'twins' ? { planted: !!a.weaponRunner.turret, rolls: a.weaponRunner.rollsLeft() } : null,
@@ -1619,7 +1869,7 @@ class Game {
       // Zone Control: counts / penalties / the operational objective (HUD counters, objective chip, banners)
       zones: m.zones ? { ...m.zones.state(), viewer: a.team } : undefined,
     };
-    this.hud.update(dt, frame);
+    this.hud!.update(dt, frame);
   }
 }
 

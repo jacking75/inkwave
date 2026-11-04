@@ -76,3 +76,10 @@ longer emitted.
 | `zones:active` | `{ objective, zones, final, moved }` — rotation (final = the last-30-s centre lock) | zones.js |
 | `zones:overtime` | `{ losing }` | zones.js |
 | `zones:end` | `{ winner, reason, counts }` (reason: knockout · time · comeback · retake · neutralised · overtime-cap) | zones.js |
+
+## 스토리·액션 리디자인(35번)
+그림책 룩·액션 모듈이 더하는 이벤트이다. 모두 `emit(name, payload)`이다.
+
+| event | payload | where |
+|---|---|---|
+| `fx:word` | `{ text, pos, kind, color? }` — 의성어 월드 라벨. kind: kill · eliteKill · stagger · perfect · surge · bomb · hurt · cue | src/style/sfxWords.ts가 받는다. 로컬 플레이어의 `hit`(처치)·`damage`(피격)·근처 `bomb:explode`를 여기서 바꿔 내고, 캠페인 액션 모듈이 직접 낸다 |
