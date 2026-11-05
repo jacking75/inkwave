@@ -48,8 +48,9 @@ import { addPreviewEchoes } from './campaign/previewEchoes.js';
 import { StoryDirector, hasStorySave } from './campaign/story/storyDirector.js';
 import { CampaignSession } from './campaign/session.js';
 import { CampaignStore } from './campaign/store.js';
-import { getMission, isImplemented } from './campaign/definitions.js';
+import { getMission, isImplemented, MISSIONS } from './campaign/definitions.js';
 import { completeMission } from './campaign/completion.js';
+import { unlockedWeapons, weaponSource } from './campaign/craft.js';
 import { MODULES } from './campaign/data/modules.js';
 import { LEVEL_XP } from './campaign/growth.js';
 import { STORE_ERROR_TEXT } from './platform/storage.js';
@@ -1194,8 +1195,10 @@ class Game {
     this._applyNight();   // after any stage rebuild too (new prop kit / decor)
     this.mapDef = map;
     this._setPalette(this._pickPalette());
+    // 캠페인은 해금한 주 무기만 쓴다(33번 T049). 대전 프로필의 무기 선택은 바꾸지 않는다
+    const wpn = this._campaignStart ? this._campaignWeapon() : (this.profile.weapon || 'shooter');
     const m = (this.match = G.match = new Match({
-      attract: false, practice, duration: opts.duration, mode: opts.mode, difficulty: opts.difficulty, weapon: this.profile.weapon || 'shooter', sub: this._subFor(this.profile.weapon), special: this._specialFor(this.profile.weapon),
+      attract: false, practice, duration: opts.duration, mode: opts.mode, difficulty: opts.difficulty, weapon: wpn, sub: this._subFor(wpn), special: this._specialFor(wpn),
       playerName: this.profile.name || 'Player', CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
       autopilot: params.has('autopilot'), style: this.profile.style || null, noBots: mapNoBots(map.id),   // (devstage: a solo walk)
     }));
@@ -1243,7 +1246,7 @@ class Game {
   // 임무 시작: 저장(없으면 새 게임)·해금·구현 범위를 확인하고 연습형 경기 위에 세션을 연다
   async startCampaign(missionId: string, o: { prologue?: boolean; resume?: boolean } = {}) {
     const back = (msg: string) => { this.menus?.show('harbor'); this.menus?.toast?.(msg, { kind: 'info', ms: 4200 }); };
-    if (!isImplemented(missionId)) { back(`${missionId}은 아직 제작 범위 밖이다 — 현재 플레이 가능: 1장 1-1 · 1-2 · 1-3`); return; }
+    if (!isImplemented(missionId)) { back(`${missionId}은 아직 제작 범위 밖이다 — 현재 플레이 가능: ${MISSIONS.map((x) => x.id).join(" · ")}`); return; }
     if (!this.store.current) {
       const r = await this.store.newGame(Date.now(), 'normal');
       if (!r.ok) { this.menus?.show('main'); this.menus?.toast?.(STORE_ERROR_TEXT[r.error], { kind: 'error', ms: 6000 }); return; }
@@ -1255,6 +1258,16 @@ class Game {
     try { await this.startMatch({ mapId: mission.mapId, practice: true, time: mission.timeOfDay }); }
     catch (e) { console.error(e); this.menus?.toast?.(`임무를 열지 못했다: ${(e as Error).message}`, { kind: 'error' }); }
     finally { this._campaignStart = null; }
+  }
+
+  // 캠페인 출전 무기: 고른 무기가 아직 캠페인에서 잠겼으면 첫 해금 무기로 나가고 이유를 알린다
+  _campaignWeapon(): string {
+    const want = this.profile.weapon || 'shooter';
+    const open = unlockedWeapons(this.store.current);
+    if (open.includes(want)) return want;
+    const src = weaponSource(want);
+    this.menus?.toast?.(`${(WEAPONS as Lookup<typeof WEAPONS>)[want]?.name ?? want}은 ${src ?? '이후 임무'} 완료 뒤 캠페인에서 쓸 수 있다 — ${WEAPONS.shooter.name}로 출전`, { kind: 'info', ms: 4200 });
+    return open[0];
   }
 
   // 적 무기·잔향 셰이더 예열용 임시 적(경기 예열이 끝나면 치운다)
@@ -1303,6 +1316,11 @@ class Game {
       importSave: async (json) => { const r = await st.importJson(json); return r.ok ? { ok: true } : { ok: false, error: r.error, reason: r.reason }; },
       newGame: async (difficulty) => { const r = await st.newGame(Date.now(), difficulty, true); return r.ok ? { ok: true } : { ok: false, error: r.error, reason: r.reason }; },
       temporary: () => st.temporary,
+      weaponLock: (id) => {
+        if (unlockedWeapons(st.current).includes(id)) return null;
+        const src = weaponSource(id);
+        return src ? `${src} 첫 완료 뒤 캠페인에서 쓸 수 있다` : '캠페인 무기 목록에 없다';
+      },
     };
   }
 

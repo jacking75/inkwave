@@ -31,7 +31,8 @@ import { CAST_LOOKS, type CastId, type ReactKind } from '../game/cast/cast.js';
 import { DISTRICTS, districtUnlocked, missionUnlocked, districtSat, nextMission, NO_PROGRESS, type HarborProgress } from '../campaign/story/districts.js';
 import { getScript } from '../campaign/story/scripts/index.js';
 import { SPEAKER_NAME } from '../campaign/story/dialogue.js';
-import { gearScreen, traitsScreen, manageScreen, pauseScreen, type CampaignUiApi, type MenuKit } from './campaignScreens.js';
+import { rewardInfo, rewardInfoText } from '../campaign/rewardInfo.js';
+import { gearScreen, traitsScreen, manageScreen, pauseScreen, craftScreen, type CampaignUiApi, type MenuKit } from './campaignScreens.js';
 
 // ---------------------------------------------------------------- types
 // ui-util.js는 아직 JS라 h()의 props가 기본값 null에서 `null`로 추론된다. 같은 함수를 정확한 시그니처로 본다(실행은 그대로).
@@ -371,7 +372,7 @@ interface MatchSnapshot {
   colors: string[]; names: string[]; players: SnapPlayer[];
 }
 
-const SCREENS: string[] = ['loading', 'title', 'main', 'mode', 'loadout', 'setup', 'locker', 'settings', 'howto', 'credits', 'pause', 'results', 'online', 'lobby', 'arena', 'workshop', 'harbor', 'records', 'storyResults', 'campGear', 'campTraits', 'campManage'];
+const SCREENS: string[] = ['loading', 'title', 'main', 'mode', 'loadout', 'setup', 'locker', 'settings', 'howto', 'credits', 'pause', 'results', 'online', 'lobby', 'arena', 'workshop', 'harbor', 'records', 'storyResults', 'campGear', 'campTraits', 'campManage', 'campCraft'];
 // Transitions that get the full-screen ink wipe (the rest use staggered pop-ins).
 const WIPES = new Set(['loading>title', 'title>main', 'results>main', 'pause>main', 'results>null', 'pause>title', 'online>lobby', 'lobby>online', 'lobby>main', 'results>lobby', 'pause>online']);
 // Pushes/pops between these get the light ink swipe (decorative — the swap itself is immediate).
@@ -510,7 +511,9 @@ const MENU_DESC: Record<string, string> = {
   arena: '기존 대전·구역 쟁탈·보스전·온라인 방을 모은 하위 메뉴',
   mission: '항구 지도를 펼쳐 임무를 고른다',
   gear: '무기·보조·스페셜을 고른다',
-  perks: '특성 배분은 캠페인 성장(33번 T033·T034) 뒤에 열린다',
+  perks: '레벨 특성점을 배분하고 언제든 무료로 다시 나눈다',
+  craft: '해금한 기본 설계를 부품으로 만들고 얻은 서명을 다시 만든다',
+  modules: '어댑터·탱크·표식 장착, 강화와 같은 슬롯 강화 이전',
   records: '읽은 대화와 모은 기록을 다시 읽는다',
   play: 'Turf War or Zone Control 4 v 4 — or team up with the bots against HULLBREAKER in a Boss Battle',
   online: 'Private rooms for up to 8 friends — create one or join with a room code',
@@ -1459,11 +1462,12 @@ export class Menus {
       { id: 'mission', label: '임무', sub: `다음: ${nx.district.missions[nx.index].id} ${nx.district.missions[nx.index].title}`, icon: GLYPHS.map, cls: 'iw-btn--menu iw-btn--xl iw-btn--primary', accept: () => this._go('harbor'), sound: 'ui_confirm', who: 'teal' },
       { id: 'gear', label: '무기', icon: GLYPHS.target, cls: 'iw-btn--menu', accept: () => this._go('loadout'), who: 'mora' },
       { id: 'modules', label: '모듈 장비', sub: '어댑터 · 탱크 · 표식', icon: GLYPHS.gear, cls: 'iw-btn--menu', accept: () => (this._campApi()?.save() ? this._go('campGear') : this.toast('임무를 하나 마치면 열린다', { icon: 'lock' })), who: 'mora' },
+      { id: 'craft', label: '제작', sub: '기본 설계 · 서명 재제작', icon: GLYPHS.gear, cls: 'iw-btn--menu', accept: () => (this._campApi()?.save() ? this._go('campCraft') : this.toast('임무를 하나 마치면 열린다', { icon: 'lock' })), who: 'mora' },
       { id: 'perks', label: '특성', icon: GLYPHS.bolt, cls: 'iw-btn--menu', accept: () => (this._campApi()?.save() ? this._go('campTraits') : this.toast('임무를 하나 마치면 열린다', { icon: 'lock' })), who: 'mora' },
       { id: 'manage', label: '캠페인 관리', sub: '난이도 · 저장', icon: GLYPHS.note, cls: 'iw-btn--menu', accept: () => this._go('campManage'), who: 'teal' },
       { id: 'records', label: '기록', sub: `${prog.records.length} / 14`, icon: GLYPHS.note, cls: 'iw-btn--menu', accept: () => this._go('records'), who: 'teal' },
     ];
-    const btns = items.map((it, i) => { const b = this._btn({ ...it, tilt: [-1.6, 1.2, -1.1, 1.4][i] }); b.classList.add('iw-in', 'iw-in--left'); b.dataset.who = it.who ?? ''; return b; });
+    const btns = items.map((it, i) => { const b = this._btn({ ...it, tilt: [-1.6, 1.2, -1.1, 1.4][i % 4] }); b.classList.add('iw-in', 'iw-in--left'); b.dataset.who = it.who ?? ''; return b; });
     const descText = h('span', { class: 'iw-main__desctext' });
     const desc = h('div', { class: 'iw-main__desc iw-in iw-in--left' }, h('i', { class: 'iw-main__descdot' }), descText);
     const el = h('div', { class: 'iw-screen iw-main iw-ws' },
@@ -1489,6 +1493,7 @@ export class Menus {
   _scr_campGear(): Screen { return gearScreen(this as unknown as MenuKit, this._campApi()!) as unknown as Screen; }
   _scr_campTraits(): Screen { return traitsScreen(this as unknown as MenuKit, this._campApi()!) as unknown as Screen; }
   _scr_campManage(): Screen { return manageScreen(this as unknown as MenuKit, this._campApi()!) as unknown as Screen; }
+  _scr_campCraft(): Screen { return craftScreen(this as unknown as MenuKit, this._campApi()!) as unknown as Screen; }
 
   // ---- 항구 지도(R029): 종이 지도 위 7개 지역 카드. 카드 채도 = colorReturn[지역], 잠긴 지역은 먹선 실루엣이다.
   // 360 px 폭에서는 지도가 가로로 스크롤된다(지도 최소 폭 960 px). 포커스가 움직이면 그 카드가 보이게 스크롤한다.
@@ -1534,7 +1539,8 @@ export class Menus {
       info.replaceChildren(
         h('div', { class: 'iw-harbor__ititle' }, `${m.id} ${m.title}`),
         h('div', { class: 'iw-harbor__igoal' }, m.goal),
-        h('div', { class: 'iw-harbor__imeta' }, `보상: ${m.reward} · 지역 파밍: ${d.reward}`));
+        h('div', { class: 'iw-harbor__imeta' }, `보상: ${m.reward} · 지역 파밍: ${d.reward}`),
+        h('div', { class: 'iw-harbor__ipool' }, rewardInfoText(rewardInfo(m.id, d.id, m.kind === 'boss' ? 'boss' : 'normal', prog.done))));
       // 포커스한 카드가 보이게(좁은 화면의 가로 스크롤)
       const r = f.getBoundingClientRect(), sr = scroller.getBoundingClientRect();
       if (r.left < sr.left + 12 || r.right > sr.right - 12) scroller.scrollBy({ left: r.left - sr.left - sr.width / 2 + r.width / 2, behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
@@ -2443,6 +2449,8 @@ export class Menus {
     const seen = new Set(Array.isArray(s0.seenWeapons) ? s0.seenWeapons : ['shooter', 'roller', 'charger', 'blaster']);
     const markSeen = (id: string) => { if (seen.has(id)) return; seen.add(id); this._setSetting('seenWeapons', [...seen]); };
     const prof = this._profile();
+    // 작업장에서 열었으면 캠페인에서 아직 잠긴 무기를 표시한다(33번 T049). 대전 메뉴에서는 모두 열려 있다
+    const campLock = (id: string): string | null => (this._stack.includes('workshop') ? safeCall(() => this._campApi()?.weaponLock(id)) ?? null : null);
 
     // ---- weapon cards (grid scales 4 → 9+: 4 columns up to 8, then 5, compact past one screen)
     const n = order.length;
@@ -2451,7 +2459,8 @@ export class Menus {
     const cards = order.map((id, i) => {
       const w = Ws[id];
       const isNew = !seen.has(id);
-      const c = h('button', { class: 'iw-wcard iw-in iw-in--pop' + (id === equipped ? ' is-equipped' : '') + (isNew ? ' is-new' : ''), style: { '--tilt': `${[-1.5, 1, -0.8, 1.4, -1.1][i % 5]}deg` } },
+      const lock = campLock(id);
+      const c = h('button', { class: 'iw-wcard iw-in iw-in--pop' + (id === equipped ? ' is-equipped' : '') + (isNew ? ' is-new' : '') + (lock ? ' is-locked' : ''), style: { '--tilt': `${[-1.5, 1, -0.8, 1.4, -1.1][i % 5]}deg` }, title: lock ?? undefined },
         h('span', { class: 'iw-wcard__ink' }),
         h('span', { class: 'iw-wcard__blob', html: splatSVG({ seed: 40 + i * 3, cls: 'iw-fa', r: 58, arms: 8, drops: 0 }) }),
         h('span', { class: 'iw-wcard__icon', html: weaponIcon(w.kind || id) }),
@@ -2463,6 +2472,7 @@ export class Menus {
       c.dataset.cur = 'own';
       this._fx(c, { tilt: 14 });
       this._bind(c, { id: 'w-' + id, accept: () => {
+        if (lock) { this._sfx('ui_back'); this.toast(lock, { icon: 'lock' }); return; }
         if (equipped === id) { this._sfx('ui_click'); restartAnim(c, 'is-pick'); return; }
         equipped = id;
         safeCall(() => this.api.setLoadout && this.api.setLoadout({ weapon: id }));

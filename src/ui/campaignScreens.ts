@@ -10,7 +10,9 @@ type HFn = <K extends keyof HTMLElementTagNameMap>(tag: K, props?: HProps | null
 const h = untypedH as unknown as HFn;
 import { MODULES, STAT_LABEL, type Slot } from '../campaign/data/modules.js';
 import { TRAITS, TRAIT_LINES, TRAIT_MAX_RANK, type TraitLine } from '../campaign/data/traits.js';
-import { SALVAGE, INVENTORY_SLOTS } from '../campaign/data/economy.js';
+import { SALVAGE, INVENTORY_SLOTS, CRAFT, UPGRADE_UNLOCK_CHAPTER } from '../campaign/data/economy.js';
+import { BASIC_IDS } from '../campaign/data/modules.js';
+import { craftBasic, craftSignature, upgradeCard, transferUpgrade, upgradeCost, upgradeTier, unlockedDesigns, designSource, type CraftOutcome } from '../campaign/craft.js';
 import { cardLines, equip, salvage, setLock, claimPending, isEquipped, findCard, type ModuleCard } from '../campaign/inventory.js';
 import { computeStats, type StatSheet } from '../campaign/stats.js';
 import { invest, canInvest, levelOf, pointsAt, spentTotal, LEVEL_XP, type TraitAlloc } from '../campaign/growth.js';
@@ -27,6 +29,7 @@ export interface CampaignUiApi {
   importSave(json: string): Promise<{ ok: boolean; error?: StoreError; reason?: string }>;
   newGame(difficulty: 'story' | 'normal'): Promise<{ ok: boolean; error?: StoreError; reason?: string }>;
   temporary(): boolean;
+  weaponLock(id: string): string | null;   // 캠페인에서 아직 못 쓰는 주 무기의 이유(33번 T049), 쓸 수 있으면 null
 }
 
 type HEl = HTMLElement & { _show?: () => void };
@@ -66,6 +69,13 @@ function statsEl(st: StatSheet): HTMLElement {
     row('목표 중 피해', `-${pct(st.objectiveGuard)}%`), ...(st.dmgTaken ? [row('받는 피해', `+${pct(st.dmgTaken)}%`)] : []));
 }
 
+function upgradeText(s: CampaignSave, c: ModuleCard): string {
+  const cost = upgradeCost(c);
+  if (cost === null) return '최대 +3';
+  if (upgradeTier(s) <= c.plus) return `+${c.plus + 1}은 ${UPGRADE_UNLOCK_CHAPTER[c.plus]}장 보스 뒤`;
+  return `+${c.plus + 1} 부품 ${cost}`;
+}
+
 // ---- 모듈 장비 ------------------------------------------------------------------------------------------------------
 export function gearScreen(M: MenuKit, api: CampaignUiApi): ScreenLike {
   let slot: Slot = 'adapter';
@@ -77,7 +87,7 @@ export function gearScreen(M: MenuKit, api: CampaignUiApi): ScreenLike {
   const cmp = h('div', { class: 'iw-cg__cmp' });
   const side = h('div', { class: 'iw-cg__side' });
   const el = h('div', { class: 'iw-screen iw-cg' }, head, h('div', { class: 'iw-cg__cols' }, h('div', { class: 'iw-cg__left' }, tabs, list), cmp, side),
-    M._prompts([['Enter', 'A', '장착'], ['L', 'X', '잠금'], ['Del', 'Y', '분해'], ['Esc', 'B', 'Back']]));
+    M._prompts([['Enter', 'A', '장착'], ['U', 'X', '강화·이전'], ['L', 'X', '잠금'], ['Del', 'Y', '분해'], ['Esc', 'B', 'Back']]));
   const run = async (label: string, op: (s: CampaignSave) => CampaignSave | { reject: StoreError; reason?: string }): Promise<void> => {
     if (busy) return;   // 연타: 처리 중에는 다음 요청을 받지 않는다(저장도 revision으로 한 번 더 막는다)
     busy = true;
@@ -97,7 +107,21 @@ export function gearScreen(M: MenuKit, api: CampaignUiApi): ScreenLike {
       if (c.plus > 0) { M._openModal({ title: '강화 단계가 사라진다', text: `${cardTitle(c)}의 +${c.plus}는 분해하면 돌려받지 못한다. 먼저 같은 슬롯으로 강화를 옮길 수 있다.`, danger: true, buttons: [{ label: '취소', accept: () => M._closeModal() }, { label: '분해', cls: 'iw-btn--danger', accept: () => { M._closeModal(true); void go(); } }] }); return; }
       void go();
     },
+    upgrade: (uid: string) => run('강화', (s) => upgradeCard(s, uid)),
+    transfer: (from: string, to: string) => run('강화 이전', (s) => transferUpgrade(s, from, to)),
     claim: (uid: string) => run('대기함 받기', (s) => { const inv = claimPending(s.inventory, uid); return inv ? { ...s, inventory: inv } : { reject: 'rejected', reason: '보관함이 가득 찼다' }; }),
+  };
+  // 강화 이전: 같은 슬롯의 다른 카드를 고르는 창(출처 → 대상, 26번 8절 5)
+  const pickTransfer = (uid: string): void => {
+    const s = api.save(); const c = s ? findCard(s.inventory, uid) : null;
+    if (!s || !c) return;
+    const others = s.inventory.cards.filter((x) => x.uid !== uid && MODULES[x.defId].slot === MODULES[c.defId].slot);
+    if (!c.plus) { M.toast('옮길 강화 단계가 없다', { kind: 'error' }); return; }
+    if (!others.length) { M.toast('같은 슬롯의 다른 카드가 없다', { kind: 'error' }); return; }
+    M._openModal({ title: `${cardTitle(c)}의 +${c.plus}를 옮긴다`, text: '원본은 +0이 된다. 대상이 같거나 높은 단계면 옮기지 않는다.', buttons: [
+      ...others.slice(0, 6).map((o) => ({ label: `→ ${cardTitle(o)} (${GRADE[o.grade]})`, accept: () => { M._closeModal(true); void act.transfer(uid, o.uid); } })),
+      { label: '취소', accept: () => M._closeModal() },
+    ] });
   };
   function render(): void {
     const s = api.save();
@@ -138,7 +162,7 @@ export function gearScreen(M: MenuKit, api: CampaignUiApi): ScreenLike {
     cmp.replaceChildren(
       h('div', { class: 'iw-cg__pair' }, h('div', null, h('small', null, '지금 장착'), h('b', null, eq ? cardTitle(eq) : '없음'), linesEl(eq)), h('div', null, h('small', null, '선택'), h('b', null, c ? cardTitle(c) : '—'), linesEl(c))),
       after ? h('div', null, h('h4', null, '바꾸면(상한 적용)'), statsEl(after)) : h('span'),
-      c ? h('p', { class: 'iw-cg__hint' }, `분해: 부품 ${SALVAGE[c.grade]}${c.plus ? ` · +${c.plus} 소실` : ''}`) : h('span'));
+      c ? h('p', { class: 'iw-cg__hint' }, `분해: 부품 ${SALVAGE[c.grade]}${c.plus ? ` · +${c.plus} 소실` : ''} · 강화: ${upgradeText(s, c)}`) : h('span'));
   }
   render();
   return {
@@ -156,6 +180,8 @@ export function gearScreen(M: MenuKit, api: CampaignUiApi): ScreenLike {
       M._openModal({ title: cardTitle(c), text: MODULES[c.defId].use, buttons: [
         { label: '장착', accept: () => { M._closeModal(true); void act.equip(uid); } },
         { label: c.locked ? '잠금 풀기' : '잠금', accept: () => { M._closeModal(true); void act.lock(uid); } },
+        { label: `강화 — ${upgradeText(api.save()!, c)}`, accept: () => { M._closeModal(true); void act.upgrade(uid); } },
+        { label: '강화 이전', accept: () => { M._closeModal(true); pickTransfer(uid); } },
         { label: '분해', cls: 'iw-btn--danger', accept: () => { M._closeModal(true); act.salvage(uid); } },
         { label: '닫기', accept: () => M._closeModal() },
       ] });
@@ -165,10 +191,56 @@ export function gearScreen(M: MenuKit, api: CampaignUiApi): ScreenLike {
       const uid = (M._focus as HTMLElement & { _uid?: string } | null)?._uid;
       if (!uid) return false;
       if (e.code === 'KeyL') { void act.lock(uid); return true; }
+      if (e.code === 'KeyU') { void act.upgrade(uid); return true; }
+      if (e.code === 'KeyT') { pickTransfer(uid); return true; }
       if (e.code === 'Delete' || e.code === 'Backspace' && e.shiftKey) { act.salvage(uid); return true; }
       return false;
     },
   };
+}
+
+// ---- 제작(33번 T048, 26번 7절): 기본 설계(해금한 것만 부품 40)·얻은 서명 재제작(부품 80·공명핵 1) ----------------------------
+export function craftScreen(M: MenuKit, api: CampaignUiApi): ScreenLike {
+  let busy = false;
+  const head = M._header('모듈 제작', { sub: `기본 설계 부품 ${CRAFT.basic} · 서명 재제작 부품 ${CRAFT.signatureParts}·공명핵 ${CRAFT.signatureCores}` });
+  const list = h('div', { class: 'iw-cg__list' });
+  const side = h('div', { class: 'iw-cg__side' });
+  const el = h('div', { class: 'iw-screen iw-cg' }, head, h('div', { class: 'iw-cg__cols' }, h('div', { class: 'iw-cg__left' }, list), side),
+    M._prompts([['Enter', 'A', '제작'], ['Esc', 'B', 'Back']]));
+  const make = async (label: string, op: (s: CampaignSave) => CraftOutcome): Promise<void> => {
+    if (busy) return;   // 연타: 처리 중에는 다음 요청을 받지 않는다(저장도 revision으로 한 번 더 막는다)
+    busy = true;
+    const r = await api.commit(op);
+    busy = false;
+    if (!r.ok) { M.toast(`${label} 실패 — ${r.reason ?? api.errorText(r.error!)}`, { kind: 'error', ms: 4200 }); return; }
+    M._sfx('ui_confirm'); M.toast(`${label} 완료 — 모듈 장비에서 장착한다`); render();
+  };
+  function render(): void {
+    const s = api.save();
+    if (!s) { list.replaceChildren(h('p', null, '캠페인 저장이 없다')); return; }
+    const open = unlockedDesigns(s);
+    const items: HTMLElement[] = [h('h4', null, '기본 설계')];
+    for (const id of BASIC_IDS) {
+      const d = MODULES[id], ok = open.includes(id);
+      const b = h('button', { class: `iw-cg__card g-common${ok ? '' : ' is-unavail'}` },
+        h('small', null, `${SLOTS.find(([k]) => k === d.slot)![1]}${ok ? ` · 부품 ${CRAFT.basic}` : ` · ${designSource(id)} 완료 뒤`}`), h('b', null, d.name), h('span', null, STAT_LABEL[d.base.key](d.base.value)));
+      M._bind(b, { id: 'craft-' + id, accept: () => { void make(d.name + ' 제작', (cur) => craftBasic(cur, id)); } });
+      items.push(b);
+    }
+    items.push(h('h4', null, '서명 재제작'));
+    for (const d of Object.values(MODULES).filter((x) => x.signature)) {
+      const ok = s.signatures.includes(d.id);
+      const b = h('button', { class: `iw-cg__card g-special${ok ? '' : ' is-unavail'}` },
+        h('small', null, ok ? `추천 보조 옵션 확정 · 부품 ${CRAFT.signatureParts}·공명핵 ${CRAFT.signatureCores}` : '아직 얻지 못한 서명'), h('b', null, ok ? d.name : '???'), h('span', null, ok ? d.use : '해당 지역 보스를 쓰러뜨리면 얻는다'));
+      M._bind(b, { id: 'sig-' + d.id, accept: () => { void make(d.name + ' 재제작', (cur) => craftSignature(cur, d.id)); } });
+      items.push(b);
+    }
+    list.replaceChildren(...items);
+    side.replaceChildren(h('div', { class: 'iw-cg__mat' }, `부품 ${s.inventory.parts} · 공명핵 ${s.inventory.cores} · 보관 ${s.inventory.cards.length}/${INVENTORY_SLOTS}`),
+      h('p', { class: 'iw-cg__hint' }, `강화 가능 단계: +${upgradeTier(s)} · 보관함이 차면 제작한 모듈은 대기함으로 간다`));
+  }
+  render();
+  return { el, wrap: true, initial: () => list.querySelector('button') as HTMLElement | null, onBack: () => M.show('workshop', { back: true }) };
 }
 
 // ---- 특성 -----------------------------------------------------------------------------------------------------------

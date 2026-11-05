@@ -4,6 +4,8 @@
 //   - 그렇지 않으면 경험치·부품·공명핵·모듈(상자 → 완료 순서)·첫 보상·해금·기록·보장 횟수를 한 번에 새 저장에 넣는다.
 // 검사: tests/client/completion.test.ts.
 import { COMPLETION } from './data/economy.js';
+import { MODULES } from './data/modules.js';
+import { districtSatAfter } from './colorReturn.js';
 import type { MissionDefinition } from './data/types.js';
 import { applyXp } from './growth.js';
 import { addCards, makeCard, type ModuleCard } from './inventory.js';
@@ -62,10 +64,17 @@ export function completeMission(save: CampaignSave, inp: CompletionInput): Compl
   const processed = { ...save.processed, [inp.completionId]: rec };
   const keys = Object.keys(processed);
   if (keys.length > PROCESSED_KEEP) for (const k of keys.slice(0, keys.length - PROCESSED_KEEP)) delete processed[k];
+  const newSigs = rolled.filter((r) => MODULES[r.defId].signature && !save.signatures.includes(r.defId)).map((r) => r.defId);
+  const doneList = first ? [...save.done, m.id] : save.done;
+  // 색 회복: 이 지역의 첫 완료 임무 수에 따른 채도(줄지 않는다)
+  const regionDone = doneList.filter((id) => id.split('-')[0] === m.id.split('-')[0]).length;
+  const sat = Math.max(save.colorReturn[m.region] ?? 0, districtSatAfter(regionDone));
   const next: CampaignSave = {
     ...save,
+    signatures: newSigs.length ? [...save.signatures, ...new Set(newSigs)] : save.signatures,
+    colorReturn: { ...save.colorReturn, [m.region]: sat },
     xp: xp.xp, pity, uidSeq: seq, inventory: inv,
-    done: first ? [...save.done, m.id] : save.done,
+    done: doneList,
     clears: { ...save.clears, [m.id]: clear },
     unlocked: [...save.unlocked, ...unlocks],
     records: record ? [...save.records, record] : save.records,

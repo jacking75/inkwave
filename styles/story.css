@@ -225,3 +225,8 @@ body.iw-vc-live .iw-dlg {
   min-height: 70px; padding: 10px 14px;
 }
 body.iw-vc-live .iw-dlg__text { font-size: 18px; }
+
+/* 캠페인에서 아직 해금하지 않은 주 무기(33번 T049) */
+.iw-wcard.is-locked { filter: grayscale(.9); opacity: .6; }
+.iw-cg__card.is-unavail { opacity: .62; }
+.iw-harbor__ipool { white-space: pre-line; font-size: .82em; opacity: .85; margin-top: .3em; }

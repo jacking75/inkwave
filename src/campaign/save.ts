@@ -8,8 +8,9 @@ import { sanitizeTraits, levelOf, pointsAt, XP_CAP, type TraitAlloc } from './gr
 import { MODULES, STAT_LABEL, type StatKey } from './data/modules.js';
 import type { DifficultyId } from './data/economy.js';
 import { INVENTORY_SLOTS } from './data/economy.js';
+import type { ColorReturnSnapshot } from './colorReturn.js';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;   // 2: signatures·colorReturn·dialogueLog(33번 T048, 35번 R005·R026)
 export const CONTENT_VERSION = 1;
 export const SAVE_DB = 'inkwave-campaign';
 
@@ -22,6 +23,8 @@ export interface CheckpointSnapshot {
   dead: string[];              // 쓰러진 일반 적(다시 나오지 않는다)
   special: number;             // 구간 시작 스페셜
   at: number;                  // 저장 시각(ms)
+  color?: ColorReturnSnapshot; // 구간 시작의 색 회복 구체(35번 R005 colorSpheres)
+  actionDevices?: unknown;     // 레벨 액션 장치 상태(35번 R023, action/devices.ts가 해석한다)
 }
 export interface CompletionRecord {
   completionId: string; runId: string; missionId: string; clear: number; first: boolean;
@@ -42,6 +45,9 @@ export interface CampaignSave {
   pity: number;                // 확정된 연속 특제 미획득 횟수
   uidSeq: number;
   records: string[];           // 찾은 선택 기록
+  signatures: string[];        // 한 번이라도 얻은 서명(재제작 해금, 33번 T048)
+  colorReturn: Record<string, number>;   // 지역 채도 0..1(35번 R005)
+  dialogueLog: string[];       // 읽은 대본 id(기록판 다시 읽기, 35번 R026)
   attempts: Record<string, AttemptLoot>;   // 미완료 임무의 추첨 기록(포기해도 남는다)
   inProgress: CheckpointSnapshot | null;
   processed: Record<string, CompletionRecord>;   // 처리한 완료 ID(최근 PROCESSED_KEEP개)
@@ -53,7 +59,7 @@ export function newSave(now: number, difficulty: DifficultyId = 'normal'): Campa
   return {
     schemaVersion: SCHEMA_VERSION, contentVersion: CONTENT_VERSION, revision: 0, createdAt: now, difficulty,
     unlocked: ['1-1'], done: [], clears: {}, xp: 0, traits: {}, inventory: { ...EMPTY_INVENTORY },
-    pity: 0, uidSeq: 1, records: [], attempts: {}, inProgress: null, processed: {}, lastResult: null,
+    pity: 0, uidSeq: 1, records: [], signatures: [], colorReturn: {}, dialogueLog: [], attempts: {}, inProgress: null, processed: {}, lastResult: null,
   };
 }
 
@@ -107,6 +113,10 @@ export const decodeSave: Decoder<CampaignSave> = (raw) => {
     inventory: { cards: cards as ModuleCard[], pending: pend as ModuleCard[], equipped, parts, cores },
     pity: num(x.pity, 0, 9) ?? 0, uidSeq: Math.max(num(x.uidSeq, 1, 1e12) ?? 1, all.length + 1),
     records: strs(x.records),
+    // v1 저장: 보관함의 서명 카드에서 복원한다
+    signatures: [...new Set([...strs(x.signatures).filter((id) => MODULES[id]?.signature), ...all.filter((c) => MODULES[c.defId].signature).map((c) => c.defId)])],
+    colorReturn: isObj(x.colorReturn) ? Object.fromEntries(Object.entries(x.colorReturn).filter(([, v]) => typeof v === 'number' && v >= 0 && v <= 1)) as Record<string, number> : {},
+    dialogueLog: [...new Set(strs(x.dialogueLog))],
     attempts: isObj(x.attempts) ? (x.attempts as Record<string, AttemptLoot>) : {},
     inProgress: isObj(x.inProgress) && typeof x.inProgress.missionId === 'string' ? (x.inProgress as unknown as CheckpointSnapshot) : null,
     processed: isObj(x.processed) ? (x.processed as Record<string, CompletionRecord>) : {},
