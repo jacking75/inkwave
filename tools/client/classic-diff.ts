@@ -32,7 +32,7 @@ async function grab(base: string): Promise<Grab> {
   const page: Page = await browser.newPage();
   page.on('pageerror', (e) => console.error('[pageerror]', base, String(e)));
   await page.evaluateOnNewDocument(`localStorage.setItem('inkwave.settings', ${JSON.stringify(SETTINGS)}); localStorage.setItem('inkwave.profile', JSON.stringify({ name: 'Diff', style: { hair: 0, skin: 1 }, weapon: 'shooter' }));`);
-  await page.goto(`${base}/?skipTitle`, { waitUntil: 'load', timeout: 180000 });
+  await page.goto(`${base}/?skipTitle&novc`, { waitUntil: 'load', timeout: 180000 });
   await page.waitForFunction('window.__inkwave && __inkwave.menus && __inkwave.menus.current === "main"', { timeout: 180000, polling: 250 });
   await page.evaluate(`__inkwave.startPractice({ mapId: ${JSON.stringify(map)} })`);
   await page.waitForFunction('__inkwave.match && !__inkwave.match.attract && __inkwave.match.state === "playing"', { timeout: 180000, polling: 250 });

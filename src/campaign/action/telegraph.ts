@@ -217,5 +217,9 @@ export class TelegraphDirector {
   }
 
   clear(): void { for (const l of this.live) this.layer.hide(l.decal); this.live = []; }
+  // 공격자가 쓰러지거나 구간이 초기화되면 그 공격자의 예고를 피해 없이 거둔다(33번 T045: 상태 전환 중 처치 시 잔여 공격 없음)
+  cancelBy(attacker: Actor): void {
+    for (let i = this.live.length - 1; i >= 0; i--) if (this.live[i].spec.attacker === attacker) { this.layer.hide(this.live[i].decal); this.live.splice(i, 1); }
+  }
   dispose(): void { this.clear(); this.layer.dispose(); }
 }

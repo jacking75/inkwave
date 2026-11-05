@@ -9,6 +9,7 @@ import type { Voice } from '../../game/cast/voice.js';
 import { VOICES, type CastId } from '../../game/cast/cast.js';
 import type { Pong, PongFace } from '../../game/cast/mascot.js';
 import type * as THREE from 'three';
+import { G } from '../../core/ctx.js';
 
 export interface StoryLayerOptions {
   voice?: Voice | null;
@@ -24,7 +25,7 @@ const MOOD_PONG: Record<string, PongFace> = { joy: 'joy', smile: 'joy', surprise
 export class StoryLayer {
   declare runner: DialogueRunner; declare portrait: PortraitView; declare opts: StoryLayerOptions;
   declare box: HTMLDivElement; declare nameEl: HTMLDivElement; declare textEl: HTMLDivElement; declare hint: HTMLDivElement;
-  declare skipBtn: HTMLButtonElement; declare offKey: () => void; declare pad: boolean[];
+  declare skipBtn: HTMLButtonElement; declare offKey: () => void;
 
   constructor(uiRoot: HTMLElement, src: PortraitSource, opts: StoryLayerOptions = {}) {
     this.opts = opts;
@@ -37,7 +38,6 @@ export class StoryLayer {
     this.skipBtn = document.createElement('button'); this.skipBtn.className = 'iw-dlg__skip'; this.skipBtn.type = 'button'; this.skipBtn.textContent = '건너뛰기 ▶▶';
     this.box.append(this.nameEl, this.textEl, this.hint, this.skipBtn);
     uiRoot.appendChild(this.box);
-    this.pad = [];
     const hooks: DialogueHooks = {
       onLine: (st, line) => this._line(st, line),
       onType: (st) => this._type(st),
@@ -97,17 +97,13 @@ export class StoryLayer {
     this.portrait.update(dt);
   }
 
+  // 패드 확인·취소는 공통 입력 프레임에서 읽는다(막는 대본 동안 main의 입력 컨텍스트가 menu이다, 33번 T017).
+  // 대본을 연 버튼은 컨텍스트 전환 때 뗄 때까지 막히므로 첫 줄을 넘기지 않는다.
   _pollPad(): void {
-    if (typeof navigator === 'undefined' || !navigator.getGamepads) return;
-    const on = this._blocking();   // 상태는 늘 갱신한다: 대본을 연 버튼이 눌린 채로 첫 줄을 넘기지 않게
-    for (const gp of navigator.getGamepads()) {
-      if (!gp) continue;
-      const a = !!gp.buttons[0]?.pressed, b = !!gp.buttons[1]?.pressed || !!gp.buttons[9]?.pressed;
-      if (on && a && !this.pad[0]) this.runner.advance();
-      if (on && b && !this.pad[1]) this.runner.skip();
-      this.pad[0] = a; this.pad[1] = b;
-      break;
-    }
+    const f = G.frame;
+    if (!f || !this._blocking() || f.source !== 'gamepad') return;
+    if (f.actions.confirm.pressed) this.runner.advance();
+    if (f.actions.cancel.pressed || f.actions.pause.pressed) this.runner.skip();
   }
 
   dispose(): void {

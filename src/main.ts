@@ -4,7 +4,13 @@ import { G, on, emit, clamp, damp } from './core/ctx.js';
 import type { GameContext, Settings } from './core/ctx.js';
 import { Renderer } from './core/renderer.js';
 import { Input } from './core/input.js';
-import { TouchControls, shouldUseTouch, isTouchDevice } from './core/touch.js';
+import { TouchControls, readSafeArea } from './core/touch.js';
+import { detectHardware, migrateInputSettings, virtualVisible, virtualEnabled, type InputContext, type PolicyState } from './core/inputPolicy.js';
+import { InputFrameBuilder, sampleKeyboard, sampleVirtual, samplePad, type InputFrame } from './core/inputFrame.js';
+import { loadProfiles, PROFILE_KEY, BIND_STEPS } from './core/gamepad.js';
+import { PadBinder } from './core/padBinder.js';
+import type { PadMapHandle } from './ui/menus.js';
+import type { CampaignUiApi } from './ui/campaignScreens.js';
 import { mapTheme,
   DEFAULT_SETTINGS, QUALITY, TEAM_PALETTES, COLORBLIND_PALETTE, TEAM_NAMES, WEAPONS, WEAPON_ORDER, WEAPON_SUCCESSOR, ZONES, SUB, SUBS, SUB_ORDER, SPECIALS, SPECIAL_ORDER,
   MAPS, DIFFICULTY, PLAYER, PROGRESSION, VERSION, MATCH, OFFLINE_MAPS, mapOfflineOk, mapNoBots, mapBossOk,
@@ -40,6 +46,16 @@ import { withCast } from './game/cast/castCharacter.js';
 import { CampaignPreview } from './campaign/preview.js';
 import { addPreviewEchoes } from './campaign/previewEchoes.js';
 import { StoryDirector, hasStorySave } from './campaign/story/storyDirector.js';
+import { CampaignSession } from './campaign/session.js';
+import { CampaignStore } from './campaign/store.js';
+import { getMission, isImplemented } from './campaign/definitions.js';
+import { completeMission } from './campaign/completion.js';
+import { MODULES } from './campaign/data/modules.js';
+import { LEVEL_XP } from './campaign/growth.js';
+import { STORE_ERROR_TEXT } from './platform/storage.js';
+import { DISTRICTS as HARBOR } from './campaign/story/districts.js';
+import { missionStory } from './campaign/story/scripts/index.js';
+import type { MissionDefinition, UnitDef } from './campaign/data/types.js';
 import type { HarborProgress } from './campaign/story/districts.js';
 import { ALL_RECORDS } from './campaign/story/scripts/index.js';
 import { Voice } from './game/cast/voice.js';
@@ -102,6 +118,8 @@ const REFRESH_RATES = [30, 48, 50, 60, 75, 90, 100, 120, 144, 165, 240]; // comm
 
 // ------------------------------------------------------------------------------------------ persistence
 function loadJSON<T extends object>(key: string, def: T): T { try { const v = JSON.parse(localStorage.getItem(key) as string); return v ? { ...def, ...v } : { ...def }; } catch { return { ...def }; } }
+// 이 키로 전투를 시작하면 PC는 포인터 잠금(키보드·마우스 조작)으로 넘어간다
+const LOCK_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'ShiftLeft', 'ShiftRight']);
 function saveJSON(key: string, v: unknown) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* private mode */ } }
 // 저장된 대전 프로필(localStorage 'inkwave.profile')이다. style·sub·special은 로드아웃·로커에서 고른 값이다.
 interface Profile {
@@ -166,6 +184,8 @@ interface MenuApi {
   version: string;
   weapons: typeof WEAPONS; weaponOrder: typeof WEAPON_ORDER; specials: typeof SPECIALS; specialOrder: typeof SPECIAL_ORDER; sub: typeof SUB.bomb; subs: typeof SUBS; subOrder: typeof SUB_ORDER; maps: typeof MAPS; difficulties: typeof DIFFICULTY;
   getSettings(): Settings;
+  padMap(): PadMapHandle | null;
+  campaign(): CampaignUiApi | null;
   setSettings(partial: Partial<Settings>): void;
   getProfile(): Profile & { played: number; xpToNext: number };
   setProfileName(n: string): void;
@@ -217,7 +237,10 @@ interface DebugHooks {
 
 class Game {
   declare settings: Settings;
-  declare touchMode: boolean;
+  declare hwMobile: boolean;   // 기기 성능 분류가 모바일인가(화질·메모리). 가상 키 표시와 무관하다(33번 T007)
+  declare policy: PolicyState;         // 입력 정책 상태(inputPolicy.ts)
+  declare frames: InputFrameBuilder;   // 공통 입력 프레임(inputFrame.ts)
+  declare padBinder: PadBinder | null;  // 컨트롤러 매핑 중이면 그 보정기(메뉴 패드 탐색을 멈춘다)
   declare memK: number;
   declare profile: Profile;
   declare uiRoot: HTMLElement;
@@ -227,8 +250,8 @@ class Game {
   declare diorama: DioramaOverlay | null;
   declare bootMarks: [string, number][];
   declare R: Renderer;
-  declare input: Input & { onUnlock?: () => void };
-  declare touch?: TouchControls;
+  declare input: Input;
+  declare touch: TouchControls;
   declare _onHide: () => void;
   declare _relock?: boolean;
   declare CharacterClass: typeof Character;
@@ -248,6 +271,9 @@ class Game {
   declare campaignPreview: CampaignPreview | null;   // 캠페인 세션만 가진다(개발용 ?colorreturn 제외). null = 전부 채색
   declare story: StoryDirector | null;               // 이야기 진행기(대화·패널·기록, 35번 R026·R027)
   declare _storyMatch: boolean;                      // 다음 startMatch가 이야기 임무 경기(캠페인 미리보기를 켠다)
+  declare session: CampaignSession | null;           // 진행 중인 캠페인 임무(33번 T022)
+  declare store: CampaignStore;                      // 캠페인 전용 저장(IndexedDB, 33번 T029)
+  declare _campaignStart: { missionId: string; prologue: boolean; resume: boolean } | null;
   declare fxHooks?: ReturnType<typeof initFxHooks> | null;
   declare screenfx?: ScreenFX | null;
   declare showcase: Showcase;
@@ -314,7 +340,6 @@ class Game {
   declare _clinkT: number;
   declare _hornT?: number;
   declare _loops?: Record<string, LoopHandle | null | undefined>;
-  declare _stickT?: number;
   declare _mv?: THREE.Vector3;
 
   async boot() {
@@ -343,8 +368,16 @@ class Game {
     // `qualityChosen` is set only by the settings screen, so a value the player actually picked always wins; a
     // defaulted one does not. Testing the flag rather than "is quality present" also repairs devices that already
     // had the default persisted by an earlier run.
-    this.touchMode = shouldUseTouch(this.settings);
-    if (this.touchMode) {
+    // 입력 설정 이전(33번 T008): 구버전 touchControls → virtualControls를 한 번만, 범위 밖·깨진 값은 기본값으로
+    {
+      const mig = migrateInputSettings(storedRaw);
+      Object.assign(this.settings, mig.input);
+      if ('touchControls' in this.settings) { delete (this.settings as Record<string, unknown>).touchControls; mig.changed = true; }
+      if (mig.changed) saveJSON('inkwave.settings', this.settings);
+    }
+    // 기기 성능 분류(주 포인터가 손가락인 기기). 가상 키 설정·패드 연결로 바뀌지 않는다(33번 T007)
+    this.hwMobile = detectHardware({ coarse: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches, touchPoints: navigator.maxTouchPoints || 0 }) === 'mobile';
+    if (this.hwMobile) {
       // Shadows cost a shadow-map render pass and, more importantly, a shadow variant of every material's program —
       // exactly the extra shader count that hurts on a phone. Off by default there; the settings screen can turn them
       // back on.
@@ -362,13 +395,17 @@ class Game {
     // 2048² ink atlas and the procedural texture set are tens of megabytes of video memory before the world is even
     // built, and an Android GPU process that runs out of memory is killed outright — every WebGL context dies with it
     // and the browser reloads the tab, which the app only sees as a bare context loss with no error and no stack.
-    this.memK = this.touchMode ? 0.5 : 1;   // read by _buildWorldNow too, hence an instance field
+    this.memK = this.hwMobile ? 0.5 : 1;   // read by _buildWorldNow too, hence an instance field
     // ?quality=low|medium|high|ultra — an explicit override for device testing. Beats localStorage, so a tier can be
     // pinned from the URL without clearing site data on a phone you cannot reach with a console.
     const qOverride = params.get('quality');
     if (qOverride && (QUALITY as Lookup<typeof QUALITY>)[qOverride]) this.settings.quality = qOverride;
     desktopPerformance?.configureSettings(this.settings, storedRaw);
     this.profile = loadJSON('inkwave.profile', DEFAULT_PROFILE);
+    // 캠페인 저장(기존 프로필·설정과 분리). 쓸 수 없으면 메모리 저장으로 임시 플레이한다.
+    this.store = new CampaignStore();
+    this.session = null; this._campaignStart = null;
+    await this.store.init();
     if ((WEAPON_SUCCESSOR as Lookup<typeof WEAPON_SUCCESSOR>)[this.profile.weapon]) this.profile.weapon = (WEAPON_SUCCESSOR as Lookup<typeof WEAPON_SUCCESSOR>)[this.profile.weapon];   // retired weapons
     const app = document.getElementById('app')!;
     this.uiRoot = document.getElementById('ui-root')!;
@@ -425,13 +462,17 @@ class Game {
     this.input = G.input = new Input(this.R.renderer.domElement);
     this.input.onKey = (e: KeyboardEvent, repeat: boolean) => this._onKey(e, repeat);
     this.input.onUnlock = () => this._onPointerUnlock();
-    // On-screen controls. All their listeners are on `window` with geometric hit-testing (see core/touch.js), so the
+    // On-screen controls. All their listeners are on `window` with geometric hit-testing (see core/touch.ts), so the
     // layer itself is purely visual and never intercepts a menu tap.
-    this.input.setTouchMode(this.touchMode);
-    if (this.touchMode) {
-      this.touch = G.touch = new TouchControls(this.input);
-      this.touch.mount(this.uiRoot);
-      this.input.onPause = () => this.pause();
+    // 가상 키는 PC·모바일 모두 만든다. 표시·입력 허용은 매 프레임 정책(inputPolicy)이 정한다(33번 T013~T015).
+    try { this.input.pads.profiles = loadProfiles(localStorage.getItem(PROFILE_KEY)); } catch { /* 저장 불가: 보정 없음 */ }
+    this.touch = G.touch = new TouchControls(this.input, { pcPad: !this.hwMobile, config: this._vcConfig(), insets: readSafeArea, reserve: () => this._hudReserve() });
+    this.touch.mount(this.uiRoot);
+    this.input.onPause = () => this.pause();
+    this.input.onRelease = () => { this.touch?.releaseAll(); this.frames?.reset(); };
+    this.frames = new InputFrameBuilder(this.hwMobile ? 'virtual' : 'keyboardMouse');
+    this.policy = { hardware: this.hwMobile ? 'mobile' : 'desktop', mode: this.settings.virtualControls, padStatus: 'awaitingGesture', source: this.frames.source, pointerLocked: false, context: 'menu', portrait: false, focused: true };
+    if (this.hwMobile) {
       // Fullscreen on the first touch, then lock landscape. Both require a user gesture, and the first tap on the
       // title screen is the natural one — it is also the only moment a player is not mid-round. Without this the
       // browser's address bar and gesture bar eat roughly a quarter of the screen height, and fullscreen is what
@@ -455,14 +496,17 @@ class Game {
         document.addEventListener('fullscreenchange', () => { if (document.fullscreenElement) disarm(); else arm(); });
         if (!document.fullscreenElement) arm();
       }
-      // There is no pointer lock to lose on a phone, so _onPointerUnlock never fires and nothing would stop a round
-      // when the player leaves the app. Same predicate as that path: backgrounding a live round is a pause.
-      this._onHide = () => {
-        if (!document.hidden) return;
-        if (G.mode === 'match' && this.match && !this.match.paused && this.match.state === 'playing' && !this.menus?.current) this.pause();
-      };
-      document.addEventListener('visibilitychange', this._onHide);
     }
+    // Without pointer lock (phone, PC virtual controls) _onPointerUnlock never fires, so nothing would stop a round when
+    // the player leaves. Same predicate as that path: hiding or blurring a live round is a pause (33번 T019). The
+    // resume needs an explicit action — nothing auto-resumes and the held input was already dropped by Input.
+    this._onHide = () => {
+      if (!document.hidden && document.hasFocus()) return;
+      if (this.match?.controller?.mapHeld) return;   // a focus steal while holding the map is not a reason to pause
+      if (G.mode === 'match' && this.match && !this.match.paused && this.match.state === 'playing' && !this.menus?.current) this.pause();
+    };
+    document.addEventListener('visibilitychange', this._onHide);
+    window.addEventListener('blur', this._onHide);
     // after a focus steal while the map was held, the next click on the game takes the mouse back (no pause detour)
     this.R.renderer.domElement.addEventListener('mousedown', () => {
       if (this._relock && G.mode === 'match' && this.match && !this.match.paused && !this.menus?.current) { this._relock = false; this.input.requestLock(); }
@@ -474,7 +518,7 @@ class Game {
       loadModule('./audio/audio.js', true), loadModule('./audio/music.js', true),
     ]);
     // 귀여운 비율(R010): 모든 생성 경로가 이 클래스를 쓰므로 여기서 감싼다. 원본 룩이면 머리 배율 1이다.
-    this.CharacterClass = withCast(withProportion(charMod.Character, () => resolveLook(this.settings, this.touchMode).headScale));
+    this.CharacterClass = withCast(withProportion(charMod.Character, () => resolveLook(this.settings, this.hwMobile).headScale));
     // 이야기 테마(R006): THEMES 표 끝에 inkwash·dawn을 더한다(기존 테마는 그대로)
     if (envMod.Environment?.THEMES) registerStoryThemes(envMod.Environment.THEMES);
     try { this.PropKit = (await import('./world/props.js')).PropKit; } catch (e) { console.error('[inkwave] prop kit failed to load', e); this.PropKit = null; }
@@ -498,7 +542,7 @@ class Game {
     this.zoneMarks = new ZoneMarks(scene);   // Zone Control ground markings: build / clear themselves on 'match:state'
     await progress(0.4, 'Filling the harbor…');
     const B = G.level!.bounds;
-    G.env = new envMod.Environment(G.renderer, scene, { bounds: B, theme: this.theme, shadowSize: q.shadowSize, footprint: this._footprint(G.level!), forceDeckField: this.touchMode });
+    G.env = new envMod.Environment(G.renderer, scene, { bounds: B, theme: this.theme, shadowSize: q.shadowSize, footprint: this._footprint(G.level!), forceDeckField: this.hwMobile });
     if (G.env.envMap) scene.environment = G.env.envMap;
     // sky-fill balance (scene.environmentIntensity, hemisphere) + per-theme exposure are the environment theme's job
     // (Environment.setTheme), so a stage/time looks the same booted into or switched to mid-session
@@ -545,13 +589,13 @@ class Game {
         ground: (x, y, z) => { const h = G.physics?.raycast(_o.set(x, y, z), _down, 8); return h?.hit ? h.point.y : null; },
         hud: (v) => { if (self.match && !self.match.attract) self.hud?.setVisible(v); },
         voice: new Voice(() => G.audio as { ctx: AudioContext | null; sfxIn?: AudioNode | null } | null, () => G.settings?.koreanVoice !== false),
-        startMissionMatch: async (mapId) => { self._storyMatch = true; try { await self.startMatch({ mapId, practice: true }); } finally { self._storyMatch = false; } },
+        startMissionMatch: async (mapId) => { const d = HARBOR.find((x) => x.id === mapId); await self.startCampaign(d?.missions[0].id ?? '1-1', { prologue: false }); },
       });
     }
     // 색 회복(R005): 캠페인 세션이 소유한다. ?colorreturn은 세션 전 확인용으로 현재 경기에 색 잃은 상태를 건다.
     this.colorReturn = null;
     if (params.has('colorreturn')) {
-      const look = resolveLook(this.settings, this.touchMode);
+      const look = resolveLook(this.settings, this.hwMobile);
       this.colorReturn = new ColorReturn(look.colorReturn);
       this.colorReturn.enter(Number(params.get('colorreturn')) || 0);
       on('color:restore', (e: { x: number; y: number; z: number; r: number }) => this.colorReturn?.restore(e.x, e.y, e.z, e.r));
@@ -780,6 +824,8 @@ class Game {
       version: VERSION,
       weapons: WEAPONS, weaponOrder: WEAPON_ORDER, specials: SPECIALS, specialOrder: SPECIAL_ORDER, sub: SUB.bomb, subs: SUBS, subOrder: SUB_ORDER, maps: MAPS, difficulties: DIFFICULTY,
       getSettings: () => ({ ...self.settings }),
+      padMap: () => self._padMap(),
+      campaign: () => self._campaignUi(),
       setSettings: (partial) => self._setSettings(partial),
       getProfile: () => {
         const p = self.profile;
@@ -816,10 +862,10 @@ class Game {
       toMainMenu: () => self.quitToMenu(),
       onScreenChange: (s) => self._onScreen(s),
       playSound: (n) => { G.audio?.init?.(); G.audio?.play(n); },
-      startStory: () => self.story!.start('1-1', true),
-      startStoryMission: (id) => self.story!.start(id, false),
-      hasStorySave: () => { let st: Storage | null = null; try { st = window.localStorage; } catch { st = null; } return hasStorySave(st); },
-      storyProgress: () => self.story!.progress(),
+      startStory: () => { const c = self.store.current; return self.startCampaign(c?.inProgress?.missionId ?? '1-1', { prologue: !c || (!c.done.length && !c.inProgress), resume: !!c?.inProgress }); },
+      startStoryMission: (id) => self.startCampaign(id, { prologue: false, resume: self.store.current?.inProgress?.missionId === id }),
+      hasStorySave: () => { if (self.store.current) return true; let st: Storage | null = null; try { st = window.localStorage; } catch { st = null; } return hasStorySave(st); },
+      storyProgress: () => self._harborProgress(),
       storyRecords: () => ALL_RECORDS.map((r) => ({ id: r.id, title: r.title, body: r.body, note: r.note, district: r.district, found: self.story!.log.data.records.includes(r.id) })),
       storyRead: () => self.story!.log.data.read.slice(),
       replayStory: (id) => self.story!.replay(id),
@@ -844,6 +890,7 @@ class Game {
     if ('fullscreen' in partial && window.inkwaveNative) window.inkwaveNative.setFullScreen(!!partial.fullscreen);
     if ('master' in partial || 'music' in partial || 'sfx' in partial) this._applyAudioVolumes();
     if ('colorblind' in partial && G.mode !== 'match') this._setPalette(this._pickPalette());
+    if ('vcSize' in partial || 'vcOpacity' in partial || 'vcOffsetX' in partial || 'vcOffsetY' in partial) this.touch?.setConfig(this._vcConfig());
   }
   _applyAudioVolumes() { G.audio?.setVolumes?.({ master: this.settings.master, music: this.settings.music, sfx: this.settings.sfx }); }
 
@@ -881,6 +928,8 @@ class Game {
     if (G.mode === 'match' && this.match && !this.match.paused && !this.menus?.current) {
       if (e.code === 'Escape' || e.code === 'KeyP') { this.pause(); return true; }
       if (e.code === 'KeyL' && this.match.practice && !repeat) { this.openPracticeLoadout(); return true; }
+      // PC: 키보드로 조작을 시작하면 포인터 잠금을 요청한다(가상 키는 잠금 동안 접힌다, 33번 T014·T015)
+      if (!repeat && !this.hwMobile && !this.input._plock && !this.match.attract && LOCK_KEYS.has(e.code)) this.input.requestLock();
       return false;
     }
     if (this.menus && this.menus.current) return this.menus.handleKey(e) || false;
@@ -1116,7 +1165,7 @@ class Game {
     if (!practice) this.lastMatchOpts = opts;
     G.audio?.init?.();
     G.audio?.duck?.(1, 0.01);   // a new stage picked from the practice pause menu starts un-ducked
-    this.input.requestLock();
+    if (this._wantLock()) this.input.requestLock();
     this.menus?.show(null);
     await this._fade(1, 350);
     G.music?.stop?.(0.3); this._musicTrack = null;
@@ -1153,18 +1202,34 @@ class Game {
     window.inkwaveNative?.performance?.mark('actors:setup:start');
     m.setup();
     // 캠페인 미리보기는 셰이더 예열 전에 붙인다(잔향 소멸 셰이더가 예열에 들어간다)
-    if (this._storyMatch && this.CharacterClass) addPreviewEchoes(m, this.CharacterClass);   // 이야기 임무 체험: 잔향 대원 3명(T026 전)
-    if (TUNE_CAMPAIGN || this._storyMatch) this.campaignPreview = new CampaignPreview(m, G.scene!, this.uiRoot, { drill: params.has('drill'), devices: params.has('devices') });
+    if (this._storyMatch && this.CharacterClass) addPreviewEchoes(m, this.CharacterClass);   // (개발용 미리보기 경로)
+    const cs = this._campaignStart;
+    if (TUNE_CAMPAIGN || this._storyMatch || cs) this.campaignPreview = new CampaignPreview(m, G.scene!, this.uiRoot, cs ? {} : { drill: params.has('drill'), devices: params.has('devices') });
+    // 캠페인 임무: 세션을 만들고(정의 검증) 적 셰이더를 예열한다
+    let warm: Actor[] = [];
+    if (cs) {
+      const mission = getMission(cs.missionId)!;
+      const save = this.store.current;
+      const resume = cs.resume && save?.inProgress?.missionId === mission.id ? save.inProgress : null;
+      this.session = new CampaignSession(this._sessionHost(), mission, { difficulty: save?.difficulty ?? 'normal', resume });
+      warm = this._campaignWarm(m, mission);
+    }
     window.inkwaveNative?.performance?.mark('actors:setup:end');
     await this._warmCharacters(m);
+    if (warm.length) { for (const a of warm) this.session?._despawn(a); }
     window.inkwaveNative?.performance?.mark('actors:warm:end');
     this.minimap.setViewerTeam(0);
     G.mode = 'match';
     this.hud?.setVisible(false);
     this.hudPrompt = null; this._hintT = 0; this._hints = {};
-    this.hud?.setPractice?.(practice);
+    this.hud?.setPractice?.(practice && !this.session);
     m.start();
-    if (practice) {
+    if (this.session && cs && this.campaignPreview) {
+      this.session.begin(m, this.campaignPreview);
+      (this.hud as unknown as { el?: HTMLElement } | null)?.el?.classList.add('is-campaign');
+      this.story?.beginMission(cs.missionId, cs.prologue, !this.session.cp.checkpointId);
+      this.hud?.setVisible(true);
+    } else if (practice) {
       // no intro fly-over: straight in, special charged so it can be tried right away
       if (m.local) m.local.special = m.local.specialCost();
       this.hud?.setVisible(true);
@@ -1172,9 +1237,122 @@ class Game {
     this._fade(0, 500);
   }
 
-  _stopCampaignPreview() { this.story?.endMission(); this.campaignPreview?.stop(); this.campaignPreview = null; }
+  _stopCampaignPreview() { this.session?.dispose(); this.session = null; (this.hud as unknown as { el?: HTMLElement } | null)?.el?.classList.remove('is-campaign'); this.story?.endMission(); this.campaignPreview?.stop(); this.campaignPreview = null; }
 
-  _inPractice() { return !!(this.match && this.match.practice && G.mode === 'match'); }
+  // ---- 캠페인(33번 T022·T029·T030) -------------------------------------------------------------------------------
+  // 임무 시작: 저장(없으면 새 게임)·해금·구현 범위를 확인하고 연습형 경기 위에 세션을 연다
+  async startCampaign(missionId: string, o: { prologue?: boolean; resume?: boolean } = {}) {
+    const back = (msg: string) => { this.menus?.show('harbor'); this.menus?.toast?.(msg, { kind: 'info', ms: 4200 }); };
+    if (!isImplemented(missionId)) { back(`${missionId}은 아직 제작 범위 밖이다 — 현재 플레이 가능: 1장 1-1 · 1-2 · 1-3`); return; }
+    if (!this.store.current) {
+      const r = await this.store.newGame(Date.now(), 'normal');
+      if (!r.ok) { this.menus?.show('main'); this.menus?.toast?.(STORE_ERROR_TEXT[r.error], { kind: 'error', ms: 6000 }); return; }
+      if (this.store.temporary) this.menus?.toast?.(STORE_ERROR_TEXT.unavailable, { kind: 'error', ms: 6000 });
+    }
+    if (!this.store.current!.unlocked.includes(missionId)) { back('앞 임무를 마치면 열린다'); return; }
+    const mission = getMission(missionId)!;
+    this._campaignStart = { missionId, prologue: !!o.prologue, resume: !!o.resume };
+    try { await this.startMatch({ mapId: mission.mapId, practice: true, time: mission.timeOfDay }); }
+    catch (e) { console.error(e); this.menus?.toast?.(`임무를 열지 못했다: ${(e as Error).message}`, { kind: 'error' }); }
+    finally { this._campaignStart = null; }
+  }
+
+  // 적 무기·잔향 셰이더 예열용 임시 적(경기 예열이 끝나면 치운다)
+  _campaignWarm(m: Match, mission: MissionDefinition): Actor[] {
+    const s = this.session!, seen = new Set<string>(), out: Actor[] = [];
+    s.prepare(m as unknown as import('./campaign/session.js').MatchLike, this.campaignPreview!);
+    for (const e of mission.encounters) for (const w of e.waves) for (const u of w.units) {
+      if (seen.has(u.role)) continue;
+      seen.add(u.role);
+      const unit: UnitDef = { id: '__warm_' + u.role, role: u.role, at: [0, -60, 0] };
+      const a = s._spawn(unit, e);
+      a.bot = undefined;
+      out.push(a);
+    }
+    return out;
+  }
+
+  _sessionHost() {
+    const self = this;
+    return {
+      get CharacterClass() { return self.CharacterClass; },
+      uiRoot: this.uiRoot,
+      store: this.store,
+      story: this.story,
+      storyPanels: (id: string) => missionStory(id)?.panels ?? {},
+      ground: (x: number, y: number, z: number) => { const h = G.physics?.raycast(new THREE.Vector3(x, y, z), new THREE.Vector3(0, -1, 0), 12); return h?.hit ? y - h.dist : null; },
+      onComplete: (s: CampaignSession) => { void this._campaignResults(s); },
+      onFailOpen: () => { this.input.releaseAll('campaign-fail'); this.input.exitLock(); },
+      quitToWorkshop: () => { void this.quitToMenu('workshop'); },
+      openGear: () => { this.menus?.show('campGear', { quick: true }); },
+    };
+  }
+
+  // 작업장·일시 정지의 캠페인 화면이 쓰는 API(33번 T032~T035)
+  _campaignUi(): CampaignUiApi {
+    const st = this.store;
+    return {
+      save: () => st.current,
+      commit: async (op) => { const r = await st.commit(op); return r.ok ? { ok: true } : { ok: false, error: r.error, reason: r.reason }; },
+      errorText: (e) => STORE_ERROR_TEXT[e],
+      inMission: () => !!this.session && this.session.state !== 'results' && this.session.state !== 'ended',
+      retry: () => { if (this.match?.paused) { this.match.paused = false; G.audio?.duck?.(1, 0.01); G.music?.resume?.(); } this.session?.retryCheckpoint(); if (this._wantLock()) this.input.requestLock(); },
+      abandon: () => { this.menus?.show(null); this.session?.abandon(); },
+      resume: () => { if (this.session?.state === 'failed') this.menus?.show(null); else this.resume(); },
+      exportSave: () => st.exportJson(),
+      importSave: async (json) => { const r = await st.importJson(json); return r.ok ? { ok: true } : { ok: false, error: r.error, reason: r.reason }; },
+      newGame: async (difficulty) => { const r = await st.newGame(Date.now(), difficulty, true); return r.ok ? { ok: true } : { ok: false, error: r.error, reason: r.reason }; },
+      temporary: () => st.temporary,
+    };
+  }
+
+  // 항구 지도 진행(저장에서): 지역 채도 = 그 지역 완료 임무 비율
+  _harborProgress(): HarborProgress {
+    const s = this.store.current;
+    if (!s) return this.story ? this.story.progress() : { done: [], colorReturn: {}, records: [] };
+    const colorReturn: Record<string, number> = {};
+    for (const d of HARBOR) { const n = d.missions.filter((x) => s.done.includes(x.id)).length; if (n) colorReturn[d.id] = 0.18 + 0.82 * n / 3; }
+    return { done: s.done, colorReturn, records: s.records };
+  }
+
+  // 임무 완료 → 완료 대사 → 결과 화면(저장 확정은 결과 화면의 commit, 같은 완료 ID로 재시도)
+  async _campaignResults(s: CampaignSession) {
+    const mission = s.mission, completionId = `${s.runId}:complete`, crate = s.crateOpened;
+    const before = this.store.current;
+    await new Promise<void>((r) => (this.story ? this.story.outro(r) : r()));
+    const commit = async (): Promise<boolean> => {
+      const r = await this.store.commit((cur) => { const o = completeMission(cur, { completionId, runId: s.runId, mission, crateOpened: crate }); return 'save' in o ? o.save : { reject: o.reject, reason: o.reason }; });
+      if (r.ok) return true;
+      this.menus?.toast?.(STORE_ERROR_TEXT[r.error], { kind: 'error', ms: 5000 });
+      return false;
+    };
+    // 보상 카드(표시용 미리 계산 — 확정은 commit이 같은 순수 계산으로 한다)
+    const pre = before ? completeMission(before, { completionId, runId: s.runId, mission, crateOpened: crate }) : null;
+    const rec = pre && 'record' in pre ? pre.record : null;
+    const rewards: Array<{ name: string; kind: string }> = [];
+    if (rec) {
+      rewards.push({ kind: '경험치', name: `+${rec.xp.granted}${rec.xp.overCap ? ` (적용 ${rec.xp.applied})` : ''}` });
+      rewards.push({ kind: '부품', name: `+${rec.parts}` });
+      if (rec.cores) rewards.push({ kind: '공명핵', name: `+${rec.cores}` });
+      for (const md of rec.modules) rewards.push({ kind: md.grade === 'special' ? '특제' : md.grade === 'precise' ? '정밀' : '일반', name: MODULES[md.defId].name + (md.toPending ? ' (대기함)' : '') });
+      if (rec.record) rewards.push({ kind: '기록', name: '선택 기록' });
+      for (const u of rec.unlocks) rewards.push({ kind: '해금', name: u });
+    }
+    const nextId = rec?.unlocks.find((u) => isImplemented(u)) ?? null;
+    const nextDef = nextId ? HARBOR.flatMap((d) => d.missions).find((x) => x.id === nextId) ?? null : null;
+    await this.quitToMenu('workshop');
+    const dist = HARBOR.find((d) => d.missions.some((x) => x.id === mission.id))!;
+    const toLv = rec?.xp.toLevel ?? 1;
+    this.menus?.showStoryResults?.({
+      mission: mission.id, title: mission.title, district: dist.id, firstClear: !!rec?.first, rewards,
+      xp: { from: before?.xp ?? 0, to: (before?.xp ?? 0) + (rec?.xp.applied ?? 0), max: LEVEL_XP[Math.min(20, toLv + 1)] || 12350 },
+      line: { speaker: 'mora', text: rec?.first ? '좋아, 색이 돌아왔어. 장비는 작업장에서 맞춰 보자.' : '같은 길도 다른 손으로 칠하면 다르게 보여.' },
+      next: nextDef ? { id: nextDef.id, title: nextDef.title } : null,
+      commit,
+    });
+  }
+
+  _inPractice() { return !!(this.match && this.match.practice && G.mode === 'match' && !this.session); }
 
   // a random stage (a different one from the current, when there's a choice)
   startPractice(o: { mapId?: string } = {}) {
@@ -1279,7 +1457,7 @@ class Game {
   netMatchGo() {
     const m = this.match;
     if (!m || m.state !== 'init') return;
-    this.input.requestLock();
+    if (this._wantLock()) this.input.requestLock();
     m.start();
   }
   // results done → everyone back in the room's lobby
@@ -1350,7 +1528,7 @@ class Game {
     this.menus?.show(null);
     this.match.paused = false;
     if (this.match.controller) this.match.controller.enabled = true;
-    this.input.requestLock();
+    if (this._wantLock()) this.input.requestLock();
     G.audio?.duck?.(1, 0.01);
     G.music?.resume?.();
   }
@@ -1579,10 +1757,7 @@ class Game {
     const tA = performance.now();
     G.renderer!.info.reset();
     G.time += dt;
-    this.input.pollPad();
-    this.input.pollTouch();
-    this.touch?.update();          // gate the on-screen controls on "in a match, no menu open"
-    this._padMenus();
+    this._inputFrame(dt);
     (G.net as { update?(dt: number): void } | null | undefined)?.update?.(dt);
     const m = this.match;
     // the online lobby / hub stand in their own full-frame set (showcase): the attract match behind them is neither
@@ -1600,6 +1775,7 @@ class Game {
     if (!m || !m.paused) this.fxHooks?.update?.(dt);
     if (m && !m.paused && !m.attract) this._ageDeathMarks(dt);
     if (this.campaignPreview) this.campaignPreview.update(dt, this._rawDt ?? dt, G.camera, !m || !!m.paused || m.state !== 'playing');
+    this.session?.update(dt, this._rawDt ?? dt, !m || !!m.paused || m.state !== 'playing');
     this.story?.update(this._rawDt ?? dt);
     this.screenfx?.update?.(dt, this);
     // the TAB map (also while splatted, planning a Super Jump): lift the splatted desaturation + ink flood off the stage
@@ -1737,7 +1913,7 @@ class Game {
         maxFt: Math.round(p.maxFt), slow: p.slowN || 0, n: p.frames || 0,
         calls: p.calls, tris: p.tris,
         dyn: +R.dynScale.toFixed(2), buf: `${cv.width}x${cv.height}`, dpr: +devicePixelRatio.toFixed(2),
-        win: `${innerWidth}x${innerHeight}`, memK: this.memK, touch: this.touchMode,
+        win: `${innerWidth}x${innerHeight}`, memK: this.memK, touch: this.hwMobile,
       }));
     } catch (e) { /* telemetry must never be able to break the game */ }
     p.maxFt = 0; p.slowN = 0; p.frames = 0;
@@ -1799,26 +1975,119 @@ class Game {
     want('enemy_ink_sizzle', alive && a.grounded && a.groundTeam === 2, 0.45, 1.0);
   }
 
-  _padMenus() {
+  // 가상 키 배치 설정(settings → touch.ts)
+  _vcConfig() {
+    const s = this.settings;
+    return { size: +s.vcSize || 1, opacity: +s.vcOpacity || 0.85, offsetX: +s.vcOffsetX || 0, offsetY: +s.vcOffsetY || 0 };
+  }
+  // 가상 키가 피할 HUD 모서리(스페셜 게이지·미니맵)의 폭
+  _hudReserve() {
+    const hud = this.hud as { sp?: HTMLElement; map?: HTMLElement } | null;
+    const sp = hud?.sp?.getBoundingClientRect(), mm = hud?.map?.getBoundingClientRect();
+    return { topRight: sp && sp.width ? innerWidth - sp.left : 0, bottomLeft: mm && mm.width && mm.top > innerHeight * 0.4 ? mm.right : 0 };
+  }
+  // 데스크톱에서 키보드·마우스로 조작 중일 때만 포인터 잠금을 요청한다. 마우스로 메뉴를 누른 사람은 가상 키로 시작한다.
+  _wantLock() { return !this.hwMobile && this.input.lastDevice === 'kbm'; }
+
+  // 이번 프레임 입력의 소비 대상(32번 2.1절). 막는 대화·패널은 메뉴처럼 확인·취소만 받는다.
+  _inputContext(): InputContext {
+    const ae = document.activeElement as HTMLElement | null;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return 'textEntry';
+    if (this.menus?.current) return 'menu';
+    if (this.story && (this.story.holds.dialogue || this.story.panels.playing)) return 'menu';
+    const m = this.match;
+    if (G.mode === 'match' && m && !m.attract && !m.paused) return m.controller?.mapHeld || (this.rig?.mapK ?? 0) > 0.05 ? 'map' : 'gameplay';
+    return 'menu';
+  }
+
+  // 입력 한 프레임(32번 3.2절): 장치 읽기 → 연결 변화 → 컨텍스트별 공통 프레임 → 소비(메뉴는 여기, 전투·지도는 각 소비자)
+  // → 가상 키 표시 갱신. 에지 정리는 프레임 끝의 input.endFrame()이다.
+  _inputFrame(dt: number) {
     const inp = this.input;
-    if (!inp.pad) return;
-    const pp = inp.padPressed;
-    if (this.menus?.current) {
+    inp.pollPad();
+    for (const ev of inp.pads.takeEvents()) this._onPadEvent(ev);
+    inp.pollTouch();
+    if (this.padBinder) this.padBinder.update(inp.pads.raw);
+    const ctx = this._inputContext();
+    const s = this.settings;
+    const f = this.frames.build(ctx, dt, [samplePad(inp.pad, ctx), sampleVirtual(inp, ctx), sampleKeyboard(inp, ctx)], {
+      mouse: +s.sensitivity || 1, touch: +s.touchSensitivity || 1, pad: +s.padSensitivity || 1, invertY: !!s.invertY, touchInvertY: !!s.touchInvertY,
+    });
+    G.frame = f;
+    // 정책 → 가상 키
+    const p = this.policy;
+    p.mode = s.virtualControls === 'always' ? 'always' : 'auto';
+    p.padStatus = inp.pads.status; p.source = f.source; p.pointerLocked = inp._plock; p.context = ctx;
+    p.portrait = innerHeight > innerWidth; p.focused = !document.hidden;
+    const m = this.match;
+    // ?novc: 화면 비교·지도 덤프 도구가 가상 키를 찍지 않게 한다(개발용)
+    const live = G.mode === 'match' && !!m && !m.attract && !this.menus?.current && !params.has('novc');
+    const visible = live && virtualVisible(p), enabled = live && virtualEnabled(p);
+    const cur = this.menus?.current;
+    const armedGate = this.hwMobile && ((G.mode === 'match' && !!m) || (!!cur && cur !== 'loading' && cur !== 'title'));
+    this.touch.update({ visible, enabled, armedGate, pcPad: !this.hwMobile });
+    inp.setTouchMode(enabled);
+    // 모바일을 세로로 돌리면 로컬 경기를 멈춘다(온라인은 메뉴만 열고 자기 입력만 중립화된다, 33번 T019)
+    if (this.hwMobile && p.portrait && live && m!.state === 'playing' && !m!.paused) { inp.releaseAll('portrait'); this.pause(); }
+    document.body.classList.toggle('iw-input-pad', f.source === 'gamepad');
+    // ---- 소비: 메뉴(패드)·정지
+    if (ctx === 'menu' && this.menus?.current && !this.padBinder) {
       const nav = (d: Parameters<Menus['nav']>[0]) => this.menus!.nav?.(d);
-      if (pp.has(12)) nav('up'); if (pp.has(13)) nav('down'); if (pp.has(14)) nav('left'); if (pp.has(15)) nav('right');
-      if (pp.has(0)) nav('accept'); if (pp.has(1)) nav('back'); if (pp.has(2)) nav('alt');   // X: locker shuffle etc.
-      if (pp.has(4)) nav('tab_prev'); if (pp.has(5)) nav('tab_next');
-      if (pp.has(3)) nav('alt');
-      // left stick as d-pad with repeat
-      const ly = inp.padAxis(1), lx = inp.padAxis(0);
-      this._stickT = (this._stickT || 0) - 1 / 60;
-      if (this._stickT <= 0) {
-        if (ly < -0.6) { nav('up'); this._stickT = 0.22; } else if (ly > 0.6) { nav('down'); this._stickT = 0.22; }
-        else if (lx < -0.6) { nav('left'); this._stickT = 0.22; } else if (lx > 0.6) { nav('right'); this._stickT = 0.22; }
-      }
-      if (pp.has(9) && this.menus.current === 'pause') this.resume();
-    } else if (G.mode === 'match' && pp.has(9)) this.pause();
-    else if (G.mode === 'match' && pp.has(8) && this.match?.practice) this.openPracticeLoadout();
+      for (const d of f.nav) nav(d);
+      const A = f.actions;
+      if (A.confirm.pressed) nav('accept');
+      if (A.cancel.pressed) nav('back');
+      if (A.alt.pressed) nav('alt');           // X·Y: locker shuffle etc.
+      if (A.tabPrev.pressed) nav('tab_prev');
+      if (A.tabNext.pressed) nav('tab_next');
+      if (A.pause.pressed && this.menus.current === 'pause') this.resume();
+    } else if ((ctx === 'gameplay' || ctx === 'map') && f.actions.pause.pressed) this.pause();
+  }
+
+  // 컨트롤러 매핑 창의 핸들(33번 T012). 선택된(깨운) 원시 패드가 있어야 시작한다.
+  _padMap(): PadMapHandle | null {
+    const raw = this.input.pads.raw;
+    if (!raw) return null;
+    const b = (this.padBinder = new PadBinder(raw));
+    const end = () => { if (this.padBinder === b) { this.padBinder = null; this.input.pads.requireNeutral(); this.frames.reset(); } };
+    return {
+      text: () => {
+        if (b.state === 'waitNeutral') return '컨트롤러에서 손을 떼 주세요';
+        const st = b.current;
+        if (!st) return '완료';
+        const n = `${b.step + 1}/${BIND_STEPS.length}`;
+        return b.state === 'release' ? `${n} · 기록했다 — 손을 떼 주세요` : `${n} · ${st.label}${st.kind === 'axis' ? '' : ' 버튼을 누른다'}${st.required ? '' : ' (선택 — 건너뛸 수 있다)'}`;
+      },
+      state: () => b.state,
+      skip: () => b.skip(),
+      restart: () => b.restart(),
+      cancel: () => { b.cancel(); end(); },
+      clear: () => { this.input.pads.clearProfile(b.id); this._savePadProfiles(); end(); },
+      save: () => {
+        const r = b.result();
+        end();
+        if (!r.profile) return { ok: false, message: `저장하지 않았다 — ${[...r.missing.map((m) => '누락: ' + m), ...r.conflicts.map((c) => '중복: ' + c)].join(', ')}` };
+        this.input.pads.setProfile(r.profile);
+        const ok = this._savePadProfiles();
+        return { ok, message: ok ? '컨트롤러 매핑을 저장했다 — Xbox 배치로 조작한다' : '매핑을 적용했지만 저장하지 못했다(이번 실행에만 적용)' };
+      },
+    };
+  }
+  _savePadProfiles(): boolean {
+    try { localStorage.setItem(PROFILE_KEY, JSON.stringify(this.input.pads.profiles)); return true; } catch { return false; }
+  }
+
+  // 패드 연결 변화(33번 T010·T019): 해제되면 입력을 중립화하고 로컬 경기는 멈춰 재개를 기다린다(가상 키는 정책이 되살린다)
+  _onPadEvent(ev: string) {
+    if (ev === 'disconnected') {
+      this.input.releaseAll('pad-lost');
+      if (G.mode === 'match' && this.match && !this.match.attract && this.match.state === 'playing' && !this.match.paused && !this.menus?.current) this.pause();
+      this.menus?.toast?.('컨트롤러 연결이 끊겼다 — 가상 키로 계속하거나 다시 연결한다', { kind: 'leave' });
+    } else if (ev === 'unmapped') {
+      this.menus?.toast?.('이 컨트롤러는 버튼 배치를 알 수 없다 — 설정 › 조작 › 컨트롤러 매핑에서 보정한다', { kind: 'info', ms: 5200 });
+    } else if (ev === 'ready' || ev === 'switched') {
+      this.menus?.toast?.('컨트롤러 준비됨 · Xbox 배치', { kind: 'join', ms: 2200 });
+    }
   }
 
   _updateHud(dt: number) {
@@ -1878,11 +2147,11 @@ class Game {
       else if (this._lowInkFlash > 0) { this._lowInkFlash -= dt; prompt = 'Low ink! Hold SHIFT in your ink to refill'; }
       else if (a.specialReady() && (this._hints.specialT = (this._hints.specialT || 0) + dt) > 2) prompt = `Special ready! Press F`;
       else if (inkF < 0.25 && a.form !== 'squid') prompt = 'Hold SHIFT to swim in your ink and refill';
-      else if (m.duration - m.time < 8 && !this._hints.shot) prompt = m.zones ? 'Ink the zone and hold it to count down!' : 'Paint the ground — most turf wins!';
+      else if (!this.session && m.duration - m.time < 8 && !this._hints.shot) prompt = m.zones ? 'Ink the zone and hold it to count down!' : 'Paint the ground — most turf wins!';
       if (!a.specialReady()) this._hints.specialT = 0;
       if (a.intent.fire) this._hints.shot = true;
     }
-    if (m.practice && m.state === 'playing' && a.alive && this._hintT < 7) prompt = 'Practice · L to change loadout · ESC for the practice menu';
+    if (m.practice && !this.session && m.state === 'playing' && a.alive && this._hintT < 7) prompt = 'Practice · L to change loadout · ESC for the practice menu';
     const strikeAim = !!(a.specialActive && a.specialActive.id === 'strike' && a.specialActive.aiming);
     // "Yeah!" cheers → screen positions over the cheering player (anyone on screen)
     const cheers = [];
@@ -1916,10 +2185,10 @@ class Game {
     const frame = {
       time: m.practice ? null : m.time,
       teams,   // HUD: [your team, theirs]
-      ink: a.ink / PLAYER.inkMax, inkLow: a.ink < 18 || (this._lowInkFlash > 0), subCost: a.specialActive?.kind === 'barrage' ? 0 : (a.sub || SUB.bomb).inkCost / PLAYER.inkMax, subKind: (a.specialActive?.kind === 'barrage' ? a.specialActive.bomb : a.sub || SUB.bomb).kind,
+      ink: a.ink / (a.tune?.inkMax ?? PLAYER.inkMax), inkLow: a.ink < 18 || (this._lowInkFlash > 0), subCost: a.specialActive?.kind === 'barrage' ? 0 : (a.sub || SUB.bomb).inkCost / PLAYER.inkMax, subKind: (a.specialActive?.kind === 'barrage' ? a.specialActive.bomb : a.sub || SUB.bomb).kind,
       poisoned: a.status.poison > 0, tracked: a.status.track > 0,
       special: a.specialActive ? G.specials!.remaining(a) : a.specialFrac(), specialReady: a.specialReady(), specialActive: !!a.specialActive, specialId: a.specialId,
-      hp: a.hp / PLAYER.hp,
+      hp: a.hp / (a.tune?.hp ?? PLAYER.hp),
       weapon: a.weaponId, charge: a.weaponRunner.charge,
       twin: w.kind === 'twins' ? { planted: !!a.weaponRunner.turret, rolls: a.weaponRunner.rollsLeft() } : null,
       crosshair: { spread, onTarget: m.controller?.onTarget ? 'enemy' : null, inRange: m.controller ? m.controller.inRange !== false : true },

@@ -5,7 +5,7 @@
 // 다른 장소(작업장 세트·광장·보스장)에 놓을 수 있게 한다. 인물의 발은 그 자리 바닥(아래로 쏜 광선)에 붙인다.
 // 카메라는 CameraRig.cinematic(arc 0, 샷 fov)을 샷마다 건다. 끝나거나 건너뛰면 host.restore()가 카메라·시간·입력을 되돌린다.
 import * as THREE from 'three';
-import { emit } from '../../core/ctx.js';
+import { G, emit } from '../../core/ctx.js';
 import type { Character } from '../../game/character.js';
 import { setCast, setStoryPose, playExpr } from '../../game/cast/castCharacter.js';
 import type { StoryPose } from '../../game/cast/poses.js';
@@ -67,11 +67,11 @@ export class PanelPlayer {
   declare word: HTMLDivElement; declare splash: HTMLDivElement;
   declare chars: Map<string, Character>; declare anim: Record<string, unknown> & { time: number };
   declare onDone: ((skipped: boolean) => void) | null; declare anchor: PanelAnchor | null;
-  declare offKey: () => void; declare padPrev: boolean; declare startedAt: number;
+  declare offKey: () => void; declare startedAt: number;
 
   constructor(host: PanelHost) {
     this.host = host; this.scene = null; this.index = -1; this.t = 0; this.chars = new Map(); this.anim = anim();
-    this.onDone = null; this.anchor = null; this.padPrev = true; this.startedAt = 0;
+    this.onDone = null; this.anchor = null; this.startedAt = 0;
     const div = (c: string): HTMLDivElement => { const d = document.createElement('div'); d.className = c; return d; };
     this.el = div('iw-panels'); this.el.hidden = true;
     this.frame = div('iw-panels__frame');
@@ -92,7 +92,7 @@ export class PanelPlayer {
   play(scene: PanelScene, onDone?: (skipped: boolean) => void): void {
     if (this.scene) this._end(true);
     this.scene = scene; this.onDone = onDone ?? null; this.anchor = this.host.anchor();
-    this.startedAt = performance.now(); this.padPrev = true;
+    this.startedAt = performance.now();
     this.host.freeze(true); this.host.hideWorldActors?.(true);
     this.el.hidden = false;
     this._shot(0);
@@ -188,12 +188,10 @@ export class PanelPlayer {
     if (this.t * 1000 >= sh.durationMs) this._shot(this.index + 1);
   }
 
+  // 패드 아무 버튼(확인·취소·정지) = 건너뛰기. 공통 입력 프레임에서 읽는다(33번 T017).
   _pollPad(): void {
-    if (typeof navigator === 'undefined' || !navigator.getGamepads) return;
-    let any = false;
-    for (const gp of navigator.getGamepads()) if (gp) for (const b of gp.buttons) if (b.pressed) { any = true; break; }
-    if (any && !this.padPrev) this.skip();
-    this.padPrev = any;
+    const A = G.frame?.actions;
+    if (A && (A.confirm.pressed || A.cancel.pressed || A.pause.pressed)) this.skip();
   }
 
   _end(skipped: boolean): void {

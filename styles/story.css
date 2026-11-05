@@ -216,3 +216,12 @@ body.iw-talking .iw-map { opacity: 0; transition: opacity .15s; }
 .iw-sres[data-step="4"] .iw-sres__line, .iw-sres[data-step="5"] .iw-sres__line { opacity: 1; }
 .iw-sres__nav { display: flex; gap: 10px; margin-top: 12px; opacity: .35; transition: opacity .3s; }
 .iw-sres[data-step="5"] .iw-sres__nav { opacity: 1; }
+
+/* 가상 키가 살아 있는 동안(33번 T015·T036): 대사·초상이 버튼 묶음과 PC 방향 패드 자리를 비운다 */
+body.iw-vc-live .iw-commport { width: 112px; height: 112px; }
+body.iw-vc-live .iw-dlg {
+  left: max(132px, var(--vc-left, 0px)); bottom: 18px;
+  width: min(560px, calc(100vw - max(132px, var(--vc-left, 0px)) - var(--vc-right, 0px)));
+  min-height: 70px; padding: 10px 14px;
+}
+body.iw-vc-live .iw-dlg__text { font-size: 18px; }

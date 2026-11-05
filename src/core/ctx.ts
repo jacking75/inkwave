@@ -4,6 +4,7 @@ import type { DEFAULT_SETTINGS, QUALITY } from '../config.js';
 import type { Renderer } from './renderer.js';
 import type { Input } from './input.js';
 import type { TouchControls } from './touch.js';
+import type { InputFrame } from './inputFrame.js';
 import type { Level } from '../world/level.js';
 import type { PaintSystem } from '../world/paint.js';
 import type { Environment } from '../world/environment.js';
@@ -42,7 +43,9 @@ export interface GameContext {
   mode: 'boot' | 'menu' | 'match';
   // main.js·하위 시스템이 부팅 중 채운다.
   subs?: SubSystem | null; specials?: SpecialSystem | null; nav?: NavGraph | null; rig?: CameraRig | null;
-  post?: Renderer | null; touch?: TouchControls | null; screenfx?: ScreenFX | null; boss?: Boss | null;
+  post?: Renderer | null; touch?: TouchControls | null;
+  frame?: InputFrame | null;   // 이번 프레임의 공통 입력(33번 T009). main이 프레임 처음에 만든다
+  screenfx?: ScreenFX | null; boss?: Boss | null;
   net?: NetSession | MockNet | null; netm?: NetMatch | null;
   game?: unknown; deathMarks?: unknown[];
   // 캠페인 세션(개발 중에는 ?tune=campaign 미리보기)만 갖는다. 대전·온라인은 null이다(35번 R016~R021).

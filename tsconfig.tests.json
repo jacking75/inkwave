@@ -1,0 +1,9 @@
+{
+  // 클라이언트 행동 검사(tests/client)의 타입 검사이다. 실행은 tools/client/test.ts가 esbuild로 묶어 node:test로 한다.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "tsBuildInfoFile": ".tools/tests.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts", "src/**/*.js", "tests/client/**/*.ts"]
+}

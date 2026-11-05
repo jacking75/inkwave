@@ -31,6 +31,14 @@ interface Surge { t: number; dir: THREE.Vector3; trailT: number; expect: number;
 interface Knock { left: number; v: THREE.Vector3 }
 interface Entry { role: CombatRole; poise: Poise | null; exposeLeft: number; knock: Knock | null; reaction?: number }
 
+// 캠페인 세션(33번 T027)이 넣는 피해·자원 보정: 성장·장비·난이도. 미리보기에는 없다(기본 1배).
+export interface CombatHooks {
+  playerTaken?(amount: number, attacker: Actor | null, source: string): number;
+  enemyTaken?(victim: Actor, amount: number, attacker: Actor | null, source: string): number;
+  inkMul?(a: Actor): number;
+  specialMul?(a: Actor): number;
+}
+
 export interface CombatOptions {
   story?: boolean;                 // 이야기 난이도: 퍼펙트 잠수 창 0.18초
   reduceMotion?: () => boolean;    // 시간 정지·카메라 펀치를 끈다
@@ -51,6 +59,7 @@ export class CampaignCombat {
   declare inputBlocked: boolean;   // 막는 대본·컷신 동안 플레이어 전투 입력을 지운다(R026·R027)
   declare hitRef: { time: number; after: number } | null;   // 텔레그래프 피해 처리 중의 퍼펙트 기준 시각
   declare unsubs: Array<() => unknown>;
+  declare hooks: CombatHooks;
 
   constructor(time: TimeScale, opts: CombatOptions = {}) {
     this.time = time; this.opts = opts;
@@ -58,7 +67,7 @@ export class CampaignCombat {
     this.player = null; this.growth = opts.growth ?? NO_GROWTH; this.base = campaignTuning(this.growth);
     this.tap = new DoubleTap(); this.surge = null; this.surgeCd = 0;
     this.buffLeft = 0; this.lastPerfect = new Map();
-    this.hitRef = null; this.inputBlocked = false;
+    this.hitRef = null; this.inputBlocked = false; this.hooks = {};
     this.feedback = new CombatFeedback(time, () => this._calm(), () => ({
       rig: G.rig as { punch?(k: 'kill' | 'elite'): void; kickFov?(d: number, s: number): void } | null,
       rumble: (a, b, ms) => (G.input as { rumble?(a: number, b: number, ms: number): void } | null)?.rumble?.(a, b, ms),
@@ -188,12 +197,14 @@ export class CampaignCombat {
         refTime: this.hitRef?.time, after: this.hitRef?.after,
       });
       if (perfect && attacker) { this._perfect(victim, attacker, source); return { amount: 0, perfect: true, attacker }; }
+      if (this.hooks.playerTaken) amount = this.hooks.playerTaken(amount, attacker, source);
       return { amount, perfect: false, attacker };
     }
     const n = this.entries.get(victim);
     if (n && n.role === 'enemy') {
       if (n.exposeLeft > 0) amount *= PERFECT.exposeMul;
       if (n.poise) amount *= n.poise.damageMul();
+      if (this.hooks.enemyTaken) amount = this.hooks.enemyTaken(victim, amount, attacker, source);
     }
     return { amount, perfect: false, attacker };
   }
@@ -204,8 +215,8 @@ export class CampaignCombat {
     try { return victim.damage(amount, attacker, 'telegraph'); } finally { this.hitRef = null; }
   }
 
-  inkCostMul(a: Actor): number { return a === this.player ? waveEffects(this.wave.level).inkMul : 1; }
-  specialChargeMul(a: Actor): number { return a === this.player ? waveEffects(this.wave.level).specialMul : 1; }
+  inkCostMul(a: Actor): number { return a === this.player ? waveEffects(this.wave.level).inkMul * (this.hooks.inkMul?.(a) ?? 1) : 1; }
+  specialChargeMul(a: Actor): number { return a === this.player ? waveEffects(this.wave.level).specialMul * (this.hooks.specialMul?.(a) ?? 1) : 1; }
   waveGlow(a: Actor): boolean { return a === this.player && waveEffects(this.wave.level).glow; }
 
   // 목표 완료(33번 T024 목표 실행기가 부른다)

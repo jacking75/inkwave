@@ -139,7 +139,7 @@ try {
     // (fov는 원본 빌드도 부팅 때 82로 되돌리므로 비교에서 뺀다: 원본·현재 빌드에서 같은 이전 결과를 확인했다)
     const oldSettings = { quality: 'medium', master: 0.6, music: 0.3, sfx: 0.7, sensitivity: 1.4, invertY: true, difficulty: 'hard', matchLength: 90, lastStage: 'kelpline', colorblind: true };
     const oldProfile = { name: 'OldTimer', xp: 1234, level: 4, wins: 7, matches: 12, weapon: 'roller', style: { hair: 2, skin: 3, outfit: 4, eyes: 1, hat: 1, brows: 0 } };
-    const init = `if (!sessionStorage.getItem('seeded')) { sessionStorage.setItem('seeded', '1'); localStorage.clear(); localStorage.setItem('inkwave.settings', ${JSON.stringify(JSON.stringify(oldSettings))}); localStorage.setItem('inkwave.profile', ${JSON.stringify(JSON.stringify(oldProfile))}); }`;
+    const init = `if (!sessionStorage.getItem('seeded')) { sessionStorage.setItem('seeded', '1'); localStorage.clear(); try { indexedDB.deleteDatabase('inkwave-campaign'); } catch {} localStorage.setItem('inkwave.settings', ${JSON.stringify(JSON.stringify(oldSettings))}); localStorage.setItem('inkwave.profile', ${JSON.stringify(JSON.stringify(oldProfile))}); }`;
     const { page, errors } = await open('', init);
     await page.waitForFunction('window.__inkwave && __inkwave.menus && __inkwave.menus.current === "main"', { timeout: 180000, polling: 250 });
     const r = await page.evaluate(`(() => {

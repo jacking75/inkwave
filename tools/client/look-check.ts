@@ -54,7 +54,7 @@ try {
     page.on('pageerror', (e) => errors.push(String(e)));
     if (look) await page.evaluateOnNewDocument((l: string) => { localStorage.setItem('inkwave.settings', JSON.stringify({ look: l })); }, look);
     const q = new URLSearchParams(query);
-    q.set('map', map); q.set('autostart', '120'); q.set('autopilot', ''); q.set('shadercheck', '');
+    q.set('map', map); q.set('autostart', '120'); q.set('autopilot', ''); q.set('shadercheck', ''); q.set('novc', '');   // novc: 화면 비교에 가상 키를 찍지 않는다
     await page.goto(`http://localhost:${port}/?${q.toString()}`, { waitUntil: 'load', timeout: 180000 });
     await page.waitForFunction('window.__inkwave && __inkwave.match && __inkwave.match.state === "playing"', { timeout: 180000, polling: 250 });
     await new Promise((r) => setTimeout(r, settle));

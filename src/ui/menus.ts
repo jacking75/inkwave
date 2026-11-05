@@ -31,6 +31,7 @@ import { CAST_LOOKS, type CastId, type ReactKind } from '../game/cast/cast.js';
 import { DISTRICTS, districtUnlocked, missionUnlocked, districtSat, nextMission, NO_PROGRESS, type HarborProgress } from '../campaign/story/districts.js';
 import { getScript } from '../campaign/story/scripts/index.js';
 import { SPEAKER_NAME } from '../campaign/story/dialogue.js';
+import { gearScreen, traitsScreen, manageScreen, pauseScreen, type CampaignUiApi, type MenuKit } from './campaignScreens.js';
 
 // ---------------------------------------------------------------- types
 // ui-util.js는 아직 JS라 h()의 props가 기본값 null에서 `null`로 추론된다. 같은 함수를 정확한 시그니처로 본다(실행은 그대로).
@@ -75,6 +76,8 @@ interface MatchStartConfig { mode: BattleMode; mapId: string; time: DayTime; dif
 interface PracticeInfo { map?: string; weapon?: string; sub?: string; special?: string }
 
 /** main.js `_menuApi()`가 넘기는 엔진 API이다. 메뉴는 멤버마다 존재를 확인하므로 모두 선택이다(UI lab은 일부만 준다). */
+// 컨트롤러 매핑 창이 쓰는 보정기 핸들(main이 만든다, core/padBinder.ts)
+export interface PadMapHandle { text(): string; state(): string; skip(): boolean; restart(): void; cancel(): void; clear(): void; save(): { ok: boolean; message: string } }
 export interface MenuApi {
   version?: string;
   weapons?: Record<string, WeaponInfo>; weaponOrder?: string[];
@@ -82,6 +85,8 @@ export interface MenuApi {
   sub?: SubInfo; subs?: Record<string, SubInfo>; subOrder?: string[];
   maps?: MapDef[]; difficulties?: Record<string, DifficultyInfo>;
   getSettings?: () => Partial<MenuSettings> | null;
+  padMap?: () => PadMapHandle | null;
+  campaign?: () => CampaignUiApi | null;
   setSettings?: (partial: Partial<MenuSettings>) => void;
   getProfile?: () => MenuProfile | null;
   setProfileName?: (name: string) => void;
@@ -366,7 +371,7 @@ interface MatchSnapshot {
   colors: string[]; names: string[]; players: SnapPlayer[];
 }
 
-const SCREENS: string[] = ['loading', 'title', 'main', 'mode', 'loadout', 'setup', 'locker', 'settings', 'howto', 'credits', 'pause', 'results', 'online', 'lobby', 'arena', 'workshop', 'harbor', 'records', 'storyResults'];
+const SCREENS: string[] = ['loading', 'title', 'main', 'mode', 'loadout', 'setup', 'locker', 'settings', 'howto', 'credits', 'pause', 'results', 'online', 'lobby', 'arena', 'workshop', 'harbor', 'records', 'storyResults', 'campGear', 'campTraits', 'campManage'];
 // Transitions that get the full-screen ink wipe (the rest use staggered pop-ins).
 const WIPES = new Set(['loading>title', 'title>main', 'results>main', 'pause>main', 'results>null', 'pause>title', 'online>lobby', 'lobby>online', 'lobby>main', 'results>lobby', 'pause>online']);
 // Pushes/pops between these get the light ink swipe (decorative — the swap itself is immediate).
@@ -524,6 +529,15 @@ const SETTINGS_TABS: SettingsTab[] = [
     { key: 'invertY', label: 'Invert vertical look', type: 'toggle', help: 'Push up to look down, like a flight stick.' },
     { key: 'aimAssist', label: 'Aim assist (controller)', type: 'slider', min: 0, max: 1, step: 0.05, fmt: pctFmt, help: 'Gently slows and steers your aim onto nearby rivals when you play with a controller.' },
     { key: 'aimAssistMouse', label: 'Aim assist for mouse', type: 'toggle', help: 'Also apply a lighter aim assist when aiming with a mouse. Off by default.' },
+    // 가상 키(33번 T008·T015): 패드가 없으면 PC·모바일 모두 화면 버튼으로 조작한다
+    { key: 'virtualControls', label: '가상 키 표시', type: 'seg', options: [['auto', '자동'], ['always', '항상']], help: '자동: 컨트롤러로 조작하는 동안과 PC에서 키보드·마우스(포인터 잠금)로 조작하는 동안만 접는다. 항상: 늘 보인다.' },
+    { key: 'vcSize', label: '가상 키 크기', type: 'slider', min: 0.7, max: 1.5, step: 0.05, fmt: pctFmt, help: '화면 버튼의 크기. 화면 밖으로 나가지 않게 자동으로 안쪽에 맞춘다.' },
+    { key: 'vcOpacity', label: '가상 키 불투명도', type: 'slider', min: 0.3, max: 1, step: 0.05, fmt: pctFmt, help: '버튼이 장면을 가리는 정도.' },
+    { key: 'vcOffsetX', label: '가상 키 위치 · 가로', type: 'slider', min: -240, max: 240, step: 10, fmt: (v) => Math.round(v) + 'px', help: '버튼 묶음을 화면 안쪽(+) 또는 가장자리(−)로 옮긴다.' },
+    { key: 'vcOffsetY', label: '가상 키 위치 · 세로', type: 'slider', min: -240, max: 240, step: 10, fmt: (v) => Math.round(v) + 'px', help: '버튼 묶음을 위(+) 또는 아래(−)로 옮긴다. 자막·위험 예고와 겹치면 조정한다.' },
+    { key: 'touchSensitivity', label: '가상 키 시점 감도', type: 'slider', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) + '×', help: '화면을 끌어 시점을 돌릴 때의 속도(손가락·PC 마우스 드래그).' },
+    { key: '_vcReset', label: '가상 키 배치 초기화', type: 'link', help: '크기·불투명도·위치를 처음 값으로 되돌린다. 버튼을 찾기 어려울 때 쓴다.' },
+    { key: '_padmap', label: '컨트롤러 매핑 (비표준 패드)', type: 'link', help: '브라우저가 표준 배치를 알려 주지 않는 패드를 버튼 하나씩 눌러 Xbox 배치에 맞춘다. 보정은 그 패드에만 적용된다.' },
     { key: '_howto', label: 'Controls reference', type: 'link', help: 'Every keyboard, mouse and controller binding in one place.' },
   ] },
   { id: 'video', label: 'Video', icon: 'monitor', rows: [
@@ -1166,6 +1180,48 @@ export class Menus {
     if (st.borderRadius !== rr) st.borderRadius = rr;
   }
 
+  // 설정 화면의 링크 행(조작 탭)
+  _settingsLink(key: string, sync: (key: string, value: unknown) => void): void {
+    if (key === '_howto') { this._go('howto'); return; }
+    if (key === '_vcReset') {
+      const reset = { vcSize: 1, vcOpacity: 0.85, vcOffsetX: 0, vcOffsetY: 0 };
+      safeCall(() => this.api.setSettings && this.api.setSettings(reset));
+      for (const [k, v] of Object.entries(reset)) sync(k, v);
+      this.toast('가상 키 배치를 처음 값으로 되돌렸다', { kind: 'good' });
+      return;
+    }
+    if (key === '_padmap') this._padMapModal();
+  }
+
+  // 비표준 패드 보정(33번 T012). 패드 입력은 main의 보정기가 읽고(메뉴 패드 탐색은 그동안 멈춘다), 이 창은 단계 안내와
+  // 키보드·마우스·터치로 누르는 건너뛰기·처음부터·취소를 제공한다. 패드가 끊기면 창이 닫힌다.
+  _padMapModal(): void {
+    const pm = safeCall(() => this.api.padMap && this.api.padMap());
+    if (!pm) { this.toast('연결된 컨트롤러가 없다 — 컨트롤러 버튼을 한 번 누른 뒤 다시 연다', { kind: 'error' }); return; }
+    let timer = 0;
+    const close = (msg?: string, kind: ToastOpts['kind'] = 'info') => { clearInterval(timer); pm.cancel(); this._closeModal(true); if (msg) this.toast(msg, { kind }); };
+    this._openModal({
+      title: '컨트롤러 매핑',
+      text: pm.text(),
+      buttons: [
+        { label: '건너뛰기', accept: () => { if (!pm.skip()) this.toast('이 항목은 필수이다', { kind: 'error' }); } },
+        { label: '처음부터', accept: () => pm.restart() },
+        { label: '보정 지우기', accept: () => { pm.clear(); close('이 패드의 보정을 지웠다', 'good'); } },
+        { label: '취소', cls: 'iw-btn--danger', accept: () => close() },
+      ],
+    });
+    const modal = this._modal!;
+    modal._onBack = () => close();
+    const textEl = modal.querySelector('.iw-modal__text');
+    timer = window.setInterval(() => {
+      if (this._modal !== modal) { clearInterval(timer); pm.cancel(); return; }
+      const st = pm.state();
+      if (textEl) textEl.textContent = pm.text();
+      if (st === 'aborted') close('컨트롤러 연결이 끊겨 매핑을 멈췄다', 'error');
+      else if (st === 'done') { const r = pm.save(); close(r.message, r.ok ? 'good' : 'error'); }
+    }, 60);
+  }
+
   // ================================================================ modal
   _openModal({ title, text, buttons, danger = false }: { title: string; text?: string; buttons: ModalButton[]; danger?: boolean }): void {
     const btnEls = buttons.map((b, i) => this._btn({ id: 'modal-' + i, label: b.label, cls: 'iw-btn--modal ' + (b.cls || ''), accept: b.accept, sound: b.sound || 'ui_click' }));
@@ -1401,8 +1457,10 @@ export class Menus {
     const say = h('div', { class: 'iw-ws__say iw-in iw-in--down' }, h('b', null, '모라'), h('span', null, moraLine));
     const items: Array<BtnOpts & { who: 'mora' | 'teal' | null }> = [
       { id: 'mission', label: '임무', sub: `다음: ${nx.district.missions[nx.index].id} ${nx.district.missions[nx.index].title}`, icon: GLYPHS.map, cls: 'iw-btn--menu iw-btn--xl iw-btn--primary', accept: () => this._go('harbor'), sound: 'ui_confirm', who: 'teal' },
-      { id: 'gear', label: '장비', icon: GLYPHS.target, cls: 'iw-btn--menu', accept: () => this._go('loadout'), who: 'mora' },
-      { id: 'perks', label: '특성', sub: '캠페인 성장 이후', icon: GLYPHS.bolt, cls: 'iw-btn--menu is-locked', accept: () => this.toast('특성 배분은 캠페인 성장(33번 T033·T034) 구현 뒤에 열린다.', { icon: 'lock' }), who: 'mora' },
+      { id: 'gear', label: '무기', icon: GLYPHS.target, cls: 'iw-btn--menu', accept: () => this._go('loadout'), who: 'mora' },
+      { id: 'modules', label: '모듈 장비', sub: '어댑터 · 탱크 · 표식', icon: GLYPHS.gear, cls: 'iw-btn--menu', accept: () => (this._campApi()?.save() ? this._go('campGear') : this.toast('임무를 하나 마치면 열린다', { icon: 'lock' })), who: 'mora' },
+      { id: 'perks', label: '특성', icon: GLYPHS.bolt, cls: 'iw-btn--menu', accept: () => (this._campApi()?.save() ? this._go('campTraits') : this.toast('임무를 하나 마치면 열린다', { icon: 'lock' })), who: 'mora' },
+      { id: 'manage', label: '캠페인 관리', sub: '난이도 · 저장', icon: GLYPHS.note, cls: 'iw-btn--menu', accept: () => this._go('campManage'), who: 'teal' },
       { id: 'records', label: '기록', sub: `${prog.records.length} / 14`, icon: GLYPHS.note, cls: 'iw-btn--menu', accept: () => this._go('records'), who: 'teal' },
     ];
     const btns = items.map((it, i) => { const b = this._btn({ ...it, tilt: [-1.6, 1.2, -1.1, 1.4][i] }); b.classList.add('iw-in', 'iw-in--left'); b.dataset.who = it.who ?? ''; return b; });
@@ -1425,6 +1483,12 @@ export class Menus {
       destroy: () => { if (sc && !(['harbor', 'records', 'loadout', 'locker'] as Array<string | null>).includes(this.current)) safeCall(() => sc.hide()); },
     };
   }
+
+  // ---- 캠페인 작업장 화면(33번 T032~T035, src/ui/campaignScreens.ts)
+  _campApi(): CampaignUiApi | null { return safeCall(() => this.api.campaign?.()) ?? null; }
+  _scr_campGear(): Screen { return gearScreen(this as unknown as MenuKit, this._campApi()!) as unknown as Screen; }
+  _scr_campTraits(): Screen { return traitsScreen(this as unknown as MenuKit, this._campApi()!) as unknown as Screen; }
+  _scr_campManage(): Screen { return manageScreen(this as unknown as MenuKit, this._campApi()!) as unknown as Screen; }
 
   // ---- 항구 지도(R029): 종이 지도 위 7개 지역 카드. 카드 채도 = colorReturn[지역], 잠긴 지역은 먹선 실루엣이다.
   // 360 px 폭에서는 지도가 가로로 스크롤된다(지도 최소 폭 960 px). 포커스가 움직이면 그 카드가 보이게 스크롤한다.
@@ -2731,7 +2795,7 @@ export class Menus {
       const tab = SETTINGS_TABS[tabIdx];
       tab.rows.forEach((r, i) => {
         let ctrl: RowControl;
-        if (r.type === 'link') ctrl = { el: h('span', { class: 'iw-row__link' }, 'VIEW', h('i', { html: GLYPHS.next })), accept: () => { this._sfx('ui_click'); this._go('howto'); } };
+        if (r.type === 'link') ctrl = { el: h('span', { class: 'iw-row__link' }, r.key === '_howto' ? 'VIEW' : '열기', h('i', { html: GLYPHS.next })), accept: () => { this._sfx('ui_click'); this._settingsLink(r.key, (k, v) => controls.get(k)?.refresh?.(v)); } };
         else if (r.type === 'slider') ctrl = this._slider(r, s[r.key]);
         else if (r.type === 'toggle') ctrl = this._toggle(r, s[r.key]);
         else {
@@ -4312,6 +4376,7 @@ export class Menus {
 
   _scr_pause(): Screen {
     if (safeCall(() => this.api.isPractice && this.api.isPractice())) return this._scr_pausePractice();
+    { const c = this._campApi(); if (c?.inMission()) return pauseScreen(this as unknown as MenuKit, c) as unknown as Screen; }
     const snap = this._matchSnapshot();
     const zoneMode = snap.mode === 'zones' && !!snap.zones;
     // online the match keeps running underneath this menu, and quitting leaves the room

@@ -11,7 +11,7 @@ import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { DEFAULT_SETTINGS, rendererQuality } from '../config.js';
 import { G } from './ctx.js';
-import { shouldUseTouch } from './touch.js';
+import { isTouchDevice } from './touch.js';   // 성능 분류(기기)이다. 가상 키 표시와 무관하다(33번 T007)
 import { resolveLook, type LookProfile } from '../style/lookProfile.js';
 import { applyToonLighting } from '../style/toonLighting.js';
 import { StylePass, type ColorReturnState, type LineMode } from '../style/stylePass.js';
@@ -131,7 +131,7 @@ export class Renderer {
   constructor(container: HTMLElement, settings: RendererSettings) {
     this.overlays = new Set();
     // 툰 램프는 셰이더를 하나라도 만들기 전에 청크를 패치해야 한다(다시 시작 후 적용)
-    applyToonLighting(resolveLook(settings, shouldUseTouch(settings)));
+    applyToonLighting(resolveLook(settings, isTouchDevice()));
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', stencil: false }));
     // Shader status checks make every compile synchronous (the main thread waits on the GPU process for the link
     // result): a mid-game compile then stalls input, netcode and all. Players run without them; ?shadercheck (the
@@ -150,7 +150,7 @@ export class Renderer {
     this.container = container;
     this.scene = null; this.camera = null;
     this.settings = settings;
-    this.touch = shouldUseTouch(settings);
+    this.touch = isTouchDevice();
     this.q = rendererQuality(settings, this.touch);
     this.look = resolveLook(settings, this.touch);
     this.style = null; this.lineMode = null; this._depthTexOk = LINE_OVERRIDE !== 'prepass'; this._colorReturn = null;
@@ -274,7 +274,7 @@ export class Renderer {
   applySettings(settings: RendererSettings): void {
     const prevQ = this.q, prevLook = this.look;
     this.settings = settings;
-    this.touch = shouldUseTouch(settings);
+    this.touch = isTouchDevice();
     this.q = rendererQuality(settings, this.touch);
     this.look = resolveLook(settings, this.touch);
     // 룩 전환(그림책 ↔ 원본)은 패스 구성이 바뀌므로 다시 만들고, 같은 룩의 수치 변경은 StylePass에 바로 넣는다

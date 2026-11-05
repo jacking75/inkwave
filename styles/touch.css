@@ -1,11 +1,12 @@
-/* On-screen touch controls (src/core/touch.js).
+/* On-screen virtual controls (src/core/touch.ts): fingers, and the mouse / pen on a PC.
    Sizes and positions are computed and written in JS — layout and hit-testing share one set of numbers so they cannot
    drift apart — and this file only paints. That is also why nothing here uses --u: the UI scale token collapses to
    under half its design size on a phone, which would leave the buttons too small to hit. The short screen edge drives
    the cluster instead. */
 
-/* The layer is always present once touch mode is on; the controls inside it are gated on the match being live. */
+/* The layer always exists (PC and phone); the controls inside it are gated on the match being live (input policy). */
 .iw-touch {
+  opacity: var(--vc-opacity, .85);
   z-index: 15;                 /* over the HUD (10), under the menu layer (20) and the overlays (30) */
   pointer-events: none;        /* every listener lives on window with geometric hit-testing */
   -webkit-touch-callout: none;
@@ -89,3 +90,26 @@
   65%, 100% { rotate: 90deg; }
 }
 @media (prefers-reduced-motion: reduce) { .iw-touch-rotate i { animation: none; rotate: 90deg; } }
+
+/* ---- PC direction pad (mouse / pen): fixed place, click a direction to keep moving, centre = stop ---- */
+.iw-touch__dpad {
+  position: absolute; left: 0; top: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, .34);
+  background: radial-gradient(circle, rgba(21, 18, 28, .38) 0 31%, rgba(21, 18, 28, .22) 32% 100%);
+  display: none;
+}
+.iw-touch.is-live .iw-touch__dpad.is-pc { display: block; }
+.iw-touch__dpad > i {
+  position: absolute; left: 50%; top: 50%;
+  width: 34%; height: 34%; margin: -17% 0 0 -17%;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .55);
+  transition: transform .08s var(--out);
+}
+.iw-touch__dpad.is-held > i { background: rgba(255, 138, 20, .9); box-shadow: 0 0 0 3px rgba(255, 255, 255, .6); }
+.iw-touch__dpad > b {
+  position: absolute; left: 50%; top: 50%; translate: -50% -50%;
+  font: 900 clamp(8px, 1.8vmin, 12px) / 1 var(--font-body); color: #fff; opacity: .8; pointer-events: none;
+}
+.iw-touch__dpad.is-held > b { opacity: 0; }

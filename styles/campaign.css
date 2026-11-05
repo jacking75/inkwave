@@ -1,0 +1,90 @@
+/* Campaign HUD (src/campaign/view.ts). Sits over the match HUD (10) and under the virtual controls (15): the objective
+   line top-left under the score area, the boss bar top-centre, never over the ink / HP gauges or the danger decals. */
+.iw-camp { position: absolute; inset: 0; z-index: 12; pointer-events: none; font-family: var(--font-body); color: #fff; }
+.iw-camp.is-hidden { display: none; }
+.iw-camp__obj {
+  position: absolute; left: calc(var(--sal, 0px) + 18px); top: calc(var(--sat, 0px) + 92px); max-width: min(46vw, 420px);
+  padding: 10px 14px; border-radius: 14px; background: rgba(21, 18, 28, .62); box-shadow: 0 0 0 2px rgba(255, 255, 255, .18);
+}
+.iw-camp__row { display: flex; align-items: baseline; gap: 10px; }
+.iw-camp__count { font: 800 14px/1 var(--font-body); padding: 3px 7px; border-radius: 8px; background: #fff; color: #15121c; }
+.iw-camp__label { font: 400 19px/1.2 var(--font-title); letter-spacing: .02em; }
+.iw-camp__block { margin-top: 6px; font: 700 14px/1.3 var(--font-body); color: #ffd21a; min-height: 0; }
+.iw-camp__block:empty, .iw-camp__hint:empty, .iw-camp__crate:empty { display: none; }
+.iw-camp__hint { margin-top: 6px; font: 600 13px/1.35 var(--font-body); opacity: .85; }
+.iw-camp__crate { margin-top: 6px; font: 700 13px/1 var(--font-body); color: #ffe48a; }
+.iw-camp__boss { position: absolute; left: 50%; top: calc(var(--sat, 0px) + 70px); translate: -50% 0; width: min(560px, 60vw); text-align: center; display: none; }
+.iw-camp__boss.is-on { display: block; }
+.iw-camp__boss b { font: 400 18px/1 var(--font-title); letter-spacing: .03em; text-shadow: 0 2px 0 #15121c; }
+.iw-camp__bar { margin-top: 6px; height: 12px; border-radius: 8px; background: rgba(21, 18, 28, .7); box-shadow: 0 0 0 2px #15121c; overflow: hidden; }
+.iw-camp__bar > i { display: block; height: 100%; width: 100%; background: linear-gradient(#ff7a6b, #e4433a); transition: width .15s; }
+.iw-camp__exposed { display: block; margin-top: 4px; min-height: 16px; font: 800 14px/1 var(--font-body); color: #ffd21a; text-shadow: 0 2px 0 #15121c; }
+.iw-camp__pin { position: absolute; left: 0; top: 0; display: none; translate: -50% -50%; padding: 3px 8px; border-radius: 10px;
+  font: 800 13px/1 var(--font-body); background: rgba(255, 255, 255, .92); color: #15121c; box-shadow: 0 2px 0 #15121c; }
+.iw-camp__pin.is-on { display: block; }
+.iw-camp__mark { position: absolute; left: 0; top: 0; translate: -50% -100%; font: 900 14px/1 var(--font-body); color: #fff; text-shadow: 0 0 3px #15121c, 0 2px 0 #15121c; }
+.iw-camp__mark.is-elite { font-size: 20px; color: #ffd21a; }
+.iw-camp__toast { position: absolute; left: 50%; top: 32%; translate: -50% 0; padding: 10px 22px; border-radius: 20px; opacity: 0;
+  font: 400 22px/1 var(--font-title); background: rgba(21, 18, 28, .8); transition: opacity .25s; }
+.iw-camp__toast.is-on { opacity: 1; }
+.iw-camp__fail { position: absolute; left: 50%; top: 50%; translate: -50% -50%; width: min(520px, 86vw); padding: 22px 24px; border-radius: 18px;
+  background: rgba(21, 18, 28, .9); box-shadow: 0 0 0 3px #fff; text-align: center; pointer-events: auto; }
+.iw-camp__failt { font: 400 30px/1 var(--font-title); }
+.iw-camp__failc { margin-top: 12px; font: 800 17px/1.3 var(--font-body); color: #ffd21a; }
+.iw-camp__faila { margin-top: 8px; font: 600 15px/1.4 var(--font-body); opacity: .9; }
+.iw-camp__failn { margin-top: 18px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.iw-camp__btn { font: 800 16px/1 var(--font-body); padding: 12px 18px; border-radius: 12px; border: 0; background: #fff; color: #15121c; cursor: pointer; min-height: 48px; }
+.iw-camp__btn.is-primary { background: #ff8a14; }
+.iw-camp__btn:focus-visible, .iw-camp__btn.is-focus { outline: 3px solid #ffd21a; outline-offset: 2px; }
+@media (max-width: 720px) { .iw-camp__obj { top: calc(var(--sat, 0px) + 64px); padding: 7px 10px; } .iw-camp__label { font-size: 15px; } }
+/* 캠페인에서는 대전 시계·팀 줄을 숨긴다(목표 줄과 대장 체력바가 그 자리를 쓴다) */
+.iw-hud.is-campaign .iw-timer, .iw-hud.is-campaign .iw-squad { display: none; }
+
+/* ---- 작업장 캠페인 화면(src/ui/campaignScreens.ts): 모듈 장비·특성 ---- */
+.iw-cg, .iw-ct { padding: calc(var(--u) * 10) calc(var(--u) * 5) calc(var(--u) * 6); display: flex; flex-direction: column; gap: calc(var(--u) * 1.4); }
+.iw-cg__cols { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, .8fr); gap: calc(var(--u) * 1.6); min-height: 0; flex: 1; }
+.iw-cg__left { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.iw-cg__tabs { display: flex; gap: 8px; }
+.iw-cg__tab, .iw-cg__card, .iw-ct__t {
+  text-align: left; border: 0; border-radius: 12px; padding: 10px 12px; background: var(--paper, #f4efe6); color: var(--ink, #15121c);
+  box-shadow: 0 0 0 2px var(--ink, #15121c); font: 600 14px/1.3 var(--font-body); cursor: pointer; min-height: 48px;
+}
+.iw-cg__tab { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.iw-cg__tab.is-on { background: #ffd21a; }
+.iw-cg__tab small, .iw-cg__card small { font: 800 11px/1 var(--font-body); letter-spacing: .04em; opacity: .7; }
+.iw-cg__list { display: flex; flex-direction: column; gap: 8px; overflow: auto; max-height: 56vh; padding: 3px; }
+.iw-cg__card { display: grid; gap: 3px; }
+.iw-cg__card b { font: 400 17px/1.1 var(--font-title); }
+.iw-cg__card span { font-size: 12px; opacity: .8; }
+.iw-cg__card.g-precise { box-shadow: 0 0 0 2px #2f5bff; }
+.iw-cg__card.g-special { box-shadow: 0 0 0 3px #b04bff; background: #f3e9ff; }
+.iw-cg__card.is-eq { background: #fff4c9; }
+.iw-cg__card.is-lock small::after { content: ' 🔒'; }
+.iw-cg__card.is-pending { opacity: .85; border: 2px dashed var(--ink, #15121c); }
+.iw-cg__cmp, .iw-cg__side { background: rgba(244, 239, 230, .94); color: var(--ink, #15121c); border-radius: 14px; padding: 12px 14px; box-shadow: 0 0 0 2px var(--ink, #15121c); overflow: auto; }
+.iw-cg__pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.iw-cg__pair small { display: block; font: 800 11px/1 var(--font-body); opacity: .65; }
+.iw-cg__pair b { display: block; margin: 4px 0; font: 400 16px/1.1 var(--font-title); }
+.iw-cg__lines { margin: 0; padding-left: 16px; font: 600 13px/1.45 var(--font-body); }
+.iw-cg__lines .is-bad { color: #c62f2f; }
+.iw-cg__none { opacity: .6; font-size: 13px; }
+.iw-cg__stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font: 600 13px/1.3 var(--font-body); }
+.iw-cg__stat { display: flex; justify-content: space-between; gap: 6px; }
+.iw-cg__stat.is-capped b::after { content: ' (상한)'; font-weight: 600; color: #c26a00; }
+.iw-cg__lv b { font: 400 22px/1 var(--font-title); margin-right: 8px; }
+.iw-cg__mat, .iw-cg__hint { margin: 6px 0; font: 700 13px/1.3 var(--font-body); }
+.iw-cg h4, .iw-ct h4 { margin: 10px 0 6px; font: 800 13px/1 var(--font-body); letter-spacing: .05em; }
+.iw-ct__info { font: 800 16px/1 var(--font-body); color: #fff; text-shadow: 0 2px 0 #15121c; }
+.iw-ct__cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: calc(var(--u) * 1.6); }
+.iw-ct__col { display: flex; flex-direction: column; gap: 8px; background: rgba(21, 18, 28, .45); border-radius: 14px; padding: 10px; }
+.iw-ct__col h4 { color: #fff; }
+.iw-ct__t { display: grid; gap: 4px; }
+.iw-ct__t b { font: 400 16px/1.1 var(--font-title); }
+.iw-ct__t span { font-size: 12px; opacity: .8; }
+.iw-ct__t.is-on { background: #ffd21a; }
+.iw-ct__t.is-locked { opacity: .55; }
+@media (max-width: 900px) { .iw-cg__cols { grid-template-columns: 1fr; } .iw-ct__cols { grid-template-columns: 1fr; } .iw-cg__list { max-height: 36vh; } }
+/* 가상 키가 살아 있으면 대장 체력바를 맨 위, 위쪽 버튼 줄 사이 폭으로(목표 줄·버튼과 겹치지 않게) */
+body.iw-vc-live .iw-camp__boss { top: calc(var(--sat, 0px) + 8px); width: min(460px, calc(100vw - 2 * var(--vc-top, 0px) - 16px)); }
+body.iw-vc-live .iw-camp__boss b { font-size: 15px; }
+.iw-camp__temp { margin-top: 6px; font: 800 13px/1.3 var(--font-body); color: #ff9b8f; }

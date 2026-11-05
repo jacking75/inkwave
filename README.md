@@ -107,13 +107,17 @@ Windows에는 **Visual Studio IDE 전체가 필요하지 않다.** Tauri의 공�
 | `npm run desktop:check` | 웹 자산 준비 후 Rust를 최대 두 작업으로 검사한다. 앱은 기동하지 않지만 컴파일·다운로드 비용은 발생할 수 있다. |
 | `npm run dev` | 타입 검사(`tsc --noEmit`) 통과 후 `.web-dev/`를 조립하고 포트 8490 웹 서버와 변경 감시를 시작한다. `.ts`는 esbuild로 변환하고 `.js`는 그대로 복사한다. 반영은 새로고침이며 타입 오류가 나면 직전 출력이 남고 화면에 붉은 상자로 알린다. |
 | `npm run serve` | `npm run dev`와 같은 경로를 감시 없이 한 번 조립해 띄운다. |
-| `npm run typecheck` | 게임 클라이언트(`tsconfig.json`)와 웹 개발 도구(`tools/client/`)의 타입 검사이다. |
+| `npm run typecheck` | 게임 클라이언트(`tsconfig.json`), 행동 검사(`tests/client`, `tsconfig.tests.json`), 웹 개발 도구(`tools/client/`)의 타입 검사이다. |
+| `npm run test:client` | `tests/client/**/*.test.ts`를 esbuild로 묶어 `node --test`로 돌리는 행동 검사이다(입력 프레임·패드·가상 키·캠페인 규칙·보상·저장). 실제 패드·터치 기기와 사람 완주를 대신하지 않는다. |
+| `npm run verify` | `typecheck` → `check` → `test:client` → `build`를 차례로 실행한다. 실패한 단계의 종료 코드를 그대로 돌려준다. |
+| `npm run smoke`, `npm run smoke:dist` | 개발 서버(8490) 또는 `dist/`(별도 8493)를 headless Chrome으로 열어 자동 조종 경기와 콘솔 오류·404를 확인한다(Windows·macOS·Linux). |
 | `npm run compile` | `.web-dev/`만 조립한다(서버 없음). Node 도구 `tools/light-shots.mjs`·`stage-shots.mjs`는 이 출력을 읽는다. |
 | `npm run package` | Tauri 릴리스와 Windows NSIS 설치 파일을 만든다. 출력은 `src-tauri/target/release/` 아래이며 현재 패키징 검증은 미실행이다. |
 | `npm run check` | 기존 JavaScript 구문 검사이다. TypeScript 타입 검사나 게임 동작 검증을 대신하지 않는다. |
 | `npm run check-maps` | 기존 맵 정합성 검사이다. 실제 이동·완주·성능 검증을 대신하지 않는다. |
 | `npm run build` | `npm run compile` 뒤 컴파일 출력과 웹 파일을 `dist/`에 수집한다. Tauri 앱은 만들지 않는다. |
-| `npm run smoke`, `npm run botlab`, `npm run net-test` | 게임을 기동하는 자동 검사이다. 이번 성능 검사에서는 실행하지 않았다. |
+| `npm run botlab`, `npm run net-test` | 게임을 기동하는 자동 검사이다. 이번 성능 검사에서는 실행하지 않았다. |
+| `node .tools/input-check.js`, `node .tools/mission-check.js` | 개발 서버에 붙어 입력 체계(가짜 패드·마우스 가상 키·에뮬레이션 터치)와 캠페인 1장(목표·체크포인트·저장·보상·작업장·주행)을 검사한다. `npm run compile` 또는 `npm run dev` 뒤 `tsc -p tsconfig.client-tools.json`으로 만든다. 상태 처리 검증이며 실기기·사람 완주가 아니다. |
 
 수정 후 검사도 먼저 스크립트 내용을 확인하고 앱을 기동하지 않는 검사부터 수행한다. 빌드 성공과 실제 성능·패드 조작 검증은 별도로 판정한다. Tauri로 바꿨다는 이유만으로 실행을 재개하지 않는다.
 

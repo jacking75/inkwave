@@ -611,7 +611,13 @@ export const DEFAULT_SETTINGS = {
   rumble: 1.0,              // gamepad vibration 0..1 (only while the pad is the last-used device)
   aimAssist: 1.0,           // gamepad aim assist 0..1
   aimAssistMouse: false,    // optional aim assist for mouse
-  touchControls: 'auto',    // on-screen controls: 'auto' (decide by device) | 'on' | 'off'
+  // 가상 키(33번 T008·T015). 구버전 touchControls('on'|'auto'|'off')는 core/inputPolicy.ts가 한 번만 옮긴다.
+  inputVersion: 2,
+  virtualControls: 'auto' as 'auto' | 'always',   // auto = 사용할 수 있는 패드로 조작 중이 아니면 표시(PC 포함) | always
+  vcSize: 1.0,              // 가상 키 크기 배율 0.7..1.5
+  vcOpacity: 0.85,          // 0.3..1
+  vcOffsetX: 0,             // 아래 버튼 묶음 위치 이동(px, -240..240). 배치가 화면·안전 영역 안으로 되돌린다
+  vcOffsetY: 0,
   touchSensitivity: 1.0,    // touch look multiplier 0.2..3
   touchInvertY: false,      // kept separate from invertY: the natural touch mapping is usually the opposite of the mouse's
   // 그림책 리디자인(35번 6.3절). 기존 키의 의미는 바꾸지 않는다.

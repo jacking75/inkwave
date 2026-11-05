@@ -141,6 +141,25 @@ export class StoryDirector {
     else intro();
   }
 
+  // 캠페인 세션(33번 T022)이 경기를 연 뒤 부른다: 이야기 사건을 그 임무에 묶고 프롤로그·입장 대본을 재생한다
+  beginMission(missionId: string, withPrologue: boolean, intro = true): void {
+    this.mission = missionId; this.firstKill = false; this.firstDeath = false;
+    this._applyHolds();
+    const ms = missionStory(missionId);
+    const play = (): void => { const s = ms && intro ? getScript(ms.intro) : null; if (s) this.layer.play(s); };
+    const pro = withPrologue && missionId === '1-1' ? getPanels('ch1.prologue') : null;
+    if (pro) this.panels.play(pro, () => play());
+    else play();
+  }
+  // 임무 완료 대사(결과 화면 앞)
+  outro(onDone?: () => void): void {
+    const ms = this.mission ? missionStory(this.mission) : null;
+    const s = ms ? getScript(ms.outro) : null;
+    if (!s) { onDone?.(); return; }
+    this.layer.play({ ...s, blocksInput: true });
+    if (onDone) { const wait = (): void => { if (!this.layer.runner.busy) onDone(); else setTimeout(wait, 200); }; setTimeout(wait, 200); }
+  }
+
   // 목표 실행기(33번 T024)·보스(T045)가 부른다: 그 임무의 comms[key] 대본
   comm(key: string): boolean {
     const ms = this.mission ? missionStory(this.mission) : null;
