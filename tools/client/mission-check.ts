@@ -1,6 +1,6 @@
 // 캠페인 임무 실행 검사(33번 T022~T046). 개발 서버의 실제 게임에서 임무를 열고, 플레이어를 목표로 옮기며 바닥을 칠하고
 // 적을 실제 피해 경로(Actor.damage)로 쓰러뜨려 목표·체크포인트·저장·결과를 확인한다. 순간 이동·직접 도색은 "논리 검사"이며
-// 사람이 조작하는 완주(T040·T043·T047)를 대신하지 않는다.
+// 사람이 조작하는 완주(33번 14절 U003~U006)를 대신하지 않는다.
 //
 // usage: node .tools/mission-check.js [--port 8490] [--mission 1-1] [--fresh] [--shots]
 // 결과: 표준 출력 JSON, shots/mission/*.png. 실패가 있으면 종료 코드 1이다.
@@ -366,7 +366,7 @@ try {
   // ------------------------------------------------------------------------------------------------ 주행(T038·T041·T044)
   // 실제 입력 경로(가짜 표준 패드 왼쪽 스틱·A 점프 → 공통 프레임 → PlayerController → Actor 물리)로 플레이어를 이동 그래프의
   // 경로를 따라 걷게 해, 시작 장비·기본 이동만으로 각 목표·선택 상자·체크포인트에 실제로 닿는지 본다. 적은 멈춰 둔다(지형 검사).
-  // 사람의 조작감·완주(T040·T043·T047)를 대신하지 않는다.
+  // 사람의 조작감·완주(33번 14절 U003~U006)를 대신하지 않는다.
   if (only.includes('walk')) {
     const { page, errors } = await openFresh();
     await page.evaluate(`window.__pads = []; Object.defineProperty(navigator, 'getGamepads', { configurable: true, value: () => window.__pads.map((q, i) => q && ({ index: i, id: 'Xbox 360 Controller (STANDARD GAMEPAD)', mapping: 'standard', connected: true, axes: q.ax || [0, 0, 0, 0], buttons: Array.from({ length: 17 }, (_, k) => ({ pressed: !!(q.b && q.b[k]), value: q.b && q.b[k] ? 1 : 0 })) })) })`);

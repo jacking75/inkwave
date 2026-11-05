@@ -1346,7 +1346,8 @@ class Game {
     this.menus?.showStoryResults?.({
       mission: mission.id, title: mission.title, district: dist.id, firstClear: !!rec?.first, rewards,
       xp: { from: before?.xp ?? 0, to: (before?.xp ?? 0) + (rec?.xp.applied ?? 0), max: LEVEL_XP[Math.min(20, toLv + 1)] || 12350 },
-      line: { speaker: 'mora', text: rec?.first ? '좋아, 색이 돌아왔어. 장비는 작업장에서 맞춰 보자.' : '같은 길도 다른 손으로 칠하면 다르게 보여.' },
+      // 1-2 첫 완료는 무료 특성 재배분을 안내한다(스테이지 4번 문서 "완료 후 변화")
+      line: { speaker: 'mora', text: !rec?.first ? '같은 길도 다른 손으로 칠하면 다르게 보여.' : mission.id === '1-2' ? '특성은 작업장에서 언제든 무료로 다시 나눌 수 있어.' : '좋아, 색이 돌아왔어. 장비는 작업장에서 맞춰 보자.' },
       next: nextDef ? { id: nextDef.id, title: nextDef.title } : null,
       commit,
     });
