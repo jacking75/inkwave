@@ -68,6 +68,14 @@ async function start(page: Page, id: string, resume = false): Promise<void> {
   await page.evaluate(HELPERS);
   for (let i = 0; i < 10; i++) { await ev(page, '__m.skipStory()'); await ev(page, '__m.frames(5)'); }
 }
+// 전투 상태까지 기다린다. 기다리는 동안 프롤로그 패널·막는 대본을 넘긴다(넘기지 않으면 패널 진행 속도에 따라 결과가 흔들린다)
+async function waitCombat(page: Page, ms = 180000): Promise<void> {
+  const t0 = Date.now(), done = '!!(__inkwave.session && __inkwave.session.state === "combat")';
+  await page.evaluate(HELPERS);
+  while (Date.now() - t0 < ms && !(await ev<boolean>(page, done))) { await ev(page, '__m.skipStory()'); await wait(250); }
+  if (!(await ev<boolean>(page, done))) throw new Error('전투 시작 대기 실패: ' + JSON.stringify(await ev(page, '({ menu: __inkwave.menus.current, st: __inkwave.session && __inkwave.session.state, save: !!__inkwave.store.current })')));
+  await page.evaluate(HELPERS);
+}
 async function pass(page: Page, ms: number): Promise<void> { const t0 = Date.now(); while (Date.now() - t0 < ms) { await ev(page, '__m.skipStory()'); await ev(page, '__m.frames(6)'); } }
 // 장치를 칠하고 원 안에 머문다
 async function operate(page: Page, x: number, z: number, secs = 2.6): Promise<void> {
@@ -80,6 +88,11 @@ async function operate(page: Page, x: number, z: number, secs = 2.6): Promise<vo
 async function clearArea(page: Page, x: number, z: number, secs = 3): Promise<void> {
   const t0 = Date.now();
   while (Date.now() - t0 < secs * 1000) { await ev(page, `(__m.tp(${x}, 3, ${z}), __m.killAll(), 0)`); await ev(page, '__m.skipStory()'); await ev(page, '__m.frames(4)'); }
+}
+// 출현 묶음이 실제로 정리될 때까지(headless는 게임 시간이 느려 벽시계 시간만으로는 출현 전에 끝날 수 있다)
+async function clearEncounter(page: Page, x: number, z: number, enc: string, maxSecs = 30): Promise<void> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < maxSecs * 1000 && (await ev<string>(page, `__inkwave.session.encounters.state('${enc}')`)) !== 'cleared') await clearArea(page, x, z, 0.5);
 }
 
 try {
@@ -212,14 +225,13 @@ try {
     await ev(page, '__m.frames(2)');
     await ev(page, `(async () => { await __inkwave.quitToMenu('workshop'); })()`);
     await ev(page, `(() => { void __inkwave.startCampaign('1-1', {}); })()`);
-    await page.waitForFunction('__inkwave.session && __inkwave.session.state === "combat"', { timeout: 180000, polling: 200 });
-    await page.evaluate(HELPERS);
+    await waitCombat(page);
     await ev(page, `__inkwave.quitToMenu('workshop')`);
     await start(page, '1-1');
     const one = await ev<{ huds: number; locals: number; enemies: number; markers: number }>(page, `({ huds: document.querySelectorAll('.iw-camp').length, locals: __inkwave.match.actors.filter((a) => a.isLocal).length, enemies: __inkwave.match.actors.filter((a) => a.team === 1).length, markers: window.__G.scene.children.filter((c) => c.name === 'campaign-devices').length })`);
     ok('T022 시작 중 취소·재시작·작업장 반복 뒤 HUD 1·플레이어 1·장치 표식 1·적 0(시작 구역 밖)', one.huds === 1 && one.locals === 1 && one.markers === 1, one);
     // 체크포인트 뒤 도색 → 재시작: CPU 격자·GPU 아틀라스가 체크포인트 때와 같다, 연속 재시작에 탄환·예고·대기 출현이 남지 않는다
-    await clearArea(page, -12, -27, 2); await operate(page, -12, -31, 2.8);
+    await clearEncounter(page, -12, -27, 'enc-a'); await operate(page, -12, -31, 2.8);
     const px = async () => ev<number[]>(page, `(() => { const P = window.__G.paint, r = P.renderer, rt = P.rt, out = new Uint8Array(64 * 64 * 4); r.readRenderTargetPixels(rt, 0, 0, 64, 64, out); let s = 0; for (let i = 0; i < out.length; i += 97) s = (s * 31 + out[i]) >>> 0; return [s, P.counts[0], P.counts[1]]; })()`);
     await ev(page, `__inkwave.session.snap.capture()`);
     const before = await px();
@@ -232,13 +244,17 @@ try {
     ok('T028 연속 재시작 뒤 남은 탄환·예고·대기 출현 없음', left.proj === 0 && left.tel === 0 && left.pend === 0, left);
     // 새로고침 → 이어하기: 진행 중 CP1에서 다시 시작(A 완료 유지)
     await page.reload({ waitUntil: 'load' });
-    await page.waitForFunction('window.__inkwave && __inkwave.menus && __inkwave.menus.current === "main"', { timeout: 180000, polling: 250 });
+    await page.waitForFunction('window.__inkwave && __inkwave.menus && __inkwave.menus.current === "main"', { timeout: 180000, polling: 250 }).catch(async (e) => {
+      throw new Error(String(e).slice(0, 80) + ' ' + JSON.stringify(await ev(page, '({ ig: !!window.__inkwave, menu: window.__inkwave && __inkwave.menus && __inkwave.menus.current, url: location.href, vis: [...document.querySelectorAll("body *")].filter((x) => x.offsetParent && x.children.length === 0 && x.textContent.trim()).slice(0, 12).map((x) => x.className + ":" + x.textContent.trim().slice(0, 30)) })').catch((x) => String(x))));
+    });
     await page.evaluate(HELPERS);
+    // 저장 읽기(IndexedDB)는 비동기이다: 이어하기 판단 전에 불러오기가 끝나야 한다(사람은 메뉴를 보고 누른다)
+    await page.waitForFunction('__inkwave.store.current', { timeout: 30000, polling: 100 }).catch(() => {});
+    const loaded = await ev<{ cur: boolean; mission: string | null }>(page, '({ cur: !!__inkwave.store.current, mission: __inkwave.store.current && __inkwave.store.current.inProgress ? __inkwave.store.current.inProgress.missionId : null })');
     await ev(page, `(() => { void __inkwave.api.startStory(); })()`);
-    await page.waitForFunction('__inkwave.session && __inkwave.session.state === "combat"', { timeout: 180000, polling: 200 });
-    await page.evaluate(HELPERS);
+    await waitCombat(page);
     const resumed = await st(page);
-    ok('T029 새로고침 후 이어하기: 진행 중 CP1·A 완료 복구', resumed.cp === 'cp1' && resumed.done.includes('o-a'), resumed);
+    ok('T029 새로고침 후 이어하기: 진행 중 CP1·A 완료 복구', loaded.mission === '1-1' && resumed.cp === 'cp1' && resumed.done.includes('o-a'), { loaded, resumed });
     ok('수명 콘솔 오류 없음', errors.length === 0, errors.slice(0, 5));
     await page.close();
   }
@@ -553,6 +569,162 @@ try {
     const rnd = save.cards.find((c) => c.defId !== 'SG01' || save.cards.length === 1);
     ok('T046 1-3 첫 완료: 600·80·무작위 1·공명핵 1·확정 SG01·2-1(시장) 해금, 확정 서명은 보장 횟수 제외', save.xp === 600 && save.parts === 80 && save.cores === 1 && save.cards.length === 2 && sig >= 1 && save.unlocked.includes('2-1') && save.pity === (rnd && rnd.grade === 'special' ? 0 : 1), save);
     ok('1-3 콘솔 오류 없음', errors.length === 0, errors.slice(0, 5));
+    await page.close();
+  }
+  // ------------------------------------------------------------------------------------------------ 액션 실측(35번 R017~R020)
+  // 1-3 광장(출현 묶음 정지)에 병종을 하나씩 세워 실제 상태기·예고·탄환으로 공격하게 한다. 잠수 입력은 가짜 표준 패드 LT의
+  // 실제 입력 경로이다(사격병의 즉발 탄환만 도착 시각을 미리 알 수 없어 잠수 시각을 피해 직전에 기록한다). 1-2는 전 구간을
+  // 피해 없이(무적) 자동 조준 사격으로 교전해 물결 단계를 잰다. 1-1은 자기 잉크 위 LT 두 번으로 서지 거리를 잰다.
+  if (only.includes('act')) {
+    const { page, errors } = await openFresh();
+    await page.evaluate(`window.__pads = [{ b: {} }]; Object.defineProperty(navigator, 'getGamepads', { configurable: true, value: () => window.__pads.map((q, i) => q && ({ index: i, id: 'Xbox 360 Controller (STANDARD GAMEPAD)', mapping: 'standard', connected: true, axes: q.ax || [0, 0, 0, 0], buttons: Array.from({ length: 17 }, (_, k) => ({ pressed: !!(q.b && q.b[k]), value: q.b && q.b[k] ? 1 : 0 })) })) })`);
+    await ev(page, `__inkwave.store.newGame(Date.now(), 'normal')`);
+    await unlockTo(page, ['1-2', '1-3']);
+    await start(page, '1-3');
+    await ev(page, `window.__pads[0] = { b: { 0: 1 } }`); await ev(page, '__m.frames(3)'); await ev(page, `window.__pads[0] = { b: {} }`); await ev(page, '__m.frames(3)');
+    await ev(page, `(() => {
+      const g = __inkwave, s = g.session, G = window.__G;
+      // 진입 사격병 등 임무 적을 거두고 출현을 멈춘다. 시험 자리는 자기 잉크로 칠해 둔다(적 잉크 위는 퍼펙트 대상이 아니다)
+      for (const id of [...s.encounters.runs.keys()]) s.encounters.stop(id);
+      s.encounters.update = () => {};
+      __m.paintAt(0, -28, 3); __m.paintAt(0, -26, 3);
+      // 시험 병종: 출현 묶음 밖에서 세션의 실제 생성 경로(_spawn)로 만든다
+      window.__act = {
+        spawn(role, x, z, yaw) { const u = { id: 'T-' + role + '-' + Math.random().toString(36).slice(2, 6), role, at: [x, 3, z], yaw }; return s._spawn(u, { id: 'enc-test', segment: 'none', area: [0, 0, 0, 0], maxActive: 3, waves: [] }); },
+        drop(a) { s._despawn(a); },
+        face(t) { const L = G.local, dx = t.pos.x - L.pos.x, dz = t.pos.z - L.pos.z, dy = t.pos.y + 0.7 - (L.pos.y + 1.1); g.rig.yaw = Math.atan2(dx, dz); g.rig.pitch = Math.atan2(dy, Math.hypot(dx, dz)); },
+      };
+    })()`);
+
+    // R017: 네 공격 × (창 안 → 피해 0·발동 1, 창 밖 → 정상 피해)
+    const dive = async (role: string, inWindow: boolean) => ev<Record<string, unknown>>(page, `(async () => {
+      const g = __inkwave, G = window.__G, L = G.local, A = window.__act, tel = g.campaignPreview.telegraphs;
+      const { on: sub } = await import('/src/core/ctx.js');
+      __m.tp(0, 3, -28); __m.paintAt(0, -28, 3); L.invuln = 0; L.hp = L.tune.hp; L.ink = L.tune.inkMax;
+      const E = A.spawn('${role}', 0, -20, Math.PI);
+      let perfect = 0, dmg = 0, pressAt = -1, endAt = -1, hitAt = -1;
+      const offs = [];
+      offs.push(sub('action:perfectDive', (e) => { if (e.attacker === E) perfect++; }));
+      offs.push(sub('damage', (e) => { if (e.victim === L && e.attacker === E) { dmg += e.amount; if (hitAt < 0) hitAt = G.time; } }));
+      // 사격병: 탄환이 닿는 순간 잠수 시각을 기록한다(창 안 0.05초 전 / 창 밖 0.5초 전)
+      const orig = L.damage;
+      if ('${role}' === 'gunner') L.damage = function (amt, att, src) { if (att === E && pressAt < 0) { pressAt = G.time; L._squidPressT = G.time - (${inWindow} ? 0.05 : 0.5); } return orig.call(this, amt, att, src); };
+      const t0 = G.time; let held = 0;
+      let fr = 0;
+      while (G.time - t0 < 14 && hitAt < 0 && perfect === 0) {
+        L.hp = L.tune.hp; A.face(E);
+        if (++fr % 8 === 0 && '${role}' === 'gunner') __m.paintAt(0, -28, 2);   // 빗나간 탄의 적 잉크가 시험 자리를 덮지 않게
+        const l = tel.live.find((x) => x.spec.attacker === E);
+        if (l && '${role}' !== 'gunner') {
+          endAt = l.endAt;
+          const at = ${inWindow} ? l.endAt - 0.09 : l.endAt - 0.6;
+          if (pressAt < 0 && G.time >= at) { pressAt = G.time; held = 3; }
+        }
+        window.__pads[0] = { b: held > 0 ? { 6: 1 } : {} };
+        if (held > 0) held--;
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      // 남은 연사 탄환·예고 피해까지 받는다(같은 공격이 끝날 때까지 쓰러지지 않게 체력만 채운다)
+      const t1 = G.time; while (G.time - t1 < 1.2) { L.hp = L.tune.hp; await new Promise((r) => requestAnimationFrame(r)); }
+      window.__pads[0] = { b: {} };
+      L.damage = orig; for (const o of offs) o(); A.drop(E); L.hp = L.tune.hp;
+      return { role: '${role}', inWindow: ${inWindow}, perfect, dmg: +dmg.toFixed(1), st: g.session.state, ground: L.groundTeam, lead: endAt > 0 ? +(endAt - L._squidPressT).toFixed(3) : null, waited: +(G.time - t0).toFixed(1) };
+    })()`);
+    const R17: Record<string, unknown>[] = [];
+    for (const role of ['gunner', 'shield', 'watcher', 'mortar']) for (const w of [true, false]) { R17.push(await dive(role, w)); await ev(page, '__m.frames(30)'); }
+    const r17in = R17.filter((r) => r.inWindow), r17out = R17.filter((r) => !r.inWindow);
+    ok('R017 네 공격(사격병 연사·방패병 발사·감시병 저격·포격병 낙하): 창 안 잠수 → 피해 0·발동', r17in.every((r) => r.perfect === 1 && r.dmg === 0), r17in);
+    ok('R017 네 공격: 창 밖 잠수 → 정상 피해·발동 없음', r17out.every((r) => r.perfect === 0 && (r.dmg as number) > 0), r17out);
+
+    // R020: 방패병 정면 사격만으로는 스태거가 나지 않는다(우산을 든 상태), 같은 사격을 뒤에서 하면 난다
+    const shieldFire = async (side: number) => ev<Record<string, unknown>>(page, `(async () => {
+      const G = window.__G, L = G.local, A = window.__act;
+      const { on: sub } = await import('/src/core/ctx.js');
+      const E = A.spawn('shield', 0, -20, Math.PI);
+      E.bot.update = () => { E.intent.move.set(0, 0, 0); E.intent.fire = false; };   // 우산을 든 경계 상태로 고정(자세·방향 유지)
+      E.tune = { ...E.tune, hp: 1e6 }; E.hp = 1e6;
+      let stag = 0, hits = 0; const offs = [sub('enemy:stagger', (e) => { if (e.actor === E) stag++; }), sub('damage', (e) => { if (e.victim === E && e.attacker === L) hits++; })];
+      const ang = E.yaw + ${side} * Math.PI / 2;
+      const px = E.pos.x + Math.sin(ang) * 6, pz = E.pos.z + Math.cos(ang) * 6;
+      const t0 = G.time;
+      let fr = 0;
+      while (G.time - t0 < 5) { __m.tp(px, 3, pz); L.ink = L.tune.inkMax; A.face(E); window.__pads[0] = { b: ++fr % 20 ? { 7: 1 } : {} }; await new Promise((r) => requestAnimationFrame(r)); }
+      window.__pads[0] = { b: {} };
+      for (const o of offs) o(); A.drop(E);
+      return { side: ${side}, hits, stag, st: __inkwave.session.state, alive: L.alive };
+    })()`);
+    const front = await shieldFire(0), back = await shieldFire(2);
+    ok('R020 방패병: 정면 사격 5초에 스태거 없음(명중은 있음), 뒤에서 같은 사격은 스태거', (front.hits as number) >= 10 && front.stag === 0 && (back.stag as number) >= 1, { front, back });
+
+    // R020: 대장의 스태거 노출 플래그를 약점 판정이 읽는다(정면이어도 노출 중에는 약점 배율)
+    const capt = await ev<Record<string, number | boolean>>(page, `(() => {
+      const g = __inkwave, s = g.session, G = window.__G, L = G.local, A = window.__act;
+      const E = A.spawn('umbrellaCaptain', 0, -20, Math.PI);
+      E.bot.update = () => { E.intent.move.set(0, 0, 0); E.intent.fire = false; };
+      __m.tp(0, 3, -26);
+      const c = g.campaignPreview.combat, n = c.entry(E);
+      const before = s._enemyTaken(E, 20, L);
+      n.poise.hit(1e6);
+      const exposed = c.isExposed(E), during = s._enemyTaken(E, 20, L);
+      A.drop(E);
+      return { before: +before.toFixed(2), during: +during.toFixed(2), exposed };
+    })()`);
+    ok('R020 대장: 스태거 노출 중 정면 피해에 약점 배율(노출 플래그 사용)', capt.exposed === true && (capt.during as number) >= (capt.before as number) * 1.45, capt);
+    ok('액션(1-3) 콘솔 오류 없음', errors.length === 0, errors.slice(0, 5));
+    await ev(page, `__inkwave.quitToMenu('workshop')`);
+
+    // R019: 1-2 전 구간을 피해 없이 교전 — 물결 점수 경제를 잰다. 조준 대신 슈터 연사 속도(0.1초마다 36 피해)로 실제
+    // damage() 경로를 부르고(명중·처치·스태거·정예 획득은 실제 리스너), 목표는 실제로 칠하고 머문다. 빗나감이 없는 상한이며
+    // 구간 사이 이동 시간은 walk 주행 실측만큼 둔다.
+    await start(page, '1-2');
+    const wave = await ev<Record<string, unknown>>(page, `(async () => {
+      const g = __inkwave, s = g.session, G = window.__G, L = G.local, c = g.campaignPreview.combat;
+      const step = () => new Promise((r) => requestAnimationFrame(r));
+      let combat = 0, maxL = 0, firstL3 = -1; const log = [];
+      const note = () => { const lv = c.wave.level; if (lv > maxL) { maxL = lv; log.push([lv, +combat.toFixed(1), Math.round(c.wave.points)]); } if (lv === 3 && firstL3 < 0) firstL3 = combat; };
+      const fight = async (gx, gz, enc, secs) => {
+        const t0 = G.time; let next = G.time;
+        while (G.time - t0 < secs && s.encounters.state(enc) !== 'cleared') {
+          window.__m.skipStory(); __m.tp(gx, 3, gz);
+          const e = s.encounters.liveActors().find((a) => a.alive);
+          if (e) { while (G.time >= next && e.alive) { e.damage(36, L, 'weapon'); next += 0.1; } }
+          else next = G.time;
+          const t1 = G.time; await step(); if (e) combat += G.time - t1;
+          note();
+        }
+      };
+      const hold = async (x, z, secs) => { const t0 = G.time; while (G.time - t0 < secs) { __m.tp(x, 3, z); __m.paintAt(x, z, 2); await step(); note(); } };
+      // 구간 사이 이동: walk 주행의 실측(기록 1 → 상자·기록 2 약 7초, 기록 2 → CP2·정예 구역 약 6초) 동안 획득 없이 보낸다
+      const idle = async (secs) => { const t0 = G.time; while (G.time - t0 < secs) { await step(); note(); } };
+      await fight(-4.5, -15, 'enc-walk', 25); await hold(-4.5, -15, 2.6);    // 기록 1
+      await idle(7);
+      await fight(20.6, -27, 'enc-high', 25); await hold(20.6, -27, 2.6);    // 고지 기록 2
+      await idle(6);
+      await fight(12, 8, 'enc-elite', 40);                                   // 청소반장
+      return { maxL, firstL3: firstL3 < 0 ? null : +firstL3.toFixed(1), combat: +combat.toFixed(1), log, done: s.objectives.snapshot(), points: Math.round(c.wave.points) };
+    })()`);
+    ok('R019 1-2: 피해 없이 25초 이내 교전으로 물결 3단계 달성', wave.firstL3 !== null && (wave.firstL3 as number) <= 25, wave);
+    await ev(page, `__inkwave.quitToMenu('workshop')`);
+
+    // R018: 1-1 광장에서 자기 잉크 위 LT 두 번(실제 입력) → 서지 거리. 걷기 주행(walk)은 서지 없이 모든 목표에 닿는다.
+    await start(page, '1-1');
+    const surge = await ev<Record<string, unknown>>(page, `(async () => {
+      const g = __inkwave, G = window.__G, L = G.local, c = g.campaignPreview.combat;
+      const { on: sub } = await import('/src/core/ctx.js');
+      const step = () => new Promise((r) => requestAnimationFrame(r));
+      __m.tp(-8, 3, -35); L.invuln = 999; L.ink = L.tune.inkMax; g.rig.yaw = 0; g.rig.pitch = 0;
+      for (let i = 0; i < 6; i++) __m.paintAt(-8, -35 + i * 1.6, 2);
+      for (let i = 0; i < 10; i++) await step();
+      let from = null, n = 0; const off = sub('action:surge', (e) => { n++; if (!from) from = e.pos.clone(); });
+      const press = async (k) => { for (let i = 0; i < k; i++) { window.__pads[0] = { ax: [0, -1, 0, 0], b: { 6: 1 } }; await step(); } };
+      const free = async (k) => { for (let i = 0; i < k; i++) { window.__pads[0] = { ax: [0, -1, 0, 0], b: {} }; await step(); } };
+      await press(2); await free(3); await press(1);
+      let seen = false, k = 0; while (k++ < 120) { if (c.surge) seen = true; if (seen && !c.surge) break; await step(); }
+      window.__pads[0] = { b: {} }; off();
+      return { n, d: from ? +Math.hypot(L.pos.x - from.x, L.pos.z - from.z).toFixed(2) : -1 };
+    })()`);
+    ok('R018 1-1: 실제 LT 이중 입력 서지 1회·거리 약 5.5 m(최대 간격 계약)', surge.n === 1 && (surge.d as number) > 4.6 && (surge.d as number) < 6.2, surge);
+    ok('액션(1-2·1-1) 콘솔 오류 없음', errors.length === 0, errors.slice(0, 5));
     await page.close();
   }
 } catch (e) { ok('실행 오류', false, String((e as Error).stack || e)); }

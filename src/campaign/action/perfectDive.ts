@@ -11,7 +11,14 @@ export const PERFECT = {
   expose: 1.5, exposeMul: 1.25,        // 공격자 노출 s, 노출 중 받는 피해 배율
   buffT: 2.0, buffSwim: 0.15, buffRun: 0.08,
   fovKick: -4,
+  burstFlight: 0.35,                   // s: 연사 끝 뒤에도 날아오는 탄환을 같은 공격으로 본다
 } as const;
+
+// 연사(사격·도색병의 attack 상태)는 한 공격이다: 첫 탄을 퍼펙트로 피했으면 남은 연사 시간 + 탄 비행 여유 동안 그 공격자의
+// 피해를 무효로 한다(보상은 다시 주지 않는다). 같은 공격자 재발동 금지 시간을 넘지 않는다. 연사 중이 아니면 0이다.
+export function burstGrace(attacking: boolean, burstLeft: number): number {
+  return attacking ? Math.min(PERFECT.sameAttackerCd, Math.max(0, burstLeft) + PERFECT.burstFlight) : 0;
+}
 
 // 환경 피해(물·낙하·적 잉크 도트)는 대상이 아니다.
 const ENVIRONMENT = new Set(['ink', 'water', 'fall']);

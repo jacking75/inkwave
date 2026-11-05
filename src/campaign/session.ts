@@ -134,6 +134,9 @@ export class CampaignSession {
         return amount * DIFFICULTY[this.difficulty].enemyDamage * damageTakenMul(this.stats, { onObjective: onObj, justLeftInk: G.time - this.lastInkT < 2 });
       },
       enemyTaken: (victim, amount, attacker) => this._enemyTaken(victim, amount, attacker),
+      poiseTaken: (victim, attacker) => !this._shieldFront(victim, attacker),
+      // 방패·감시·포격병과 정예·대장의 피해는 예고 형태가 판정한다. 같은 공격의 무기 탄환은 동작일 뿐이다(이중 피해 없음)
+      harmless: (attacker, source) => source !== 'telegraph' && ((attacker?.bot as EnemyBrain | undefined)?.def?.damage ?? 0) > 0,
       inkMul: (a) => (a.intent.sub ? this.stats.subInkMul : this.stats.mainInkMul),
       specialMul: () => this.stats.specialChargeMul,
     };
@@ -219,16 +222,28 @@ export class CampaignSession {
     if (b instanceof UmbrellaCaptainBrain && s === 'open' && !this.once.has('weak')) { this.once.add('weak'); this.host.story?.comm('weak'); }
   }
 
+  // 공격자가 적의 정면 쪽에 있는 정도(1 = 정면, -1 = 등 뒤)
+  _facing(victim: Actor, attacker: Actor): number {
+    const fx = Math.sin(victim.yaw), fz = Math.cos(victim.yaw);
+    const dx = attacker.pos.x - victim.pos.x, dz = attacker.pos.z - victim.pos.z, d = Math.hypot(dx, dz) || 1;
+    return (dx * fx + dz * fz) / d;
+  }
+  // 우산을 든 방패병·대장의 정면 공격: 피해가 줄고 버팀(스태거)도 깎지 못한다(35번 R020, 정면 사격만으로는 스태거 없음)
+  _shieldFront(victim: Actor, attacker: Actor | null): boolean {
+    const b = victim.bot as EnemyBrain | undefined;
+    if (!b || !attacker) return false;
+    const role = b.def.role;
+    const shieldUp = role === 'umbrellaCaptain' ? (b as UmbrellaCaptainBrain).shieldUp : role === 'shield' ? b.state !== 'recover' : false;
+    return shieldUp && this._facing(victim, attacker) > 0.35;
+  }
+
   // 플레이어가 적에게 주는 피해: 방패 정면 감소, 후방·노출 약점, 기절 보스
   _enemyTaken(victim: Actor, amount: number, attacker: Actor | null): number {
     const b = victim.bot as EnemyBrain | undefined;
     if (!b || !attacker || attacker !== this.player) return amount;
     const role = b.def.role;
-    const fx = Math.sin(victim.yaw), fz = Math.cos(victim.yaw);
-    const dx = attacker.pos.x - victim.pos.x, dz = attacker.pos.z - victim.pos.z, d = Math.hypot(dx, dz) || 1;
-    const facing = (dx * fx + dz * fz) / d;   // 1 = 정면
-    const shieldUp = role === 'umbrellaCaptain' ? (b as UmbrellaCaptainBrain).shieldUp : role === 'shield' ? b.state !== 'recover' : false;
-    if (shieldUp && facing > 0.35) amount *= 0.35;            // 정면은 효율이 낮지만 일반 공격으로도 들어간다
+    const facing = this._facing(victim, attacker);
+    if (this._shieldFront(victim, attacker)) amount *= 0.35;   // 정면은 효율이 낮지만 일반 공격으로도 들어간다
     const exposed = this.preview.combat.isExposed(victim) || (role === 'umbrellaCaptain' && b.state === 'open');
     const weak = (role === 'umbrellaCaptain' || role === 'rollerElite' || role === 'shield') && (facing < -0.3 || exposed);
     if (weak) amount *= 1.5;

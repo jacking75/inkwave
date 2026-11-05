@@ -12,7 +12,7 @@ import { G, on, emit } from '../../core/ctx.js';
 import type { Actor } from '../../game/actor.js';
 import { PLAYER } from '../../config.js';
 import type { TimeScale } from './timeScale.js';
-import { PERFECT, isPerfectDive } from './perfectDive.js';
+import { PERFECT, isPerfectDive, burstGrace } from './perfectDive.js';
 import { SURGE, DoubleTap, canSurge, surgeSpeed } from './surge.js';
 import { WaveGauge, waveEffects, type WaveGain, type WaveLevel } from './waveGauge.js';
 import { Poise, STAGGER, roleOfWeapon, type EnemyTier } from './stagger.js';
@@ -35,6 +35,8 @@ interface Entry { role: CombatRole; poise: Poise | null; exposeLeft: number; kno
 export interface CombatHooks {
   playerTaken?(amount: number, attacker: Actor | null, source: string): number;
   enemyTaken?(victim: Actor, amount: number, attacker: Actor | null, source: string): number;
+  poiseTaken?(victim: Actor, attacker: Actor | null): boolean;
+  harmless?(attacker: Actor | null, source: string): boolean;     // true면 플레이어가 받는 이 피해는 없다(예고형 공격의 무기 동작)   // false면 이 피해는 버팀을 깎지 않는다(방패 정면)
   inkMul?(a: Actor): number;
   specialMul?(a: Actor): number;
 }
@@ -54,7 +56,7 @@ export class CampaignCombat {
   declare wave: WaveGauge; declare entries: Map<Actor, Entry>;
   declare player: Actor | null; declare base: PlayerTuning; declare growth: GrowthMods;
   declare tap: DoubleTap; declare surge: Surge | null; declare surgeCd: number;
-  declare buffLeft: number; declare lastPerfect: Map<Actor, number>;
+  declare buffLeft: number; declare lastPerfect: Map<Actor, number>; declare dodged: Map<Actor, number>;
   declare feedback: CombatFeedback;
   declare inputBlocked: boolean;   // 막는 대본·컷신 동안 플레이어 전투 입력을 지운다(R026·R027)
   declare hitRef: { time: number; after: number } | null;   // 텔레그래프 피해 처리 중의 퍼펙트 기준 시각
@@ -66,7 +68,7 @@ export class CampaignCombat {
     this.wave = new WaveGauge(); this.entries = new Map();
     this.player = null; this.growth = opts.growth ?? NO_GROWTH; this.base = campaignTuning(this.growth);
     this.tap = new DoubleTap(); this.surge = null; this.surgeCd = 0;
-    this.buffLeft = 0; this.lastPerfect = new Map();
+    this.buffLeft = 0; this.lastPerfect = new Map(); this.dodged = new Map();
     this.hitRef = null; this.inputBlocked = false; this.hooks = {};
     this.feedback = new CombatFeedback(time, () => this._calm(), () => ({
       rig: G.rig as { punch?(k: 'kill' | 'elite'): void; kickFov?(d: number, s: number): void } | null,
@@ -101,7 +103,7 @@ export class CampaignCombat {
       const bot = a.bot as BotWithDiff | undefined;
       if (n.reaction !== undefined && bot?.diff) bot.diff = { ...bot.diff, reaction: n.reaction };
     }
-    this.entries.clear(); this.player = null; this.surge = null;
+    this.entries.clear(); this.dodged.clear(); this.player = null; this.surge = null;
     for (const u of this.unsubs) u();
     this.unsubs = [];
     G.rig?.setWaveLevel?.(0);
@@ -189,7 +191,9 @@ export class CampaignCombat {
   intercept(victim: Actor, amount: number, attacker: Actor | null, source: string): DamageIntercept {
     const now = G.time;
     if (victim === this.player) {
+      if (this.hooks.harmless?.(attacker, source)) return { amount: 0, perfect: false, attacker };
       if (this.surge && this.surge.t < SURGE.invuln) return { amount: 0, perfect: false, attacker };
+      if (attacker && now < (this.dodged.get(attacker) ?? -Infinity)) return { amount: 0, perfect: false, attacker };
       const perfect = isPerfectDive({
         now, squidPressedAt: victim._squidPressT, window: this.opts.story ? PERFECT.windowStory : PERFECT.window, source,
         hasAttacker: !!attacker, onEnemyInk: victim.grounded && victim.groundTeam === 2, alive: victim.alive,
@@ -227,6 +231,9 @@ export class CampaignCombat {
 
   _perfect(p: Actor, attacker: Actor, source: string): void {
     this.lastPerfect.set(attacker, G.time);
+    const bot = attacker.bot as { state?: string; burst?: number; t?: number } | undefined;
+    const grace = burstGrace(bot?.state === 'attack', (bot?.burst ?? 0) - (bot?.t ?? 0));
+    if (grace > 0) this.dodged.set(attacker, G.time + grace);
     if (!this._calm()) { this.feedback.hitstop(PERFECT.hitstop, 'perfect', PERFECT.hitstopScale); this.time.slow(PERFECT.slow, PERFECT.slowScale); }
     p.ink = Math.min(p.tune.inkMax, p.ink + PERFECT.ink);
     if (!p.specialActive) {
@@ -270,7 +277,7 @@ export class CampaignCombat {
     const v = e.victim, dx = v.pos.x - p.pos.x, dz = v.pos.z - p.pos.z, d = Math.hypot(dx, dz) || 1;
     const dist = n.poise ? n.poise.knockback() : STAGGER.knockback;
     n.knock = { left: STAGGER.knockbackTime, v: new THREE.Vector3((dx / d) * dist / STAGGER.knockbackTime, 0, (dz / d) * dist / STAGGER.knockbackTime) };
-    if (n.poise && n.poise.hit(e.amount) === 'stagger') {
+    if (n.poise && (this.hooks.poiseTaken?.(v, p) ?? true) && n.poise.hit(e.amount) === 'stagger') {
       const exposeWeak = n.poise.tier !== 'grunt';
       // 몸이 크게 흔들린다(character.js의 누적 피격 비틀거림을 끌어낸다)
       const cy = Math.cos(v.yaw), sy = Math.sin(v.yaw);

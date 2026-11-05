@@ -150,6 +150,9 @@ try {
     await shot(page, 'portrait');
     await page.evaluate('__inkwave.story.layer.runner.skip()');
     // 첫 처치 통신: 적을 쓰러뜨리면 1-1.firstKill
+    // 1-1 시작점(발코니)에는 적이 없다: 중계기 A 구역에 들어가 경계 사격병이 나오면 쓰러뜨린다
+    await page.evaluate(`(() => { const s = __inkwave.session, me = __ctx.G.local, p = s._ground([-12, 3, -27]); me.pos.set(p.x, p.y, p.z); me.vel.set(0, 0, 0); me.invuln = 999; })()`);
+    await page.waitForFunction('__ctx.G.match.actors.some((a) => a.team !== __ctx.G.local.team && a.alive)', { timeout: 60000, polling: 100 });
     await page.evaluate(`(() => { const G = __ctx.G, me = G.local; const e = G.match.actors.find((a) => a.team !== me.team && a.alive); e.damage(999, me, 'weapon'); })()`);
     await wait(400);
     ok('story.firstKill.comm', (await page.evaluate('__inkwave.story.layer.runner.cur && __inkwave.story.layer.runner.cur.script.id')) === '1-1.firstKill');
@@ -184,7 +187,7 @@ try {
     await page.evaluate('__inkwave.menus._go("workshop")');
     await page.waitForFunction('__inkwave.showcase.fullFrame && __inkwave.showcase._ws && __inkwave.showcase._ws.chars.size === 2', { timeout: 60000, polling: 250 }).then(() => ok('workshop.set', true), () => ok('workshop.set', false));
     await wait(1200);
-    ok('workshop.items', JSON.stringify(await menuIds(page)) === JSON.stringify(['mission', 'gear', 'perks', 'records']), await menuIds(page));
+    ok('workshop.items', JSON.stringify(await menuIds(page)) === JSON.stringify(['mission', 'gear', 'modules', 'perks', 'manage', 'records']), await menuIds(page));
     await shot(page, 'workshop');
     await key(page, 'ArrowDown'); await wait(800); await shot(page, 'workshop-gear');
     await key(page, 'ArrowUp');
@@ -199,13 +202,16 @@ try {
     await page.evaluate('__inkwave.menus._setFocus(document.querySelector("[data-id=\\"m-1-2\\"]"))');
     await key(page, 'Enter');
     ok('harbor.locked', (await page.evaluate('__inkwave.menus.current')) === 'harbor');
-    // 패드: 아래·위로 움직이고 A로 1-1 시작
+    // 패드: 처음 보는 패드의 첫 누름은 활성화 몸짓이라 소비하지 않는다(32번 4.2절). 1-1은 지도 맨 아래라 위로 갔다가
+    // 아래로 돌아오고 A로 1-1 시작
     await page.evaluate('__inkwave.menus._setFocus(document.querySelector("[data-id=\\"m-1-1\\"]"))');
-    await pad(page, 13);
-    const pf = await focusId(page);
+    await pad(page, 0);
+    const p0 = await focusId(page);
     await pad(page, 12);
+    const pf = await focusId(page);
+    await pad(page, 13);
     const pb = await focusId(page);
-    ok('harbor.pad.move', pf !== 'm-1-1' && pb === 'm-1-1', { pf, pb });
+    ok('harbor.pad.move', p0 === 'm-1-1' && pf !== 'm-1-1' && pb === 'm-1-1', { p0, pf, pb });
     await pad(page, 0);
     await page.waitForFunction('__inkwave.match && !__inkwave.match.attract && __inkwave.story.mission === "1-1"', { timeout: 120000, polling: 250 }).then(() => ok('harbor.pad.start', true), () => ok('harbor.pad.start', false));
     await page.evaluate('__inkwave.quitToMenu()'); await wait(1500);
