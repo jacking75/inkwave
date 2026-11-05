@@ -46,6 +46,8 @@ export class CastDirector {
         } else this._react('waveDown');
       }),
       on('action:objective', () => { this._react('objective'); this.pong?.react('joy', 1.4); }),
+      // 피니시(정예·대장 처치, R021): 퐁이 크게 기뻐한다
+      on('action:finish', (e: { pongJoy: boolean }) => { if (e.pongJoy) { this.pong?.react('joy', 1.6); this._pongSay('해냈다! 퐁!'); } }),
       on('enemy:stagger', (e: { actor: Actor }) => {
         blinkMark(e.actor.character, STAGGER.duration);
         playExpr(e.actor.character, EXPR.wince, 0.9, STAGGER.duration);

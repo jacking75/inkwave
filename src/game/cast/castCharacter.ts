@@ -11,6 +11,7 @@ import {
   PROFILES, EXPR, ECHO, pickIdle, pickLine, passReactGate,
   type CastId, type ExpressionProfile, type IdleKind, type ReactKind, type EchoSpec, type ExprVector, type ReactGate,
 } from './cast.js';
+import { applyPose, type StoryPose } from './poses.js';
 
 type CharacterOptions = ConstructorParameters<typeof Character>[0];
 // _mxPlay 슬롯과 호출 형식(character.js: E = [sneer, pucker, blush] 추가 채널)
@@ -24,6 +25,7 @@ interface CastState {
   echo: EchoSpec | null; mark: THREE.Mesh | null; markBlink: number;
   waveGlow: number;                                   // 0..1 물결 3단계 머리카락 발광
   onHide: ((c: Character) => boolean) | null;         // 숨김을 가로채 연출(잔향 소멸) 뒤 숨긴다
+  pose: StoryPose; poseT: number;                     // 이야기 포즈(R027·R028)
 }
 
 const STATE = new WeakMap<Character, CastState>();
@@ -40,7 +42,7 @@ export function setCast(c: Character, id: CastId | null, echo: EchoSpec | null =
   const st: CastState = {
     id, profile: PROFILES[id], gate: { at: -99, weight: 0 }, lastLine: null, lastIdle: null,
     idleT: 1 + c.rng() * 2, prevBlinkNext: c.bl.next, echo: echo ?? prev?.echo ?? null, mark: prev?.mark ?? null, markBlink: 0,
-    waveGlow: 0, onHide: prev?.onHide ?? null,
+    waveGlow: 0, onHide: prev?.onHide ?? null, pose: prev?.pose ?? 'idle', poseT: 0,
   };
   STATE.set(c, st);
   if (st.echo && !prev?.echo) applyEchoLook(c, st);
@@ -59,6 +61,8 @@ export function react(c: Character, kind: ReactKind, now: number): string | null
 
 export function setWaveGlow(c: Character, k: number): void { const st = STATE.get(c); if (st) st.waveGlow = k; }
 export function blinkMark(c: Character, seconds: number): void { const st = STATE.get(c); if (st) st.markBlink = seconds; }
+// 이야기 포즈(패널·작업장). 프로필이 없는 캐릭터에는 걸리지 않는다(setCast 먼저)
+export function setStoryPose(c: Character, pose: StoryPose): void { const st = STATE.get(c); if (st && st.pose !== pose) { st.pose = pose; st.poseT = 0; } }
 export function setHideHook(c: Character, fn: ((c: Character) => boolean) | null): void { const st = STATE.get(c); if (st) st.onHide = fn; }
 
 // ---------------------------------------------------------------- 잔향 외형(R014)
@@ -117,6 +121,7 @@ function tick(c: Character, st: CastState, dt: number): void {
   else if (c.bl.next > st.prevBlinkNext + 1e-3) c.bl.next *= BASE_BLINK / p.blinkRate;
   st.prevBlinkNext = c.bl.next;
   if (p.headTilt) (c.bones as Record<string, THREE.Bone | undefined>).head?.rotateZ(p.headTilt);
+  if (st.pose !== 'idle') { st.poseT += dt; applyPose(c.bones as Record<string, THREE.Bone | undefined>, st.pose, st.poseT); }
   if (st.mark) {
     st.markBlink = Math.max(0, st.markBlink - dt);
     const mat = st.mark.material as THREE.MeshStandardMaterial;

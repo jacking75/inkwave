@@ -28,6 +28,9 @@ import { WhatsNew } from './news.js';
 import type { MapDef } from '../config.js';
 import type { Settings } from '../core/ctx.js';
 import { CAST_LOOKS, type CastId, type ReactKind } from '../game/cast/cast.js';
+import { DISTRICTS, districtUnlocked, missionUnlocked, districtSat, nextMission, NO_PROGRESS, type HarborProgress } from '../campaign/story/districts.js';
+import { getScript } from '../campaign/story/scripts/index.js';
+import { SPEAKER_NAME } from '../campaign/story/dialogue.js';
 
 // ---------------------------------------------------------------- types
 // ui-util.js는 아직 JS라 h()의 props가 기본값 null에서 `null`로 추론된다. 같은 함수를 정확한 시그니처로 본다(실행은 그대로).
@@ -99,6 +102,23 @@ export interface MenuApi {
   toMainMenu?: () => void;
   onScreenChange?: (screen: string | null) => void;
   playSound?: (name: string) => void;
+  // 이야기(35번 R025·R028~R030)
+  startStory?: () => Promise<void>;
+  startStoryMission?: (id: string) => Promise<void>;
+  hasStorySave?: () => boolean;
+  storyProgress?: () => HarborProgress;
+  storyRecords?: () => Array<{ id: string; title: string; body: string; note?: string; found: boolean; district: string }>;
+  storyRead?: () => string[];
+}
+
+/** 이야기 결과 화면(R030) 데이터. commit은 단일 저장 처리(33번 T030)이며 실패하면 false/예외 → 미확정·재시도이다. */
+export interface StoryResultsData {
+  mission: string; title: string; district: string; firstClear: boolean;
+  rewards: Array<{ name: string; kind: string }>;
+  xp: { from: number; to: number; max: number };
+  line: { speaker: string; text: string };
+  next: { id: string; title: string } | null;
+  commit: () => Promise<boolean>;
 }
 
 /** show() 옵션이다. */
@@ -346,11 +366,11 @@ interface MatchSnapshot {
   colors: string[]; names: string[]; players: SnapPlayer[];
 }
 
-const SCREENS: string[] = ['loading', 'title', 'main', 'mode', 'loadout', 'setup', 'locker', 'settings', 'howto', 'credits', 'pause', 'results', 'online', 'lobby'];
+const SCREENS: string[] = ['loading', 'title', 'main', 'mode', 'loadout', 'setup', 'locker', 'settings', 'howto', 'credits', 'pause', 'results', 'online', 'lobby', 'arena', 'workshop', 'harbor', 'records', 'storyResults'];
 // Transitions that get the full-screen ink wipe (the rest use staggered pop-ins).
 const WIPES = new Set(['loading>title', 'title>main', 'results>main', 'pause>main', 'results>null', 'pause>title', 'online>lobby', 'lobby>online', 'lobby>main', 'results>lobby', 'pause>online']);
 // Pushes/pops between these get the light ink swipe (decorative — the swap itself is immediate).
-const LIGHT = new Set(['main', 'mode', 'loadout', 'setup', 'locker', 'settings', 'howto', 'credits', 'pause', 'online', 'lobby']);
+const LIGHT = new Set(['main', 'mode', 'loadout', 'setup', 'locker', 'settings', 'howto', 'credits', 'pause', 'online', 'lobby', 'arena', 'workshop', 'harbor', 'records']);
 // ?netmock=1 → an offline stand-in for G.net (src/net/mock.js) so the online screens work without the relay
 const NETMOCK = typeof location !== 'undefined' && new URLSearchParams(location.search).get('netmock') === '1';
 // 표정 검수(35번 R011): 라커에 인물(플레이어·모라·틸)과 사건 버튼을 더한다. 개발 확인용이다.
@@ -480,6 +500,13 @@ const LOCKER_TABS: LockerTab[] = [
   { id: 'outfit', label: 'OUTFIT', icon: 'shirt', sections: ['outfit'] },
 ];
 const MENU_DESC: Record<string, string> = {
+  continue: '작업장으로 돌아가 항구 지도에서 다음 임무를 고른다',
+  story: '색을 잃은 항구를 되찾는 이야기를 처음부터 시작한다',
+  arena: '기존 대전·구역 쟁탈·보스전·온라인 방을 모은 하위 메뉴',
+  mission: '항구 지도를 펼쳐 임무를 고른다',
+  gear: '무기·보조·스페셜을 고른다',
+  perks: '특성 배분은 캠페인 성장(33번 T033·T034) 뒤에 열린다',
+  records: '읽은 대화와 모은 기록을 다시 읽는다',
   play: 'Turf War or Zone Control 4 v 4 — or team up with the bots against HULLBREAKER in a Boss Battle',
   online: 'Private rooms for up to 8 friends — create one or join with a room code',
   loadout: 'Choose your weapon, sub and special — or practice with it',
@@ -590,6 +617,8 @@ export class Menus {
   declare _netOff?: Array<() => unknown>;
   declare _leavingRoom?: boolean;
   declare _anc?: LobbyAnchor;
+  declare _storyFirst?: boolean;              // 첫 실행 "이야기 시작": 라커를 거친 뒤 이야기로(R025)
+  declare _storyRes?: StoryResultsData;
 
   constructor(rootEl: HTMLElement | null, api: MenuApi | null = {}) {
     this.root = rootEl || document.body;
@@ -932,7 +961,7 @@ export class Menus {
     if (this._stack.length > 1) {
       this._sfx('ui_back');
       this.show(this._stack[this._stack.length - 2], { pop: true, back: true });
-    } else if ((['mode', 'loadout', 'setup', 'locker', 'settings', 'howto', 'credits', 'online'] as Array<string | null>).includes(this.current)) {
+    } else if ((['mode', 'loadout', 'setup', 'locker', 'settings', 'howto', 'credits', 'online', 'arena', 'workshop', 'harbor', 'records'] as Array<string | null>).includes(this.current)) {
       this._sfx('ui_back'); // opened directly by the engine: fall back to the main menu
       this.show('main', { back: true });
     }
@@ -1244,8 +1273,12 @@ export class Menus {
       press,
       h('div', { class: 'iw-corner iw-corner--bl iw-in' }, h('b', null, GAME_TITLE), ' · an original turf-war shooter'),
       h('div', { class: 'iw-corner iw-corner--br iw-in' }, `v${this._version()}`));
+    // 타이틀 비네트(35번 R025): 작업장 세트 앞의 플레이어와 퐁, 색이 천천히 돌아오는 10초 루프
+    const sc = this._sc() as (MenuShowcase & { showWorkshop?: (s: LookStyle, c: ColorLike, w: string, o: { cast: boolean; vignette: boolean }) => void }) | null;
     return {
       el, noCursor: true,
+      afterMount: () => { if (sc?.showWorkshop) safeCall(() => sc.showWorkshop!(this._style(), (G.teamColors && G.teamColors[0]) || this._accent()[0], this._loadout().weapon, { cast: false, vignette: true })); },
+      destroy: () => { if (sc && this.current !== 'workshop') safeCall(() => sc.hide()); },
       onInputMode: (m) => {
         press.firstChild!.textContent = m === 'pad' ? 'PRESS ANY BUTTON' : 'PRESS ANY KEY';
         press.lastChild!.textContent = m === 'pad' ? '' : 'or click to start';
@@ -1260,15 +1293,14 @@ export class Menus {
     const W = this._weapons()[lo.weapon];
     const sp = this._special();
     const sub = this._sub();
-    const items = [
-      { id: 'play', label: 'PLAY', sub: 'Turf War · Zone Control · Boss Battle', icon: GLYPHS.play, cls: 'iw-btn--menu iw-btn--xl iw-btn--primary', accept: () => this._go('mode'), sound: 'ui_confirm' },
-      { id: 'online', label: 'ONLINE', sub: 'Play with friends · private rooms', icon: GLYPHS.online, cls: 'iw-btn--menu iw-btn--online', accept: () => this._go('online'), sound: 'ui_confirm',
-        badge: h('span', { class: 'iw-btn__live' }, h('i'), 'LIVE') },
-      { id: 'loadout', label: 'LOADOUT', icon: weaponIcon(W.kind || lo.weapon), cls: 'iw-btn--menu', accept: () => this._go('loadout') },
-      { id: 'locker', label: 'LOCKER', icon: GLYPHS.hanger, cls: 'iw-btn--menu', accept: () => this._go('locker') },
-      { id: 'settings', label: 'SETTINGS', icon: GLYPHS.gear, cls: 'iw-btn--menu', accept: () => this._go('settings') },
-      { id: 'howto', label: 'HOW TO PLAY', icon: GLYPHS.question, cls: 'iw-btn--menu', accept: () => this._go('howto') },
-      { id: 'credits', label: 'CREDITS', icon: GLYPHS.star, cls: 'iw-btn--menu', accept: () => this._go('credits') },
+    // 이야기 우선(35번 R025): 이어하기(저장이 있을 때, 첫 포커스) · 이야기 시작 · 항구 대전 · 라커 · 설정
+    const hasSave = !!safeCall(() => this.api.hasStorySave?.());
+    const items: BtnOpts[] = [
+      ...(hasSave ? [{ id: 'continue', label: '이어하기', sub: '작업장 · 항구 지도', icon: GLYPHS.play, cls: 'iw-btn--menu iw-btn--xl iw-btn--primary', accept: () => this._go('workshop'), sound: 'ui_confirm' }] : []),
+      { id: 'story', label: '이야기 시작', sub: '1장 — 멈춘 시계 아래', icon: hasSave ? GLYPHS.flag : GLYPHS.play, cls: hasSave ? 'iw-btn--menu' : 'iw-btn--menu iw-btn--xl iw-btn--primary', accept: () => this._storyStart(), sound: 'ui_confirm' },
+      { id: 'arena', label: '항구 대전', sub: '대전 · 구역 · 보스 · 온라인', icon: GLYPHS.swords, cls: 'iw-btn--menu iw-btn--online', accept: () => this._go('arena'), sound: 'ui_confirm' },
+      { id: 'locker', label: '라커', icon: GLYPHS.hanger, cls: 'iw-btn--menu', accept: () => this._go('locker') },
+      { id: 'settings', label: '설정', icon: GLYPHS.gear, cls: 'iw-btn--menu', accept: () => this._go('settings') },
     ];
     const tilts = [-2.2, 1.3, 1.4, -1.1, 1.6, -1.3, 1.1];
     const btns = items.map((it, i) => { const b = this._btn({ ...it, tilt: tilts[i % tilts.length] }); b.classList.add('iw-in', 'iw-in--left'); return b; });
@@ -1317,6 +1349,206 @@ export class Menus {
         if (t && descText.textContent !== t) { descText.textContent = t; restartAnim(desc, 'is-swap'); }
       },
       onBack: () => { this._sfx('ui_back'); this.show('title', { back: true }); },
+    };
+  }
+
+  // ================================================================ 이야기(35번 R025·R028~R030)
+  // "이야기 시작": 첫 실행(이야기 기록·캠페인 저장 없음)이면 라커를 짧게 거친다(뒤로·시작 버튼이 이야기로 이어진다).
+  _storyStart(): void {
+    if (!safeCall(() => this.api.hasStorySave?.()) && !this._storyFirst) { this._storyFirst = true; this._go('locker'); return; }
+    this._storyBegin();
+  }
+  _storyBegin(missionId: string | null = null): void {
+    this._storyFirst = false;
+    this.show(null);
+    safeCall(() => (missionId ? this.api.startStoryMission?.(missionId) : this.api.startStory?.()));
+  }
+
+  // ---- 항구 대전: 기존 대전·온라인·장비·도움말·제작진을 그대로 모은 하위 메뉴
+  _scr_arena(): Screen {
+    const lo = this._loadout();
+    const W = this._weapons()[lo.weapon];
+    const items: BtnOpts[] = [
+      { id: 'play', label: 'PLAY', sub: 'Turf War · Zone Control · Boss Battle', icon: GLYPHS.play, cls: 'iw-btn--menu iw-btn--xl iw-btn--primary', accept: () => this._go('mode'), sound: 'ui_confirm' },
+      { id: 'online', label: 'ONLINE', sub: 'Play with friends · private rooms', icon: GLYPHS.online, cls: 'iw-btn--menu iw-btn--online', accept: () => this._go('online'), sound: 'ui_confirm',
+        badge: h('span', { class: 'iw-btn__live' }, h('i'), 'LIVE') },
+      { id: 'loadout', label: 'LOADOUT', icon: weaponIcon(W.kind || lo.weapon), cls: 'iw-btn--menu', accept: () => this._go('loadout') },
+      { id: 'howto', label: 'HOW TO PLAY', icon: GLYPHS.question, cls: 'iw-btn--menu', accept: () => this._go('howto') },
+      { id: 'credits', label: 'CREDITS', icon: GLYPHS.star, cls: 'iw-btn--menu', accept: () => this._go('credits') },
+    ];
+    const tilts = [-2.2, 1.3, 1.4, -1.1, 1.6];
+    const btns = items.map((it, i) => { const b = this._btn({ ...it, tilt: tilts[i % tilts.length] }); b.classList.add('iw-in', 'iw-in--left'); return b; });
+    const descText = h('span', { class: 'iw-main__desctext' });
+    const desc = h('div', { class: 'iw-main__desc iw-in iw-in--left' }, h('i', { class: 'iw-main__descdot' }), descText);
+    const el = h('div', { class: 'iw-screen iw-main iw-arena' },
+      h('div', { class: 'iw-scrim-left' }),
+      this._header('항구 대전', { sub: '대전 · 구역 쟁탈 · 보스전 · 온라인' }),
+      h('nav', { class: 'iw-main__menu' }, btns),
+      desc,
+      this._prompts([['Enter', 'A', 'Select'], ['Esc', 'B', 'Back']]));
+    return {
+      el, wrap: true, initial: btns[0],
+      onFocus: (f) => { const t = MENU_DESC[f.dataset.id!]; if (t && descText.textContent !== t) { descText.textContent = t; restartAnim(desc, 'is-swap'); } },
+    };
+  }
+
+  // ---- 작업장(R028): 로비 세트에 선 모라·틸과 메뉴(임무·장비·특성·기록). 고른 항목의 인물이 카메라를 본다
+  _scr_workshop(): Screen {
+    const sc = this._sc() as (MenuShowcase & { showWorkshop?: (s: LookStyle, c: ColorLike, w: string) => void; workshopFocus?: (w: 'mora' | 'teal' | null) => void }) | null;
+    const prog = safeCall(() => this.api.storyProgress?.()) ?? NO_PROGRESS;
+    const nx = nextMission(prog);
+    const moraLine = prog.done.length ? '다음 길은 지도에 표시해 뒀어.' : `${nx.district.missions[nx.index].title}부터야. 중계기 두 개.`;
+    const say = h('div', { class: 'iw-ws__say iw-in iw-in--down' }, h('b', null, '모라'), h('span', null, moraLine));
+    const items: Array<BtnOpts & { who: 'mora' | 'teal' | null }> = [
+      { id: 'mission', label: '임무', sub: `다음: ${nx.district.missions[nx.index].id} ${nx.district.missions[nx.index].title}`, icon: GLYPHS.map, cls: 'iw-btn--menu iw-btn--xl iw-btn--primary', accept: () => this._go('harbor'), sound: 'ui_confirm', who: 'teal' },
+      { id: 'gear', label: '장비', icon: GLYPHS.target, cls: 'iw-btn--menu', accept: () => this._go('loadout'), who: 'mora' },
+      { id: 'perks', label: '특성', sub: '캠페인 성장 이후', icon: GLYPHS.bolt, cls: 'iw-btn--menu is-locked', accept: () => this.toast('특성 배분은 캠페인 성장(33번 T033·T034) 구현 뒤에 열린다.', { icon: 'lock' }), who: 'mora' },
+      { id: 'records', label: '기록', sub: `${prog.records.length} / 14`, icon: GLYPHS.note, cls: 'iw-btn--menu', accept: () => this._go('records'), who: 'teal' },
+    ];
+    const btns = items.map((it, i) => { const b = this._btn({ ...it, tilt: [-1.6, 1.2, -1.1, 1.4][i] }); b.classList.add('iw-in', 'iw-in--left'); b.dataset.who = it.who ?? ''; return b; });
+    const descText = h('span', { class: 'iw-main__desctext' });
+    const desc = h('div', { class: 'iw-main__desc iw-in iw-in--left' }, h('i', { class: 'iw-main__descdot' }), descText);
+    const el = h('div', { class: 'iw-screen iw-main iw-ws' },
+      h('div', { class: 'iw-scrim-left' }),
+      this._header('작업장', { sub: '모라의 정비소 · 틸의 통신 책상' }),
+      h('nav', { class: 'iw-main__menu' }, btns),
+      desc, say,
+      this._prompts([['Enter', 'A', 'Select'], ['Esc', 'B', 'Back']]));
+    return {
+      el, wrap: true, initial: btns[0],
+      afterMount: () => { if (sc?.showWorkshop) safeCall(() => sc.showWorkshop!(this._style(), (G.teamColors && G.teamColors[0]) || this._accent()[0], this._loadout().weapon)); },
+      onFocus: (f) => {
+        const t = MENU_DESC[f.dataset.id!]; if (t && descText.textContent !== t) { descText.textContent = t; restartAnim(desc, 'is-swap'); }
+        const who = (f.dataset.who || null) as 'mora' | 'teal' | null;
+        safeCall(() => sc?.workshopFocus?.(who));
+      },
+      destroy: () => { if (sc && !(['harbor', 'records', 'loadout', 'locker'] as Array<string | null>).includes(this.current)) safeCall(() => sc.hide()); },
+    };
+  }
+
+  // ---- 항구 지도(R029): 종이 지도 위 7개 지역 카드. 카드 채도 = colorReturn[지역], 잠긴 지역은 먹선 실루엣이다.
+  // 360 px 폭에서는 지도가 가로로 스크롤된다(지도 최소 폭 960 px). 포커스가 움직이면 그 카드가 보이게 스크롤한다.
+  _scr_harbor(): Screen {
+    const prog = safeCall(() => this.api.storyProgress?.()) ?? NO_PROGRESS;
+    const nx = nextMission(prog);
+    const info = h('div', { class: 'iw-harbor__info iw-in iw-in--up' });
+    let first: HTMLElement | null = null;
+    const cards = DISTRICTS.map((d) => {
+      const open = districtUnlocked(d, prog);
+      const sat = districtSat(d, prog);
+      const ms = d.missions.map((m, i) => {
+        const ok = missionUnlocked(d, i, prog), done = prog.done.includes(m.id);
+        const b = h('button', { class: `iw-harbor__m${ok ? '' : ' is-locked'}${done ? ' is-done' : ''}`, 'data-kind': m.kind },
+          h('b', null, m.id), h('span', null, m.title),
+          m.recordId ? h('i', { class: `iw-harbor__rec${prog.records.includes(m.recordId) ? ' is-found' : ''}`, title: '기록' }, '◆') : null);
+        this._bind(b, {
+          id: 'm-' + m.id,
+          accept: () => {
+            if (!ok) { this._sfx('ui_back'); this.toast('앞 임무를 마치면 열린다.', { icon: 'lock' }); return; }
+            this._sfx('ui_confirm'); this._storyBegin(m.id);
+          },
+        });
+        (b as FocusEl & { _mission?: typeof m; _district?: typeof d })._mission = m;
+        (b as FocusEl & { _mission?: typeof m; _district?: typeof d })._district = d;
+        if (d === nx.district && i === nx.index) first = b;
+        return b;
+      });
+      return h('div', { class: `iw-harbor__card${open ? '' : ' is-locked'}`, style: { left: d.at[0] + '%', top: d.at[1] + '%', '--sat': sat.toFixed(2) } },
+        h('div', { class: 'iw-harbor__thumb', style: { backgroundImage: `url(${stageArt(d.id, d.time, true)})` } }),
+        h('div', { class: 'iw-harbor__name' }, h('small', null, `${d.chapter}장`), d.name),
+        h('div', { class: 'iw-harbor__ms' }, ms));
+    });
+    const map = h('div', { class: 'iw-harbor__map' }, h('div', { class: 'iw-harbor__sea' }), cards);
+    const scroller = h('div', { class: 'iw-harbor__scroll' }, map);
+    const el = h('div', { class: 'iw-screen iw-harbor' },
+      this._header('항구 지도', { sub: '색을 되찾은 곳부터 다시 칠해진다' }),
+      scroller, info,
+      this._prompts([['Enter', 'A', '임무 시작'], ['Esc', 'B', 'Back']]));
+    const showInfo = (f: FocusEl & { _mission?: (typeof DISTRICTS)[number]['missions'][number]; _district?: (typeof DISTRICTS)[number] }): void => {
+      const m = f._mission, d = f._district;
+      if (!m || !d) return;
+      info.replaceChildren(
+        h('div', { class: 'iw-harbor__ititle' }, `${m.id} ${m.title}`),
+        h('div', { class: 'iw-harbor__igoal' }, m.goal),
+        h('div', { class: 'iw-harbor__imeta' }, `보상: ${m.reward} · 지역 파밍: ${d.reward}`));
+      // 포커스한 카드가 보이게(좁은 화면의 가로 스크롤)
+      const r = f.getBoundingClientRect(), sr = scroller.getBoundingClientRect();
+      if (r.left < sr.left + 12 || r.right > sr.right - 12) scroller.scrollBy({ left: r.left - sr.left - sr.width / 2 + r.width / 2, behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+    };
+    return { el, initial: () => first, onFocus: (f) => showInfo(f) };
+  }
+
+  // ---- 기록판(R026·R028): 읽은 대화 다시 읽기 + 모은 기록(14개)
+  _scr_records(): Screen {
+    const read = (safeCall(() => this.api.storyRead?.()) ?? []) as string[];
+    type Rec = { id: string; title: string; body: string; note?: string; found: boolean; district: string };
+    const recs: Rec[] = (safeCall(() => this.api.storyRecords?.()) ?? []) as Rec[];
+    const body = h('div', { class: 'iw-rec__body iw-in iw-in--right' }, h('p', { class: 'iw-rec__empty' }, '항목을 고르면 여기에 펼쳐진다.'));
+    const btn = (id: string, label: string, sub: string, show: () => void): HTMLButtonElement => {
+      const b = h('button', { class: 'iw-rec__item' }, h('b', null, label), h('small', null, sub));
+      this._bind(b, { id, accept: () => { this._sfx('ui_click'); show(); } });
+      (b as FocusEl & { _show?: () => void })._show = show;
+      return b;
+    };
+    const scripts = read.map((id) => getScript(id)).filter((s): s is NonNullable<typeof s> => !!s);
+    const sList = scripts.map((s) => btn('s-' + s.id, s.id, `${s.lines.length}줄`, () => body.replaceChildren(
+      h('h3', null, s.id), ...s.lines.map((l) => h('p', { class: 'iw-rec__line' }, h('b', null, (SPEAKER_NAME[l.speaker] ?? l.speaker) || '—'), l.text)))));
+    const rList = recs.map((r) => btn('r-' + r.id, r.found ? r.title : '???', r.district, () => body.replaceChildren(
+      h('h3', null, r.found ? r.title : '아직 찾지 못한 기록'),
+      h('p', null, r.found ? r.body : '선택 상자 안에 있다. 지도에서 ◆가 붙은 임무를 확인한다.'),
+      ...(r.found && r.note ? [h('p', { class: 'iw-rec__note' }, r.note)] : []))));
+    const el = h('div', { class: 'iw-screen iw-rec' },
+      this._header('기록판', { sub: `대화 ${scripts.length} · 기록 ${recs.filter((r) => r.found).length} / ${recs.length}` }),
+      h('div', { class: 'iw-rec__cols' },
+        h('div', { class: 'iw-rec__list iw-in iw-in--left' }, h('h4', null, '읽은 대화'), sList.length ? sList : h('p', { class: 'iw-rec__empty' }, '아직 없다'), h('h4', null, '기록'), rList),
+        body),
+      this._prompts([['Enter', 'A', '읽기'], ['Esc', 'B', 'Back']]));
+    return { el, initial: () => (sList[0] || rList[0] || null), onFocus: (f) => (f as FocusEl & { _show?: () => void })._show?.() };
+  }
+
+  // ---- 이야기 결과(R030): 색 회복 2.5초 → 보상 카드 도장 → 저장 확정(실패 시 미확정·재시도) → 모라·틸 한 줄 → 다음 임무
+  showStoryResults(data: StoryResultsData): void { this._storyRes = data; this.show('storyResults', { force: true }); }
+  _scr_storyResults(): Screen {
+    const d = this._storyRes!;
+    const reduced = prefersReducedMotion();
+    const dist = DISTRICTS.find((x) => x.id === d.district) ?? DISTRICTS[0];
+    const art = h('div', { class: 'iw-sres__art', style: { backgroundImage: `url(${stageArt(dist.id, dist.time)})` } });
+    const cards = d.rewards.map((r, i) => h('div', { class: 'iw-sres__card', style: { '--i': String(i) } }, h('small', null, r.kind), h('b', null, r.name)));
+    const state = h('div', { class: 'iw-sres__save' }, '저장 확인 중…');
+    const retry = h('button', { class: 'iw-btn iw-btn--menu iw-sres__retry' }, h('span', { class: 'iw-btn__text' }, h('span', { class: 'iw-btn__label' }, '다시 저장')));
+    retry.classList.add('is-off');
+    const line = h('div', { class: 'iw-sres__line' }, h('b', null, SPEAKER_NAME[d.line.speaker] ?? d.line.speaker), h('span', null, d.line.text));
+    const next = d.next ? this._btn({ id: 'next', label: '다음 임무', sub: `${d.next.id} ${d.next.title}`, icon: GLYPHS.next, cls: 'iw-btn--menu iw-btn--primary', accept: () => this._storyBegin(d.next!.id), sound: 'ui_confirm' }) : null;
+    const hub = this._btn({ id: 'hub', label: '작업장으로', icon: GLYPHS.back, cls: 'iw-btn--menu', accept: () => this.show('workshop', { back: true }) });
+    const xp = h('div', { class: 'iw-sres__xp', style: { '--from': (d.xp.from / d.xp.max).toFixed(3), '--to': (d.xp.to / d.xp.max).toFixed(3) } }, h('i'));
+    const el = h('div', { class: `iw-screen iw-sres${d.firstClear ? ' is-first' : ''}`, 'data-step': '0' },
+      art,
+      h('div', { class: 'iw-sres__panel' },
+        h('div', { class: 'iw-sres__title' }, h('small', null, d.mission), d.title, d.firstClear ? h('em', null, '첫 완료') : null),
+        h('div', { class: 'iw-sres__cards' }, cards), xp, state, retry, line,
+        h('nav', { class: 'iw-sres__nav' }, next, hub)));
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+    const step = (n: number, ms: number): void => { timers.push(setTimeout(() => { el.dataset.step = String(n); }, reduced ? 0 : ms)); };
+    let alive = true;
+    const commit = async (): Promise<void> => {
+      el.dataset.saved = 'pending'; state.textContent = '저장 확인 중…'; retry.classList.add('is-off');
+      let ok = false;
+      try { ok = await d.commit(); } catch { ok = false; }
+      if (!alive) return;
+      el.dataset.saved = ok ? 'ok' : 'fail';
+      state.textContent = ok ? '보상 확정 · 저장됨' : '저장 실패 — 보상은 아직 미확정이다';
+      retry.classList.toggle('is-off', ok);
+      // 실패면 재시도에, 확정되면 다음 임무에 포커스
+      if (ok) { step(4, 300); step(5, 1100); timers.push(setTimeout(() => this._setFocus(next || hub), reduced ? 0 : 1100)); }
+      else this._setFocus(retry);
+    };
+    this._bind(retry, { id: 'retry', accept: () => { this._sfx('ui_click'); void commit(); } });
+    // 1 색 회복(첫 완료만 2.5초, 반복 완료는 바로) → 2 보상 카드 → 3 저장 → 4 한 줄 → 5 다음 임무
+    const t0 = d.firstClear ? 2500 : 0;
+    step(1, 0); step(2, t0); timers.push(setTimeout(() => { el.dataset.step = '3'; void commit(); }, reduced ? 0 : t0 + 900));
+    return {
+      el, initial: () => (next || hub),
+      destroy: () => { alive = false; for (const t of timers) clearTimeout(t); },
     };
   }
 
@@ -2107,6 +2339,8 @@ export class Menus {
         movePill(true);
         if (sc && sc.showLocker) safeCall(() => sc.showLocker!(style, teamColor(), this._loadout().weapon));
       },
+      // 첫 실행 이야기 시작: 뒤로 가면 이야기가 시작된다(라커를 짧게 거친다, R025)
+      onBack: this._storyFirst ? () => { this._sfx('ui_confirm'); this._storyBegin(); } : undefined,
       onFocus: (f) => { if (f._sec) showInfo(f as LockerTile); },
       onNav: (dir) => {
         if (dir === 'tab_prev' || dir === 'tab_next') {

@@ -89,5 +89,10 @@ longer emitted.
 | `action:objective` | `{ actor }` — 목표 완료가 물결 게이지에 반영됨(목표 실행기가 `combat.objective()`를 부를 때) | src/campaign/action/combat.ts |
 | `enemy:stagger` / `enemy:staggerEnd` | `{ actor, by, exposeWeak }` / `{ actor }` — 버팀(poise) 0 → 0.7초 스태거 / 끝(3초 면역 시작) | src/campaign/action/combat.ts |
 | `cast:say` | `{ actor?, pos?, text, kind, speaker? }` — 머리 위(또는 pos) 말풍선과 찍찍 목소리. speaker: player · mora · teal · pong · captain | src/game/cast/castDirector.ts가 내고 src/game/cast/speech.ts가 받는다 |
+| `fx:hitstop` | `{ seconds, scale, reason }` — 새 히트스톱 시작(0.4초 안에 병합된 요청은 내지 않는다). reason: kill · elite · phase · perfect | src/campaign/action/feedback.ts |
+| `action:finish` | `{ kind, pos, pongJoy }` — 처치·피니시(정예·대장)·보스 페이즈 전환 연출. kind: kill · elite · phase | src/campaign/action/feedback.ts. castDirector가 퐁 기쁨을 붙인다 |
+| `device:fountain` / `device:barrel` / `device:switch` | `{ id, actor }` / `{ id, pos }` / `{ id, enables }` — 잉크 분수 발사·잉크통 폭발·스위치 작동 | src/campaign/action/devices.ts |
+| `story:line` / `story:end` | `{ scriptId, index, line }` / `{ scriptId, skipped }` — 대화 한 줄 시작 / 대본 끝(건너뛰기 포함) | src/campaign/story/dialogue.ts |
+| `story:panel` / `story:panelEnd` | `{ sceneId, shotId }` / `{ sceneId, skipped }` — 만화 패널 컷 시작 / 장면 끝 | src/campaign/story/panels.ts |
 
-위 `action:*`·`enemy:*`·`cast:say`는 캠페인 세션(개발 중에는 `?tune=campaign` 미리보기, src/campaign/preview.ts)이 있을 때만 난다.
+위 `action:*`·`enemy:*`·`cast:say`·`fx:hitstop`·`device:*`는 캠페인 세션(개발 중에는 `?tune=campaign` 미리보기와 메뉴의 이야기 임무 체험, src/campaign/preview.ts)이 있을 때만 난다. `story:*`는 이야기 진행기(src/campaign/story/storyDirector.ts)가 대화·패널을 재생할 때 난다.

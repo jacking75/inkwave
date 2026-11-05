@@ -16,6 +16,7 @@ import { PERFECT, isPerfectDive } from './perfectDive.js';
 import { SURGE, DoubleTap, canSurge, surgeSpeed } from './surge.js';
 import { WaveGauge, waveEffects, type WaveGain, type WaveLevel } from './waveGauge.js';
 import { Poise, STAGGER, roleOfWeapon, type EnemyTier } from './stagger.js';
+import { CombatFeedback } from './feedback.js';
 import { applyTemp, campaignTuning, enemyTuning, restoreTuning, NO_GROWTH, ENEMY_HANDLING, type GrowthMods, type PlayerTuning } from '../tuning.js';
 
 export type CombatRole = 'player' | 'enemy' | 'ally';
@@ -46,6 +47,9 @@ export class CampaignCombat {
   declare player: Actor | null; declare base: PlayerTuning; declare growth: GrowthMods;
   declare tap: DoubleTap; declare surge: Surge | null; declare surgeCd: number;
   declare buffLeft: number; declare lastPerfect: Map<Actor, number>;
+  declare feedback: CombatFeedback;
+  declare inputBlocked: boolean;   // 막는 대본·컷신 동안 플레이어 전투 입력을 지운다(R026·R027)
+  declare hitRef: { time: number; after: number } | null;   // 텔레그래프 피해 처리 중의 퍼펙트 기준 시각
   declare unsubs: Array<() => unknown>;
 
   constructor(time: TimeScale, opts: CombatOptions = {}) {
@@ -54,6 +58,11 @@ export class CampaignCombat {
     this.player = null; this.growth = opts.growth ?? NO_GROWTH; this.base = campaignTuning(this.growth);
     this.tap = new DoubleTap(); this.surge = null; this.surgeCd = 0;
     this.buffLeft = 0; this.lastPerfect = new Map();
+    this.hitRef = null; this.inputBlocked = false;
+    this.feedback = new CombatFeedback(time, () => this._calm(), () => ({
+      rig: G.rig as { punch?(k: 'kill' | 'elite'): void; kickFov?(d: number, s: number): void } | null,
+      rumble: (a, b, ms) => (G.input as { rumble?(a: number, b: number, ms: number): void } | null)?.rumble?.(a, b, ms),
+    }));
     this.unsubs = [
       on('damage', (e: { victim: Actor; attacker: Actor | null; amount: number; source: string }) => this._onDamage(e)),
       on('splatted', (e: { victim: Actor; attacker: Actor | null }) => this._onSplatted(e)),
@@ -90,6 +99,7 @@ export class CampaignCombat {
   }
 
   entry(a: Actor): Entry | undefined { return this.entries.get(a); }
+  tierOf(a: Actor): EnemyTier | null { return this.entries.get(a)?.poise?.tier ?? null; }
   isStaggered(a: Actor): boolean { return !!this.entries.get(a)?.poise?.staggered; }
   isExposed(a: Actor): boolean { const n = this.entries.get(a); return !!n && (n.exposeLeft > 0 || (n.poise?.exposeLeft ?? 0) > 0); }
 
@@ -112,9 +122,9 @@ export class CampaignCombat {
   }
 
   // ---------------------------------------------------------------- Actor 훅
-  // 스태거 중인 적은 아무 의도도 내지 않는다(봇 두뇌가 이번 프레임에 쓴 의도를 지운다).
+  // 스태거 중인 적은 아무 의도도 내지 않는다(봇 두뇌가 이번 프레임에 쓴 의도를 지운다). 대본·컷신 중의 플레이어도 같다.
   beforeUpdate(a: Actor): void {
-    if (!this.isStaggered(a)) return;
+    if (!this.isStaggered(a) && !(this.inputBlocked && a === this.player)) return;
     const it = a.intent;
     it.move.set(0, 0, 0); it.jump = false; it.squid = false; it.fire = false; it.sub = false; it.special = false;
   }
@@ -175,6 +185,7 @@ export class CampaignCombat {
         now, squidPressedAt: victim._squidPressT, window: this.opts.story ? PERFECT.windowStory : PERFECT.window, source,
         hasAttacker: !!attacker, onEnemyInk: victim.grounded && victim.groundTeam === 2, alive: victim.alive,
         specialActive: !!victim.specialActive, lastPerfectVsAttacker: attacker ? this.lastPerfect.get(attacker) ?? -Infinity : -Infinity,
+        refTime: this.hitRef?.time, after: this.hitRef?.after,
       });
       if (perfect && attacker) { this._perfect(victim, attacker, source); return { amount: 0, perfect: true, attacker }; }
       return { amount, perfect: false, attacker };
@@ -185,6 +196,12 @@ export class CampaignCombat {
       if (n.poise) amount *= n.poise.damageMul();
     }
     return { amount, perfect: false, attacker };
+  }
+
+  // 예고(텔레그래프)가 끝난 공격의 피해: 퍼펙트 잠수 기준을 예고 종료 시각으로 두고 damage()를 부른다(R022)
+  telegraphHit(victim: Actor, amount: number, attacker: Actor | null, endAt: number, after: number): boolean {
+    this.hitRef = { time: endAt, after };
+    try { return victim.damage(amount, attacker, 'telegraph'); } finally { this.hitRef = null; }
   }
 
   inkCostMul(a: Actor): number { return a === this.player ? waveEffects(this.wave.level).inkMul : 1; }
@@ -199,7 +216,7 @@ export class CampaignCombat {
 
   _perfect(p: Actor, attacker: Actor, source: string): void {
     this.lastPerfect.set(attacker, G.time);
-    if (!this._calm()) { this.time.hitstop(PERFECT.hitstop, PERFECT.hitstopScale); this.time.slow(PERFECT.slow, PERFECT.slowScale); }
+    if (!this._calm()) { this.feedback.hitstop(PERFECT.hitstop, 'perfect', PERFECT.hitstopScale); this.time.slow(PERFECT.slow, PERFECT.slowScale); }
     p.ink = Math.min(p.tune.inkMax, p.ink + PERFECT.ink);
     if (!p.specialActive) {
       const was = p.specialReady();
@@ -259,7 +276,10 @@ export class CampaignCombat {
     if (!p) return;
     if (e.victim === p) { const prev = this.wave.death(); if (prev !== null) this._waveChanged(prev); this.surge = null; return; }
     const n = this.entries.get(e.victim);
-    if (n?.role === 'enemy' && e.attacker === p) this._gain(n.poise && n.poise.tier !== 'grunt' ? 'elite' : 'kill');
+    if (n?.role === 'enemy' && e.attacker === p) {
+      this._gain(n.poise && n.poise.tier !== 'grunt' ? 'elite' : 'kill');
+      this.feedback.kill(e.victim, n.poise?.tier ?? null);
+    }
   }
 }
 

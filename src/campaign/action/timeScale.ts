@@ -13,6 +13,7 @@ export class TimeScale {
   declare clock: number;          // 실시간 누적(rawDt 합)
   declare stopLeft: number; declare stopScale: number; declare lastStopAt: number;
   declare slowLeft: number; declare slowScale: number; declare slowEase: number;
+  declare held: boolean;          // 컷신(R027): 시뮬레이션 정지(배율 0). 입력은 건너뛰기만 받으므로 에지 유실이 문제 되지 않는다
 
   constructor() { this.reset(); this.clock = 0; }
 
@@ -36,10 +37,14 @@ export class TimeScale {
     this.slowLeft = seconds; this.slowScale = scale; this.slowEase = Math.max(0.001, Math.min(ease, seconds));
   }
 
+  // 컷신 동안 시뮬레이션을 멈춘다(카메라·인물·UI는 rawDt로 돈다)
+  hold(on: boolean): void { this.held = on; }
+
   step(rawDt: number): TimeStep {
     this.clock += rawDt;
     let scale = 1;
-    if (this.stopLeft > 0) {
+    if (this.held) scale = 0;
+    else if (this.stopLeft > 0) {
       scale = this.stopScale;
       this.stopLeft = Math.max(0, this.stopLeft - rawDt);
     } else if (this.slowLeft > 0) {
@@ -53,7 +58,7 @@ export class TimeScale {
 
   // 세션 종료·일시 정지·포커스 이탈: 즉시 배율 1이다.
   reset(): void {
-    this.scale = 1;
+    this.scale = 1; this.held = false;
     this.stopLeft = 0; this.stopScale = HITSTOP_SCALE; this.lastStopAt = -Infinity;
     this.slowLeft = 0; this.slowScale = 1; this.slowEase = 0.1;
   }

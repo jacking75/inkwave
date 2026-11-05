@@ -38,6 +38,12 @@ import { SfxWords } from './style/sfxWords.js';
 import { withProportion } from './game/cast/proportion.js';
 import { withCast } from './game/cast/castCharacter.js';
 import { CampaignPreview } from './campaign/preview.js';
+import { addPreviewEchoes } from './campaign/previewEchoes.js';
+import { StoryDirector, hasStorySave } from './campaign/story/storyDirector.js';
+import type { HarborProgress } from './campaign/story/districts.js';
+import { ALL_RECORDS } from './campaign/story/scripts/index.js';
+import { Voice } from './game/cast/voice.js';
+import { registerCampaignSongs } from './audio/campaignMusic.js';
 import { registerStoryThemes, isStoryTheme } from './world/themes-story.js';
 import { ACTION_CAMERA } from './game/cameraRig.js';
 import { ColorReturn } from './campaign/colorReturn.js';
@@ -180,6 +186,14 @@ interface MenuApi {
   toMainMenu(): Promise<void>;
   onScreenChange(s: string | null): void;
   playSound(n: string): void;
+  // 이야기(35번 R025·R029·R031)
+  startStory(): Promise<void>;
+  startStoryMission(id: string): Promise<void>;
+  hasStorySave(): boolean;
+  storyProgress(): HarborProgress;
+  storyRecords(): Array<{ id: string; title: string; body: string; note?: string; found: boolean; district: string }>;
+  storyRead(): string[];
+  replayStory(id: string): boolean;
 }
 type LoopHandle = ReturnType<AudioEngine['loop']> & { _v?: number };
 // startMatch()가 정한 대전 조건이다(재대전은 이 값을 그대로 다시 쓴다).
@@ -232,6 +246,8 @@ class Game {
   declare colorReturn: ColorReturn | null;
   // ?tune=campaign: 캠페인 전투·인물 연출 미리보기(오프라인 경기마다 만들고 경기 정리 때 끝낸다, 35번 R011~R020)
   declare campaignPreview: CampaignPreview | null;   // 캠페인 세션만 가진다(개발용 ?colorreturn 제외). null = 전부 채색
+  declare story: StoryDirector | null;               // 이야기 진행기(대화·패널·기록, 35번 R026·R027)
+  declare _storyMatch: boolean;                      // 다음 startMatch가 이야기 임무 경기(캠페인 미리보기를 켠다)
   declare fxHooks?: ReturnType<typeof initFxHooks> | null;
   declare screenfx?: ScreenFX | null;
   declare showcase: Showcase;
@@ -506,11 +522,32 @@ class Game {
     G.post = this.R; G.game = this; G.rig = this.rig;
     // 액션 카메라(R009)는 캠페인 세션 전용이다. 세션 전에는 ?tune=campaign으로 연습·대전에서 미리 체감한다.
     if (TUNE_CAMPAIGN) {
-      this.rig.setProfile(ACTION_CAMERA);
-      on('hit', (e: { attacker?: Actor | null; killed?: boolean }) => { if (e.killed && e.attacker === G.local) this.rig.punch('kill'); });
+      this.rig.setProfile(ACTION_CAMERA);   // 처치 펀치는 캠페인 피드백 패키지(R021 feedback.ts)가 건다
     }
     // 의성어 라벨(R008): HUD와 같은 ui-root 레이어
     this.words = new SfxWords(this.uiRoot);
+    registerCampaignSongs();   // 캠페인 전투 곡·작업장 곡(R024)
+    // 이야기 진행기: 대화·통신 초상·만화 패널(메뉴의 이야기 시작·이어하기, 35번 R025~R027)
+    this._storyMatch = false;
+    {
+      const self = this;
+      let store: Storage | null = null;
+      try { store = window.localStorage; } catch { store = null; }
+      const _down = new THREE.Vector3(0, -1, 0), _o = new THREE.Vector3();
+      this.story = new StoryDirector({
+        uiRoot: this.uiRoot, overlays: this.R.overlays, store,
+        get CharacterClass() { return (self.CharacterClass ?? null) as never; },
+        playerStyle: () => ({ ...(self.profile.style || { hair: 0, skin: 1 }) }) as Record<string, number>,
+        playerColor: () => '#' + (G.teamColors[0]?.getHexString() ?? 'ff8a14'),
+        scene: () => G.scene!, camera: () => G.camera!, rig: this.rig,
+        match: () => (self.match && !self.match.attract ? self.match : null),
+        preview: () => self.campaignPreview,
+        ground: (x, y, z) => { const h = G.physics?.raycast(_o.set(x, y, z), _down, 8); return h?.hit ? h.point.y : null; },
+        hud: (v) => { if (self.match && !self.match.attract) self.hud?.setVisible(v); },
+        voice: new Voice(() => G.audio as { ctx: AudioContext | null; sfxIn?: AudioNode | null } | null, () => G.settings?.koreanVoice !== false),
+        startMissionMatch: async (mapId) => { self._storyMatch = true; try { await self.startMatch({ mapId, practice: true }); } finally { self._storyMatch = false; } },
+      });
+    }
     // 색 회복(R005): 캠페인 세션이 소유한다. ?colorreturn은 세션 전 확인용으로 현재 경기에 색 잃은 상태를 건다.
     this.colorReturn = null;
     if (params.has('colorreturn')) {
@@ -779,6 +816,13 @@ class Game {
       toMainMenu: () => self.quitToMenu(),
       onScreenChange: (s) => self._onScreen(s),
       playSound: (n) => { G.audio?.init?.(); G.audio?.play(n); },
+      startStory: () => self.story!.start('1-1', true),
+      startStoryMission: (id) => self.story!.start(id, false),
+      hasStorySave: () => { let st: Storage | null = null; try { st = window.localStorage; } catch { st = null; } return hasStorySave(st); },
+      storyProgress: () => self.story!.progress(),
+      storyRecords: () => ALL_RECORDS.map((r) => ({ id: r.id, title: r.title, body: r.body, note: r.note, district: r.district, found: self.story!.log.data.records.includes(r.id) })),
+      storyRead: () => self.story!.log.data.read.slice(),
+      replayStory: (id) => self.story!.replay(id),
     });
     return api;
   }
@@ -813,7 +857,10 @@ class Game {
     if (s === 'loadout') this.showcase.showLoadout(this.profile.weapon || 'shooter', G.teamColors[0], this.profile.style);
     else if (s !== 'results') { if (this.showcase.mode === 'loadout') this.showcase.hide(); }
     if (G.mode === 'menu') {
-      if (s === 'title' || s === 'main' || s === 'setup' || s === 'settings' || s === 'howto' || s === 'credits' || s === 'loadout' || s === 'locker' || s === 'online' || s === 'lobby') {
+      // 작업장·항구 지도·기록판은 작업장 곡(3/4, R024)이다
+      const story = s === 'workshop' || s === 'harbor' || s === 'records' || s === 'storyResults';
+      if (story) { if (this._musicTrack !== 'workshop') this._playMusic('workshop'); }
+      else if (s === 'title' || s === 'main' || s === 'setup' || s === 'settings' || s === 'howto' || s === 'credits' || s === 'loadout' || s === 'locker' || s === 'online' || s === 'lobby' || s === 'arena') {
         if (this._musicTrack !== (s === 'title' ? 'title' : 'menu')) this._playMusic(s === 'title' ? 'title' : 'menu');
       }
     }
@@ -1106,7 +1153,8 @@ class Game {
     window.inkwaveNative?.performance?.mark('actors:setup:start');
     m.setup();
     // 캠페인 미리보기는 셰이더 예열 전에 붙인다(잔향 소멸 셰이더가 예열에 들어간다)
-    if (TUNE_CAMPAIGN) this.campaignPreview = new CampaignPreview(m, G.scene!, this.uiRoot);
+    if (this._storyMatch && this.CharacterClass) addPreviewEchoes(m, this.CharacterClass);   // 이야기 임무 체험: 잔향 대원 3명(T026 전)
+    if (TUNE_CAMPAIGN || this._storyMatch) this.campaignPreview = new CampaignPreview(m, G.scene!, this.uiRoot, { drill: params.has('drill'), devices: params.has('devices') });
     window.inkwaveNative?.performance?.mark('actors:setup:end');
     await this._warmCharacters(m);
     window.inkwaveNative?.performance?.mark('actors:warm:end');
@@ -1124,7 +1172,7 @@ class Game {
     this._fade(0, 500);
   }
 
-  _stopCampaignPreview() { this.campaignPreview?.stop(); this.campaignPreview = null; }
+  _stopCampaignPreview() { this.story?.endMission(); this.campaignPreview?.stop(); this.campaignPreview = null; }
 
   _inPractice() { return !!(this.match && this.match.practice && G.mode === 'match'); }
 
@@ -1552,6 +1600,7 @@ class Game {
     if (!m || !m.paused) this.fxHooks?.update?.(dt);
     if (m && !m.paused && !m.attract) this._ageDeathMarks(dt);
     if (this.campaignPreview) this.campaignPreview.update(dt, this._rawDt ?? dt, G.camera, !m || !!m.paused || m.state !== 'playing');
+    this.story?.update(this._rawDt ?? dt);
     this.screenfx?.update?.(dt, this);
     // the TAB map (also while splatted, planning a Super Jump): lift the splatted desaturation + ink flood off the stage
     // so the ink and the pins read
@@ -1568,7 +1617,8 @@ class Game {
     // aiming a Vortex Strike (that uses the flat stage map)
     const strikeAiming = !!(m?.local?.specialActive && m.local.specialActive.id === 'strike' && m.local.specialActive.aiming);
     this.rig.setMap?.(!!(m && !m.attract && !m.paused && m.state === 'playing' && m.controller?.mapHeld && !this.menus?.current && !strikeAiming));
-    this.rig.update(dt);
+    // 카메라(흔들림·펀치 감쇠)는 실시간으로 돈다: 히트스톱 중에도 화면 반응이 멈추지 않는다(R021)
+    this.rig.update(G.campaign ? (this._rawDt ?? dt) : dt);
     this._dioFog();
     this.diorama?.update(dt, this.rig.mapK);
     // local player camera-dependent aim must use this frame's camera

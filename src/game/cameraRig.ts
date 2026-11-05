@@ -22,12 +22,14 @@ export interface CameraProfile {
 }
 export const ACTION_CAMERA: CameraProfile = { dist: 4.2, shoulder: 0.35, fovKickSurge: 6, fovKickWave: [0, 1, 2, 3], punchKill: 0.18, punchElite: 0.32 };
 // 보스 등장 같은 연속 컷 한 장(playShots)
-export interface CameraShot { from: THREE.Vector3; to: THREE.Vector3; lookFrom: THREE.Vector3; lookTo: THREE.Vector3; dur: number }
+// arc: 경로 가운데에서 위로 솟는 높이 m(기본 1.5, 패널 컷은 0), fov: 수직 화각(없으면 기존 계산)
+export interface CameraShot { from: THREE.Vector3; to: THREE.Vector3; lookFrom: THREE.Vector3; lookTo: THREE.Vector3; dur: number; arc?: number; fov?: number }
 
 export interface CameraPath {
   from: THREE.Vector3; to: THREE.Vector3; lookFrom: THREE.Vector3; lookTo: THREE.Vector3;
   t: number; dur: number;
   onDone: (() => void) | null | undefined;
+  arc: number; fov: number | null;
 }
 // 사망 관전(spectate)이다. pos는 쓰러진 자리, from은 그때 피해자 위치, actor는 쓰러뜨린 상대이다(없거나 퇴장하면 null).
 // 카메라가 따라가는 대상(follow)이다. Actor가 이 형태를 만족한다. 카메라가 실제로 읽는 멤버만 둔다.
@@ -239,7 +241,7 @@ export class CameraRig {
     const next = (i: number): void => {
       if (i >= shots.length) { onDone?.(); return; }
       const s = shots[i];
-      this.cinematic(s.from, s.to, s.lookFrom, s.lookTo, s.dur, () => next(i + 1));
+      this.cinematic(s.from, s.to, s.lookFrom, s.lookTo, s.dur, () => next(i + 1), s.arc, s.fov);
     };
     next(0);
   }
@@ -262,9 +264,9 @@ export class CameraRig {
   }
 
   // Cinematic: move along a smooth arc from->to while looking from lookFrom->lookTo.
-  cinematic(from: THREE.Vector3, to: THREE.Vector3, lookFrom: THREE.Vector3, lookTo: THREE.Vector3, dur: number, onDone?: () => void): void {
+  cinematic(from: THREE.Vector3, to: THREE.Vector3, lookFrom: THREE.Vector3, lookTo: THREE.Vector3, dur: number, onDone?: () => void, arc = 1.5, fov: number | null = null): void {
     this.mode = 'path';
-    this.path = { from: from.clone(), to: to.clone(), lookFrom: lookFrom.clone(), lookTo: lookTo.clone(), t: 0, dur, onDone };
+    this.path = { from: from.clone(), to: to.clone(), lookFrom: lookFrom.clone(), lookTo: lookTo.clone(), t: 0, dur, onDone, arc, fov: fov ?? null };
   }
 
   orbit(center: THREE.Vector3, radius: number, height: number, speed = 0.05, phase = 0): void {
@@ -321,6 +323,7 @@ export class CameraRig {
     // fisheye); kicks/zoom are in vertical degrees
     const vBase = 2 * Math.atan(Math.tan((this.baseFov * Math.PI) / 360) / (16 / 9)) * (180 / Math.PI);
     let fov = vBase + (this.fovKick - this.zoom) * 0.8;
+    if (this.mode === 'path' && this.path?.fov) fov = this.path.fov;   // 패널 컷의 화각(R027)
     // pose blend (mode transitions)
     const b = this.blend;
     if (b && b.active) {
@@ -582,7 +585,7 @@ export class CameraRig {
     const k = clamp(p.t / p.dur, 0, 1);
     const e = easeInOut(k);
     cam.position.lerpVectors(p.from, p.to, e);
-    cam.position.y += Math.sin(e * Math.PI) * 1.5;
+    cam.position.y += Math.sin(e * Math.PI) * p.arc;
     _v.lerpVectors(p.lookFrom, p.lookTo, e);
     cam.up.set(0, 1, 0);
     cam.lookAt(_v);

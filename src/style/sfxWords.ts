@@ -66,6 +66,9 @@ export class SfxWords {
       // 내가 쓰러뜨렸을 때
       on('hit', (e: { attacker?: { isLocal?: boolean } | null; victim?: { pos: THREE.Vector3; team: number } | null; killed?: boolean }) => {
         if (!e.killed || !e.attacker?.isLocal || !e.victim) return;
+        // 캠페인의 정예·대장 처치는 피니시 연출(feedback.ts)이 '쾅!'을 낸다
+        const tierOf = (G.campaign as { combat?: { tierOf?(a: unknown): string | null } } | null)?.combat?.tierOf;
+        if (tierOf && (tierOf.call((G.campaign as { combat: unknown }).combat, e.victim) ?? 'grunt') !== 'grunt') return;
         emit('fx:word', { text: WORDS.kill, pos: headPos(e.victim.pos), kind: 'kill', color: G.teamHex[0] });
       }),
       // 내가 맞았을 때

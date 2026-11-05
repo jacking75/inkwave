@@ -107,6 +107,7 @@ const _off = new THREE.Vector3(PONG.offset[0], PONG.offset[1], PONG.offset[2]);
 interface Mood { face: PongFace; left: number }
 
 export class Pong {
+  declare offstage: boolean;   // 패널 컷신 동안 숨긴다(패널이 자기 인물을 세운다, R027)
   declare mesh: THREE.Mesh; declare mat: THREE.MeshPhysicalMaterial; declare cell: THREE.Vector4; declare tex: THREE.CanvasTexture;
   declare actor: Actor | null; declare spring: Spring2; declare face: PongFace; declare mood: Mood | null;
   declare faceCamera: boolean;   // 대화 중에는 카메라 쪽으로 몸을 돌린다(3.3절, R026 대화가 켠다)
@@ -115,6 +116,7 @@ export class Pong {
   declare unsubs: Array<() => unknown>;
 
   constructor(uiRoot: HTMLElement) {
+    this.offstage = false;
     const atlas = pongAtlas();
     this.tex = new THREE.CanvasTexture(atlas.canvas);
     this.tex.colorSpace = THREE.SRGBColorSpace;
@@ -187,7 +189,7 @@ export class Pong {
     if (camera) { camera.getWorldPosition(_cam); near = Math.max(0, Math.min(1, (_cam.distanceTo(p) - PONG.nearCam) / 0.3)); }
     const s = (1 - this.hide) * near;
     this.mesh.scale.set(s / Math.sqrt(this.sy), s * this.sy, s / Math.sqrt(this.sy));
-    this.mesh.visible = s > 0.01;
+    this.mesh.visible = s > 0.01 && !this.offstage;
   }
 
   _target(a: Actor, out: THREE.Vector3): THREE.Vector3 {

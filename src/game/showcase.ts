@@ -31,8 +31,14 @@ import { WEAPONS } from '../config.js';
 import { resolveLook } from '../style/lookProfile.js';
 import type { Character } from './character.js';
 import type { LobbySet } from './lobbySet.js';
-import { setCast, react, castOf } from './cast/castCharacter.js';
-import type { CastId, ReactKind, EchoSpec } from './cast/cast.js';
+import { setCast, react, castOf, setStoryPose } from './cast/castCharacter.js';
+import { CAST_LOOKS, type CastId, type ReactKind, type EchoSpec } from './cast/cast.js';
+import type { StoryPose } from './cast/poses.js';
+import { Pong } from './cast/mascot.js';
+import { titleColorReturn } from '../campaign/story/titleVignette.js';
+
+// 퐁이 붙는 인물(쇼케이스 아이는 Actor가 아니므로 Pong.update가 읽는 칸만 채운다)
+interface PongActor { color: THREE.Color; alive: boolean; intent: { move: { x: number; z: number }; fire: boolean; jump: boolean; squid: boolean; sub: boolean }; hp: number; tune: { hp: number }; form: string; climbing: boolean; yaw: number; grounded: boolean; vel: THREE.Vector3; pos: THREE.Vector3; character: Character }
 
 // ================================================================================================ types
 // 타입만 둔다(실행 코드 없음). 캐릭터 외형은 키 → 번호(hair·skin·outfit·eyes …)이다.
@@ -1070,6 +1076,8 @@ export class Showcase {
   declare won: boolean;
   declare t: number; declare fadeIn: number; declare _out: number; declare _outDur: number; declare _lastMode: ShowMode | null;
   declare lob: LobbyState | null; declare _ffFrame: boolean;
+  // 작업장(35번 R028): 로비 세트 hub 화면에 선 모라·틸. showWorkshop이 켜고 showHub(온라인)는 끈다
+  declare _ws: { on: boolean; cast: boolean; vignette: boolean; vt: number; chars: Map<'mora' | 'teal', Character>; focus: 'mora' | 'teal' | null; anim: AnimState; pong: Pong | null; pongActor: PongActor | null } | undefined;
   declare spin: number; declare spinVel: number; declare sinceDrag: number; declare drag: { x: number; t: number } | null;
   declare weapon: string | null; declare hopT: number; declare hopWeapon: string | null; declare pop: THREE.Object3D | null;
   declare ui: UIState;
@@ -1880,7 +1888,79 @@ export class Showcase {
   }
 
   /** Online hub (menus.js 'online'): your kid on the set's hub spot, framed right of the create / join cards. */
+  /** 작업장(R028): 온라인 hub와 같은 세트·구도에 모라(작업대 'work')·틸(통신 'listen')을 세운다. focus는 고른 메뉴의 인물 */
+  //  opts.cast false: 모라·틸 없이(타이틀 비네트), opts.vignette: 퐁을 태우고 색이 천천히 돌아오는 10초 루프(R025)
+  showWorkshop(style: LookStyle | null | undefined, color: ColorArg | null | undefined, weapon?: string | null, opts: { cast?: boolean; vignette?: boolean } = {}) {
+    this.showHub(style, color, weapon);
+    const W = this._ws || (this._ws = { on: false, cast: true, vignette: false, vt: 0, chars: new Map(), focus: null, anim: this._anim(), pong: null, pongActor: null });
+    W.on = true; W.cast = opts.cast !== false; W.vignette = !!opts.vignette; W.vt = 0;
+  }
+  workshopFocus(who: 'mora' | 'teal' | null) { if (this._ws) this._ws.focus = who; }
+
+  _wsUpdate(L: LobbyState, dt: number) {
+    const W = this._ws;
+    if (!W) return;
+    const show = W.on && this.mode === 'hub' && !!L.set;
+    for (const [id, c] of W.chars) c.root.visible = show && W.cast && L.k > 0.02 && !!id;
+    this._wsVignette(L, dt, show && W.vignette);
+    if (!show || !W.cast) return;
+    const S = L.set!;
+    const slots: Array<['mora' | 'teal', number, StoryPose]> = [['mora', 1, 'work'], ['teal', 2, 'listen']];
+    W.anim.time += dt;
+    for (const [id, slot, pose] of slots) {
+      let c = W.chars.get(id);
+      if (!c) {
+        const lk = CAST_LOOKS[id];
+        c = new this.CharacterClass({ color: new THREE.Color(lk.color), weapon: 'shooter', style: { ...lk.style }, name: 'ws-' + id, isLocal: false });
+        setCast(c, id);
+        c.setDance('menu_idle');
+        (c as unknown as { weaponHidden: boolean }).weaponHidden = true;
+        L.kids.add(c.root);
+        W.chars.set(id, c);
+      }
+      const sp = S.spots[slot];
+      c.root.position.copy(sp.pos);
+      // 고른 인물은 카메라를 본다(메뉴 시선 처리와 같은 뜻), 나머지는 자기 일을 한다
+      const look = W.focus === id;
+      const toCam = Math.atan2(L.cam.position.x - sp.pos.x, L.cam.position.z - sp.pos.z);
+      c.root.rotation.y = look ? toCam : sp.yaw + (id === 'mora' ? 0.9 : -0.9);
+      setStoryPose(c, look ? (id === 'mora' ? 'wave' : 'idle') : pose);
+      c.root.visible = true;
+      c.update(dt, W.anim);
+    }
+  }
+
+  // 타이틀 비네트(R025): 허브 아이 등에 퐁을 태우고, 세트의 색이 10초 주기로 아이 자리에서부터 돌아온다
+  _wsVignette(L: LobbyState, dt: number, on: boolean) {
+    const W = this._ws!;
+    const M = L.members.get(HUB_ID);
+    if (!on || !M || !M.c) {
+      if (W.pong) W.pong.mesh.visible = false;
+      if (W.vt > 0) { G.post?.setOverlayColorReturn?.(null); W.vt = 0; }
+      return;
+    }
+    W.vt += dt;
+    const c = M.c, root = c.root;
+    if (!W.pong) {
+      const uiRoot = document.getElementById('ui-root') || document.body;
+      W.pong = new Pong(uiRoot);
+      W.pong.portrait.remove();   // 비네트에는 통신 초상이 없다
+    }
+    let A = W.pongActor;
+    if (!A || A.character !== c) {
+      A = W.pongActor = { color: L.colors[0].clone(), alive: true, intent: { move: { x: 0, z: 0 }, fire: false, jump: false, squid: false, sub: false }, hp: 1, tune: { hp: 1 }, form: 'kid', climbing: false, yaw: root.rotation.y, grounded: true, vel: new THREE.Vector3(), pos: root.position, character: c };
+      W.pong.attach(A as unknown as Parameters<Pong['attach']>[0]);
+      W.pong.mesh.removeFromParent(); L.kids.add(W.pong.mesh);
+    }
+    A.yaw = root.rotation.y;
+    W.pong.update(dt, L.cam);
+    if (W.vt > 0 && Math.floor(W.vt / 10) !== Math.floor((W.vt - dt) / 10)) W.pong.react('joy', 1.2);   // 색이 다 돌아올 때
+    G.post?.setOverlayColorReturn?.(titleColorReturn(W.vt, root.position));
+  }
+
   showHub(style: LookStyle | null | undefined, color: ColorArg | null | undefined, weapon?: string | null) {
+    if (this._ws) { this._ws.on = false; this._ws.vignette = false; }
+    G.post?.setOverlayColorReturn?.(null);
     const L = this._lobEnsure();
     if (!color || !(color as THREE.Color).isColor) color = new THREE.Color(color || this.color);
     const look = style ? { ...style } : this._profileStyle();
@@ -2317,6 +2397,7 @@ export class Showcase {
     L.t += dt;
     L.shotT += dt;
     S!.update?.(dt, L.t);
+    this._wsUpdate(L, dt);
     // members (kids + contact shadows)
     let ci = 0;
     for (const M of [...L.members.values()]) {

@@ -1,6 +1,7 @@
 // 퍼펙트 잠수(저스트 회피, 35번 R017)의 판정과 수치이다. 순수 계산이며 효과(시간·잉크·게이지·연출)는 combat.ts가 건다.
 // 새 버튼은 없다: 적 공격이 닿기 직전 window초 안에 잠수 키를 "새로" 눌렀으면 그 공격을 무효화한다.
-// 텔레그래프(R022)가 생기면 예고 종료 시각 기준 [-window, +0.04]로 바꾼다. 지금은 피해가 도착한 시각 기준이다.
+// 기준 시각: 예고(텔레그래프, R022)가 있는 공격은 예고 종료 시각 ref 기준 [ref - window, ref + after]이고(after 0.04),
+// 예고 없는 공격(봇의 즉발 사격)은 피해가 도착한 시각 기준 [now - window, now]이다.
 
 export const PERFECT = {
   window: 0.14, windowStory: 0.18,     // s: 입력 창(일반·이야기 난이도)
@@ -25,12 +26,15 @@ export interface PerfectCheck {
   alive: boolean;
   specialActive: boolean;     // 스페셜 변신 중
   lastPerfectVsAttacker: number;   // 같은 공격자에게 마지막으로 발동한 시각(없으면 -Infinity)
+  refTime?: number;           // 예고 종료 시각(텔레그래프 공격). 없으면 now
+  after?: number;             // ref 뒤로 허용하는 s(텔레그래프 0.04)
 }
 
 export function isPerfectDive(c: PerfectCheck): boolean {
   if (!c.alive || c.specialActive || !c.hasAttacker || ENVIRONMENT.has(c.source)) return false;
   if (c.onEnemyInk) return false;
   if (c.now - c.lastPerfectVsAttacker < PERFECT.sameAttackerCd) return false;
-  const since = c.now - c.squidPressedAt;
-  return c.squidPressedAt >= 0 && since >= 0 && since <= c.window;
+  if (c.squidPressedAt < 0 || c.squidPressedAt > c.now) return false;
+  const since = (c.refTime ?? c.now) - c.squidPressedAt;
+  return since >= -(c.after ?? 0) && since <= c.window;
 }

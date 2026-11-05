@@ -122,10 +122,14 @@ export class Renderer {
   declare lineMode: LineMode | null;   // 외곽선 깊이 출처(StylePass 주석). 그림책 룩이 아니면 null
   declare _depthTexOk: boolean;        // 컴포저 타깃에 DepthTexture를 붙일 수 있는지(첫 확인 뒤 고정)
   declare _colorReturn: ColorReturnState | null;
+  declare _overlayColorReturn: ColorReturnState | null;   // 쇼케이스 층의 색 회복(타이틀 비네트, R025). 기본 null = 전부 채색
   declare _overlayStyle: StylePass | null;          // 쇼케이스(로비 세트·받침대·결과) 층에 쓰는 StylePass
   declare _overlayRT: THREE.WebGLRenderTarget | null;
+  // 메인 컴포저 뒤에 화면에 바로 그리는 작은 뷰(통신 초상 등, 35번 R026). 시저 영역 밖은 건드리지 않아야 한다
+  declare overlays: Set<(r: THREE.WebGLRenderer) => void>;
 
   constructor(container: HTMLElement, settings: RendererSettings) {
+    this.overlays = new Set();
     // 툰 램프는 셰이더를 하나라도 만들기 전에 청크를 패치해야 한다(다시 시작 후 적용)
     applyToonLighting(resolveLook(settings, shouldUseTouch(settings)));
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance', stencil: false }));
@@ -150,7 +154,7 @@ export class Renderer {
     this.q = rendererQuality(settings, this.touch);
     this.look = resolveLook(settings, this.touch);
     this.style = null; this.lineMode = null; this._depthTexOk = LINE_OVERRIDE !== 'prepass'; this._colorReturn = null;
-    this._overlayStyle = null; this._overlayRT = null;
+    this._overlayStyle = null; this._overlayRT = null; this._overlayColorReturn = null;
     this._w = 0; this._h = 0;
   }
 
@@ -235,12 +239,13 @@ export class Renderer {
 
   // 쇼케이스처럼 컴포저 밖에서 그린 HDR 층에도 같은 룩(외곽선·종이·하프톤)을 입힌다(35번 R002: 메뉴·로비 세트도 같은 프로필).
   // src는 DepthTexture가 붙은 타깃이어야 하며 결과는 src와 같은 크기의 단일 샘플 HDR 텍스처이다. 그림책 룩이 아니거나
-  // 깊이가 없으면 src.texture를 그대로 돌려준다. 색 회복은 걸지 않는다(메뉴는 언제나 전부 채색).
+  // 깊이가 없으면 src.texture를 그대로 돌려준다. 색 회복은 타이틀 비네트(setOverlayColorReturn)만 건다.
   stylize(src: THREE.WebGLRenderTarget, scene: THREE.Scene, camera: THREE.PerspectiveCamera): THREE.Texture {
     if (this.look.id !== 'storybook' || !src.depthTexture) return src.texture;
     const sp = this._overlayStyle || (this._overlayStyle = new StylePass());
     sp.configure('depthTex', scene, camera);
     sp.setProfile(this.look);
+    sp.setColorReturn(this._overlayColorReturn);
     let rt = this._overlayRT;
     if (!rt) rt = this._overlayRT = new THREE.WebGLRenderTarget(src.width, src.height, { type: THREE.HalfFloatType });
     else if (rt.width !== src.width || rt.height !== src.height) rt.setSize(src.width, src.height);
@@ -250,6 +255,9 @@ export class Renderer {
     this.renderer.setRenderTarget(prev);
     return rt.texture;
   }
+
+  // 쇼케이스 층(로비 세트)의 색 회복. 타이틀 비네트만 쓰고 떠나면 null로 되돌린다(R025).
+  setOverlayColorReturn(state: ColorReturnState | null): void { this._overlayColorReturn = state; }
 
   // 색 회복 상태(R005). null = 전부 채색이며 대전·연습·보스·메뉴는 언제나 null이다.
   setColorReturn(state: ColorReturnState | null): void {
@@ -338,5 +346,6 @@ export class Renderer {
       this.composer.render();
       scene.environmentIntensity = ei;
     } else this.composer.render();
+    for (const fn of this.overlays) fn(this.renderer);
   }
 }

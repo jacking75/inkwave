@@ -87,12 +87,13 @@ try {
     L.invuln = 0; L.hp = 100; L.ink = 100;
     for (let i = 0; i < 6; i++) G.paint.splat(L.pos.clone().setY(L.pos.y + 0.3).addScaledVector(new L.pos.constructor(Math.sin(L.aimYaw), 0, Math.cos(L.aimYaw)), i * 1.6), 2.2, L.team, { seed: i });
     await frames(10);
-    let n = 0; const off = __t.on('action:surge', () => n++);
+    let n = 0, start = null; const off = __t.on('action:surge', (e) => { n++; if (!start) start = e.pos.clone(); });
     const c = G.campaign.combat; const ink0 = L.ink;
     __drive.squid = true; await frames(2); __drive.squid = false; await wait(100); __drive.squid = true; await frames(1);
-    // 서지 시작(combat.surge 생김)부터 끝(사라짐)까지의 수평 이동만 잰다
-    let p0 = null, k = 0; while (k++ < 120) { if (c.surge && !p0) p0 = L.pos.clone(); if (p0 && !c.surge) break; await frames(1); }
-    const d = p0 ? Math.hypot(L.pos.x - p0.x, L.pos.z - p0.z) : -1; __drive.squid = false; off();
+    // 서지 시작 위치(action:surge의 pos: 발동 순간)부터 끝(combat.surge 사라짐)까지의 수평 이동만 잰다.
+    // (발동 뒤 첫 프레임에 위치를 잡으면 느린 프레임에서 첫 프레임 이동 약 1.5 m가 빠진다)
+    let seen = false, k = 0; while (k++ < 120) { if (c.surge) seen = true; if (seen && !c.surge) break; await frames(1); }
+    const d = start ? Math.hypot(L.pos.x - start.x, L.pos.z - start.z) : -1; __drive.squid = false; off();
     // 쿨다운 중 다시 이중 입력 → 무시
     __drive.squid = true; await frames(2); __drive.squid = false; await wait(60); __drive.squid = true; await frames(2); __drive.squid = false;
     return { n, d, inkUsed: ink0 - L.ink, groundTeam: L.groundTeam }; })()`) as { n: number; d: number; inkUsed: number };
