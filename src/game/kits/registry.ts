@@ -113,7 +113,7 @@ export interface SubKit {
 }
 export const MAIN_KITS: Record<string, MainKit | undefined> = {};
 export const SUB_KITS: Record<string, SubKit | undefined> = {};
-export const KIT_GHOSTS: Record<string, { ghost(actor: Actor, data: number[]): void } | undefined> = {};
+export const KIT_GHOSTS: Record<string, { ghost(actor: Actor, data: Array<number | string>): void; netHurt?(id: number, dmg: number): void } | undefined> = {};
 // the local owner records a spawn for the other players (no-op offline / for remote actors)
 export function netRec(actor: Actor, kind: string, data: object) { G.netm?.recKit?.(actor, kind, data); }
 // a network id for an owner's world object (its ghosts carry the same id): owner nid × 1e5 + a per-session sequence

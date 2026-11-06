@@ -22,6 +22,7 @@ import { WeaponRunner } from './weapons.js';
 import { MAIN_KITS } from './kits/registry.js';
 import type { Character } from './character.js';
 import type { SubItem } from './subs.js';
+import type { SpecialRun } from './specials.js';
 // 캠페인 전투 훅(35번 R016~R020): 캠페인 세션(개발 중에는 ?tune=campaign 미리보기)만 G.campaign을 가진다. 대전·온라인은 null이다.
 import { runScale, type PlayerTuning } from '../campaign/tuning.js';
 
@@ -79,7 +80,8 @@ export function rumble(actor: Actor | null | undefined, strong: number, weak: nu
 const _dodgeV = new THREE.Vector3();
 export class Actor {
   declare team: number; declare name: string; declare isLocal: boolean; declare isBot: boolean; declare slot: number;
-  declare _flickBossT?: number;   // 롤러 휘두르기 보스 피해의 첫 방울 시각(weapons.ts)
+  declare _flickBossT?: number;
+  declare _shieldSnd?: number; declare _shieldOwner?: boolean; declare _cheerT?: number;   // 방패 소리·방패 주인·응원 간격(specials.ts)   // 롤러 휘두르기 보스 피해의 첫 방울 시각(weapons.ts)
   declare weaponId: string; declare weapon: WeaponDef; declare subId: string; declare sub: SubDef; declare specialId: string;
   declare status: { track: number; trackTeam: number; poison: number; reveal: number; revealTeam: number; shield: number };
   declare pos: THREE.Vector3; declare vel: THREE.Vector3;
@@ -99,7 +101,7 @@ export class Actor {
   // 이동·잉크·체력 수치이다. 기본은 전역 PLAYER 자체이고 캠페인만 덮어쓴 복사본을 넣는다(src/campaign/tuning.ts).
   declare tune: PlayerTuning;
   // reset()이 채우는 상태
-  declare alive: boolean; declare hp: number; declare ink: number; declare special: number; declare specialActive: ActiveSpecial | null;
+  declare alive: boolean; declare hp: number; declare ink: number; declare special: number; declare specialActive: SpecialRun | null;
   declare form: 'kid' | 'squid'; declare submerged: boolean; declare climbing: boolean; declare grounded: boolean; declare groundTeam: number;
   declare respawnTimer: number; declare invuln: number; declare lastDamage: number; declare lastFire: number; declare inkIdle: number;
   declare damageFromInk: number; declare hurtFlash: number; declare lastAttacker: Actor | null; declare fireFacing: number;
@@ -938,12 +940,12 @@ export class Actor {
     rumble(this, 0.25, 0.45, 120);
     if (id !== 'slam' && id !== 'storm') { G.specials!.start(this, id); return; }
     if (id === 'slam') {
-      this.specialActive = { id, t: 0, phase: 'rise', armor: true, body: true, startY: this.pos.y };
+      this.specialActive = { id, t: 0, phase: 'rise', armor: true, body: true, startY: this.pos.y } as SpecialRun;   // (slam·storm은 actor가 직접 돌린다: 종류별 필드를 쓰지 않는다)
       this.vel.set(this.vel.x * 0.3, 11.5, this.vel.z * 0.3);
       this.grounded = false;
       this.character.trigger('special_leap');
     } else if (id === 'storm') {
-      this.specialActive = { id, t: 0, phase: 'throw', armor: false, body: true };
+      this.specialActive = { id, t: 0, phase: 'throw', armor: false, body: true } as SpecialRun;
       this.character.trigger('throw');
       G.projectiles!.throwStorm(this);
     }

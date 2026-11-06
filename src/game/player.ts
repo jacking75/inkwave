@@ -19,6 +19,7 @@ import type { SubItem } from './subs.js';
 import type { Actor, ActorIntent } from './actor.js';
 import type { CameraRig } from './cameraRig.js';
 import type { Input } from '../core/input.js';
+import type { Minimap } from './minimap.js';
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _fwd = new THREE.Vector3(), _c = new THREE.Vector3();
 const _hit = new Hit();
@@ -80,7 +81,7 @@ export class PlayerController {
     // Vortex Strike targeting: pointer / sticks / move drive a cursor over the (opened) stage map, fire launches
     const spx = a.specialActive;
     if (spx && spx.id === 'strike' && spx.aiming) {
-      const mm = (G.game as { minimap?: unknown } | null)?.minimap;
+      const mm = (G.game as { minimap?: Minimap } | null)?.minimap;
       const k = STRIKE_CURSOR.pointer * (s.sensitivity ?? 1);
       const cx = f.cursor.dx * k + (f.sticks.rx * STRIKE_CURSOR.stick + f.move.x * STRIKE_CURSOR.move) * dt;
       const cy = f.cursor.dy * k + (f.sticks.ry * STRIKE_CURSOR.stick - f.move.y * STRIKE_CURSOR.move) * dt;

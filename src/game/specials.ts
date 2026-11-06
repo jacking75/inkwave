@@ -12,18 +12,33 @@
 // this.world and update in update(dt).
 import * as THREE from 'three';
 import { G, emit, on, clamp, lerp, angleDiff } from '../core/ctx.js';
-import { SPECIALS, SPECIAL_ORDER, SUBS, PLAYER } from '../config.js';
+import { SPECIALS, SPECIAL_ORDER, SUBS, PLAYER, SPECIAL_CFG, SUB_CFG } from '../config.js';
+import type { SpecialCfg, SubCfg } from '../config.js';
+import type { LoopHandle, PlayOpts } from '../audio/audio.js';
+import type { WeaponInput } from './weapons.js';
+import type { Minimap } from './minimap.js';
+import type { SpecialProp as PropBase } from './special-props.js';
+type Geo = THREE.BufferGeometry | null;
+/** special-props가 만드는 부품(종류별로 일부만 있다): 스피커 원뿔·입, 제트팩 노즐, 게 다리·기관총·대포·좌석·공 */
+type SpecialProp = PropBase & {
+  glow?: THREE.BufferGeometry; cone?: Geo; coneInk?: Geo; coneAt?: THREE.Vector3; mouth?: THREE.Vector3; nozzles?: THREE.Vector3[];
+  legs?: Array<{ body: Geo; ink: Geo; at: THREE.Vector3; side: number; index: number }>;
+  gun?: { body: Geo; ink: Geo; at: THREE.Vector3 }; cannon?: { body: Geo; ink: Geo; at: THREE.Vector3 };
+  gunSpin?: Geo; gunSpinInk?: Geo; gunSpinAt?: THREE.Vector3; gunMuzzle?: THREE.Vector3; cannonMuzzle?: THREE.Vector3;
+  seatAt?: THREE.Vector3; ballBody?: Geo; ballInk?: Geo; ballR?: number;
+};
 import { Physics, Hit } from './physics.js';
 import { getWeaponDef } from './character-weapons.js';
 import { getPlasticMaterial, getInkMaterial } from './character-mats.js';
 import { rumble } from './actor.js';
+import type { Actor, ActiveSpecial } from './actor.js';
 import { SPECIAL_ICONS } from '../ui/ui-icons.js';
 import { KIT_GHOSTS, netRec, netId, netHurt, netMuted, ghostMute } from './kits/registry.js';
 
 // world props for the big specials (kraken, speaker, missile, jetpack, crab) — optional until they exist
-let PROPS = null;
+let PROPS: typeof import('./special-props.js') | null = null;
 import('./special-props.js').then((m) => { PROPS = m; }).catch(() => { /* placeholders are used */ });
-const prop = (kind) => { try { return PROPS && PROPS.getSpecialProp ? PROPS.getSpecialProp(kind) : null; } catch (e) { console.warn('[specials] prop', kind, e); return null; } };
+const prop = (kind: string): SpecialProp | null => { try { return PROPS && PROPS.getSpecialProp ? PROPS.getSpecialProp(kind) : null; } catch (e) { console.warn('[specials] prop', kind, e); return null; } };
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0);
@@ -36,25 +51,25 @@ const TAU = Math.PI * 2;
 //   bubble, thrown stamp, shell, orb) · [3, gid, what] a world object's event · [4, what, …] a running special's moment
 // Everyone else plays it on that player as a ghost: the props / transformation / held things, visual-only (paint muted,
 // hits dropped); continuous damage (tornado, sound beam) is each client's own, on its own players.
-const r2 = (x) => Math.round(x * 100) / 100;
-const v3 = (v) => [r2(v.x), r2(v.y), r2(v.z)];
-const V = (d, i) => new THREE.Vector3(d[i], d[i + 1], d[i + 2]);
-const rec = (a, d) => netRec(a, 'sp', d);
+const r2 = (x: number) => Math.round(x * 100) / 100;
+const v3 = (v: THREE.Vector3) => [r2(v.x), r2(v.y), r2(v.z)];
+const V = (d: NetRec, i: number) => new THREE.Vector3(d[i] as number, d[i + 1] as number, d[i + 2] as number);
+const rec = (a: Actor, d: object) => netRec(a, 'sp', d);
 
-const near = (p, r = 32) => !!G.camera && G.camera.position.distanceToSquared(p) < r * r;
-const hearable = (a) => a.isLocal || a._nearCamera();
-const play = (name, o) => G.audio?.play(name, o);
-const loop = (name, o) => G.audio?.loop?.(name, o) || null;
-function groundBelow(p, maxDown = 30) {
-  const g = G.physics.raycast(_v4.copy(p).setY(p.y + 0.3), DOWN, maxDown, _hit2, true);
+const near = (p: THREE.Vector3, r = 32) => !!G.camera && G.camera.position.distanceToSquared(p) < r * r;
+const hearable = (a: Actor) => a.isLocal || a._nearCamera();
+const play = (name: string, o: PlayOpts | undefined) => G.audio?.play(name, o);
+const loop = (name: string, o: PlayOpts | undefined) => G.audio?.loop?.(name, o) || null;
+function groundBelow(p: THREE.Vector3, maxDown = 30) {
+  const g = G.physics!.raycast(_v4.copy(p).setY(p.y + 0.3), DOWN, maxDown, _hit2, true);
   return g.hit ? g.point.clone() : null;
 }
 // special ink counts as turf but never charges the special meter
-function paint(owner, pos, r, team) { const area = G.paint.splat(pos, r, team, { seed: Math.random() }); owner?.addTurfNoSpecial?.(area); return area; }
+function paint(owner: Actor, pos: THREE.Vector3, r: number, team: number) { const area = G.paint!.splat(pos, r, team, { seed: Math.random() }); owner?.addTurfNoSpecial?.(area); return area; }
 // damage everyone on the other team within `radius` of c (line of sight from c), falloff from dmgMax to dmgMin
 // Mega Stamp: the body's facing (it turns slower than the aim) and a front-arc test (is p within arcDeg of the facing?)
-function stampFwd(s) { return new THREE.Vector3(Math.sin(s.bodyYaw), 0, Math.cos(s.bodyYaw)); }
-function stampFront(a, s, p, arcDeg) {
+function stampFwd(s: SpecialRun) { return new THREE.Vector3(Math.sin(s.bodyYaw), 0, Math.cos(s.bodyYaw)); }
+function stampFront(a: Actor, s: SpecialRun, p: THREE.Vector3, arcDeg: number) {
   const dx = p.x - a.pos.x, dz = p.z - a.pos.z, l = Math.hypot(dx, dz);
   if (l < 0.3) return true;
   return (dx * Math.sin(s.bodyYaw) + dz * Math.cos(s.bodyYaw)) / l >= Math.cos((arcDeg * Math.PI) / 180);
@@ -63,27 +78,27 @@ function stampFront(a, s, p, arcDeg) {
 const TRANSFORMS = new Set(['jetpack', 'crab', 'kraken', 'stamp', 'zipcaster', 'zooka', 'blower', 'bubbler']);
 const ENDING_CUE = 2.0;   // seconds left when it sounds
 const STAMP_SMASHES = new Set(['bomb', 'sticky', 'burst', 'seeker', 'mist', 'mine']);   // sub kinds a swing smashes
-function blast(owner, team, c, radius, dmgMax, dmgMin, weaponId, killRadius = 0) {
+function blast(owner: Actor, team: number, c: THREE.Vector3, radius: number, dmgMax: number, dmgMin: number, weaponId: string, killRadius = 0) {
   for (const e of G.actors) {
     if (e.team === team || !e.alive) continue;
     _v.copy(e.pos); _v.y += 0.8;
     const d = _v.distanceTo(c);
     if (d > radius + 0.3) continue;
-    if (!G.physics.los(_v2.copy(c).setY(c.y + 0.35), _v)) continue;
+    if (!G.physics!.los(_v2.copy(c).setY(c.y + 0.35), _v)) continue;
     const k = d <= killRadius ? 0 : clamp((d - killRadius) / Math.max(0.01, radius - killRadius), 0, 1);
-    G.projectiles.applyHit(owner, e, lerp(dmgMax, dmgMin, k * k), weaponId);
+    G.projectiles!.applyHit(owner, e, lerp(dmgMax, dmgMin, k * k), weaponId);
   }
   G.subs?.damageArea(c, radius, 60, team);
   G.boss?.splash(owner, c, radius, dmgMax, dmgMin, weaponId);   // Boss Battle
 }
 // continuous damage (tornado, sound beam): no per-frame hit events, only the splat
 // (online: each client applies it to its own players — from a ghost's tornado / speaker too, as the Ink Tempest does)
-function tickDamage(owner, e, dmg, weaponId) {
+function tickDamage(owner: Actor, e: Actor, dmg: number, weaponId: string) {
   if (!e.alive || e.team === owner.team || e.remote) return;
   const killed = e.damage(dmg, owner, weaponId);
   if (killed) emit('hit', { attacker: owner, victim: e, damage: dmg, killed: true, weaponId });
 }
-function bounds() { return G.level.bounds; }
+function bounds() { return G.level!.bounds; }
 
 // ------------------------------------------------------------------------------------------------ shaders
 // swirling funnel (vortex, twisters): spiral streaks scrolling up, soft top/bottom, team tint
@@ -174,24 +189,24 @@ const AURA_FS = `
     float a = smoke * smoke * 0.6 * (0.3 + 0.7 * f) + rim * 0.45;
     gl_FragColor = vec4(c, clamp(a, 0.0, 0.9));
   }`;
-function auraMat(color) {
+function auraMat(color: THREE.Color) {
   return new THREE.ShaderMaterial({ uniforms: { uColor: { value: color.clone() }, uTime: { value: 0 } }, vertexShader: AURA_VS, fragmentShader: AURA_FS, transparent: true, depthWrite: false });
 }
 
-function swirlMat(color, o = {}) {
+function swirlMat(color: THREE.Color, o: { speed?: number; bottom?: number; top?: number; wobble?: number } = {}) {
   return new THREE.ShaderMaterial({
     uniforms: { uColor: { value: color.clone() }, uTime: { value: 0 }, uAlpha: { value: 1 }, uSpeed: { value: o.speed ?? 1.6 },
       uBottom: { value: o.bottom ?? 0.35 }, uTop: { value: o.top ?? 1 }, uWobble: { value: o.wobble ?? 0.2 } },
     vertexShader: SWIRL_VS, fragmentShader: SWIRL_FS, transparent: true, depthWrite: false, side: THREE.DoubleSide,
   });
 }
-function beamMat(color) {
+function beamMat(color: THREE.Color) {
   return new THREE.ShaderMaterial({
     uniforms: { uColor: { value: color.clone() }, uTime: { value: 0 }, uAlpha: { value: 1 }, uCharge: { value: 0 }, uBottom: { value: 1 }, uTop: { value: 1 }, uWobble: { value: 0 } },
     vertexShader: SWIRL_VS, fragmentShader: BEAM_FS, transparent: true, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending,
   });
 }
-function bubbleMat(color) {
+function bubbleMat(color: THREE.Color) {
   return new THREE.ShaderMaterial({
     uniforms: { uColor: { value: color.clone() }, uTime: { value: 0 }, uAlpha: { value: 1 }, uHit: { value: 0 } },
     vertexShader: BUBBLE_VS, fragmentShader: BUBBLE_FS, transparent: true, depthWrite: false,
@@ -199,23 +214,76 @@ function bubbleMat(color) {
 }
 
 // a mesh group from a prop def's geometry (body plastic + team ink + optional glow)
-function propMesh(d, team, glowMat) {
+function propMesh(d: SpecialProp, team: number, glowMat?: THREE.Material) {
   const g = new THREE.Group();
   if (d.body) { const m = new THREE.Mesh(d.body, getPlasticMaterial()); m.castShadow = true; g.add(m); }
-  if (d.ink) { const m = new THREE.Mesh(d.ink, getInkMaterial(G.teamColors[team])); m.castShadow = true; g.add(m); }
+  if (d.ink) { const m = new THREE.Mesh(d.ink, getInkMaterial(G.teamColors[team]!)); m.castShadow = true; g.add(m); }
   if (d.glow && glowMat) g.add(new THREE.Mesh(d.glow, glowMat));
   return g;
 }
-function partMesh(body, ink, team) {
+function partMesh(body: THREE.BufferGeometry | null | undefined, ink: THREE.BufferGeometry | null | undefined, team: number) {
   const g = new THREE.Group();
   if (body) { const m = new THREE.Mesh(body, getPlasticMaterial()); m.castShadow = true; g.add(m); }
-  if (ink) { const m = new THREE.Mesh(ink, getInkMaterial(G.teamColors[team])); m.castShadow = true; g.add(m); }
+  if (ink) { const m = new THREE.Mesh(ink, getInkMaterial(G.teamColors[team]!)); m.castShadow = true; g.add(m); }
   return g;
 }
 
 // ================================================================================================ system
+/** 진행 중인 스페셜의 실행 상태(start가 종류별 필드를 둔다; 공통 필드는 ActiveSpecial) */
+export interface SpecialRun extends ActiveSpecial {
+  kind: string; def: SpecialCfg; dur: number; firing: number; ghost?: boolean; ended?: boolean; endCued?: boolean; marker?: ReturnMarker | null;
+  cd: number; gcd: number; ccd: number; count: number; cur: Bubble | null; curT: number; done: boolean; needRelease: boolean;
+  ball: THREE.Object3D; hull: number; hullG: THREE.Group; rig: THREE.Group; heldG: THREE.Group; gunSpin: THREE.Group; legs: Array<{ g: THREE.Group; i: number }>;
+  roll: boolean; rollAng: number; loop: LoopHandle | null; inflate: LoopHandle | null; guide: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>; line: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>; aura: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>; halo: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>; auraCol: THREE.Color;
+  zip: { to: THREE.Vector3; n: THREE.Vector3; wall: boolean; anchor: THREE.Vector3; t: number; stuck: number } | null; anchor: THREE.Vector3; hang: number; hangN: THREE.Vector3;
+  miss: { to: THREE.Vector3; t: number } | null; flip: { t: number; back: boolean; front: boolean } | null; net: { roll: boolean; firing: boolean; hull: number } | null;
+  fx: number; wisp: number; trail: number; paintT: number; pending: number; legT: number; fullT: number; boostT: number; boostCd: number; sndT: number; pingT: number;
+  subWas: boolean; jumpWas: boolean; air: boolean; confirm: boolean; attack: boolean; netCharge: boolean; cheered: number; autoT: number | null; seatY: number;
+  mvIn: { x: number; z: number }; mvOut: { x: number; z: number }; nozzles: THREE.Vector3[]; gunMuzzle: THREE.Vector3; cannonMuzzle: THREE.Vector3;
+  pack: THREE.Object3D | null; mesh: THREE.Object3D | null; tankKids: THREE.Object3D[]; body3: THREE.Group;
+  // ActiveSpecial의 선택 필드 중 이 종류들이 쓰는 것(그 종류의 start가 둔다)
+  charge: number; guard: number; bodyYaw: number; hp: number; origin: THREE.Vector3; target: THREE.Vector3; bomb: SubCfg;
+}
+/** 세상 물체 공통: 시스템, 팀·주인, 원격 유령·번호, 끝남 */
+interface WorldCommon { sys: SpecialSystem; team: number; owner: Actor; ghost?: boolean; gid?: number; dead?: boolean }
+// (클래스와 인터페이스 병합: 아래 클래스들이 WorldCommon 필드를 가진다)
+interface ReturnMarker extends WorldCommon {}
+interface Missile extends WorldCommon {}
+interface Tornado extends WorldCommon {}
+interface Twister extends WorldCommon {}
+interface Speaker extends WorldCommon {}
+interface Bubble extends WorldCommon {}
+interface ThrownStamp extends WorldCommon {}
+interface Shell extends WorldCommon {}
+interface Orb extends WorldCommon {}
+/** 세상에 남는 스페셜 물체(미사일·회오리·스피커·거품·도장·포탄·구슬) */
+type WorldObj = Missile | Twister | Speaker | Bubble | ThrownStamp | Shell | Orb | Tornado | ReturnMarker;
+/** 종류별 동작(this = SpecialSystem): 시작·몸 소유 틱·일반 틱·이동 조정·무기 대체·끝·피해·유령 사건 */
+interface SpecialHooks {
+  start?(a: Actor, s: SpecialRun): void;
+  tick?(a: Actor, s: SpecialRun, dt: number): void;
+  body?(a: Actor, s: SpecialRun, dt: number): void;
+  move?(a: Actor, s: SpecialRun, dt: number): void;
+  weapon?(a: Actor, s: SpecialRun, dt: number, inp: WeaponInput): boolean | void;
+  end?(a: Actor, s: SpecialRun, reason: string): void;
+  hurt?(v: Actor, s: SpecialRun, amount: number, attacker: Actor | null | undefined): number;
+  event?(a: Actor, s: SpecialRun, d: NetRec): void;
+}
+/** 온라인 기록 [op, …] */
+type NetRec = Array<string | number>;
+
 export class SpecialSystem {
-  constructor(scene) {
+  declare _glow: THREE.MeshStandardMaterial[];
+  declare ringGeo: THREE.RingGeometry;
+  declare beamGeo: THREE.CylinderGeometry;
+  declare funnelGeo: THREE.CylinderGeometry;
+  declare sphereGeo: THREE.IcosahedronGeometry;
+  declare cheers: Array<{ a: Actor; t: number }>;
+  declare shieldMeshes: Map<Actor, THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>>;
+  declare owned: Set<THREE.Object3D>;
+  declare world: WorldObj[];
+  declare scene: THREE.Scene;
+  constructor(scene: THREE.Scene) {
     this.scene = scene;
     this.world = [];
     this.owned = new Set();          // meshes a running special put in the scene (kraken body, crab rig, tether, orb)
@@ -228,12 +296,12 @@ export class SpecialSystem {
     this._glow = [];
   }
 
-  _add(...objs) { for (const o of objs) { this.scene.add(o); this.owned.add(o); } }
-  _remove(...objs) { for (const o of objs) { if (!o) continue; this.scene.remove(o); this.owned.delete(o); } }
+  _add(...objs: THREE.Object3D[]) { for (const o of objs) { this.scene.add(o); this.owned.add(o); } }
+  _remove(...objs: Array<THREE.Object3D | null | undefined>) { for (const o of objs) { if (!o) continue; this.scene.remove(o); this.owned.delete(o); } }
 
-  glowMat(team) {
+  glowMat(team: number) {
     if (!this._glow[team]) {
-      const c = G.teamColors[team];
+      const c = G.teamColors[team]!;
       this._glow[team] = new THREE.MeshStandardMaterial({ color: c.clone().multiplyScalar(0.35), emissive: c.clone(), emissiveIntensity: 1.2, roughness: 0.35 });
     }
     return this._glow[team];
@@ -251,40 +319,40 @@ export class SpecialSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- lifecycle
-  start(a, id) {
-    const def = SPECIALS[id];
+  start(a: Actor, id: string) {
+    const def = SPECIAL_CFG[id]!;
     // `kind` picks the behaviour (the Bomb Barrage variants all share 'barrage')
-    const s = { id, kind: def.kind || id, def, t: 0, dur: def.duration || 0 };
+    const s = { id, kind: def.kind || id, def, t: 0, dur: def.duration || 0 } as SpecialRun;   // (종류별 필드는 start가 둔다)
     a.specialActive = s;
     rec(a, [0, SPECIAL_ORDER.indexOf(id)]);
-    const impl = IMPL[s.kind];
+    const impl = HOOKS[s.kind];
     impl?.start?.call(this, a, s);
     emit('special:start', { actor: a, id });
   }
 
   // ---------------------------------------------------------------------------------------------- online
   // a remote player's special, from its owner's records (see the note at the top)
-  netGhost(a, d) {
+  netGhost(a: Actor, d: NetRec) {
     if (!Array.isArray(d)) return;
     switch (d[0]) {
-      case 0: { const id = SPECIAL_ORDER[d[1]]; if (id && SPECIALS[id]) this._startGhost(a, id); break; }
-      case 1: if (a.specialActive?.ghost) this.end(a, d[1] || 'net'); break;
+      case 0: { const id = SPECIAL_ORDER[d[1] as number]; if (id && SPECIAL_CFG[id]) this._startGhost(a, id); break; }
+      case 1: if (a.specialActive?.ghost) this.end(a, (d[1] as string) || 'net'); break;
       case 2: this._ghostObj(a, d); break;
-      case 3: { const w = this.world.find((x) => x.ghost && x.gid === d[1] && !x.dead); if (w) w.netEvent?.(d); break; }
-      case 4: { const s = a.specialActive; if (s?.ghost) GHOST[s.kind]?.event?.call(this, a, s, d); break; }
+      case 3: { const w = this.world.find((x) => x.ghost && x.gid === d[1] && !x.dead); if (w && 'netEvent' in w) w.netEvent(d); break; }
+      case 4: { const s = a.specialActive; if (s?.ghost) GHOSTS[s.kind]?.event?.call(this, a, s, d); break; }
     }
   }
-  _startGhost(a, id) {
+  _startGhost(a: Actor, id: string) {
     if (a.specialActive?.ghost) this.end(a, 'net');   // (one that never heard its end)
-    const def = SPECIALS[id];
-    const s = { id, kind: def.kind || id, def, t: 0, dur: def.duration || 0, ghost: true };
+    const def = SPECIAL_CFG[id]!;
+    const s = { id, kind: def.kind || id, def, t: 0, dur: def.duration || 0, ghost: true } as SpecialRun;
     a.specialActive = s;
-    const g = GHOST[s.kind], f = g && 'start' in g ? g.start : IMPL[s.kind]?.start;
+    const g = GHOSTS[s.kind], f = g && 'start' in g ? g.start : HOOKS[s.kind]?.start;
     try { f?.call(this, a, s); } catch (e) { console.warn('[specials] ghost start', id, e); }
     emit('special:start', { actor: a, id });
   }
   // per frame: remote players' specials (visuals only; their owners move them)
-  _ghostTick(dt) {
+  _ghostTick(dt: number) {
     for (const a of G.actors) {
       const s = a.specialActive;
       if (!a.remote || !s || !s.ghost) continue;
@@ -292,80 +360,80 @@ export class SpecialSystem {
       s.t += dt;
       s.firing = Math.max(0, (s.firing || 0) - dt);
       this._endCue(a, s);
-      const f = GHOST[s.kind]?.tick;
+      const f = GHOSTS[s.kind]?.tick;
       if (f) ghostMute(s, () => f.call(this, a, s, dt));
     }
   }
   // the owner's world object: in the world, with an id, recorded for everyone else
-  _spawn(a, w, kind, data) {
+  _spawn<W extends WorldObj>(a: Actor, w: W, kind: string, data: Array<string | number>) {
     this.world.push(w);
     w.gid = netId(a);
     if (w.gid) rec(a, [2, kind, w.gid, ...data]);
     return w;
   }
-  _ghostObj(a, d) {
+  _ghostObj(a: Actor, d: NetRec) {
     const [, kind, gid] = d;
     if (this.world.some((x) => x.gid === gid)) return;
-    let w = null;
+    let w: WorldObj | null = null;
     switch (kind) {
       case 'mi': w = new Missile(this, a, V(d, 3)); break;
       case 'tw': w = new Twister(this, a, V(d, 3), V(d, 6)); break;
       case 'sk': w = new Speaker(this, a, V(d, 3), V(d, 6)); break;
-      case 'bu': w = new Bubble(this, a); w.pos.copy(V(d, 3)); w.r = d[6]; w.release(V(d, 7)); break;
+      case 'bu': w = new Bubble(this, a); w.pos.copy(V(d, 3)); w.r = d[6] as number; w.release(V(d, 7)); break;
       case 'ts': w = new ThrownStamp(this, a, V(d, 3), V(d, 6)); break;
       case 'sh': w = new Shell(this, a, V(d, 3), V(d, 6)); break;
       case 'or': w = new Orb(this, a, V(d, 3), V(d, 6)); break;
     }
     if (!w) return;
-    w.ghost = true; w.gid = gid;
+    w.ghost = true; w.gid = gid as number;
     this.world.push(w);
   }
   // a hit on one of our world objects made on another screen (bubbles: dmg < 0 = its own team's ink)
-  netHurtObj(gid, dmg) {
+  netHurtObj(gid: number, dmg: number) {
     const w = this.world.find((x) => !x.ghost && x.gid === gid && !x.dead);
     if (w && w.kind === 'bubble') this._bubbleHit(w, dmg < 0 ? w.team : 1 - w.team, Math.abs(dmg), null);
   }
   // transformation specials: a "wearing off" jingle ~2 s before the time runs out (loud for you, positional for others)
-  _endCue(a, s) {
+  _endCue(a: Actor, s: SpecialRun) {
     if (s.endCued || !s.dur || !TRANSFORMS.has(s.kind) || s.dur - s.t > ENDING_CUE) return;
     s.endCued = true;
     if (a.isLocal) play('special_ending', { volume: 0.75 });
     else if (hearable(a)) play('special_ending', { pos: a.pos, volume: 0.4 });
   }
   // per-frame for non-body specials (after the actor's own movement + weapon)
-  tick(a, s, dt) {
+  tick(a: Actor, s: SpecialRun, dt: number) {
     s.t += dt;
     s.firing = Math.max(0, (s.firing || 0) - dt);
     this._endCue(a, s);
-    IMPL[s.kind]?.tick?.call(this, a, s, dt);
+    HOOKS[s.kind]?.tick?.call(this, a, s, dt);
     if (a.specialActive === s && s.dur && s.t >= s.dur) this.end(a, 'time');
   }
   // body-owning specials (strike aiming, wail placement, sonar cast, jetpack, zipline zips)
-  body(a, s, dt) {
+  body(a: Actor, s: SpecialRun, dt: number) {
     s.t += dt;
     s.firing = Math.max(0, (s.firing || 0) - dt);
     this._endCue(a, s);
-    IMPL[s.kind]?.body?.call(this, a, s, dt);
+    HOOKS[s.kind]?.body?.call(this, a, s, dt);
     if (a.specialActive === s && s.dur && s.t >= s.dur) this.end(a, 'time');
     // the sea still wins
-    if (a.alive && a.pos.y < PLAYER.fallDeathY && G.level.groundHeight(a.pos.x, a.pos.z, a.pos.y + 0.6) === -Infinity) {
+    if (a.alive && a.pos.y < PLAYER.fallDeathY && G.level!.groundHeight(a.pos.x, a.pos.z, a.pos.y + 0.6) === -Infinity) {
       if (a.specialActive) this.end(a, 'splat');
       a.splat(a.lastDamage < 4 ? a.lastAttacker : null, 'water');
     }
   }
   // before the actor moves: a special may steer / shape the movement input (Mega Stamp)
-  move(a, s, dt) { IMPL[s.kind]?.move?.call(this, a, s, dt); }
+  move(a: Actor, s: SpecialRun, dt: number) { HOOKS[s.kind]?.move?.call(this, a, s, dt); }
   // main-weapon replacement; returns true when the special consumed the trigger (the weapon runner is skipped)
-  weapon(a, s, dt, inp) {
-    const f = IMPL[s.kind]?.weapon;
+  weapon(a: Actor, s: SpecialRun, dt: number, inp: WeaponInput) {
+    const f = HOOKS[s.kind]?.weapon;
     return f ? !!f.call(this, a, s, dt, inp) : false;
   }
-  end(a, reason = 'time') {
+  end(a: Actor, reason = 'time') {
     const s = a.specialActive;
     if (!s || s.ended || s.id === 'slam' || s.id === 'storm') return;
     s.ended = true;
     if (!s.ghost) rec(a, [1, reason]);
-    IMPL[s.kind]?.end?.call(this, a, s, reason);
+    HOOKS[s.kind]?.end?.call(this, a, s, reason);
     if (a.specialActive === s) a.specialActive = null;
     emit('special:end', { actor: a, id: s.id, reason });
     if (reason === 'time' && hearable(a)) play('special_end', { pos: a.isLocal ? undefined : a.pos, volume: a.isLocal ? 0.7 : 0.45 });
@@ -374,12 +442,12 @@ export class SpecialSystem {
     else if (s.jumpBack && reason !== 'splat' && a.alive && s.origin && a.pos.distanceTo(s.origin) > 2.5 && a.superJump(s.origin.clone(), { instant: true, home: true })) s.marker?.returning();
     else s.marker?.finish();
   }
-  onSplat(a) {
+  onSplat(a: Actor) {
     if (a.specialActive && a.specialActive.id !== 'slam' && a.specialActive.id !== 'storm') this.end(a, 'splat');
     if (a.status.shield > 0) this._dropShield(a, false);
   }
   // remaining fraction of a running special (HUD gauge drains)
-  remaining(a) {
+  remaining(a: Actor) {
     const s = a.specialActive;
     if (!s) return 0;
     if (s.id === 'booyah') return s.thrown ? 0 : 1;   // held: stays full until thrown
@@ -389,7 +457,7 @@ export class SpecialSystem {
     return 1;
   }
   // HUD hint for the local player while a special runs
-  prompt(a) {
+  prompt(a: Actor) {
     const s = a.specialActive;
     if (!s) return null;
     switch (s.kind) {
@@ -409,7 +477,7 @@ export class SpecialSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- damage + hits
-  filterDamage(v, amount, attacker, source) {
+  filterDamage(v: Actor, amount: number, attacker: Actor | null | undefined, source: string) {
     const s = v.specialActive;
     if (s && s.id === 'kraken') { this._knock(v, attacker, Math.min(4, amount * s.def.knockPerDamage)); this._hitFlash(v); return 0; }
     if (s && s.id === 'crab') return IMPL.crab.hurt.call(this, v, s, amount, attacker);
@@ -427,7 +495,7 @@ export class SpecialSystem {
     }
     return amount;
   }
-  _knock(v, attacker, k) {
+  _knock(v: Actor, attacker: Actor | null | undefined, k: number) {
     if (!(k > 0)) return;
     let dx = 0, dz = 0;
     if (attacker && attacker !== v) { dx = v.pos.x - attacker.pos.x; dz = v.pos.z - attacker.pos.z; }
@@ -436,10 +504,10 @@ export class SpecialSystem {
     v.vel.x += dx * k; v.vel.z += dz * k;
     if (v.grounded) { v.vel.y = Math.max(v.vel.y, 1.4 + k * 0.18); v.grounded = false; }
   }
-  _hitFlash(v) { v.hurtFlash = Math.min(1, v.hurtFlash + 0.25); }
+  _hitFlash(v: Actor) { v.hurtFlash = Math.min(1, v.hurtFlash + 0.25); }
 
   // projectile segment against special objects (bubbles: any team). true = absorbed
-  shotHit(prev, pos, team, dmg, owner) {
+  shotHit(prev: THREE.Vector3, pos: THREE.Vector3, team: number, dmg: number, owner: Actor) {
     for (const w of this.world) {
       if (w.kind !== 'bubble' || w.dead) continue;
       Physics.segmentCapsuleDist(prev, pos, _v.copy(w.pos).setY(w.pos.y - w.r * 0.5), w.r * 0.5, w.r, _res);
@@ -447,7 +515,7 @@ export class SpecialSystem {
     }
     return false;
   }
-  rayHit(from, dir, len, team, dmg, owner) {
+  rayHit(from: THREE.Vector3, dir: THREE.Vector3, len: number, team: number, dmg: number, owner: Actor) {
     let best = len, hitB = null;
     for (const w of this.world) {
       if (w.kind !== 'bubble' || w.dead) continue;
@@ -462,7 +530,7 @@ export class SpecialSystem {
     if (hitB) this._bubbleHit(hitB, team, dmg, owner);
     return best;
   }
-  areaHit(c, radius, dmg, team, owner) {
+  areaHit(c: THREE.Vector3, radius: number, dmg: number, team: number, owner?: Actor | null) {
     for (const w of this.world) {
       if (w.kind !== 'bubble' || w.dead) continue;
       if (w.pos.distanceTo(c) < radius + w.r * 0.8) this._bubbleHit(w, team, dmg * 1.5, owner || null);
@@ -470,10 +538,10 @@ export class SpecialSystem {
   }
 
   // a bubble hit: your team's ink charges it until it blows; enemy ink is soaked up (and shrinks it a little)
-  _bubbleHit(w, team, dmg, owner) {
+  _bubbleHit(w: Bubble, team: number, dmg: number, owner: Actor | null | undefined) {
     if (w.dead || netMuted()) return;   // (a ghost's shot: its owner's copy decides)
     w.mesh.material.uniforms.uHit.value = 0.5;
-    if (w.ghost) { if (!(team === w.team && w.held)) netHurt(w.owner, 'sp', w.gid, team === w.team ? -dmg : dmg); return; }
+    if (w.ghost) { if (!(team === w.team && w.held)) netHurt(w.owner, 'sp', w.gid!, team === w.team ? -dmg : dmg); return; }
     const d = SPECIALS.blower;
     if (team === w.team) {
       if (w.held) return;
@@ -483,11 +551,11 @@ export class SpecialSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- shields
-  giveShield(a, time, owner) {
+  giveShield(a: Actor, time: number, owner: boolean) {
     a.status.shield = Math.max(a.status.shield, time);
     a._shieldOwner = !!owner;
     if (!this.shieldMeshes.has(a)) {
-      const m = new THREE.Mesh(this.sphereGeo, bubbleMat(G.teamColors[a.team]));
+      const m = new THREE.Mesh(this.sphereGeo, bubbleMat(G.teamColors[a.team]!));
       m.renderOrder = 4;
       m.scale.setScalar(0.2);
       this.scene.add(m);
@@ -496,7 +564,7 @@ export class SpecialSystem {
     if (hearable(a)) play('shield_up', { pos: a.isLocal ? undefined : a.pos, volume: a.isLocal ? 0.8 : 0.5 });
     emit('special:shield', { actor: a, time });
   }
-  _dropShield(a, pop) {
+  _dropShield(a: Actor, pop: boolean) {
     a.status.shield = 0;
     const m = this.shieldMeshes.get(a);
     if (m) { this.scene.remove(m); m.material.dispose(); this.shieldMeshes.delete(a); }
@@ -507,7 +575,7 @@ export class SpecialSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- "Yeah!" cheers
-  cheer(a) {
+  cheer(a: Actor) {
     if (!a.alive || G.time - (a._cheerT || -9) < 0.4) return;
     a._cheerT = G.time;
     if (hearable(a)) play('booyah_cheer', { pos: a.isLocal ? undefined : a.pos, volume: a.isLocal ? 0.7 : 0.5, pitch: 0.95 + Math.random() * 0.15 });
@@ -530,7 +598,7 @@ export class SpecialSystem {
     emit('actor:cheer', { actor: a, helped });
   }
   // ---------------------------------------------------------------------------------------------- per frame
-  update(dt) {
+  update(dt: number) {
     // cheer input (controllers set intent.cheer for one frame)
     for (const a of G.actors) if (a.intent.cheer) { a.intent.cheer = false; this.cheer(a); }
     for (let i = this.cheers.length - 1; i >= 0; i--) {
@@ -570,7 +638,7 @@ export class SpecialSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- minimap
-  drawMap(c, mm, tc, s, hex, t) {
+  drawMap(c: CanvasRenderingContext2D, mm: Minimap, tc: { x: number; y: number }, s: number, hex: string[], t: number) {
     const me = mm.viewerTeam ?? 0;
     for (const w of this.world) {
       const col = hex[w.team] || '#fff';
@@ -630,26 +698,26 @@ export class SpecialSystem {
   }
 
   // strike targeting input from the player controller: cursor moves in minimap canvas pixels
-  aimMove(a, dxPx, dyPx, mm) {
+  aimMove(a: Actor, dxPx: number, dyPx: number, mm: Minimap | null | undefined) {
     const s = a.specialActive;
     if (!s || s.id !== 'strike' || !s.aiming || !mm) return;
     const tc = mm.toCanvas(s.target.x, s.target.z, { x: 0, y: 0 });
     tc.x = clamp(tc.x + dxPx, 0, mm.w); tc.y = clamp(tc.y + dyPx, 0, mm.h);
     s.target.x = mm._worldX(tc.x); s.target.z = mm._worldZ(tc.y);
   }
-  aimConfirm(a) { const s = a.specialActive; if (s && s.id === 'strike' && s.aiming && s.t > 0.25) s.confirm = true; }
+  aimConfirm(a: Actor) { const s = a.specialActive; if (s && s.id === 'strike' && s.aiming && s.t > 0.25) s.confirm = true; }
 
   // ---------------------------------------------------------------------------------------------- shared helpers
-  _stand(a, dt, damp = 8) {
+  _stand(a: Actor, dt: number, damp = 8) {
     a.vel.x *= Math.exp(-damp * dt); a.vel.z *= Math.exp(-damp * dt);
     if (!a.grounded) a.vel.y = Math.max(-PLAYER.maxFall, a.vel.y - PLAYER.gravity * dt); else a.vel.y = 0;
     const py = a.pos.y;
     a.pos.addScaledVector(a.vel, dt);
     a._resolve(false, py, a.grounded);
   }
-  _swapWeapon(a, kind) { a.character.setWeapon(kind); a.weaponRunner.reset(); }
-  _restoreWeapon(a) { a.character.setWeapon(a.weaponId); }
-  _fwd(a, out = _v3) { return out.set(Math.sin(a.aimYaw), 0, Math.cos(a.aimYaw)); }
+  _swapWeapon(a: Actor, kind: string) { a.character.setWeapon(kind); a.weaponRunner.reset(); }
+  _restoreWeapon(a: Actor) { a.character.setWeapon(a.weaponId); }
+  _fwd(a: Actor, out = _v3) { return out.set(Math.sin(a.aimYaw), 0, Math.cos(a.aimYaw)); }
 }
 
 // ================================================================================================ world objects
@@ -658,14 +726,15 @@ export class SpecialSystem {
 // icon in the owner's colour; once they take off for home it wipes round to grey like a clock, reaching full grey the
 // instant they land — a countdown to time your attack by.
 const RETURN_GREY = new THREE.Color('#9aa0a6');
-const _badges = new Map();
+type Badge = { canvas: HTMLCanvasElement; texture: THREE.CanvasTexture };
+const _badges = new Map<string, Badge>();
 // icon badge (canvas + texture, shared): cream disc, colour rim, the special's icon with its accents in `color`
-function iconBadge(id, color) {
+function iconBadge(id: string, color: THREE.Color) {
   const hex = '#' + color.getHexString(), key = id + hex;
   let e = _badges.get(key);
   if (e) return e;
   const c = document.createElement('canvas'); c.width = c.height = 256;
-  const g = c.getContext('2d');
+  const g = c.getContext('2d')!;
   const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
   e = { canvas: c, texture: tex };
   _badges.set(key, e);
@@ -686,7 +755,25 @@ function iconBadge(id, color) {
   return e;
 }
 class ReturnMarker {
-  constructor(sys, a, pos, icon) {
+  declare unsub: (() => boolean | undefined)[];
+  declare wipe: { canvas: HTMLCanvasElement; g: CanvasRenderingContext2D; texture: THREE.CanvasTexture; drawn: number } | null;
+  declare wipeK: number;
+  declare badge: THREE.Sprite<THREE.Object3DEventMap>;
+  declare badgeGrey: Badge;
+  declare badgeCol: Badge;
+  declare pillar: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  declare ring2: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  declare ring: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  declare group: THREE.Group<THREE.Object3DEventMap>;
+  declare col: THREE.Color;
+  declare fade: number;
+  declare back: boolean;
+  declare done: boolean;
+  declare t: number;
+  declare pos: THREE.Vector3;
+  declare icon: string;
+  declare kind: 'return';
+  constructor(sys: SpecialSystem, a: Actor, pos: THREE.Vector3, icon: string) {
     this.sys = sys; this.kind = 'return'; this.owner = a; this.team = a.team; this.icon = icon;
     this.pos = pos.clone(); this.t = 0; this.done = false; this.back = false; this.fade = 1;
     const col = a.color;
@@ -715,7 +802,7 @@ class ReturnMarker {
     this.back = true; this.t = Math.min(this.t, 1);
     const c = document.createElement('canvas'); c.width = c.height = 256;
     const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
-    this.wipe = { canvas: c, g: c.getContext('2d'), texture: tex, drawn: -1 };
+    this.wipe = { canvas: c, g: c.getContext('2d')!, texture: tex, drawn: -1 };
     this.badge.material.map = tex; this.badge.material.needsUpdate = true;
     this._drawWipe(0);
   }
@@ -727,7 +814,7 @@ class ReturnMarker {
     return Math.min(1, sj.t / Math.max(0.01, sj.dur || 1));
   }
   // grey badge underneath, the colour badge on top clipped to the time still left (a clock sweep from 12 o'clock)
-  _drawWipe(k) {
+  _drawWipe(k: number) {
     const w = this.wipe; if (!w || Math.abs(k - w.drawn) < 0.004) return;
     w.drawn = k;
     const g = w.g;
@@ -742,7 +829,7 @@ class ReturnMarker {
   }
   get mapCanvas() { return this.wipe ? this.wipe.canvas : this.badgeCol.canvas; }
   finish(now = false) { this.done = true; if (now) this.fade = 0.001; }
-  update(dt) {
+  update(dt: number) {
     this.t += dt;
     if (this.done) { this.fade -= dt * 3; if (this.fade <= 0) return false; }
     if (this.t > 30) this.done = true;          // safety net
@@ -774,7 +861,15 @@ class ReturnMarker {
 
 // Vortex Strike missile: up off the thrower's back, then down onto the target (warning ring on the ground)
 class Missile {
-  constructor(sys, a, to) {
+  declare whistled: boolean;
+  declare ring: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  declare mesh: THREE.Group<THREE.Object3DEventMap> | THREE.Mesh<THREE.CapsuleGeometry, THREE.MeshPhysicalMaterial, THREE.Object3DEventMap>;
+  declare flight: number;
+  declare to: THREE.Vector3;
+  declare from: THREE.Vector3;
+  declare t: number;
+  declare kind: 'missile';
+  constructor(sys: SpecialSystem, a: Actor, to: THREE.Vector3) {
     this.sys = sys; this.kind = 'missile'; this.team = a.team; this.owner = a; this.t = 0;
     this.from = a.pos.clone().setY(a.pos.y + 1.6); this.to = to.clone();
     this.flight = SPECIALS.strike.flight;
@@ -788,7 +883,7 @@ class Missile {
     this.whistled = false;
     if (hearable(a)) play('strike_launch', { pos: a.isLocal ? undefined : a.pos, volume: 0.8 });
   }
-  update(dt) {
+  update(dt: number) {
     this.t += dt;
     const k = this.t / this.flight;
     const p = this.mesh.position;
@@ -820,11 +915,21 @@ class Missile {
 }
 
 class Tornado {
-  constructor(sys, owner, team, pos) {
+  declare loop: import("C:/github_game/inkwave/src/audio/audio").LoopHandle | null;
+  declare outer: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  declare inner: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  declare group: THREE.Group<THREE.Object3DEventMap>;
+  declare paintT: number;
+  declare radius: number;
+  declare dur: number;
+  declare t: number;
+  declare pos: THREE.Vector3;
+  declare kind: 'tornado';
+  constructor(sys: SpecialSystem, owner: Actor, team: number, pos: THREE.Vector3) {
     const d = SPECIALS.strike;
     this.sys = sys; this.kind = 'tornado'; this.owner = owner; this.team = team; this.pos = pos.clone();
     this.t = 0; this.dur = d.duration; this.radius = d.radius; this.paintT = 0;
-    const col = G.teamColors[team];
+    const col = G.teamColors[team]!;
     this.group = new THREE.Group(); this.group.position.copy(this.pos);
     this.inner = new THREE.Mesh(sys.funnelGeo, swirlMat(col, { bottom: 0.25, top: 1, wobble: 0.35, speed: 1.9 }));
     this.outer = new THREE.Mesh(sys.funnelGeo, swirlMat(col.clone().lerp(new THREE.Color(1, 1, 1), 0.25), { bottom: 0.4, top: 1.15, wobble: 0.5, speed: 1.2 }));
@@ -837,7 +942,7 @@ class Tornado {
     G.fx?.explosion(_v.copy(this.pos).setY(this.pos.y + 0.6), col, this.radius * 0.8);
     emit('special:strike', { actor: owner, pos: this.pos.clone(), radius: this.radius });
   }
-  update(dt) {
+  update(dt: number) {
     const d = SPECIALS.strike;
     this.t += dt;
     const grow = Math.min(1, this.t / 0.4), fade = Math.max(0, Math.min(1, (this.dur - this.t) / 0.6));
@@ -853,7 +958,7 @@ class Tornado {
         const g = groundBelow(_v.set(this.pos.x + Math.cos(ang) * r, this.pos.y + 3, this.pos.z + Math.sin(ang) * r), 8);
         if (g) paint(this.owner, g.setY(g.y + 0.2), 0.9 + Math.random() * 0.8, this.team);
       }
-      if (near(this.pos, 38)) G.fx?.burst(_v.set(this.pos.x + (Math.random() - 0.5) * this.radius, this.pos.y + 0.4 + Math.random() * 3, this.pos.z + (Math.random() - 0.5) * this.radius), UP, G.teamColors[this.team], { count: 3, speed: 5, size: 0.1, ring: false, mist: false });
+      if (near(this.pos, 38)) G.fx?.burst(_v.set(this.pos.x + (Math.random() - 0.5) * this.radius, this.pos.y + 0.4 + Math.random() * 3, this.pos.z + (Math.random() - 0.5) * this.radius), UP, G.teamColors[this.team]!, { count: 3, speed: 5, size: 0.1, ring: false, mist: false });
     }
     // hurt (and gently drag) enemies inside
     for (const e of G.actors) {
@@ -875,7 +980,16 @@ class Tornado {
 
 // Twister Zooka shot: a tall spinning twister flying straight; pierces players, stops at walls
 class Twister {
-  constructor(sys, a, from, dir) {
+  declare mesh: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  declare paintAcc: number;
+  declare hit: Set<unknown>;
+  declare life: number;
+  declare t: number;
+  declare vel: THREE.Vector3;
+  declare prev: THREE.Vector3;
+  declare pos: THREE.Vector3;
+  declare kind: 'twister';
+  constructor(sys: SpecialSystem, a: Actor, from: THREE.Vector3, dir: THREE.Vector3) {
     const d = SPECIALS.zooka;
     this.sys = sys; this.kind = 'twister'; this.owner = a; this.team = a.team;
     this.pos = from.clone(); this.prev = from.clone(); this.vel = dir.clone().multiplyScalar(d.speed);
@@ -885,15 +999,15 @@ class Twister {
     this.mesh.position.copy(this.pos).setY(this.pos.y - d.height * 0.45);
     sys.scene.add(this.mesh);
   }
-  update(dt) {
+  update(dt: number) {
     const d = SPECIALS.zooka;
     this.t += dt;
     this.prev.copy(this.pos);
     this.pos.addScaledVector(this.vel, dt);
     // walls end it
-    const hit = G.physics.segment(this.prev, this.pos, _hit, true);
+    const hit = G.physics!.segment(this.prev, this.pos, _hit, true);
     if (hit.hit) { this._burst(hit.point, hit.normal); return false; }
-    if (G.subs && G.subs.blockShot(this.prev, this.pos, this.team, 120)) { this._burst(this.pos, UP); return false; }
+    if (G.subs && G.subs!.blockShot(this.prev, this.pos, this.team, 120)) { this._burst(this.pos, UP); return false; }
     if (this.sys.shotHit(this.prev, this.pos, this.team, 120, this.owner)) { this._burst(this.pos, UP); return false; }
     // players inside the column
     for (const e of G.actors) {
@@ -905,7 +1019,7 @@ class Twister {
       Physics.segmentCapsuleDist(_v2.copy(this.prev), _v3.copy(this.pos).setY(this.prev.y), _v.setY(this.prev.y - 0.5), 0.01, 1, _res);
       if (_res.dist < d.radius + (e.hitR || PLAYER.radius)) {
         this.hit.add(e);
-        G.projectiles.applyHit(this.owner, e, d.damage, 'zooka');
+        G.projectiles!.applyHit(this.owner, e, d.damage, 'zooka');
         G.fx?.burst(_v.copy(e.pos).setY(e.pos.y + 0.8), UP, this.owner.color, { count: 10, speed: 4, size: 0.09 });
       }
     }
@@ -923,7 +1037,7 @@ class Twister {
     if (this.t > this.life) { this._burst(this.pos, UP, true); return false; }
     return true;
   }
-  _burst(p, n, soft) {
+  _burst(p: THREE.Vector3, n: THREE.Vector3, soft?: boolean) {
     paint(this.owner, _v.copy(p).addScaledVector(n, 0.15), soft ? 1.1 : 1.6, this.team);
     if (near(p, 40)) { G.fx?.burst(p, n, this.owner.color, { count: 12, speed: 4, size: 0.09 }); play('splat_big', { pos: p, volume: 0.6 }); }
   }
@@ -932,7 +1046,19 @@ class Twister {
 
 // Howl Box: charges, then blasts a sound wave down its line through walls
 class Speaker {
-  constructor(sys, a, pos, dir) {
+  declare loop: import("C:/github_game/inkwave/src/audio/audio").LoopHandle | null;
+  declare beam: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  declare mouth: THREE.Vector3;
+  declare cone: THREE.Group<THREE.Object3DEventMap>;
+  declare group: THREE.Group<THREE.Object3DEventMap>;
+  declare phase: string;
+  declare t: number;
+  declare radius: number;
+  declare range: number;
+  declare dir: THREE.Vector3;
+  declare pos: THREE.Vector3;
+  declare kind: 'speaker';
+  constructor(sys: SpecialSystem, a: Actor, pos: THREE.Vector3, dir: THREE.Vector3) {
     const d = SPECIALS.wail;
     this.sys = sys; this.kind = 'speaker'; this.owner = a; this.team = a.team;
     this.pos = pos.clone(); this.dir = dir.clone().normalize(); this.range = d.range; this.radius = d.radius;
@@ -944,8 +1070,8 @@ class Speaker {
     if (pd) {
       this.group.add(propMesh(pd, a.team, sys.glowMat(a.team)));
       if (pd.cone) {
-        this.cone = new THREE.Group(); this.cone.position.copy(pd.coneAt);
-        const cm = partMesh(pd.cone, pd.coneInk, a.team); cm.position.copy(pd.coneAt).negate();
+        this.cone = new THREE.Group(); this.cone.position.copy(pd.coneAt!);
+        const cm = partMesh(pd.cone, pd.coneInk, a.team); cm.position.copy(pd.coneAt!).negate();
         this.cone.add(cm); this.group.add(this.cone);
       }
       mouthLocal = (pd.mouth || new THREE.Vector3(0, 0.8, 0.45)).clone();
@@ -970,7 +1096,7 @@ class Speaker {
     if (near(this.pos, 60)) play('wail_charge', { pos: this.pos, volume: 1 });
     emit('special:wail', { actor: a, pos: this.pos.clone(), dir: this.dir.clone() });
   }
-  update(dt) {
+  update(dt: number) {
     const d = SPECIALS.wail;
     this.t += dt;
     const u = this.beam.material.uniforms;
@@ -1020,7 +1146,17 @@ class Speaker {
 
 // Bubble Blower bubble: floats, walls off enemies, soaks up enemy fire; team fire sets it off
 class Bubble {
-  constructor(sys, a) {
+  declare mesh: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  declare ph: number;
+  declare held: boolean;
+  declare charge: number;
+  declare life: number;
+  declare t: number;
+  declare vel: THREE.Vector3;
+  declare kind: 'bubble';
+  declare r: number;
+  declare pos: THREE.Vector3;
+  constructor(sys: SpecialSystem, a: Actor) {
     const d = SPECIALS.blower;
     this.sys = sys; this.kind = 'bubble'; this.owner = a; this.team = a.team;
     this.pos = new THREE.Vector3(); this.vel = new THREE.Vector3(); this.r = d.rMin; this.t = 0; this.life = d.life;
@@ -1029,13 +1165,13 @@ class Bubble {
     this.mesh.renderOrder = 4;
     sys.scene.add(this.mesh);
   }
-  release(dir) {
+  release(dir: THREE.Vector3) {
     this.held = false;
     this.vel.set(dir.x, 0, dir.z).normalize().multiplyScalar(SPECIALS.blower.drift);
     this.vel.y = 0.25;
     if (near(this.pos)) play('bubble_release', { pos: this.pos, volume: 0.7 });
   }
-  update(dt) {
+  update(dt: number) {
     this.t += dt;
     const u = this.mesh.material.uniforms;
     u.uTime.value = this.t; u.uHit.value = Math.max(0, u.uHit.value - dt * 3);
@@ -1046,9 +1182,9 @@ class Bubble {
       _v.copy(this.pos);
       this.pos.addScaledVector(this.vel, dt);
       // don't sink into the deck; stop at walls
-      const g = G.level.groundHeight(this.pos.x, this.pos.z, this.pos.y + 1);
+      const g = G.level!.groundHeight(this.pos.x, this.pos.z, this.pos.y + 1);
       if (g > -Infinity && this.pos.y - this.r * 0.85 < g) { this.pos.y = g + this.r * 0.85; this.vel.y = Math.max(0, this.vel.y); }
-      const w = G.physics.raycast(_v, _v2.copy(this.vel).normalize(), this.r * 0.8 + this.vel.length() * dt, _hit, true);
+      const w = G.physics!.raycast(_v, _v2.copy(this.vel).normalize(), this.r * 0.8 + this.vel.length() * dt, _hit, true);
       if (w.hit && Math.abs(w.normal.y) < 0.6) { this.pos.copy(_v); this.vel.set(0, this.vel.y, 0); }
       // enemies can't pass through
       for (const e of G.actors) {
@@ -1077,8 +1213,8 @@ class Bubble {
     if (near(this.pos)) { play('bubble_pop', { pos: this.pos, volume: 0.7 }); G.fx?.burst(this.pos, UP, this.owner.color, { count: 10, speed: 3, size: 0.08 }); }
   }
   // online: the owner's copy says when it blows
-  netEvent(d) { if (d[2] === 'x') this.explode(null); }
-  explode(by) {
+  netEvent(d: NetRec) { if (d[2] === 'x') this.explode(null); }
+  explode(by: Actor | null | undefined) {
     if (this.dead) return;
     this.dead = true;
     if (!this.ghost && this.gid) rec(this.owner, [3, this.gid, 'x']);
@@ -1102,7 +1238,13 @@ class Bubble {
 
 // thrown Mega Stamp
 class ThrownStamp {
-  constructor(sys, a, from, dir) {
+  declare mesh: THREE.Group<THREE.Object3DEventMap>;
+  declare t: number;
+  declare vel: THREE.Vector3;
+  declare prev: THREE.Vector3;
+  declare pos: THREE.Vector3;
+  declare kind: 'stamp';
+  constructor(sys: SpecialSystem, a: Actor, from: THREE.Vector3, dir: THREE.Vector3) {
     const d = SPECIALS.stamp;
     this.sys = sys; this.kind = 'stamp'; this.owner = a; this.team = a.team;
     this.pos = from.clone(); this.prev = from.clone(); this.vel = dir.clone().multiplyScalar(d.throwSpeed); this.vel.y += 2.5;
@@ -1113,13 +1255,13 @@ class ThrownStamp {
     sys.scene.add(this.mesh);
     if (hearable(a)) play('stamp_throw', { pos: a.isLocal ? undefined : a.pos, volume: 0.9 });
   }
-  update(dt) {
+  update(dt: number) {
     this.t += dt;
     this.prev.copy(this.pos);
     this.vel.y -= 12 * dt;
     this.pos.addScaledVector(this.vel, dt);
     let at = null;
-    const hit = G.physics.segment(this.prev, this.pos, _hit, true);
+    const hit = G.physics!.segment(this.prev, this.pos, _hit, true);
     if (hit.hit) at = hit.point.clone().addScaledVector(hit.normal, 0.3);
     if (!at) for (const e of G.actors) {
       if (e.team === this.team || !e.alive) continue;
@@ -1135,7 +1277,7 @@ class ThrownStamp {
     }
     return true;
   }
-  _boom(c) {
+  _boom(c: THREE.Vector3) {
     const d = SPECIALS.stamp;
     const g = groundBelow(c, 4);
     paint(this.owner, (g || c).clone().setY((g || c).y + 0.2), d.throwRadius * 0.8, this.team);
@@ -1154,19 +1296,25 @@ class ThrownStamp {
 
 // Crab Rig mortar shell
 class Shell {
-  constructor(sys, a, from, vel) {
+  declare mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>;
+  declare t: number;
+  declare vel: THREE.Vector3;
+  declare prev: THREE.Vector3;
+  declare pos: THREE.Vector3;
+  declare kind: 'shell';
+  constructor(sys: SpecialSystem, a: Actor, from: THREE.Vector3, vel: THREE.Vector3) {
     this.sys = sys; this.kind = 'shell'; this.owner = a; this.team = a.team;
     this.pos = from.clone(); this.prev = from.clone(); this.vel = vel.clone(); this.t = 0;
     this.mesh = new THREE.Mesh(sys.sphereGeo, getInkMaterial(a.color)); this.mesh.scale.setScalar(0.28); this.mesh.castShadow = true;
     sys.scene.add(this.mesh);
   }
-  update(dt) {
+  update(dt: number) {
     this.t += dt;
     this.prev.copy(this.pos);
     this.vel.y -= 20 * dt;
     this.pos.addScaledVector(this.vel, dt);
     let at = null;
-    const hit = G.physics.segment(this.prev, this.pos, _hit, true);
+    const hit = G.physics!.segment(this.prev, this.pos, _hit, true);
     if (hit.hit) at = hit.point.clone().addScaledVector(hit.normal, 0.25);
     if (!at) for (const e of G.actors) {
       if (e.team === this.team || !e.alive) continue;
@@ -1191,7 +1339,15 @@ class Shell {
 
 // Cheer Orb: lobbed, lands, swells, then one huge blast
 class Orb {
-  constructor(sys, a, from, vel) {
+  declare halo: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  declare mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
+  declare phase: string;
+  declare t: number;
+  declare vel: THREE.Vector3;
+  declare prev: THREE.Vector3;
+  declare pos: THREE.Vector3;
+  declare kind: 'orb';
+  constructor(sys: SpecialSystem, a: Actor, from: THREE.Vector3, vel: THREE.Vector3) {
     this.sys = sys; this.kind = 'orb'; this.owner = a; this.team = a.team;
     this.pos = from.clone(); this.prev = from.clone(); this.vel = vel.clone(); this.t = 0; this.phase = 'fly';
     this.mesh = new THREE.Mesh(sys.sphereGeo, new THREE.MeshBasicMaterial({ color: a.color.clone().multiplyScalar(2.2) }));
@@ -1200,15 +1356,15 @@ class Orb {
     this.halo.scale.setScalar(0.8);
     sys.scene.add(this.mesh, this.halo);
   }
-  update(dt) {
+  update(dt: number) {
     const d = SPECIALS.booyah;
     this.t += dt;
-    const hu = this.halo.material.uniforms; hu.uTime.value = this.t;
+    const hu = (this.halo.material as THREE.ShaderMaterial).uniforms; hu.uTime.value = this.t;
     if (this.phase === 'fly') {
       this.prev.copy(this.pos);
       this.vel.y -= 24 * dt;
       this.pos.addScaledVector(this.vel, dt);
-      const hit = G.physics.segment(this.prev, this.pos, _hit, true);
+      const hit = G.physics!.segment(this.prev, this.pos, _hit, true);
       if (hit.hit) { this.pos.copy(hit.point).addScaledVector(hit.normal, 0.5); this.phase = 'fuse'; this.t = 0; if (near(this.pos, 50)) play('bomb_beep', { pos: this.pos, volume: 1, pitch: 0.6 }); }
       else if (this.t > 4 || this.pos.y < PLAYER.waterY - 2) return false;
     } else if (this.phase === 'fuse') {
@@ -1245,8 +1401,8 @@ class Orb {
 const IMPL = {
   // ---------------------------------------------------------------------------------------------- Bomb Barrage
   barrage: {
-    start(a, s) {
-      s.bomb = SUBS[s.def.bomb] || SUBS.bomb; s.nextThrow = 0;
+    start(a: Actor, s: SpecialRun) {
+      s.bomb = SUB_CFG[s.def.bomb] || SUB_CFG.bomb!; s.nextThrow = 0;
       a.character.setSub?.(s.bomb.kind);
     },
     end(a) { a.character.setSub?.(a.sub.kind); a.weaponRunner.aimingSub = false; },
@@ -1254,13 +1410,13 @@ const IMPL = {
 
   // ---------------------------------------------------------------------------------------------- Bubble Guard
   bubbler: {
-    start(a, s) { this.giveShield(a, s.def.duration, true); },
-    end(a, s, reason) { if (reason !== 'time') return; /* the field runs out on its own timer */ },
+    start(a: Actor, s: SpecialRun) { this.giveShield(a, s.def.duration, true); },
+    end(a, s, reason: string) { if (reason !== 'time') return; /* the field runs out on its own timer */ },
   },
 
   // ---------------------------------------------------------------------------------------------- Deep Sonar
   sonar: {
-    start(a, s) {
+    start(a: Actor, s: SpecialRun) {
       s.body = true; s.dur = s.def.cast;
       a.character.trigger('throw');
       for (const e of G.actors) {
@@ -1278,7 +1434,7 @@ const IMPL = {
 
   // ---------------------------------------------------------------------------------------------- Vortex Strike
   strike: {
-    start(a, s) {
+    start(a: Actor, s: SpecialRun) {
       s.body = true; s.aiming = true; s.dur = 0; s.confirm = false;
       const B = bounds();
       s.target = new THREE.Vector3(clamp(a.pos.x + Math.sin(a.aimYaw) * 16, B.minX + 2, B.maxX - 2), 0, clamp(a.pos.z + Math.cos(a.aimYaw) * 16, B.minZ + 2, B.maxZ - 2));
@@ -1291,16 +1447,16 @@ const IMPL = {
       if (s.autoT != null && s.t >= s.autoT) s.confirm = true;
       if (s.confirm || s.t >= s.def.aimTime) IMPL.strike.launch.call(this, a, s);
     },
-    launch(a, s) {
+    launch(a: Actor, s: SpecialRun) {
       s.aiming = false;
-      const g = G.physics.raycast(_v.set(s.target.x, 40, s.target.z), DOWN, 80, _hit, true);
+      const g = G.physics!.raycast(_v.set(s.target.x, 40, s.target.z), DOWN, 80, _hit, true);
       const to = g.hit ? g.point.clone() : new THREE.Vector3(s.target.x, 0, s.target.z);
       this._spawn(a, new Missile(this, a, to), 'mi', v3(to));
       emit('special:launch', { actor: a, to: to.clone() });
       this.end(a, 'launch');
     },
     // bots: the thickest cluster of enemies, else the most enemy ink
-    botTarget(a, s) {
+    botTarget(a: Actor, s: SpecialRun) {
       let best = null, bs = 0;
       for (const e of G.actors) {
         if (e.team === a.team || !e.alive) continue;
@@ -1311,13 +1467,13 @@ const IMPL = {
       if (!best || Math.random() < 0.35) {
         let bv = -1;
         // sample walkable ground (nav nodes) — on a skewed / jagged stage most of the bounds box is open water
-        const nodes = G.nav && G.nav.nodes && G.nav.nodes.length ? G.nav.nodes : null;
+        const nodes = G.nav && G.nav!.nodes && G.nav!.nodes.length ? G.nav!.nodes : null;
         for (let k = 0; k < 24; k++) {
           let x, z;
           if (nodes) { const n = nodes[(Math.random() * nodes.length) | 0]; x = n.x; z = n.z; }
           else { x = lerp(B.minX + 3, B.maxX - 3, Math.random()); z = lerp(B.minZ + 3, B.maxZ - 3, Math.random()); }
-          const y = G.level.groundHeight(x, z, 30); if (y === -Infinity) continue;
-          const st = G.paint.regionStats(x, y, z, 4, a.team);
+          const y = G.level!.groundHeight(x, z, 30); if (y === -Infinity) continue;
+          const st = G.paint!.regionStats(x, y, z, 4, a.team);
           const v = st.n ? st.enemy * 1.5 + st.empty : -1;
           if (v > bv) { bv = v; best = _v.set(x, y, z).clone(); }
         }
@@ -1328,13 +1484,13 @@ const IMPL = {
 
   // ---------------------------------------------------------------------------------------------- Twister Zooka
   zooka: {
-    start(a, s) { s.cd = 0.25; s.speed = 4.2; s.aimFace = true; s.noSquid = true; this._swapWeapon(a, 'sp_zooka'); },
-    weapon(a, s, dt, inp) {
+    start(a: Actor, s: SpecialRun) { s.cd = 0.25; s.speed = 4.2; s.aimFace = true; s.noSquid = true; this._swapWeapon(a, 'sp_zooka'); },
+    weapon(a: Actor, s: SpecialRun, dt: number, inp) {
       s.cd -= dt;
       if (inp.fire && s.cd <= 0) {
         s.cd = s.def.interval; s.firing = 0.45;
-        const m = G.projectiles._muzzle(a, _v.set(0, 0, 0)).clone();
-        const dir = G.projectiles._aimFrom(a, m, _v2).clone();
+        const m = G.projectiles!._muzzle(a, _v.set(0, 0, 0)).clone();
+        const dir = G.projectiles!._aimFrom(a, m, _v2).clone();
         this._spawn(a, new Twister(this, a, m, dir), 'tw', [...v3(m), ...v3(dir)]);
         a.character.trigger('shoot');
         if (hearable(a)) play('zooka_fire', { pos: a.isLocal ? undefined : m, volume: a.isLocal ? 0.9 : 0.6 });
@@ -1350,7 +1506,7 @@ const IMPL = {
   // ---------------------------------------------------------------------------------------------- Howl Box
   wail: {
     // hold the speaker up in front of you and aim (a faint guide shows the line); click sets it down and it fires
-    start(a, s) {
+    start(a: Actor, s: SpecialRun) {
       Object.assign(s, { speed: s.def.holdSpeed, noSquid: true, aimFace: true, dur: 0 });
       a.character.weaponHidden = true;
       if (a.character.weapon?.pivot) a.character.weapon.pivot.visible = false;
@@ -1369,11 +1525,11 @@ const IMPL = {
       if ((inp.firePressed && s.t > 0.2) || (s.autoT != null && s.t >= s.autoT) || s.t >= s.def.holdTime) IMPL.wail.place.call(this, a, s);
       return true;
     },
-    dirOf(a) {
+    dirOf(a: Actor) {
       const p = clamp(a.aimPitch, -0.3, 0.3);
       return new THREE.Vector3(Math.sin(a.aimYaw) * Math.cos(p), Math.sin(p), Math.cos(a.aimYaw) * Math.cos(p));
     },
-    tick(a, s, dt) {
+    tick(a: Actor, s: SpecialRun, dt) {
       if (!s.heldG) return;
       // boombox-style on the right shoulder, pointing where you aim (visible from the follow camera)
       const f = this._fwd(a), rx = -f.z, rz = f.x;   // the kid's right
@@ -1387,17 +1543,17 @@ const IMPL = {
       const u = s.guide.material.uniforms;
       u.uTime.value = s.t; u.uCharge.value = 0; u.uAlpha.value = 0.3 + 0.15 * Math.sin(s.t * 6);
     },
-    place(a, s) {
+    place(a: Actor, s: SpecialRun) {
       const f = this._fwd(a, new THREE.Vector3());
       const at = _v.copy(a.pos).addScaledVector(f, 1.3);
-      const g = G.physics.raycast(_v2.copy(at).setY(a.pos.y + 1.2), DOWN, 4, _hit, true);
+      const g = G.physics!.raycast(_v2.copy(at).setY(a.pos.y + 1.2), DOWN, 4, _hit, true);
       const pos = g.hit && g.normal.y > 0.6 ? g.point.clone() : a.pos.clone();
       a.character.trigger('throw');
       const dir = IMPL.wail.dirOf(a);
       this._spawn(a, new Speaker(this, a, pos, dir), 'sk', [...v3(pos), ...v3(dir)]);
       this.end(a, 'place');
     },
-    end(a, s) {
+    end(a: Actor, s: SpecialRun) {
       this._remove(s.heldG, s.guide);
       s.guide?.material.dispose();
       a.character.weaponHidden = false;
@@ -1408,7 +1564,7 @@ const IMPL = {
 
   // ---------------------------------------------------------------------------------------------- Kraken
   kraken: {
-    start(a, s) {
+    start(a: Actor, s: SpecialRun) {
       Object.assign(s, { noSquid: true, inkProof: true, speed: s.def.speed, accel: 45, faceMove: true, cd: 0, attack: false, trail: 0, air: false });
       a.form = 'kid';
       a.weaponRunner.reset();
@@ -1420,7 +1576,7 @@ const IMPL = {
       if (hearable(a)) play('kraken_on', { pos: a.isLocal ? undefined : a.pos, volume: 0.9 });
       G.fx?.explosion(_v.copy(a.pos).setY(a.pos.y + 0.8), a.color, 1.6);
     },
-    weapon(a, s, dt, inp) {
+    weapon(a: Actor, s: SpecialRun, dt: number, inp) {
       s.cd -= dt;
       if (inp.firePressed && s.cd <= 0) {
         s.cd = s.def.cooldown; s.attack = true;
@@ -1433,7 +1589,7 @@ const IMPL = {
       }
       return true;
     },
-    tick(a, s, dt) {
+    tick(a: Actor, s: SpecialRun, dt: number) {
       // big hops on jump
       if (!a.grounded && !s.air && a.vel.y > 3 && !s.attack) { a.vel.y = Math.max(a.vel.y, s.def.hopVel); if (hearable(a)) play('kraken_jump', { pos: a.isLocal ? undefined : a.pos, volume: 0.6, pitch: 1.2 }); }
       const landed = s.air && a.grounded;
@@ -1461,7 +1617,7 @@ const IMPL = {
       const sq = a.grounded ? 1 + Math.sin(s.t * 14) * 0.04 * Math.min(1, Math.hypot(a.vel.x, a.vel.z) / 4) : clamp(1 + a.vel.y * 0.025, 0.8, 1.25);
       b.scale.set(1 / Math.sqrt(sq), sq, 1 / Math.sqrt(sq));
     },
-    end(a, s) {
+    end(a: Actor, s: SpecialRun) {
       this._remove(s.body3);
       a.character.setVisible(true);
       if (a.alive) G.fx?.explosion(_v.copy(a.pos).setY(a.pos.y + 0.8), a.color, 1.4);
@@ -1470,8 +1626,8 @@ const IMPL = {
 
   // ---------------------------------------------------------------------------------------------- Bubble Blower
   blower: {
-    start(a, s) { s.count = 0; s.cur = null; s.aimFace = true; s.noSquid = true; this._swapWeapon(a, 'sp_blower'); },
-    weapon(a, s, dt, inp) {
+    start(a: Actor, s: SpecialRun) { s.count = 0; s.cur = null; s.aimFace = true; s.noSquid = true; this._swapWeapon(a, 'sp_blower'); },
+    weapon(a: Actor, s: SpecialRun, dt, inp) {
       const d = s.def;
       if (!inp.fire) s.needRelease = false;
       if (inp.fire && !s.cur && s.count < d.max && !s.done && !s.needRelease) {
@@ -1482,7 +1638,7 @@ const IMPL = {
         s.curT += dt; s.firing = 0.3;
         const k = clamp(s.curT / d.inflate, 0, 1);
         s.cur.r = lerp(d.rMin, d.rMax, 1 - (1 - k) * (1 - k));
-        const m = G.projectiles._muzzle(a, _v.set(0, 0, 0));
+        const m = G.projectiles!._muzzle(a, _v.set(0, 0, 0));
         const f = this._fwd(a, _v2);
         s.cur.pos.copy(m).addScaledVector(f, s.cur.r + 0.2);
         s.cur.pos.y = Math.max(s.cur.pos.y, a.pos.y + s.cur.r * 0.7);
@@ -1497,11 +1653,11 @@ const IMPL = {
       return true;
     },
     // let go of the bubble (online: it appears on everyone else's screen now, already blown)
-    let(a, b, f) {
+    let(a: Actor, b: Bubble, f: THREE.Vector3) {
       b.release(f);
       if (b.gid) rec(a, [2, 'bu', b.gid, ...v3(b.pos), r2(b.r), r2(f.x), r2(f.y), r2(f.z)]);
     },
-    end(a, s) {
+    end(a: Actor, s: SpecialRun) {
       if (s.cur) { IMPL.blower.let(a, s.cur, this._fwd(a, _v2)); s.cur = null; }
       s.inflate?.stop?.(0.05);
       this._restoreWeapon(a);
@@ -1510,7 +1666,7 @@ const IMPL = {
 
   // ---------------------------------------------------------------------------------------------- Ink Jet
   jetpack: {
-    start(a, s) {
+    start(a: Actor, s: SpecialRun) {
       Object.assign(s, { body: true, origin: a.pos.clone(), jumpBack: true, cd: 0.3, paintT: 0, fx: 0, boostCd: 0, boostT: 0, jumpWas: true });
       s.marker = new ReturnMarker(this, a, a.pos, 'jetpack'); this.world.push(s.marker);
       a.grounded = false; a.vel.y = 7;
@@ -1527,14 +1683,14 @@ const IMPL = {
       }
       s.loop = hearable(a) ? loop('jet_loop', { pos: a.isLocal ? undefined : a.pos, volume: a.isLocal ? 0.55 : 0.4 }) : null;
     },
-    body(a, s, dt) {
+    body(a: Actor, s: SpecialRun, dt: number) {
       const d = s.def, mv = a.intent.move;
       // horizontal: steer toward the stick at hover speed
       const tvx = mv.x * d.speed, tvz = mv.z * d.speed;
       const ex = tvx - a.vel.x, ez = tvz - a.vel.z, el = Math.hypot(ex, ez), r = d.accel * dt;
       if (el <= r) { a.vel.x = tvx; a.vel.z = tvz; } else { a.vel.x += ex / el * r; a.vel.z += ez / el * r; }
       // vertical: hold a hover height over whatever is below (never lower than above the take-off point)
-      const gy = G.level.groundHeight(a.pos.x, a.pos.z, a.pos.y + 0.5);
+      const gy = G.level!.groundHeight(a.pos.x, a.pos.z, a.pos.y + 0.5);
       const floor = gy === -Infinity ? s.origin.y : Math.max(gy, s.origin.y - 1);
       const wantY = floor + d.height + Math.sin(s.t * 2.2) * 0.12;
       // jump = a boost: a burst of thrust upward, then the hover settles back down
@@ -1561,9 +1717,9 @@ const IMPL = {
       s.cd -= dt;
       if (a.intent.fire && s.cd <= 0) {
         s.cd = d.interval; s.firing = 0.4;
-        const m = G.projectiles._muzzle(a, _v.set(0, 0, 0)).clone();
-        const dir = G.projectiles._aimFrom(a, m, _v2).clone();
-        G.projectiles.fireCustom(a, m, dir, { type: 'blast', speed: d.projSpeed, damage: d.directDamage, range: d.range, weaponId: 'jetpack',
+        const m = G.projectiles!._muzzle(a, _v.set(0, 0, 0)).clone();
+        const dir = G.projectiles!._aimFrom(a, m, _v2).clone();
+        G.projectiles!.fireCustom(a, m, dir, { type: 'blast', speed: d.projSpeed, damage: d.directDamage, range: d.range, weaponId: 'jetpack',
           burst: { radius: d.splashRadius, splashRadius: d.splashRadius, dmgMax: d.splashMax, dmgMin: d.splashMin, paint: d.paintRadius } });
         a.character.trigger('shoot');
         if (hearable(a)) play('jet_fire', { pos: a.isLocal ? undefined : m, volume: a.isLocal ? 0.8 : 0.55 });
@@ -1585,7 +1741,7 @@ const IMPL = {
       }
       s.loop?.set?.({ pos: a.isLocal ? undefined : a.pos });
     },
-    end(a, s) {
+    end(a: Actor, s: SpecialRun) {
       s.loop?.stop?.(0.2);
       if (hearable(a) && a.alive) play('jet_end', { pos: a.isLocal ? undefined : a.pos, volume: 0.7 });
       if (s.pack) s.pack.parent?.remove(s.pack);
@@ -1596,13 +1752,13 @@ const IMPL = {
 
   // ---------------------------------------------------------------------------------------------- Mega Stamp
   stamp: {
-    start(a, s) {
+    start(a: Actor, s: SpecialRun) {
       Object.assign(s, { cd: 0, speed: s.def.moveSpeed, noSquid: true, pending: -1, subWas: false, guard: 0, flip: null, bodyYaw: a.yaw, faceYaw: a.yaw });
       this._swapWeapon(a, 'sp_stamp');
     },
     // heavy: the body swings round toward the aim slowly while charging (quicker once stopped), and moves mostly along
     // its facing — sideways input is cut to a shuffle
-    move(a, s, dt) {
+    move(a, s, dt: number) {
       const d = s.def, hs = Math.hypot(a.vel.x, a.vel.z);
       const rate = (hs > 1.5 ? d.turnRate : d.turnRateStill) * dt;
       s.bodyYaw += Math.max(-rate, Math.min(rate, angleDiff(s.bodyYaw, a.aimYaw)));
@@ -1616,14 +1772,14 @@ const IMPL = {
       mv.z = f.z * along + (mv.z - f.z * along) * d.strafe;
       s.mvOut = { x: mv.x, z: mv.z };
     },
-    weapon(a, s, dt, inp) {
+    weapon(a: Actor, s: SpecialRun, dt: number, inp) {
       const d = s.def;
       s.cd -= dt;
       const subPress = inp.sub && !s.subWas; s.subWas = inp.sub;
       if (subPress) {
         // throw it: a long-range blast, and the special is over
-        const m = G.projectiles._muzzle(a, _v.set(0, 0, 0)).clone();
-        const dir = G.projectiles._aimFrom(a, m, _v2).clone();
+        const m = G.projectiles!._muzzle(a, _v.set(0, 0, 0)).clone();
+        const dir = G.projectiles!._aimFrom(a, m, _v2).clone();
         a.character.trigger('throw');
         const from = _v3.copy(a.pos).setY(a.pos.y + 1.5).clone();
         this._spawn(a, new ThrownStamp(this, a, from, dir), 'ts', [...v3(from), ...v3(dir)]);
@@ -1635,7 +1791,7 @@ const IMPL = {
           // mid-air swing: a single flip — behind first as the stamp goes over, then a long smash in front
           const f = stampFwd(s);
           s.flip = { t: 0, back: false, front: false }; s.guard = d.flipTime; s.cd = d.flipTime + 0.1;
-          const dir = new THREE.Vector3(f.x, 0, f.z); dir.dur = d.flipTime;
+          const dir = Object.assign(new THREE.Vector3(f.x, 0, f.z), { dur: d.flipTime });   // (구르기 trigger가 dur를 읽는다)
           a.character.trigger('roll', dir);
           if (hearable(a)) play('stamp_swing', { pos: a.isLocal ? undefined : a.pos, volume: 0.7, pitch: 0.85 });
         } else {
@@ -1655,7 +1811,7 @@ const IMPL = {
       }
       return true;
     },
-    tick(a, s, dt) {
+    tick(a, s, dt: number) {
       const d = s.def;
       if (s.flip) {
         const fl = s.flip; fl.t += dt;
@@ -1669,32 +1825,32 @@ const IMPL = {
       }
     },
     // the swing's guard: enemy shots in front are knocked out of the air, enemy bombs in front are smashed
-    guardSweep(a, s) {
+    guardSweep(a: Actor, s: SpecialRun) {
       const d = s.def, ay = a.pos.y + 1.0;
-      const shots = G.projectiles.list;
+      const shots = G.projectiles!.list;
       for (let i = shots.length - 1; i >= 0; i--) {
         const p = shots[i];
         if (p.team === a.team || Math.abs(p.pos.y - ay) > 2.0) continue;
         if (Math.hypot(p.pos.x - a.pos.x, p.pos.z - a.pos.z) > d.deflectR || !stampFront(a, s, p.pos, d.deflectArc)) continue;
-        G.projectiles.removeShot(p);
+        G.projectiles!.removeShot(p);
         if (near(p.pos, 30)) G.fx?.burst(p.pos, UP, a.color, { count: 4, speed: 3.5, size: 0.06, ring: false });
       }
-      for (const b of [...G.projectiles.bombs]) {
+      for (const b of [...G.projectiles!.bombs]) {
         if (b.team === a.team || b.kind !== 'bomb') continue;
         if (b.pos.distanceTo(_v.copy(a.pos).setY(ay)) > d.bombClearR || !stampFront(a, s, b.pos, d.deflectArc)) continue;
-        G.projectiles.defuseBomb(b);
+        G.projectiles!.defuseBomb(b);
         if (near(b.pos, 40)) { G.fx?.burst(b.pos, UP, a.color, { count: 10, speed: 4, size: 0.08 }); play('shield_hit', { pos: b.pos, volume: 0.6, pitch: 0.8 }); }
       }
       for (const it of G.subs?.items || []) {
         if (it.team === a.team || it.state === 'dead' || !STAMP_SMASHES.has(it.kind)) continue;
         if (it.pos.distanceTo(_v.copy(a.pos).setY(ay)) > d.bombClearR || !stampFront(a, s, it.pos, d.deflectArc)) continue;
-        G.subs._destroy(it);
+        G.subs!._destroy(it);
       }
     },
-    slam(a, s, radius, reach) {
+    slam(a: Actor, s: SpecialRun, radius: number, reach: number) {
       const f = stampFwd(s);
       const c = _v.copy(a.pos).addScaledVector(f, reach);
-      const g = G.physics.raycast(_v2.copy(c).setY(a.pos.y + 1.2), DOWN, 3, _hit, true);
+      const g = G.physics!.raycast(_v2.copy(c).setY(a.pos.y + 1.2), DOWN, 3, _hit, true);
       const at = g.hit ? g.point.clone() : c.clone().setY(a.pos.y);
       paint(a, _v2.copy(at).setY(at.y + 0.2), radius * 0.95, a.team);
       paint(a, _v2.copy(at).addScaledVector(f, radius * 0.7).setY(at.y + 0.2), radius * 0.6, a.team);
@@ -1705,17 +1861,17 @@ const IMPL = {
         if (e.team === a.team || !e.alive) continue;
         const dh = Math.hypot(e.pos.x - at.x, e.pos.z - at.z);
         if (dh > radius + PLAYER.radius || Math.abs(e.pos.y - at.y) > 1.8) continue;
-        if (!G.physics.los(_v2.copy(at).setY(at.y + 0.5), _v3.copy(e.pos).setY(e.pos.y + 0.6))) continue;
-        G.projectiles.applyHit(a, e, s.def.damage, 'stamp');
+        if (!G.physics!.los(_v2.copy(at).setY(at.y + 0.5), _v3.copy(e.pos).setY(e.pos.y + 0.6))) continue;
+        G.projectiles!.applyHit(a, e, s.def.damage, 'stamp');
       }
       G.subs?.damageArea(at, radius, 80, a.team);
     },
-    end(a) { this._restoreWeapon(a); },
+    end(a: Actor) { this._restoreWeapon(a); },
   },
 
   // ---------------------------------------------------------------------------------------------- Cheer Orb
   booyah: {
-    start(a, s) {
+    start(a: Actor, s: SpecialRun) {
       // `bomb` gives the throw-arc preview the orb's launch speed (the orb flies with the same gravity as bombs)
       Object.assign(s, { charge: 0, fullT: 0, speed: s.def.moveSpeed, noSquid: true, aimFace: true, thrown: false, cheered: 0, bomb: { kind: 'booyah', throwSpeed: s.def.throwSpeed } });
       a.character.subPropHidden = true;
@@ -1724,7 +1880,7 @@ const IMPL = {
       this._add(s.ball, s.halo);
       s.loop = hearable(a) ? loop('booyah_charge', { pos: a.isLocal ? undefined : a.pos, volume: a.isLocal ? 0.55 : 0.4 }) : null;
     },
-    weapon(a, s, dt, inp) {
+    weapon(a, s, dt: number, inp) {
       const d = s.def;
       s.charge = Math.min(1, s.charge + dt / d.charge);
       if (s.charge >= 1) {
@@ -1737,7 +1893,7 @@ const IMPL = {
       s.raise = true;                        // arm up (the sub-aim pose), ball overhead
       return true;
     },
-    tick(a, s, dt) {
+    tick(a, s, dt: number) {
       if (!s.ball) return;
       if (a.character.getHeadPosition) a.character.getHeadPosition(_v); else _v.copy(a.pos).setY(a.pos.y + 1.5);
       const r = 0.16 + 0.2 * s.charge;
@@ -1750,27 +1906,27 @@ const IMPL = {
       s.halo.material.uniforms.uTime.value = s.t;
       s.loop?.set?.({ pitch: 1 + s.charge, pos: a.isLocal ? undefined : a.pos });
     },
-    throwIt(a, s) {
+    throwIt(a: Actor, s: SpecialRun) {
       s.thrown = true;
       const from = a.pos.clone().setY(a.pos.y + 1.35);
-      const vel = G.projectiles.throwVelocity(a, s.def.throwSpeed, new THREE.Vector3());
+      const vel = G.projectiles!.throwVelocity(a, s.def.throwSpeed, new THREE.Vector3());
       this._spawn(a, new Orb(this, a, from, vel), 'or', [...v3(from), ...v3(vel)]);
       s.raise = false;
       a.character.trigger('throw');
       if (hearable(a)) play('booyah_throw', { pos: a.isLocal ? undefined : a.pos, volume: 0.9 });
       this.end(a, 'throw');
     },
-    end(a, s) {
+    end(a: Actor, s: SpecialRun) {
       s.loop?.stop?.(0.2);
       this._remove(s.ball, s.halo);
-      s.ball?.material.dispose(); s.halo?.material.dispose();
+      ((s.ball as THREE.Mesh)?.material as THREE.Material | undefined)?.dispose(); s.halo?.material.dispose();
       a.character.subPropHidden = false;
     },
   },
 
   // ---------------------------------------------------------------------------------------------- Zipline
   zipcaster: {
-    start(a, s) {
+    start(a: Actor, s: SpecialRun) {
       Object.assign(s, { origin: a.pos.clone(), jumpBack: true, cd: 0, hang: 0, subWas: false, zip: null, wisp: 0 });
       s.marker = new ReturnMarker(this, a, a.pos, 'zipcaster'); this.world.push(s.marker);
       // a mysterious aura: a dark, shifting shroud with a team-coloured rim, trailing wisps
@@ -1783,19 +1939,19 @@ const IMPL = {
       this._add(s.line);
     },
     // the main weapon keeps working; the sub button fires the tether
-    weapon(a, s, dt, inp) {
+    weapon(a, s, dt: number, inp) {
       s.cd -= dt;
       const press = inp.sub && !s.subWas; s.subWas = inp.sub;
       inp.sub = false; inp.subReleased = false;
       if (press && s.cd <= 0 && !s.zip) IMPL.zipcaster.fire.call(this, a, s);
       return false;
     },
-    fire(a, s) {
+    fire(a: Actor, s: SpecialRun) {
       const from = _v.copy(a.pos).setY(a.pos.y + 1.2).clone();
       const dir = _v2.copy(a.aimPoint).sub(from).normalize().clone();
       s.cd = s.def.cooldown;
       if (hearable(a)) play('zip_fire', { pos: a.isLocal ? undefined : a.pos, volume: 0.7 });
-      const g = G.physics.raycast(from, dir, s.def.range, _hit, true);
+      const g = G.physics!.raycast(from, dir, s.def.range, _hit, true);
       if (!g.hit) { s.miss = { to: from.clone().addScaledVector(dir, s.def.range), t: 0.2 }; rec(a, [4, 'zm', ...v3(s.miss.to)]); return; }
       const n = g.normal.clone(), wall = Math.abs(n.y) < 0.55;
       const to = g.point.clone().addScaledVector(n, PLAYER.radius + 0.08);
@@ -1808,7 +1964,7 @@ const IMPL = {
       if (near(g.point, 40)) play('zip_latch', { pos: g.point, volume: 0.8 });
       if (hearable(a)) play('zip_pull', { pos: a.isLocal ? undefined : a.pos, volume: 0.7 });
     },
-    body(a, s, dt) {
+    body(a: Actor, s: SpecialRun, dt: number) {
       const z = s.zip;
       if (!z) { s.body = false; return; }
       z.t += dt;
@@ -1843,7 +1999,7 @@ const IMPL = {
     },
     // body impact: a mini explosion round the zipper — a direct hit (the enemy slammed into, or anyone right at the
     // body) takes impactDirect, the rest of the blast impactSplash
-    impact(a, s, direct) {
+    impact(a: Actor, s: SpecialRun, direct: Actor | null) {
       const d = s.def, c = _v3.copy(a.pos).setY(a.pos.y + 0.7).clone();
       rec(a, [4, 'zi', ...v3(c), s.hang > 0 ? 1 : 0]);
       for (const e of G.actors) {
@@ -1851,8 +2007,8 @@ const IMPL = {
         _v.copy(e.pos); _v.y += 0.8;
         const dist = _v.distanceTo(c), hitDirect = e === direct || dist <= d.impactDirectR;
         if (!hitDirect && dist > d.impactRadius + 0.3) continue;
-        if (e !== direct && !G.physics.los(_v2.copy(c), _v)) continue;
-        G.projectiles.applyHit(a, e, hitDirect ? d.impactDirect : d.impactSplash, 'zipcaster');
+        if (e !== direct && !G.physics!.los(_v2.copy(c), _v)) continue;
+        G.projectiles!.applyHit(a, e, hitDirect ? d.impactDirect : d.impactSplash, 'zipcaster');
       }
       G.subs?.damageArea(c, d.impactRadius, d.impactSplash, a.team);
       const g = groundBelow(c, 3);
@@ -1861,7 +2017,7 @@ const IMPL = {
       if (near(c, 40)) play('blaster_boom', { pos: a.isLocal ? undefined : c, volume: 0.6, pitch: 1.25 });
       emit('shake', { pos: c.clone(), amount: 0.35 });
     },
-    tick(a, s, dt) {
+    tick(a, s, dt: number) {
       if (!s.zip) s.faceYaw = null;
       if (s.aura) {
         const sq = a.form === 'squid';
@@ -1901,12 +2057,12 @@ const IMPL = {
         s.line.scale.set(1, 1, Math.max(0.01, _v.distanceTo(to)));
       }
     },
-    end(a, s) { this._remove(s.line, s.aura); s.line.material.dispose(); s.line.geometry.dispose(); s.aura?.material.dispose(); s.hang = 0; },
+    end(a: Actor, s: SpecialRun) { this._remove(s.line, s.aura); s.line.material.dispose(); s.line.geometry.dispose(); s.aura?.material.dispose(); s.hang = 0; },
   },
 
   // ---------------------------------------------------------------------------------------------- Crab Rig
   crab: {
-    start(a, s) {
+    start(a: Actor, s: SpecialRun) {
       const d = s.def;
       Object.assign(s, { hp: d.hp, hull: a.yaw, noSquid: true, inkProof: true, speed: d.speed, faceYaw: a.yaw, roll: false,
         gcd: 0, ccd: 0.4, subWas: false, legT: 0, rollAng: 0, seatY: 0.95, sndT: 0 });
@@ -1923,7 +2079,7 @@ const IMPL = {
         s.legs = (pd.legs || []).map((L, i) => { const g = new THREE.Group(); g.position.copy(L.at); const m = partMesh(L.body, L.ink, a.team); m.position.copy(L.at).negate(); g.add(m); s.hullG.add(g); return { g, i }; });
         if (pd.gun) s.hullG.add(partMesh(pd.gun.body, pd.gun.ink, a.team));
         if (pd.cannon) s.hullG.add(partMesh(pd.cannon.body, pd.cannon.ink, a.team));
-        if (pd.gunSpin) { s.gunSpin = new THREE.Group(); s.gunSpin.position.copy(pd.gunSpinAt); const m = partMesh(pd.gunSpin, pd.gunSpinInk, a.team); m.position.copy(pd.gunSpinAt).negate(); s.gunSpin.add(m); s.hullG.add(s.gunSpin); }
+        if (pd.gunSpin) { s.gunSpin = new THREE.Group(); s.gunSpin.position.copy(pd.gunSpinAt!); const m = partMesh(pd.gunSpin, pd.gunSpinInk, a.team); m.position.copy(pd.gunSpinAt!).negate(); s.gunSpin.add(m); s.hullG.add(s.gunSpin); }
         s.gunMuzzle = (pd.gunMuzzle || new THREE.Vector3(0, 0.7, 1.0)).clone();
         s.cannonMuzzle = (pd.cannonMuzzle || new THREE.Vector3(0.5, 1.1, -0.2)).clone();
         s.seatY = pd.seatAt ? pd.seatAt.y : 0.95;
@@ -1941,7 +2097,7 @@ const IMPL = {
       s.loop = hearable(a) ? loop('crab_move', { pos: a.isLocal ? undefined : a.pos, volume: 0 }) : null;
       G.fx?.explosion(_v.copy(a.pos).setY(a.pos.y + 0.6), a.color, 1.5);
     },
-    weapon(a, s, dt, inp) {
+    weapon(a: Actor, s: SpecialRun, dt: number, inp) {
       const d = s.def;
       // swim = roll into an armoured ball (fast, can't shoot)
       const roll = !!a.intent.squid;
@@ -1969,7 +2125,7 @@ const IMPL = {
           const m = IMPL.crab.local(a, s, s.gunMuzzle, _v);
           const sp = (Math.random() - 0.5) * 2 * d.gunSpread * Math.PI / 180, sp2 = (Math.random() - 0.5) * d.gunSpread * Math.PI / 180;
           const dir = _v2.set(Math.sin(s.hull + sp) * cp, Math.sin(pitch + sp2), Math.cos(s.hull + sp) * cp);
-          G.projectiles.fireCustom(a, m, dir, { type: 'shot', speed: d.gunSpeed, damage: d.gunDamage, range: d.gunRange, straight: 0.4, radius: 0.55, trailEvery: 1.6, trailRadius: 0.35, weaponId: 'crab' });
+          G.projectiles!.fireCustom(a, m, dir, { type: 'shot', speed: d.gunSpeed, damage: d.gunDamage, range: d.gunRange, straight: 0.4, radius: 0.55, trailEvery: 1.6, trailRadius: 0.35, weaponId: 'crab' });
           if (hearable(a) && G.time - s.sndT > 0.06) { s.sndT = G.time; play('crab_gatling', { pos: a.isLocal ? undefined : m, volume: a.isLocal ? 0.45 : 0.3 }); }
         }
       } else if (s.gcd < 0) s.gcd = 0;
@@ -1987,11 +2143,11 @@ const IMPL = {
       return true;
     },
     // a point in the hull's frame → world
-    local(a, s, p, out) {
+    local(a: Actor, s: SpecialRun, p: THREE.Vector3, out: THREE.Vector3) {
       const c = Math.cos(s.hull), sn = Math.sin(s.hull);
       return out.set(a.pos.x + p.x * c + p.z * sn, a.pos.y + p.y, a.pos.z - p.x * sn + p.z * c);
     },
-    tick(a, s, dt) {
+    tick(a: Actor, s: SpecialRun, dt: number) {
       const hs = Math.hypot(a.vel.x, a.vel.z);
       s.rig.position.set(a.pos.x, a.pos.y + (a.smoothY || 0), a.pos.z);
       s.hullG.rotation.y = s.hull;
@@ -2011,7 +2167,7 @@ const IMPL = {
       s.loop?.set?.({ volume: Math.min(1, hs / (s.roll ? 6 : 2)) * (a.isLocal ? 0.5 : 0.35), pitch: 0.8 + hs * 0.08, pos: a.isLocal ? undefined : a.pos });
       if (s.hp <= 0) this.end(a, 'broken');
     },
-    hurt(a, s, amount, attacker) {
+    hurt(a, s, amount: number, attacker) {
       const d = s.def;
       let toRider = false;
       if (!s.roll && attacker && attacker !== a) {
@@ -2025,7 +2181,7 @@ const IMPL = {
       if (near(a.pos) && G.time - (s.pingT || 0) > 0.08) { s.pingT = G.time; play('crab_hit', { pos: a.isLocal ? undefined : a.pos, volume: 0.5 }); }
       return 0;
     },
-    end(a, s, reason) {
+    end(a: Actor, s: SpecialRun, reason: string) {
       s.loop?.stop?.(0.15);
       this._remove(s.rig);
       a.hitR = undefined; a.hitH = undefined; s.seat = 0;
@@ -2040,7 +2196,8 @@ const IMPL = {
       if (a.alive) { a.vel.y = 5; a.grounded = false; }
     },
   },
-};
+} satisfies Record<string, SpecialHooks & ThisType<SpecialSystem> & { [k: string]: unknown }>;
+const HOOKS: Record<string, SpecialHooks | undefined> = IMPL;
 
 // ================================================================================================ online ghosts
 // A remote player's special on this screen (see the note at the top): what differs from IMPL. start (default: IMPL's
@@ -2050,11 +2207,11 @@ const GHOST = {
   strike: { start(a) { a.character.trigger('throw'); } },                 // (aiming is the owner's; its missile arrives)
   sonar: { start: IMPL.sonar.start },                                      // (the reveal is everyone's)
   wail: {
-    start(a, s) { IMPL.wail.start.call(this, a, s); if (s.guide) s.guide.visible = false; },   // (the aim guide is the owner's)
+    start(a: Actor, s: SpecialRun) { IMPL.wail.start.call(this, a, s); if (s.guide) s.guide.visible = false; },   // (the aim guide is the owner's)
     tick(a, s, dt) { IMPL.wail.tick.call(this, a, s, dt); if (s.guide) s.guide.visible = false; },
   },
   kraken: {
-    tick(a, s) {
+    tick(a: Actor, s: SpecialRun) {
       const b = s.body3;
       if (!b) return;
       b.position.set(a.pos.x, a.pos.y + (a.smoothY || 0), a.pos.z);
@@ -2064,7 +2221,7 @@ const GHOST = {
     },
   },
   jetpack: {
-    tick(a, s, dt) {
+    tick(a, s, dt: number) {
       s.fx = (s.fx || 0) - dt;
       const tg = a.character.tank?.group;
       if (s.fx <= 0 && tg && near(a.pos, 30)) {
@@ -2075,21 +2232,21 @@ const GHOST = {
     },
   },
   stamp: {
-    event(a, s, d) {
+    event(a: Actor, s: SpecialRun, d: NetRec) {
       if (d[1] !== 'sl') return;
       const at = V(d, 2);
-      if (near(at, 40)) { G.fx?.explosion(_v2.copy(at).setY(at.y + 0.3), a.color, d[5]); play('stamp_slam', { pos: at, volume: 0.85 }); }
+      if (near(at, 40)) { G.fx?.explosion(_v2.copy(at).setY(at.y + 0.3), a.color, d[5] as number); play('stamp_slam', { pos: at, volume: 0.85 }); }
     },
   },
   booyah: {
-    start(a, s) { IMPL.booyah.start.call(this, a, s); s.raise = true; },   // (arm up, the orb overhead)
+    start(a: Actor, s: SpecialRun) { IMPL.booyah.start.call(this, a, s); s.raise = true; },   // (arm up, the orb overhead)
     tick(a, s, dt) { if (!s.netCharge) s.charge = Math.min(1, s.t / s.def.charge); IMPL.booyah.tick.call(this, a, s, dt); },
   },
   zipcaster: {
     tick: IMPL.zipcaster.tick,   // aura + tether (the zip itself is the owner's movement)
-    event(a, s, d) {
+    event(a: Actor, s: SpecialRun, d: NetRec) {
       if (d[1] === 'zf') {
-        s.zip = { anchor: V(d, 2) }; s.anchor = s.zip.anchor; s.hang = 0;
+        s.zip = { anchor: V(d, 2) } as NonNullable<SpecialRun['zip']>; s.anchor = s.zip.anchor; s.hang = 0;   // (유령: 고정점만 안다)
         if (near(s.anchor, 40)) play('zip_latch', { pos: s.anchor, volume: 0.8 });
         if (hearable(a)) play('zip_pull', { pos: a.pos, volume: 0.7 });
       } else if (d[1] === 'zm') s.miss = { to: V(d, 2), t: 0.2 };
@@ -2103,7 +2260,7 @@ const GHOST = {
     },
   },
   crab: {
-    tick(a, s, dt) {
+    tick(a: Actor, s: SpecialRun, dt: number) {
       const N = s.net;
       if (N) {
         s.hull += angleDiff(s.hull, N.hull) * Math.min(1, dt * 15);
@@ -2118,21 +2275,22 @@ const GHOST = {
       IMPL.crab.tick.call(this, a, s, dt);
     },
   },
-};
+} satisfies Record<string, SpecialHooks & ThisType<SpecialSystem> & { [k: string]: unknown }>;
+const GHOSTS: Record<string, SpecialHooks | undefined> = GHOST;
 
 // the owner's special pose state beyond the actor tick (packActor) → the ghost's (applyRemote)
-export function specialNetState(a) {
+export function specialNetState(a: Actor) {
   const s = a.specialActive;
   if (!s || s.ghost || !s.def) return 0;
   if (s.kind === 'crab') return (s.roll ? 1 : 0) | (s.firing > 0 ? 2 : 0) | ((Math.round((((s.hull % TAU) + TAU) % TAU) / TAU * 255) & 255) << 2);
   if (s.kind === 'booyah') return Math.round(clamp(s.charge || 0, 0, 1) * 63);
   return 0;
 }
-export function specialNetApply(a, v) {
+export function specialNetApply(a: Actor, v: number) {
   const s = a.specialActive;
   if (!s || !s.ghost) return;
   if (s.kind === 'crab') s.net = { roll: !!(v & 1), firing: !!(v & 2), hull: ((v >> 2) & 255) / 255 * TAU };
   else if (s.kind === 'booyah') { s.netCharge = true; s.charge = (v & 63) / 63; }
 }
 
-KIT_GHOSTS.sp = { ghost: (a, d) => G.specials?.netGhost(a, d), netHurt: (gid, dmg) => G.specials?.netHurtObj(gid, dmg) };
+KIT_GHOSTS.sp = { ghost: (a, d) => G.specials?.netGhost(a, d), netHurt: (gid: number, dmg: number) => G.specials?.netHurtObj(gid, dmg) };
