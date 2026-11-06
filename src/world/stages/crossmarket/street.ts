@@ -1,15 +1,18 @@
 // Crossroads Market — street furniture + market kit: stalls, barrows, the fountain, gas lamps, bollards, benches,
 // iron railings, stone balustrades, the news kiosk, the advertising column, produce crates.
+import type { Kit } from './kit.js';
+import type * as THREE from 'three';
+import type { PropDefs, PackHelpers, Builder, PropParams, PartOpts, ColorLike } from '../../props.js';
 
-export function registerStreet(D, H, KIT) {
+export function registerStreet(D: PropDefs, H: PackHelpers, KIT: Kit) {
   const { PI, TAU, HP, P3, NS, K, tpl, kf, pbox, colBox, rod, letters, textW, arcPts, shade, mixc, GB, cx3, hash } = KIT;
-  const blobGeo = (r, det, seed) => KIT.blob(det, seed);
+  const blobGeo = (r: number, det: number, seed: number) => KIT.blob(det, seed);
 
   // ---- produce: fills a crate / tray top (w × d at height y) with goods of a kind (small parts: no shadow)
-  const FRUIT = { apples: ['#b83a2e', '#c9502f', '#9c2f28'], greens: ['#7aa04a', '#8cb35a'], oranges: ['#e39a2e', '#eaa73a'], lemons: ['#e8cf52', '#f0da6a'],
+  const FRUIT: Record<string, string[]> = { apples: ['#b83a2e', '#c9502f', '#9c2f28'], greens: ['#7aa04a', '#8cb35a'], oranges: ['#e39a2e', '#eaa73a'], lemons: ['#e8cf52', '#f0da6a'],
     tomatoes: ['#c8382c', '#d8452f'], plums: ['#5b2a4a', '#6d3656'], pears: ['#b9c25a', '#a8b04c'] };
-  function produce(B, kind, x, y, z, w, d, seed = 1) {
-    const rnd = (k) => hash(seed * 7.1 + k * 3.3);
+  function produce(B: Builder, kind: string, x: number, y: number, z: number, w: number, d: number, seed = 1) {
+    const rnd = (k: number) => hash(seed * 7.1 + k * 3.3);
     if (FRUIT[kind]) {
       const r = kind === 'lemons' || kind === 'plums' ? 0.052 : 0.064, nx = Math.max(2, Math.floor(w / (r * 2.1))), nz = Math.max(2, Math.floor(d / (r * 2.1)));
       for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) {
@@ -43,7 +46,7 @@ export function registerStreet(D, H, KIT) {
     }
   }
   // slatted produce crate (open top) at x, y, z, filled with `kind`, optionally tilted toward +Z
-  function crate(B, x, y, z, w, d, h, kind, seed, tilt = 0) {
+  function crate(B: Builder, x: number, y: number, z: number, w: number, d: number, h: number, kind: string, seed: number | undefined, tilt = 0) {
     B.push(x, y, z, 0, tilt);
     for (const sz of [-1, 1]) for (let k = 0; k < 2; k++) pbox(B, 'wood', shade(K.woodLt, 0.92 + k * 0.06), w, h * 0.38, 0.02, 0, h * (0.22 + k * 0.5), sz * (d / 2 - 0.01));
     for (const sx of [-1, 1]) pbox(B, 'wood', K.wood, 0.02, h, d, sx * (w / 2 - 0.01), h / 2, 0);
@@ -53,7 +56,7 @@ export function registerStreet(D, H, KIT) {
   }
 
   // ---- pitched striped stall canopy (ridge along X), valance front + back, cached per size + colours
-  function stallCanopy(W, Dd, rise, cA, cB) {
+  function stallCanopy(W: number, Dd: number, rise: number, cA: ColorLike, cB: ColorLike) {
     return tpl(['stallcan', W, Dd, rise, cA, cB].map(kf).join('|'), () => {
       const g = new GB(), n = Math.max(4, Math.round(W / 0.25)), sw = W / n, ca = cx3(cA), cb = cx3(cB);
       for (const side of [1, -1]) {
@@ -61,7 +64,7 @@ export function registerStreet(D, H, KIT) {
         for (const zs of [-1, 1]) {
           const l = Math.hypot(Dd / 2, rise), ny = (Dd / 2) / l * side, nz = zs * rise / l * side;
           for (let j = 0; j < n; j++) {
-            const x0 = -W / 2 + j * sw, x1 = x0 + sw, c = (j % 2 ? cb : ca).map((v) => v * kk);
+            const x0 = -W / 2 + j * sw, x1 = x0 + sw, c = (j % 2 ? cb : ca).map((v: number) => v * kk);
             const a = g.v(x0, rise + off, 0, 0, ny, nz, ...c), b = g.v(x1, rise + off, 0, 0, ny, nz, ...c), d2 = g.v(x1, off, zs * Dd / 2, 0, ny, nz, ...c), e = g.v(x0, off, zs * Dd / 2, 0, ny, nz, ...c);
             g.quad(a, b, d2, e);
             const vh = 0.14, zf = zs * (Dd / 2 + 0.002 * side);
@@ -73,7 +76,7 @@ export function registerStreet(D, H, KIT) {
           }
         }
         // gable triangles in colour A
-        for (const sx of [-1, 1]) { const c = ca.map((v) => v * kk * 0.9); const x = sx * (W / 2 + 0.002 * side); const t = [g.v(x, off, -Dd / 2, sx * side, 0, 0, ...c), g.v(x, off, Dd / 2, sx * side, 0, 0, ...c), g.v(x, rise + off, 0, sx * side, 0, 0, ...c)]; g.tri(t[0], t[1], t[2]); }
+        for (const sx of [-1, 1]) { const c = ca.map((v: number) => v * kk * 0.9); const x = sx * (W / 2 + 0.002 * side); const t = [g.v(x, off, -Dd / 2, sx * side, 0, 0, ...c), g.v(x, off, Dd / 2, sx * side, 0, 0, ...c), g.v(x, rise + off, 0, sx * side, 0, 0, ...c)]; g.tri(t[0], t[1], t[2]); }
       }
       return g.geo();
     });
@@ -90,8 +93,8 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_stall = {
     desc: 'Market stall (front +Z; `double`: goods on both long sides, an island stall): timber counter w × d (collider, 1.0 m), sloped display of slatted crates filled with produce / fish on ice / flowers / bread / cheese / spices, four posts, a pitched striped canopy with a scalloped valance, a lettered header board, a hanging scale and a lamp.',
     params: { w: 'm (2.4)', d: 'm (1.2)', kind: 'veg | fruit | fish | flowers | bread | cheese | spice', double: 'bool', canopy: 'bool (true)', name: 'header text' }, variants: 1, mount: 'ground',
-    build(B, o) {
-      const W = o.w ?? 2.4, Dd = o.d ?? 1.2, S = STALLS[o.kind ?? 'veg'] ?? STALLS.veg, dbl = !!o.double, seed = Math.round(o.pos[0] * 13 + o.pos[2] * 7);
+    build(B: Builder, o: PropParams) {
+      const W = o.w ?? 2.4, Dd = o.d ?? 1.2, S = STALLS[(o.kind ?? 'veg') as keyof typeof STALLS] ?? STALLS.veg, dbl = !!o.double, seed = Math.round(o.pos![0] * 13 + o.pos![2] * 7);
       const ch = 0.82;
       // counter: framed timber body with vertical boards, a skirt board, the worktop
       B.box('wood', K.woodDk, W, ch - 0.05, Dd, 0, (ch - 0.05) / 2, 0, { r: 0.03 });
@@ -141,8 +144,8 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_barrow = {
     desc: 'Costermonger barrow (handles toward local -X): timber tray on two big spoked wheels + a prop leg, crates of produce / flowers, a little striped parasol. Collider: the barrow body.',
     params: { kind: 'veg | flowers | fruit | fish', color: 'parasol stripe' }, variants: 2, mount: 'ground',
-    build(B, o) {
-      const S = STALLS[o.kind ?? 'fruit'] ?? STALLS.fruit, seed = Math.round(o.pos[0] * 11 + o.pos[2] * 5), L = 1.9, W = 0.95, ty = 0.72;
+    build(B: Builder, o: PropParams) {
+      const S = STALLS[(o.kind ?? 'fruit') as keyof typeof STALLS] ?? STALLS.fruit, seed = Math.round(o.pos![0] * 11 + o.pos![2] * 5), L = 1.9, W = 0.95, ty = 0.72;
       B.box('wood', K.woodDk, L, 0.08, W, 0, ty, 0, { r: 0.02 });
       for (const sz of [-1, 1]) B.box('wood', K.wood, L, 0.18, 0.04, 0, ty + 0.12, sz * (W / 2 - 0.02), { r: 0.01 });
       for (const sx of [-1, 1]) B.box('wood', K.wood, 0.04, 0.18, W, sx * (L / 2 - 0.02), ty + 0.12, 0, { r: 0.01 });
@@ -176,7 +179,7 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_fountain = {
     desc: 'Market fountain (round, R 1.7): moulded sandstone basin with water, a pedestal carrying two scalloped bowls (water sheets) and a bronze dolphin, four lion-mask spouts, a cast-iron drinking cup post. Colliders: basin (cross of boxes, 0.72 m) + pedestal.',
     params: { r: 'basin radius (1.7)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const R = o.r ?? 1.7, st = K.stone, stD = K.stoneDk;
       B.lathe('paint', st, [[R + 0.08, 0], [R + 0.1, 0.08], [R, 0.14], [R - 0.02, 0.5], [R + 0.08, 0.56], [R + 0.1, 0.66], [R + 0.02, 0.72], [R - 0.26, 0.72], [R - 0.28, 0.62], [R - 0.3, 0.3], [0, 0.3]], 0, 0, 0, { seg: 32 });
       B.cyl(NS('gloss'), '#35646a', R - 0.29, 0.02, 0, 0.56, 0, { seg: 28 });                                  // water
@@ -191,7 +194,7 @@ export function registerStreet(D, H, KIT) {
       B.lathe('metal', '#7b6a44', [[0, 2.26], [0.1, 2.28], [0.14, 2.38], [0.12, 2.5], [0.07, 2.58], [0.02, 2.64], [0, 2.64]], 0, 0, 0, { seg: 10 });
       for (let i = 0; i < 6; i++) { const a2 = (i / 6) * TAU; B.box(NS('metal'), '#5f6a44', 0.05, 0.16, 0.02, Math.cos(a2) * 0.05, 2.7, Math.sin(a2) * 0.05, { ry: -a2 + HP, rx: 0.4, r: 0.01 }); }
       // water: trickles off both bowls' lips, a jet from the finial (thin glassy strands, no shading slabs)
-      const strand = (x0, y0, z0, out, y1) => { const r0 = Math.hypot(x0, z0) || 1, ux = x0 / r0, uz = z0 / r0; B.tube(NS('gloss'), '#cde9ea', [P3(x0, y0, z0), P3(x0 + ux * out * 0.5, y0 - 0.04, z0 + uz * out * 0.5), P3(x0 + ux * out * 0.9, (y0 + y1) / 2, z0 + uz * out * 0.9), P3(x0 + ux * out, y1, z0 + uz * out)], 0.018, { radial: 4 }); };
+      const strand = (x0: number, y0: number, z0: number, out: number, y1: number) => { const r0 = Math.hypot(x0, z0) || 1, ux = x0 / r0, uz = z0 / r0; B.tube(NS('gloss'), '#cde9ea', [P3(x0, y0, z0), P3(x0 + ux * out * 0.5, y0 - 0.04, z0 + uz * out * 0.5), P3(x0 + ux * out * 0.9, (y0 + y1) / 2, z0 + uz * out * 0.9), P3(x0 + ux * out, y1, z0 + uz * out)], 0.018, { radial: 4 }); };
       for (let i = 0; i < 12; i++) { const a2 = (i / 12) * TAU + 0.13; strand(Math.cos(a2) * 0.97, 1.63, Math.sin(a2) * 0.97, 0.16, 0.58); }
       for (let i = 0; i < 8; i++) { const a2 = (i / 8) * TAU; strand(Math.cos(a2) * 0.5, 2.28, Math.sin(a2) * 0.5, 0.12, 1.63); }
       B.cyl(NS('gloss'), '#e2f3f3', 0.02, 0.35, 0, 2.82, 0, { seg: 5 });
@@ -216,7 +219,7 @@ export function registerStreet(D, H, KIT) {
   };
 
   // ---- gas street lamp: fluted post, ladder bar, a four-sided lantern with a crown (variant 1: twin swan-neck arms)
-  function lantern(B, x, y, z, s = 1) {
+  function lantern(B: Builder, x: number, y: number, z: number, s = 1) {
     B.push(x, y, z, PI / 4, 0, 0, s);
     B.lathe('metal', K.iron, [[0.06, 0], [0.13, 0.02], [0.14, 0.06], [0.09, 0.1]], 0, 0, 0, { seg: 4 });
     B.lathe(NS('glow'), K.lit, [[0.001, 0.1], [0.13, 0.1], [0.2, 0.52], [0.001, 0.52]], 0, 0, 0, { seg: 4, glow: 1.9 });
@@ -228,7 +231,7 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_lamp = {
     desc: 'Gas-style street lamp: fluted cast-iron post on a moulded base, gilt collars, ladder bar, square lantern with a crown (glows at dusk). variant 1 = twin swan-neck arms with two lanterns (arms along local X). Collider: the post.',
     params: { height: 'm post (3.4)' }, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const Hh = o.height ?? 3.4, v = (o.variant ?? 0) % 2, c = K.iron;
       B.lathe('metal', c, [[0, 0], [0.22, 0], [0.23, 0.05], [0.18, 0.12], [0.17, 0.5], [0.12, 0.62], [0.09, 0.75], [0.075, Hh - 0.2], [0.1, Hh - 0.12], [0.1, Hh - 0.04], [0, Hh]], 0, 0, 0, { seg: 10 });
       for (let k = 0; k < 6; k++) { const a = (k / 6) * TAU; pbox(B, NS('metal'), shade(c, 0.8), 0.025, 0.36, 0.025, Math.cos(a) * 0.175, 0.3, Math.sin(a) * 0.175); }
@@ -253,7 +256,7 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_bollard = {
     desc: 'Row of cast-iron cannon bollards along local +X (count, spacing), painted bistro green with a gilt band (variant 1: black + white band). Colliders per bollard.',
     params: { count: '(1)', spacing: 'm (1.4)' }, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const n = o.count ?? 1, sp = o.spacing ?? 1.4, v = (o.variant ?? 0) % 2, c = v ? K.black : K.iron, band = v ? '#e9e4d8' : K.gold;
       for (let i = 0; i < n; i++) {
         const x = i * sp;
@@ -269,7 +272,7 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_bench = {
     desc: 'Victorian park bench (seat faces +Z): cast-iron scrolled ends in bistro green, timber slats, a plaque. Collider: seat + back.',
     params: { length: 'm (1.8)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const L = o.length ?? 1.8, c = K.iron;
       for (const sx of [-1, 1]) {
         const x = sx * (L / 2 - 0.12);
@@ -291,7 +294,7 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_railing = {
     desc: 'Wrought-iron railing along local +X (length): square posts with urn finials every ~1.8 m, top rail, bottom rail, bars with alternating spear tips, a scroll band. Rail collider over its full length + height.',
     params: { length: 'm (4)', height: 'm (0.95)', depth: 'collider depth toward -Z (0.1)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const L = o.length ?? 4, Hh = o.height ?? 0.95, c = o.color ?? K.iron;
       const np = Math.max(1, Math.round(L / 1.8));
       for (let i = 0; i <= np; i++) { const x = (i * L) / np; B.box('metal', c, 0.07, Hh + 0.08, 0.07, x, (Hh + 0.08) / 2, 0, { r: 0.012 }); B.sph(NS('metal'), K.gold, 0.045, x, Hh + 0.13, 0, { ws: 6, hs: 4 }); }
@@ -310,7 +313,7 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_balustrade = {
     desc: 'Sandstone balustrade along local +X (length): plinth, turned balusters, moulded coping, square dies at the ends (with ball finials) and every ~2.4 m. Rail collider (see-through between the balusters).',
     params: { length: 'm (4)', height: 'm (0.9)', balls: 'bool (true)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const L = o.length ?? 4, Hh = o.height ?? 0.9, st = o.color ?? K.stone;
       B.box('paint', shade(st, 0.94), L, 0.14, 0.34, L / 2, 0.07, 0, { r: 0.02 });
       B.box('paint', st, L + 0.06, 0.12, 0.4, L / 2, Hh - 0.06, 0, { r: 0.03 });
@@ -332,7 +335,7 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_kiosk = {
     desc: 'Newspaper kiosk (R 1.0): eight-sided bistro-green iron kiosk, glazed upper band, serving hatch toward +Z with a counter of papers, headline bill boards, a scalloped zinc dome with a finial + NEWS lettering in the frieze. Collider: the body.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const R = 1.0, Hh = 2.3, c = K.iron;
       B.lathe('paint', c, [[0, 0], [R + 0.05, 0], [R + 0.05, 0.12], [R, 0.14], [R, 1.0], [R + 0.04, 1.04], [R + 0.04, 1.08], [R, 1.1], [R, Hh], [R + 0.18, Hh + 0.05], [R + 0.18, Hh + 0.28], [0, Hh + 0.28]], 0, 0, 0, { seg: 8, ry: PI / 8 });
       // panels + posters on seven faces, the hatch on +Z
@@ -373,7 +376,7 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_column = {
     desc: 'Advertising column (R 0.55): a round iron pillar pasted with posters on 6 sides, moulded base, a lettered crown frieze (THEATRE · CIRCUS), a scalloped zinc cap with a finial. Collider.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const R = 0.55, Hh = 2.6, c = K.iron;
       B.lathe('metal', c, [[0, 0], [R + 0.12, 0], [R + 0.12, 0.1], [R + 0.05, 0.16], [R, 0.3], [R, Hh], [R + 0.08, Hh + 0.04], [R + 0.08, Hh + 0.36], [R + 0.16, Hh + 0.42], [0, Hh + 0.42]], 0, 0, 0, { seg: 18 });
       for (let i = 0; i < 6; i++) {
@@ -395,8 +398,8 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_crates = {
     desc: 'Market crate stack: 3–5 slatted crates of produce on a pallet, a sack or two (variant: kind mix). Collider.',
     params: { kind: 'veg | fruit | fish | flowers' }, variants: 3, mount: 'ground',
-    build(B, o) {
-      const v = (o.variant ?? 0) % 3, S = STALLS[o.kind ?? 'veg'] ?? STALLS.veg, seed = Math.round(o.pos[0] * 17 + o.pos[2] * 3);
+    build(B: Builder, o: PropParams) {
+      const v = (o.variant ?? 0) % 3, S = STALLS[(o.kind ?? 'veg') as keyof typeof STALLS] ?? STALLS.veg, seed = Math.round(o.pos![0] * 17 + o.pos![2] * 3);
       const g = S.goods;
       pbox(B, 'wood', K.woodDk, 1.3, 0.12, 0.9, 0, 0.06, 0);
       crate(B, -0.32, 0.12, -0.2, 0.6, 0.42, 0.3, g[0], seed); crate(B, 0.32, 0.12, -0.2, 0.6, 0.42, 0.3, g[1 % g.length], seed + 1);
@@ -415,7 +418,7 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_postbox = {
     desc: 'Cast-iron pillar post box (red, domed cap, slot, collection plate). Collider.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const R = '#b8322a';
       B.lathe('gloss', R, [[0, 0], [0.27, 0], [0.27, 0.08], [0.24, 0.12], [0.23, 1.2], [0.26, 1.24], [0.27, 1.32], [0.22, 1.36], [0.18, 1.46], [0.08, 1.54], [0, 1.56]], 0, 0, 0, { seg: 14 });
       pbox(B, NS('paint'), K.black, 0.26, 0.035, 0.05, 0, 1.12, 0.225);
@@ -430,11 +433,11 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_fingerpost = {
     desc: 'Fingerpost signpost: fluted iron post, finial, 2–4 pointing arms (local angles `arms`: [[deg, text], …]) lettered on both faces. Collider: the post.',
     params: { arms: '[[deg, text]]' }, variants: 1, mount: 'ground',
-    build(B, o) {
-      const arms = o.arms ?? [[0, 'MARKET HALL'], [180, 'HARBOUR']], c = K.iron;
+    build(B: Builder, o: PropParams) {
+      const arms = (o.arms as Array<[number, string]> | undefined) ?? [[0, 'MARKET HALL'], [180, 'HARBOUR']], c = K.iron;
       B.lathe('metal', c, [[0, 0], [0.16, 0], [0.16, 0.08], [0.1, 0.16], [0.06, 0.3], [0.05, 3.0], [0.07, 3.05], [0, 3.1]], 0, 0, 0, { seg: 8 });
       B.sph('metal', K.gold, 0.07, 0, 3.15, 0, { ws: 8, hs: 5 });
-      arms.forEach(([deg, text], i) => {
+      arms.forEach(([deg, text], i: number) => {
         const y = 2.75 - i * 0.26, L = textW(text, 0.2, 0.08) * 0.11 + 0.4;
         B.push(0, y, 0, (deg * PI) / 180);
         B.add('paint', tpl(['finger', L].map(kf).join('|'), () => KIT.extrudeGeo([[0, -0.1], [L - 0.12, -0.1], [L, 0], [L - 0.12, 0.1], [0, 0.1]], 0.04, 0.006)), '#f2eee6', 0, 0, 0, { ry: -HP });
@@ -449,9 +452,9 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_sacks = {
     desc: 'Pile of hessian sacks (flour / potatoes / coffee) with a sack truck leaning on it. Collider.',
     params: {}, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 2, cc = ['#c8a577', '#b9956a', '#d1b184'];
-      const sack = (x, y, z, ry, s = 1, k = 0) => { B.add('paint', blobGeo(1, 1, 2 + k), cc[k % 3], x, y + 0.2 * s, z, { sx: 0.3 * s, sy: 0.22 * s, sz: 0.24 * s, ry }); B.cyl(NS('paint'), shade(cc[k % 3], 0.85), 0.07 * s, 0.1 * s, x + 0.26 * s * Math.cos(ry), y + 0.22 * s, z - 0.26 * s * Math.sin(ry), { rz: HP, ry, seg: 6 }); };
+      const sack = (x: number, y: number, z: number, ry: number, s = 1, k = 0) => { B.add('paint', blobGeo(1, 1, 2 + k), cc[k % 3], x, y + 0.2 * s, z, { sx: 0.3 * s, sy: 0.22 * s, sz: 0.24 * s, ry }); B.cyl(NS('paint'), shade(cc[k % 3], 0.85), 0.07 * s, 0.1 * s, x + 0.26 * s * Math.cos(ry), y + 0.22 * s, z - 0.26 * s * Math.sin(ry), { rz: HP, ry, seg: 6 }); };
       sack(-0.3, 0, 0, 0.1, 1, 0); sack(0.32, 0, 0.05, -0.2, 1, 1); sack(0, 0.36, 0.02, 0.4, 0.95, 2);
       if (v === 0) sack(0.1, 0, -0.5, 1.4, 0.9, 1);
       // sack truck
@@ -469,9 +472,9 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_casks = {
     desc: 'Oak casks: two on a timber cradle + one standing, iron hoops, bung. Collider.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const prof = [[0, -0.42], [0.26, -0.42], [0.31, -0.3], [0.33, 0], [0.31, 0.3], [0.26, 0.42], [0, 0.42]];
-      const cask = (x, y, z, rx, rz) => {
+      const cask = (x: number, y: number, z: number, rx: number, rz: number) => {
         B.lathe('wood', K.wood, prof, x, y, z, { seg: 14, rx, rz });
         for (const t of [-0.36, -0.14, 0.14, 0.36]) { const r = 0.26 + 0.07 * (1 - Math.abs(t) / 0.42) ** 0.5; B.push(x, y, z, 0, rx, rz); B.tor(NS('metal'), K.ironDk, r, 0.012, 0, t, 0, { rs: 3, ts: 16, rx: HP }); B.pop(); }
       };
@@ -486,8 +489,8 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_pots = {
     desc: 'Harbour clutter: stacked lobster pots (netted half-barrels), a rope coil, stacked fish boxes, a float. Collider.',
     params: {}, variants: 2, mount: 'ground',
-    build(B, o) {
-      const pot = (x, y, z, ry) => {
+    build(B: Builder, o: PropParams) {
+      const pot = (x: number, y: number, z: number, ry: number) => {
         B.push(x, y, z, ry);
         pbox(B, 'wood', K.woodDk, 0.7, 0.05, 0.5, 0, 0.025, 0);
         for (let k = 0; k < 3; k++) B.tor('wood', K.wood, 0.25, 0.018, -0.25 + k * 0.25, 0.05, 0, { rs: 3, ts: 12, arc: PI, ry: HP });
@@ -505,7 +508,7 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_tubs = {
     desc: 'A pair of painted wooden flower tubs with geraniums / a bay tree (count along local X). Collider per tub.',
     params: { count: '(2)', spacing: 'm (1.2)', color: 'tub paint' }, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const n = o.count ?? 2, sp = o.spacing ?? 1.2, c = o.color ?? K.iron, v = (o.variant ?? 0) % 2;
       for (let i = 0; i < n; i++) {
         const x = i * sp;
@@ -527,7 +530,7 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_aboard = {
     desc: 'Chalk A-board with a timber frame, chalk menu lines and a heading. Non-colliding.',
     params: { text: 'heading (MENU)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       for (const f of [1, -1]) {
         B.push(0, 0, f * 0.16, f > 0 ? 0 : PI);
         B.push(0, 0, 0, 0, -0.18);
@@ -543,7 +546,7 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_bin = {
     desc: 'Cast-iron litter bin (bistro green, pierced band, domed lid). Collider.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.lathe('metal', K.iron, [[0, 0], [0.24, 0], [0.24, 0.05], [0.2, 0.08], [0.22, 0.8], [0.25, 0.84], [0.25, 0.9], [0.18, 0.96], [0.06, 1.0], [0, 1.02]], 0, 0, 0, { seg: 12 });
       B.tor(NS('metal'), K.gold, 0.225, 0.012, 0, 0.62, 0, { rs: 3, ts: 12, rx: HP });
       for (let k = 0; k < 8; k++) { const a = (k / 8) * TAU; B.cyl(NS('metal'), K.ironDk, 0.035, 0.02, Math.cos(a) * 0.215, 0.45, Math.sin(a) * 0.215, { rx: HP, rz: -a, seg: 6 }); }
@@ -556,7 +559,7 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_manhole = {
     desc: 'Cast-iron manhole cover (variant 0, round, with a lettered rim) or a gully grate (variant 1), flush in the paving. Non-colliding.',
     params: {}, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       if ((o.variant ?? 0) % 2 === 0) {
         B.cyl(NS('metal'), '#3a3b3d', 0.36, 0.02, 0, 0.01, 0, { seg: 18 });
@@ -573,7 +576,7 @@ export function registerStreet(D, H, KIT) {
   D.crossmarket_bills = {
     desc: 'Fly-posted bills on a wall (local z = 0 = wall face, facing +Z): 3–5 overlapping vintage posters. Non-colliding.',
     params: { count: '(4)', seedN: 'mix' }, variants: 1, mount: 'wall',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const n = o.count ?? 4, kinds = Object.keys(KIT.BILLS), sd = o.seedN ?? 1;
       for (let i = 0; i < n; i++) {
         const w = 0.5 + hash(sd * 3 + i) * 0.15, h2 = w * 1.45, x = (i - (n - 1) / 2) * 0.52 + (hash(sd + i * 7) - 0.5) * 0.1, y = 1.35 + (hash(sd * 5 + i) - 0.5) * 0.3;

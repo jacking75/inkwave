@@ -1,34 +1,38 @@
 // Crossroads Market — building dressings: town houses (crossmarket_house) and the Corn Exchange behind each spawn.
 import { FL } from './kit.js';
+import type { Kit, FacadeSpec, RoofSpec } from './kit.js';
+import type * as THREE from 'three';
+import type { PropDefs, PackHelpers, Builder, PropParams, PartOpts, ColorLike } from '../../props.js';
 
-export function registerBuildings(D, H, KIT) {
+export function registerBuildings(D: PropDefs, H: PackHelpers, KIT: Kit) {
   const { PI, HP, hash } = KIT;
   const { facade, roof } = KIT;
   // ------------------------------------------------------------------------------------------ the house prop
   D.crossmarket_house = {
     desc: 'Crossroads Market building dressing around a W × D block (pos = block base centre at street level): each listed face (n +Z, s -Z, e +X, w -X) gets a town facade (shopfronts, windows, balconettes, cornice, quoins …), the roof sits on the block top (h). No colliders (the block is the building).',
     params: { w: 'm X size', d: 'm Z size', h: 'm wall top (eave)', faces: '{ n|s|e|w: facade spec }', roof: 'roof spec' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
-      const W = o.w, Dd = o.d, h = o.h, seed = o.seedN ?? Math.round((o.pos[0] * 7 + o.pos[2] * 3) * 10);
-      const sides = { n: [0, Dd / 2, W], s: [PI, Dd / 2, W], e: [HP, W / 2, Dd], w: [-HP, W / 2, Dd] };
-      for (const [k, spec] of Object.entries(o.faces || {})) {
+      const W = o.w!, Dd = o.d!, h = o.h!, seed = o.seedN ?? Math.round((o.pos![0] * 7 + o.pos![2] * 3) * 10);   // (집 배치는 w·d·h·pos를 늘 준다)
+      const sides: Record<string, number[]> = { n: [0, Dd / 2, W], s: [PI, Dd / 2, W], e: [HP, W / 2, Dd], w: [-HP, W / 2, Dd] };
+      for (const [k, spec] of Object.entries((o.faces || {}) as Record<string, Partial<FacadeSpec>>)) {
         const [ry, off, len] = sides[k];
         B.push(Math.sin(ry) * off, 0, Math.cos(ry) * off, ry);
-        facade(B, spec.len ?? len, { h, ...o.style, ...spec }, seed + k.charCodeAt(0));
+        facade(B, spec.len ?? len, { h, ...(o.style as Partial<FacadeSpec> | undefined), ...spec }, seed + k.charCodeAt(0));
         B.pop();
       }
-      if (o.roof) {
-        B.push(0, h, 0, o.roof.ry ?? 0); roof(B, o.roof.ry ? Dd : W, o.roof.ry ? W : Dd, { seed, ...o.roof }); B.pop();
+      const rf = o.roof as RoofSpec | undefined;
+      if (rf) {
+        B.push(0, h, 0, rf.ry ?? 0); roof(B, rf.ry ? Dd : W, rf.ry ? W : Dd, { seed, ...rf }); B.pop();
         // off-limits roof volume (stepped boxes under the slopes; the block top below is roof-flagged in the layout)
-        const RF = { roof: true }, kind = o.roof.kind ?? 'gable', rw = o.roof.ry ? Dd : W, rd = o.roof.ry ? W : Dd;
-        const rise = kind === 'mansard' ? 1.9 : (rd / 2) * Math.tan(o.roof.pitch ?? 0.62);
-        const box = (hw, hd, y0, y1) => { const [ax, az] = o.roof.ry ? [hd, hw] : [hw, hd]; B.col(-ax, y0, -az, ax, y1, az, RF); };
+        const RF = { roof: true }, kind = rf.kind ?? 'gable', rw = rf.ry ? Dd : W, rd = rf.ry ? W : Dd;
+        const rise = kind === 'mansard' ? 1.9 : (rd / 2) * Math.tan(rf.pitch ?? 0.62);
+        const box = (hw: number, hd: number, y0: number, y1: number) => { const [ax, az] = rf.ry ? [hd, hw] : [hw, hd]; B.col(-ax, y0, -az, ax, y1, az, RF); };
         if (kind !== 'flat') {
           box(rw / 2, rd / 2, h, h + rise * 0.45);
           box(rw / 2 - (kind === 'hip' ? rd * 0.22 : 0), rd * 0.26, h + rise * 0.45, h + rise * 0.8);
         }
-        for (const [x, z] of o.roof.chimneys || []) { const [cx, cz] = o.roof.ry ? [z, -x] : [x, z]; B.col(cx - 0.4, h, cz - 0.4, cx + 0.4, h + rise + 1.0, cz + 0.4, RF); }
+        for (const [x, z] of rf.chimneys || []) { const [cx, cz] = rf.ry ? [z, -x] : [x, z]; B.col(cx - 0.4, h, cz - 0.4, cx + 0.4, h + rise + 1.0, cz + 0.4, RF); }
       }
     },
   };
@@ -36,7 +40,7 @@ export function registerBuildings(D, H, KIT) {
 }
 
 // ================================================================================================ civic + circulation
-export function registerCivic(D, H, KIT) {
+export function registerCivic(D: PropDefs, H: PackHelpers, KIT: Kit) {
   const { PI, TAU, HP, P3, NS, K, tpl, kf, pbox, colBox, rod, letters, textW, arcPts, shade, mixc, GB, cx3, win, wallLantern, extrudeGeo, balconette, hash, rakedRail } = KIT;
   const IRON = K.iron, IRDK = K.ironDk, GOLD = K.gold, ST = K.stone, STL = K.stoneLt, STD = K.stoneDk;
   const baluster = [[0.06, 0], [0.045, 0.07], [0.085, 0.3], [0.045, 0.5], [0.06, 0.56], [0, 0.6]];
@@ -47,10 +51,11 @@ export function registerCivic(D, H, KIT) {
   D.crossmarket_stonestair = {
     desc: 'Stone stair balustrades: raked sandstone balustrades outside the walking width (both sides unless `sides` = [-1] / [1]), newels with lanterns at the foot and urns at the head. Rail colliders along the balustrades (stepped), solid newels.',
     params: { run: 'm', rise: 'm', width: 'm', sides: '[-1, 1]', lamps: 'bool (true)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
-      const run = o.run, rise = o.rise, W = o.width, L = Math.hypot(run, rise), pitch = Math.atan2(rise, run), HR = 0.9;
-      const yAt = (t) => (rise * t) / run;
+      const run = o.run!, rise = o.rise!, W = o.width!,   // (계단 배치는 run·rise·width를 늘 준다)
+        L = Math.hypot(run, rise), pitch = Math.atan2(rise, run), HR = 0.9;
+      const yAt = (t: number) => (rise * t) / run;
       for (const sx of o.sides ?? [-1, 1]) {
         const x = sx * (W / 2 + 0.16);
         // raked plinth + handrail coping
@@ -60,7 +65,7 @@ export function registerCivic(D, H, KIT) {
         B.pop();
         const n = Math.round((run - 0.6) / 0.22);
         for (let i = 0; i < n; i++) { const t = 0.4 + ((run - 0.8) * (i + 0.5)) / n; B.lathe(NS('paint'), ST, baluster.map(([r, y]) => [r, y * (HR - 0.2) / 0.6]), x, yAt(t) + 0.12, t, { seg: 5 }); }
-        const newel = (t, y0, lamp) => {
+        const newel = (t: number, y0: number, lamp: boolean) => {
           B.box('paint', ST, 0.42, 1.05, 0.42, x, y0 + 0.525, t, { r: 0.03 });
           B.box('paint', STL, 0.5, 0.1, 0.5, x, y0 + 1.1, t, { r: 0.02 });
           pbox(B, NS('paint'), STD, 0.3, 0.5, 0.01, x, y0 + 0.55, t + (t > 0.5 ? -0.215 : 0.215));
@@ -87,10 +92,11 @@ export function registerCivic(D, H, KIT) {
   D.crossmarket_ironstair = {
     desc: 'Cast-iron stair dressing (local +Z from the foot to the head): pierced stringer plates, balusters + handrail both sides (unless `sides`), legs under the upper half. Rail colliders along the handrail sides.',
     params: { run: 'm', rise: 'm', width: 'm', sides: '[-1, 1]' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
-      const run = o.run, rise = o.rise, W = o.width, L = Math.hypot(run, rise), pitch = Math.atan2(rise, run), HR = 0.92;
-      const yAt = (t) => (rise * t) / run;
+      const run = o.run!, rise = o.rise!, W = o.width!,   // (계단 배치는 run·rise·width를 늘 준다)
+        L = Math.hypot(run, rise), pitch = Math.atan2(rise, run), HR = 0.92;
+      const yAt = (t: number) => (rise * t) / run;
       for (const sx of [-1, 1]) {
         const x = sx * (W / 2 + 0.03);
         B.push(x, rise / 2 - 0.12, run / 2, 0, -pitch);
@@ -118,12 +124,12 @@ export function registerCivic(D, H, KIT) {
   D.crossmarket_veranda = {
     desc: 'The veranda gallery dressing (pos = centre of the 2.2 × 20 m slab at street level): columns (colliders) along the street edge + the free west edge over the forecourt, fascia girder, pierced valance, glazed lean-to canopy on brackets, railings (rail colliders) on the open edges, baskets, lamps, the ARCADE GALLERY sign.',
     params: { length: 'm (20)', free: 'z ranges (local) where the west edge is open', railW: 'z ranges (local) with a railing on the west edge' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const hw = 1.1, L = o.length ?? 20, FL2 = 2.6, CAN = 5.35, c = IRON;
       const east = hw, west = -hw;
       const nCol = Math.max(2, Math.round((L - 0.8) / 4.6)), colZ = Array.from({ length: nCol + 1 }, (_, i) => -L / 2 + 0.4 + (i * (L - 0.8)) / nCol);
-      const column = (x, z, y0, top) => {
+      const column = (x: number, z: number, y0: number, top: number) => {
         B.lathe('metal', c, [[0.16, y0], [0.17, y0 + 0.05], [0.12, y0 + 0.12], [0.09, y0 + 0.2], [0.075, top - 0.3], [0.1, top - 0.2], [0.16, top - 0.08], [0.17, top], [0, top]], x, 0, z, { seg: 10 });
         for (const y of [y0 + 0.9, FL2 + 0.7]) if (y < top - 0.3) B.tor(NS('metal'), GOLD, 0.085, 0.015, x, y, z, { rs: 3, ts: 10, rx: HP });
       };
@@ -141,7 +147,7 @@ export function registerCivic(D, H, KIT) {
       pbox(B, NS('paint'), GOLD, 0.005, 0.025, L - 0.1, east + 0.064, 2.6, 0);
       for (const [z0, z1] of o.free || []) { B.box('metal', c, 0.08, 0.34, z1 - z0, west - 0.02, 2.44, (z0 + z1) / 2, { r: 0.015 }); }
       // railings on the open edges: rail colliders (kids blocked; shots, ink and squids pass)
-      const rail = (x, z0, z1, side) => {
+      const rail = (x: number, z0: number, z1: number, side: number) => {
         const Lr = z1 - z0, cz = (z0 + z1) / 2;
         pbox(B, 'metal', c, 0.06, 0.05, Lr, x, FL2 + 1.0, cz);
         pbox(B, 'metal', c, 0.05, 0.04, Lr, x, FL2 + 0.1, cz);
@@ -199,7 +205,7 @@ export function registerCivic(D, H, KIT) {
   D.crossmarket_exchange = {
     desc: 'Corn Exchange (pos = terrace back-edge centre at street level; facade faces +Z, building behind): arched French doors on the terrace, pilasters, first-floor windows with balconettes, CORN EXCHANGE entablature, pediment clock, balustraded parapet with urns, cupola, team flags; upper mass collides.',
     params: { w: 'm (18)', team: '0|1' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const W = o.w ?? 18, T = 2.6, E1 = 9.2, PAR = 10.3, DEP = 7;
       const wall = K.stoneLt, trim = '#f3ecdc', team = o.team ?? 0;
@@ -293,10 +299,10 @@ export function registerCivic(D, H, KIT) {
   D.crossmarket_podium = {
     desc: 'Rusticated podium dressing on the spawn terrace front (pos = front-edge centre, face +Z): channelled rustication, blind arches with iron grilles (skipping the stair openings), plinth + cornice band, a bronze plaque. Non-colliding.',
     params: { w: 'm (18)', h: 'm (2.4)', arches: '[x…] centres', skip: '[[x0, x1]] stair openings' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const W = o.w ?? 18, Hh = o.h ?? 2.4, skip = o.skip ?? [];
-      const inSkip = (x) => skip.some(([a, b]) => x > a - 0.05 && x < b + 0.05);
+      const inSkip = (x: number) => skip.some(([a, b]) => x > a - 0.05 && x < b + 0.05);
       const segs = []; let x0 = -W / 2;
       for (const [a, b] of [...skip].sort((p, q) => p[0] - q[0])) { if (a > x0) segs.push([x0, a]); x0 = Math.max(x0, b); }
       if (x0 < W / 2) segs.push([x0, W / 2]);
@@ -325,7 +331,7 @@ export function registerCivic(D, H, KIT) {
   D.crossmarket_arcade = {
     desc: 'Arcade dressing (pos = centre of the pier row at floor level; piers 0.8 × 0.7 every `pitch` m along local Z, `n` piers): segmental arches + spandrels between the piers facing ±X, pier caps and bases, the ceiling (joists, iron beams), pendant lamps, a lettered FISH MARKET frieze. Non-colliding.',
     params: { n: 'piers (7)', pitch: 'm (4.6)', depth: 'arcade depth toward -X (3.8)', y0: 'floor (0.15)', top: 'soffit (2.8)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const n = o.n ?? 7, pitch = o.pitch ?? 4.6, dep = o.depth ?? 3.8, y0 = o.y0 ?? 0.15, top = o.top ?? 2.8, st = K.stoneLt;
       const z0 = -((n - 1) * pitch) / 2;
@@ -371,10 +377,10 @@ export function registerCivic(D, H, KIT) {
   D.crossmarket_passage = {
     desc: 'Market Passage dressing (pos = west mouth centre at street level; local +Z out, passage toward -Z, width w, depth): stone portals with MARKET PASSAGE lintels at both mouths, hanging lanterns, bill posters, a side door. Non-colliding.',
     params: { w: 'm opening (3)', depth: 'm (9)', h: 'm (2.6)', h2: 'm soffit over the far part (2.2)', split: 'm where the soffit drops (4.5)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const w = o.w ?? 3, dep = o.depth ?? 9, h = o.h ?? 2.6, h2 = o.h2 ?? 2.2, split = o.split ?? 4.5;
-      const portal = (z, ry, hh, name) => {
+      const portal = (z: number, ry: number, hh: number, name: string) => {
         B.push(0, 0, z, ry);
         for (const sx of [-1, 1]) { B.box('paint', ST, 0.34, hh, 0.14, sx * (w / 2 + 0.17), hh / 2, 0.07, { r: 0.02 }); for (let y = 0.4; y < hh - 0.2; y += 0.4) pbox(B, NS('paint'), STD, 0.36, 0.03, 0.15, sx * (w / 2 + 0.17), y, 0.075); }
         B.box('paint', ST, w + 0.9, 0.46, 0.16, 0, hh + 0.23, 0.08, { r: 0.02 });
@@ -411,7 +417,7 @@ export function registerCivic(D, H, KIT) {
   D.crossmarket_pergola = {
     desc: 'Café-terrace pergola along local +X (length): slender iron hoops from the wall line (z = 0) out to posts at depth `d`, trained vines along the top, hanging lamps. Posts collide.',
     params: { length: 'm (8)', d: 'm (1.8)', h: 'm (2.5)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const L = o.length ?? 8, d = o.d ?? 1.8, hh = o.h ?? 2.5, n = Math.max(2, Math.round(L / 2.4));
       for (let i = 0; i <= n; i++) {
         const x = (i * L) / n;

@@ -1828,7 +1828,7 @@ export function register(D: PropDefs, H: PackHelpers) {
     desc: 'Cast-iron fingerpost with a crown finial and three or four pointing arms (PIER, TOWN HALL, BANDSTAND, LIFEBOAT, TEA ROOMS, PROMENADE); arm angles via `arms` [[label, deg], …]. Post collides.',
     params: { arms: '[[label, yaw deg], …]' }, variants: 1, mount: 'ground',
     build(B: Builder, o: PropParams) {
-      const c = K.iron, arms = o.arms ?? [['PIER', 90], ['TOWN HALL', 180], ['BANDSTAND', 0]];
+      const c = K.iron, arms = (o.arms as Array<[string, number]> | undefined) ?? [['PIER', 90], ['TOWN HALL', 180], ['BANDSTAND', 0]];
       B.lathe('gloss', c, [[0, 0], [0.16, 0], [0.16, 0.1], [0.1, 0.18], [0.07, 0.3], [0.06, 2.9], [0.08, 2.95], [0.08, 3.02], [0, 3.02]], 0, 0, 0, { seg: 8 });
       B.tor(NS('gloss'), K.gold, 0.065, 0.014, 0, 0.5, 0, { rx: HP, rs: 3, ts: 10 });
       B.lathe('gloss', c, [[0, 0], [0.1, 0], [0.12, 0.08], [0.06, 0.16], [0.08, 0.24], [0, 0.3]], 0, 3.02, 0, { seg: 8 });

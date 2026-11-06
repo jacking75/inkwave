@@ -319,7 +319,7 @@ export function register(D: PropDefs, H: PackHelpers) {
   function flood(B: Builder, x: number, y: number, z: number, o: FloodOpts = {}) {
     B.push(x, y, z, o.ry ?? 0, o.rx ?? 0);
     B.box(NS('paint'), o.c ?? K.charcoal, 0.56, 0.2, 0.4, 0, 0, 0, { r: 0.04 });
-    pbox(B, 'glow', o.lamp ?? K.lampCool, 0.5, 0.012, 0.34, 0, -0.105, 0, { glow: (o.glow ?? 1.6) * 2.2 });
+    pbox(B, 'glow', (o.lamp as ColorLike | undefined) ?? K.lampCool, 0.5, 0.012, 0.34, 0, -0.105, 0, { glow: (o.glow ?? 1.6) * 2.2 });
     for (let k = -2; k <= 2; k++) pbox(B, NS('paint'), shade(o.c ?? K.charcoal, 0.8), 0.02, 0.06, 0.36, k * 0.09, 0.11, 0);
     B.pop();
   }

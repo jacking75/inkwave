@@ -2,11 +2,37 @@
 // makeKit(D, H) returns the palette + geometry helpers (stroke-font channel letters, windows, doors, shopfronts,
 // awnings, balconettes, facades, roofs …) used by buildings.js, hall.js, street.js and tram.js. H = the PropKit's
 // PACK_HELPERS (THREE + helpers), D = the prop definition table (for sub-props).
+import type * as THREE from 'three';
+import type { PropDefs, PackHelpers, Builder, PropParams, PartOpts, ColorLike } from '../../props.js';
 export const FL = 2.6;   // first-floor level (layout.js)
 
-export function makeKit(D, H) {
+// 지역 도우미 선택(도우미 본문의 o.키와 호출부 값에서 모은 타입)
+// 상점 한 칸(파사드 shops 항목): 범위 x0..x1 + 상점 선택 + 돌출 간판
+export type ShopSpec = ShopfrontOpts & BracketSignOpts & { x0: number; x1: number; sign?: string; signX?: number };
+// 거리 파사드 사양: 높이 h, 양식(ashlar·brick·render), 층·칸, 장식·창·문·상점
+export interface FacadeSpec {
+  h: number; len?: number; style?: string; trim?: ColorLike; bays?: number; floors?: number[]; sur?: string; noBand?: boolean; plinth?: boolean; noGround?: boolean;
+  cornice?: string; parapet?: number; wall?: ColorLike; quoins?: boolean; quoinC?: ColorLike; uskip?: number[][]; balc?: string | number[]; french?: boolean;
+  winW?: number; lit?: number; frame?: ColorLike; shut?: ColorLike; iron?: ColorLike; archC?: ColorLike; boxes?: boolean; curtain?: ColorLike;
+  door?: number[]; doorC?: ColorLike; gshut?: ColorLike; gwin?: number[]; lanterns?: number[]; pipe?: boolean; pipeC?: ColorLike; plaque?: [number, number, string]; shops?: ShopSpec[];
+}
+// 지붕 사양: 종류(gable·hip·mansard·flat), 경사·처마, 색·기와, 굴뚝·지붕창·채광창·환기구
+export interface RoofSpec {
+  kind?: string; ry?: number; pitch?: number; ov?: number; c?: ColorLike; tiles?: boolean; seed?: number; barge?: ColorLike; wall?: ColorLike; chimC?: ColorLike;
+  chimneys?: number[][]; dormers?: number | Array<[number, number, number?]>; dormerC?: ColorLike; dormerSides?: number[]; skylights?: number[][]; vents?: number[][];
+}
+interface BillOpts { rz?: number }
+interface BracketSignOpts { board?: ColorLike; hb?: number; text?: string; w?: number }
+interface ShopfrontOpts { awn?: ColorLike[]; door?: 'l' | 'c' | 'r'; drop?: number; fascia?: ColorLike; glowC?: ColorLike; goods?: string; proj?: number; rolled?: ColorLike; top?: number; name?: string; letterC?: ColorLike; lit?: number; litC?: ColorLike }
+interface FasciaOpts { fascia?: ColorLike; letterC?: ColorLike; lit?: number; litC?: ColorLike; name?: string }
+interface FrontDoorOpts { door?: ColorLike; surC?: ColorLike }
+interface BalconetteOpts { depth?: number; iron?: ColorLike; pots?: boolean; slab?: ColorLike }
+interface WinOpts { archC?: ColorLike; bars?: number; box?: ColorLike | true | null; curtain?: ColorLike | null; door?: boolean; frame?: ColorLike; glass?: ColorLike; hood?: 'cornice' | 'pediment' | null; key?: boolean; lit?: number; shut?: ColorLike | null; sill?: boolean; sillC?: ColorLike; sur?: string; surC?: ColorLike }
+interface LettersOpts { h?: number; wt?: number; flat?: boolean; dep?: number; bev?: number; track?: number; ds?: number; align?: 'left' | 'right' | 'center'; mat?: string; cast?: boolean; c?: ColorLike; x?: number; y?: number; z?: number; glow?: number; lit?: number; litC?: ColorLike }
+
+export function makeKit(D: PropDefs, H: PackHelpers) {
   const { THREE, col, shade, mixc, latheGeo, tubeGeo, extrudeGeo, arcPts, PI, TAU, HP, P3 } = H;
-  const NS = (m) => (H.noShadow ? H.noShadow(m) : m);
+  const NS = (m: string) => (H.noShadow ? H.noShadow(m) : m);
 
   // ------------------------------------------------------------------------------------------ palette
   // muted old-town tones; the bistro-green ironwork and the gilded letters are the accents (inks stay the loudest)
@@ -23,9 +49,14 @@ export function makeKit(D, H) {
 
   // ------------------------------------------------------------------------------------------ geometry helpers
   class GB {
+    idx: number[] = [];
+    c: number[] = [];
+    uv: number[] = [];
+    n: number[] = [];
+    p: number[] = [];
     constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.idx = []; }
-    v(x, y, z, nx, ny, nz, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
-    tri(a, b, c) {
+    v(x: number, y: number, z: number, nx: number, ny: number, nz: number, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
+    tri(a: number, b: number, c: number) {
       const P = this.p, N = this.n;
       const ax = P[a * 3], ay = P[a * 3 + 1], az = P[a * 3 + 2];
       const e1x = P[b * 3] - ax, e1y = P[b * 3 + 1] - ay, e1z = P[b * 3 + 2] - az;
@@ -35,7 +66,7 @@ export function makeKit(D, H) {
       const s = cx * (N[a * 3] + N[b * 3] + N[c * 3]) + cy * (N[a * 3 + 1] + N[b * 3 + 1] + N[c * 3 + 1]) + cz * (N[a * 3 + 2] + N[b * 3 + 2] + N[c * 3 + 2]);
       if (s < 0) this.idx.push(a, c, b); else this.idx.push(a, b, c);
     }
-    quad(a, b, c, d) { this.tri(a, b, c); this.tri(a, c, d); }
+    quad(a: number, b: number, c: number, d: number) { this.tri(a, b, c); this.tri(a, c, d); }
     geo() {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(this.p, 3));
@@ -46,23 +77,23 @@ export function makeKit(D, H) {
       return g;
     }
   }
-  const TPL = new Map();
-  const tpl = (key, fn) => { let g = TPL.get(key); if (!g) { g = fn(); TPL.set(key, g); } return g; };
-  const kf = (a) => (typeof a === 'number' ? a.toFixed(4) : String(a));
-  const hash = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
-  const cx3 = (c) => { const k = col(c); return [k.r, k.g, k.b]; };
+  const TPL = new Map<string, unknown>();   // (키마다 만드는 값의 모양이 다르다: 형상·글리프 등)
+  const tpl = <T,>(key: string, fn: () => T): T => { let g = TPL.get(key) as T | undefined; if (g === undefined) { g = fn(); TPL.set(key, g); } return g; };
+  const kf = (a: unknown) => (typeof a === 'number' ? a.toFixed(4) : String(a));
+  const hash = (n: number) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+  const cx3 = (c: ColorLike) => { const k = col(c); return [k.r, k.g, k.b]; };
   const pboxGeo = () => tpl('pbox', () => new THREE.BoxGeometry(1, 1, 1));
   // cached lumpy foliage / sack blob (H.blobGeo builds a new geometry per call)
-  const blob = (det, seed) => tpl('cmblob|' + det + '|' + seed, () => H.blobGeo(1, det, seed));
+  const blob = (det: number, seed: number) => tpl('cmblob|' + det + '|' + seed, () => H.blobGeo(1, det, seed));
   // plain (unbevelled) box for small / flush parts: 12 triangles
-  const pbox = (B, mat, c, w, h, d, x, y, z, o = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
+  const pbox = (B: Builder, mat: string, c: ColorLike, w: number, h: number, d: number, x: number, y: number, z: number, o: PartOpts = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
   // collider from centre + size; roof: true = an off-limits top (nobody stands on it, never inked), or pass the
   // flags object itself ({ rail: true } for railings: blocks kids, shots / ink / squids pass)
-  const colBox = (B, x, y, z, w, h, d, roof = false) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2, roof === true ? { roof: true } : roof || undefined);
+  const colBox = (B: Builder, x: number, y: number, z: number, w: number, h: number, d: number, roof = false) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2, roof === true ? { roof: true } : roof || undefined);
   // collider given in the CURRENT push frame (B.col takes prop-local coordinates): the box's corners go through the
   // builder's stack top and the prop-local AABB is stored (pushes here only turn about Y, so the fit is exact)
   const _cv = new THREE.Vector3();
-  function colT(B, x0, y0, z0, x1, y1, z1, flags) {
+  function colT(B: Builder, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, flags?: PartOpts) {
     const m = B.top; let ax = Infinity, ay = Infinity, az = Infinity, bx = -Infinity, by = -Infinity, bz = -Infinity;
     for (let i = 0; i < 8; i++) {
       _cv.set(i & 1 ? x1 : x0, i & 2 ? y1 : y0, i & 4 ? z1 : z0).applyMatrix4(m);
@@ -73,15 +104,15 @@ export function makeKit(D, H) {
   const RAIL = { rail: true };
   // raked railing collider beside a stair (local +Z from the foot up to (0, rise, run)): `n` stepped rail boxes from
   // x0 to x1, each from the ground (below == null) or `below` m under the flight up to the handrail height
-  function rakedRail(B, x0, x1, rise, run, HR, n = 5, below = null) {
+  function rakedRail(B: Builder, x0: number, x1: number, rise: number, run: number, HR: number, n = 5, below: number | null = null) {
     for (let i = 0; i < n; i++) {
       const t0 = (run * i) / n, t1 = (run * (i + 1)) / n, ya = (rise * t0) / run, yb = (rise * t1) / run;
       colT(B, x0, below == null ? 0 : Math.max(0, ya - below), t0, x1, yb + HR, t1, RAIL);
     }
   }
-  const rod = (B, mat, c, a, b, r, radial = 5) => B.tube(mat, c, [a, b], r, { radial });
+  const rod = (B: Builder, mat: string, c: ColorLike, a: number[], b: number[], r: number, radial = 5) => B.tube(mat, c, [a, b], r, { radial });
   // compose another prop type inside this one, carrying its colliders into this prop's frame
-  function sub(B, type, x, y, z, ry, opts = {}) {
+  function sub(B: Builder, type: string, x: number, y: number, z: number, ry: number, opts: PropParams = {}) {
     const def = D[type];
     if (!def) return;
     const n0 = B.cols.length, ao = B.aoBase;
@@ -103,9 +134,11 @@ export function makeKit(D, H) {
 
   // ------------------------------------------------------------------------------------------ stroke font
   // Rounded bold sans (cap height 1): centre-line strokes, round caps + joins; raised channel letters or flat paint.
-  const EA = (cx, cy, rx, ry, a0, a1, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
-  const LOOP = (cx, cy, rx, ry, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
-  const GL = {
+  const EA = (cx: number, cy: number, rx: number, ry: number, a0: number, a1: number, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
+  const LOOP = (cx: number, cy: number, rx: number, ry: number, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
+  // 글리프: [폭, 획…], 획은 점 목록 또는 닫힌 곡선 { c: 점 목록 }
+  type Stroke = number[][] | { c: number[][] };
+  const GL: Record<string, Array<number | Stroke>> = {
     A: [0.66, [[0, 0], [0.33, 1], [0.66, 0]], [[0.13, 0.33], [0.53, 0.33]]],
     B: [0.58, [[0, 0], [0, 1]], [[0, 1], ...EA(0.3, 0.755, 0.245, 0.245, 90, -90, 12), [0, 0.51]], [[0, 0.51], ...EA(0.32, 0.255, 0.255, 0.255, 90, -90, 12), [0, 0]]],
     C: [0.64, EA(0.34, 0.5, 0.34, 0.5, 46, 314, 22)],
@@ -147,23 +180,23 @@ export function makeKit(D, H) {
     "'": [0, [[0, 1], [0, 0.8]]],
     '&': [0.7, [[0.7, 0], ...EA(0.27, 0.72, 0.17, 0.2, -40, 220, 12).reverse(), [0.08, 0.28], ...EA(0.26, 0.24, 0.24, 0.24, 180, 300, 6), [0.62, 0.36]]],
   };
-  const DOTS = { '·': [[0, 0.46]], '.': [[0, 0]], ':': [[0, 0.1], [0, 0.62]] };
+  const DOTS: Record<string, number[][]> = { '·': [[0, 0.46]], '.': [[0, 0]], ':': [[0, 0.1], [0, 0.62]] };
   const SPACE = 0.34;
-  function ribbon(g, pts, closed, hw, b, d, z0) {
+  function ribbon(g: GB, pts: number[][], closed: boolean, hw: number, b: number, d: number, z0: number) {
     const n = pts.length, R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5;
-    const N = pts.map((p, i) => {
+    const N = pts.map((p: number[], i: number) => {
       const a = closed ? pts[(i - 1 + n) % n] : i > 0 ? pts[i - 1] : null;
       const c = closed ? pts[(i + 1) % n] : i < n - 1 ? pts[i + 1] : null;
-      const nrm = (u, v) => { const dx = v[0] - u[0], dy = v[1] - u[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; };
+      const nrm = (u: number[], v: number[]) => { const dx = v[0] - u[0], dy = v[1] - u[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; };
       const n1 = a ? nrm(a, p) : null, n2 = c ? nrm(p, c) : null;
-      if (!n1) return [n2[0], n2[1], 1];
+      if (!n1) return [n2![0], n2![1], 1];
       if (!n2) return [n1[0], n1[1], 1];
       let mx = n1[0] + n2[0], my = n1[1] + n2[1]; const ml = Math.hypot(mx, my) || 1; mx /= ml; my /= ml;
       return [mx, my, Math.min(1.6, 1 / Math.max(0.3, mx * n2[0] + my * n2[1]))];
     });
-    const rings = pts.map((p, i) => {
+    const rings = pts.map((p: number[], i: number) => {
       const [nx, ny, k] = N[i];
-      const at = (s) => [p[0] + nx * k * s, p[1] + ny * k * s];
+      const at = (s: number) => [p[0] + nx * k * s, p[1] + ny * k * s];
       const hi = bev ? hw - b : hw, Li = at(hi), Lo = at(hw), Ri = at(-hi), Ro = at(-hw), dz = bev ? b : 0;
       const r = [g.v(Li[0], Li[1], d, 0, 0, 1), g.v(Ri[0], Ri[1], d, 0, 0, 1)];
       if (bev) r.push(g.v(Li[0], Li[1], d, nx * R, ny * R, R), g.v(Lo[0], Lo[1], d - b, nx * R, ny * R, R), g.v(Ri[0], Ri[1], d, -nx * R, -ny * R, R), g.v(Ro[0], Ro[1], d - b, -nx * R, -ny * R, R));
@@ -176,9 +209,9 @@ export function makeKit(D, H) {
       for (let j = 0; j < np; j += 2) g.quad(A[j], A[j + 1], Bq[j + 1], Bq[j]);
     }
   }
-  function disc(g, cx, cy, r, b, d, z0, seg, a0 = 0, a1 = TAU) {
+  function disc(g: GB, cx: number, cy: number, r: number, b: number, d: number, z0: number, seg: number, a0 = 0, a1 = TAU) {
     const R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5, ri = bev ? r - b : r, full = a1 - a0 > TAU - 1e-4;
-    const c0 = g.v(cx, cy, d, 0, 0, 1), f = [], bi = [], bo = [], wt = [], wb = [];
+    const c0 = g.v(cx, cy, d, 0, 0, 1), f: number[] = [], bi: number[] = [], bo: number[] = [], wt: number[] = [], wb: number[] = [];
     const n = full ? seg : seg + 1;
     for (let k = 0; k < n; k++) {
       const a = a0 + ((a1 - a0) * k) / seg, cs = Math.cos(a), sn = Math.sin(a);
@@ -193,9 +226,9 @@ export function makeKit(D, H) {
       if (walls) g.quad(wt[k], wb[k], wb[j], wt[j]);
     }
   }
-  function glyph(ch, wt, dep, bev, ds = 10) {
+  function glyph(ch: string, wt: number, dep: number, bev: number, ds = 10): { geo: THREE.BufferGeometry | null; adv: number } {
     return tpl(['cmgl', ch, wt, dep, bev, ds].map(kf).join('|'), () => {
-      const s = 1 - wt, hw = wt / 2, T = (p) => [hw + p[0] * s, hw + p[1] * s];
+      const s = 1 - wt, hw = wt / 2, T = (p: number[]) => [hw + p[0] * s, hw + p[1] * s];
       const g = new GB();
       const b = Math.min(bev, hw * 0.6);
       if (DOTS[ch]) {
@@ -204,12 +237,12 @@ export function makeKit(D, H) {
       }
       const def = GL[ch];
       if (!def) return { geo: null, adv: SPACE };
-      const [w, ...strokes] = def;
-      strokes.forEach((st, si) => {
+      const [w, ...strokes] = def as [number, ...Stroke[]];
+      strokes.forEach((st, si: number) => {
         const d = dep > 0 ? dep - si * 0.006 : si * 0.0004;
         const closed = !Array.isArray(st);
-        let pts = (closed ? st.c : st).map(T);
-        pts = pts.filter((p, i) => i === 0 || Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 1e-4);
+        let pts = (Array.isArray(st) ? st : st.c).map(T);
+        pts = pts.filter((p: number[], i: number) => i === 0 || Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 1e-4);
         if (closed) { ribbon(g, pts, true, hw, b, d, 0); return; }
         let cur = [pts[0]];
         const joints = [pts[0], pts[pts.length - 1]];
@@ -223,17 +256,17 @@ export function makeKit(D, H) {
           }
         }
         if (cur.length > 1) ribbon(g, cur, false, hw, b, d, 0);
-        const endCap = (p, q) => { const a = Math.atan2(p[1] - q[1], p[0] - q[0]); disc(g, p[0], p[1], hw, b, d, 0, Math.max(3, Math.round(ds / 2)), a - HP, a + HP); };
+        const endCap = (p: number[], q: number[]) => { const a = Math.atan2(p[1] - q[1], p[0] - q[0]); disc(g, p[0], p[1], hw, b, d, 0, Math.max(3, Math.round(ds / 2)), a - HP, a + HP); };
         endCap(pts[0], pts[1]); endCap(pts[pts.length - 1], pts[pts.length - 2]);
         for (const p of joints.slice(2)) disc(g, p[0], p[1], hw, b, d, 0, ds);
       });
       return { geo: g.geo(), adv: w * s + wt };
     });
   }
-  const textW = (str, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
+  const textW = (str: string, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
   // a line of letters facing +Z in the current frame (raised channel letters, or flat paint with flat: true);
   // lit: an unlit-shaded acrylic face just proud of each letter (reads as switched on at dusk). Returns the width (m).
-  function letters(B, str, o = {}) {
+  function letters(B: Builder, str: string, o: LettersOpts = {}) {
     const h = o.h ?? 0.3, wt = o.wt ?? 0.17, flat = !!o.flat;
     const dep = flat ? 0 : o.dep ?? 0.05, bev = flat ? 0 : o.bev ?? 0, track = o.track ?? 0.12;
     const ds = o.ds ?? (flat || h < 0.12 ? 6 : 8);
@@ -260,7 +293,7 @@ export function makeKit(D, H) {
 
   // striped canvas shop awning: sloping blind from the wall (y0) out to `proj` and down to y0 - drop, scalloped
   // valance at the front, triangular side cheeks; stripes run down the slope. Cached per size + colours.
-  function awningGeo(W, proj, drop, cA, cB) {
+  function awningGeo(W: number, proj: number, drop: number, cA: ColorLike, cB: ColorLike) {
     return tpl(['awn', W, proj, drop, cA, cB].map(kf).join('|'), () => {
       const g = new GB(), n = Math.max(3, Math.round(W / 0.24)), sw = W / n, ca = cx3(cA), cb = cx3(cB);
       const L = Math.hypot(proj, drop), ny = proj / L, nz = drop / L;
@@ -293,7 +326,7 @@ export function makeKit(D, H) {
       return g.geo();
     });
   }
-  function awning(B, x, y, W, proj, drop, cA, cB = K.canvas) {
+  function awning(B: Builder, x: number, y: number, W: number, proj: number, drop: number, cA: ColorLike, cB: ColorLike = K.canvas) {
     B.box('paint', K.ironDk, W + 0.1, 0.12, 0.14, x, y + 0.02, 0.07, { r: 0.03 });            // roller box
     B.add('foliage', awningGeo(W, proj, drop, cA, cB), 'white', x, y - 0.02, 0.1, {});
     for (const sx of [-1, 1]) {                                                              // iron arms
@@ -304,7 +337,7 @@ export function makeKit(D, H) {
   }
   // double-hung sash window in an opening w × h (sill at y), with a surround: 'stone' architrave + sill (+ keystone /
   // cornice hood / pediment), 'paint' band, 'brick' segmental arch; shutters, a lit blind, a balconette
-  function win(B, x, y, w, h, o = {}) {
+  function win(B: Builder, x: number, y: number, w: number, h: number, o: WinOpts = {}) {
     const fc = o.frame ?? K.frame, gc = o.glass ?? K.glass, sur = o.sur ?? 'stone', sc = o.surC ?? K.stone;
     const door = !!o.door;
     pbox(B, NS('gloss'), o.lit ? K.glassWarm : gc, w, h, 0.02, x, y + h / 2, 0.006);
@@ -354,7 +387,7 @@ export function makeKit(D, H) {
     if (o.box) flowerBox(B, x, y - 0.02, w + 0.1, o.box);
   }
   // window box of geraniums hanging under a sill
-  function flowerBox(B, x, y, w, c) {
+  function flowerBox(B: Builder, x: number, y: number, w: number, c: ColorLike | true) {
     pbox(B, 'wood', c === true ? '#8a4f3a' : c, w, 0.18, 0.2, x, y - 0.12, 0.14);
     const n = Math.max(3, Math.round(w / 0.22));
     B.add('foliage', blob(1, 3), '#4f8a45', x, y + 0.03, 0.14, { sx: w * 0.52, sy: 0.12, sz: 0.13 });
@@ -364,7 +397,7 @@ export function makeKit(D, H) {
     }
   }
   // wrought-iron balconette at floor level y in front of an opening w (slab + railing with a scroll panel)
-  function balconette(B, x, y, w, o = {}) {
+  function balconette(B: Builder, x: number, y: number, w: number, o: BalconetteOpts = {}) {
     const W = w + 0.5, dz = o.depth ?? 0.42, ic = o.iron ?? K.iron;
     B.box('paint', o.slab ?? K.stone, W, 0.1, dz + 0.04, x, y - 0.05, dz / 2, { r: 0.02 });
     for (const sx of [-1, 1]) B.box('paint', o.slab ?? K.stone, 0.1, 0.24, 0.18, x + sx * (W / 2 - 0.12), y - 0.2, 0.09, { r: 0.02 });   // corbels
@@ -378,14 +411,14 @@ export function makeKit(D, H) {
     // scroll panel in the middle
     for (const s of [-1, 1]) B.tor(NS('metal'), ic, 0.11, 0.011, x + s * 0.12, y + 0.48, dz - 0.03, { rs: 4, ts: 12, arc: PI * 1.5, rz: s > 0 ? PI : 0 });
     B.tor(NS('metal'), K.gold, 0.05, 0.01, x, y + 0.48, dz - 0.03, { rs: 4, ts: 10 });
-    if (o.pots) for (const [px, c] of [[-W / 2 + 0.2, '#d9443c'], [W / 2 - 0.22, '#e87a8c']]) {
+    if (o.pots) for (const [px, c] of [[-W / 2 + 0.2, '#d9443c'], [W / 2 - 0.22, '#e87a8c']] as Array<[number, string]>) {
       B.lathe(NS('paint'), '#b5654a', [[0, 0], [0.08, 0], [0.11, 0.18], [0, 0.18]], x + px, y, dz * 0.55, { seg: 8 });
       B.add(NS('foliage'), blob(1, 5), '#4f8a45', x + px, y + 0.26, dz * 0.55, { s: 0.15 });
       B.sph(NS('foliage'), c, 0.05, x + px + 0.05, y + 0.36, dz * 0.55 + 0.05, { ws: 6, hs: 4 });
     }
   }
   // panelled front door with a fanlight, in a stone doorcase (door opening dw × dh at ground level)
-  function frontDoor(B, x, dw, dh, o = {}) {
+  function frontDoor(B: Builder, x: number, dw: number, dh: number, o: FrontDoorOpts = {}) {
     const dc = o.door ?? K.iron, sc = o.surC ?? K.stone;
     B.box(NS('paint'), dc, dw, dh - 0.35, 0.05, x, (dh - 0.35) / 2, 0.02, { r: 0.012 });
     for (const [yy, hh] of [[0.45, 0.6], [1.25, 0.7]]) for (const sx of (dw > 1.1 ? [-1, 1] : [0])) pbox(B, NS('paint'), shade(dc, 0.85), dw * (dw > 1.1 ? 0.36 : 0.66), hh, 0.02, x + sx * dw * 0.23, yy, 0.05);
@@ -400,7 +433,7 @@ export function makeKit(D, H) {
     pbox(B, NS('paint'), shade(sc, 0.9), dw + 0.5, 0.12, 0.3, x, 0.06, 0.15);                        // door step
   }
   // lettered fascia board between two console brackets (x0 … x1), top at y
-  function fascia(B, x0, x1, y, o = {}) {
+  function fascia(B: Builder, x0: number, x1: number, y: number, o: FasciaOpts = {}) {
     const W = x1 - x0, cx = (x0 + x1) / 2, fc = o.fascia ?? K.iron, Hh = 0.5;
     B.box(NS('paint'), fc, W, Hh, 0.1, cx, y - Hh / 2, 0.08, { r: 0.02 });
     B.box(NS('paint'), shade(fc, 1.12), W + 0.12, 0.07, 0.2, cx, y + 0.02, 0.1, { r: 0.02 });   // cornice cap
@@ -417,7 +450,7 @@ export function makeKit(D, H) {
   }
   // Victorian shopfront between x0 … x1: pilasters, fascia with gilded name, stallriser, display glazing with
   // mullions + transom lights, a recessed door, awning (open or rolled), a warm-lit interior strip; goods rack
-  function shopfront(B, x0, x1, o = {}) {
+  function shopfront(B: Builder, x0: number, x1: number, o: ShopfrontOpts = {}) {
     const W = x1 - x0, cx = (x0 + x1) / 2, fc = o.fascia ?? K.iron, top = o.top ?? 2.45;
     const dw = 0.95, dx = o.door === 'l' ? x0 + 0.3 + dw / 2 : o.door === 'c' ? cx : x1 - 0.3 - dw / 2;
     // pilasters (full height to the fascia)
@@ -452,7 +485,7 @@ export function makeKit(D, H) {
     else if (o.rolled) { B.box(NS('paint'), o.rolled, W - 0.4, 0.13, 0.14, cx, top - 0.44, 0.07, { round: true, r: 0.04 }); }
   }
   // goods silhouettes on a display shelf just behind the glass: bread, fish, flowers, tins, cups, wine
-  function goodsShelf(B, x, y, w, kind) {
+  function goodsShelf(B: Builder, x: number, y: number, w: number, kind: string) {
     pbox(B, NS('wood'), K.woodDk, w, 0.04, 0.2, x, y, -0.1);
     const n = Math.max(3, Math.round(w / 0.22));
     for (let i = 0; i < n; i++) {
@@ -467,7 +500,7 @@ export function makeKit(D, H) {
     }
   }
   // projecting bracket sign: scrolled iron bracket from the wall at y, hanging a double-sided emblem / board
-  function bracketSign(B, x, y, kind, o = {}) {
+  function bracketSign(B: Builder, x: number, y: number, kind: string, o: BracketSignOpts = {}) {
     const ic = K.iron, reach = 0.95;
     B.box('metal', ic, 0.16, 0.32, 0.04, x, y, 0.02, { r: 0.01 });
     rod(B, 'metal', ic, P3(x, y + 0.1, 0.03), P3(x, y + 0.1, reach), 0.022);
@@ -515,7 +548,7 @@ export function makeKit(D, H) {
     B.pop();
   }
   // cast-iron wall lantern on a scroll bracket (wall z = 0)
-  function wallLantern(B, x, y) {
+  function wallLantern(B: Builder, x: number, y: number) {
     B.box('metal', K.black, 0.1, 0.22, 0.03, x, y, 0.015, { r: 0.01 });
     B.tube(NS('metal'), K.black, [P3(x, y + 0.05, 0.02), P3(x, y + 0.12, 0.2), P3(x, y + 0.05, 0.34)], 0.014, { radial: 4 });
     const lx = x, ly = y - 0.18, lz = 0.34;
@@ -526,12 +559,12 @@ export function makeKit(D, H) {
 
   // vintage bill poster (faces +Z, centred at x, y, z; w × h): paper, a coloured field, a headline, an emblem and
   // rows of small print as bars. kinds: circus, opera, tram, soap, herring, market, regatta, cocoa
-  const BILLS = {
+  const BILLS: Record<string, string[]> = {
     circus: ['#b8483e', '#f1e3c4', 'CIRCUS', 'star'], opera: ['#23304a', '#d9b25a', 'OPERA', 'ring'], tram: ['#3f6b55', '#efe6d2', 'TRAMS', 'bar'],
     soap: ['#e0b04a', '#7a3a4c', 'SOAP', 'ring'], herring: ['#3f5f86', '#efe6d2', 'HERRING', 'fish'], market: ['#efe6d2', '#b8483e', 'MARKET', 'star'],
     regatta: ['#f1e3c4', '#23304a', 'REGATTA', 'bar'], cocoa: ['#6a3f2a', '#f1e3c4', 'COCOA', 'ring'],
   };
-  function bill(B, x, y, z, w, h, kind = 'circus', o = {}) {
+  function bill(B: Builder, x: number, y: number, z: number, w: number, h: number, kind = 'circus', o: BillOpts = {}) {
     const [bg, fg, word, em] = BILLS[kind] ?? BILLS.circus;
     B.push(x, y, z, 0, 0, o.rz ?? 0);
     pbox(B, NS('paint'), '#efe9da', w, h, 0.004, 0, 0, 0.002);
@@ -553,12 +586,12 @@ export function makeKit(D, H) {
   //   balc 'first' | 'all' | [bay indices] (iron balconettes + French windows on the first floor)
   //   shops [{ x0, x1, name, fascia, awn: [cA, cB] | rolled, door, goods, sign: 'pretzel' | 'fish' | … }]
   //   door [x, w] (a house door), gskip / uskip: x ranges kept bare on the ground / upper floors, cornice, quoins
-  function facade(B, len, s, seed) {
+  function facade(B: Builder, len: number, s: FacadeSpec, seed: number) {
     const h = s.h, style = s.style ?? 'ashlar', trim = s.trim ?? (style === 'render' ? K.stoneLt : K.stone);
-    const rnd = (k) => hash(seed * 13.1 + k * 7.7);
+    const rnd = (k: number) => hash(seed * 13.1 + k * 7.7);
     const bays = s.bays ?? Math.max(1, Math.round(len / 2.4));
     const levels = s.floors ?? (() => { const L = []; for (let y = FL; y + 2.2 < h; y += 2.7) L.push(y); return L; })();
-    const inSkip = (x, ranges) => (ranges || []).some(([a, b]) => x > a - 0.6 && x < b + 0.6);
+    const inSkip = (x: number, ranges: number[][] | undefined) => (ranges || []).some(([a, b]) => x > a - 0.6 && x < b + 0.6);
     const surK = style === 'brick' ? 'brick' : style === 'render' ? (s.sur ?? 'paint') : 'stone';
     // string course at every floor level + plinth
     for (const y of levels) if (!(s.noBand)) pbox(B, NS('paint'), trim, len, 0.16, 0.07, 0, y - 0.02, 0.035);
@@ -578,7 +611,7 @@ export function makeKit(D, H) {
       pbox(B, NS('paint'), s.quoinC ?? trim, w, 0.32, 0.04, sx * (len / 2 - w / 2 + 0.02), y + 0.16, 0.02);
     }
     // upper windows
-    levels.forEach((y, fi) => {
+    levels.forEach((y: number, fi: number) => {
       for (let b = 0; b < bays; b++) {
         const x = -len / 2 + ((b + 0.5) * len) / bays;
         if (inSkip(x, s.uskip)) continue;
@@ -608,7 +641,7 @@ export function makeKit(D, H) {
     if (s.plaque) streetPlaque(B, s.plaque[0], s.plaque[1], s.plaque[2]);
   }
   // enamel street-name plaque (white on blue), wall z = 0
-  function streetPlaque(B, x, y, text) {
+  function streetPlaque(B: Builder, x: number, y: number, text: string) {
     const W = textW(text, 0.2, 0.1) * 0.13 + 0.22;
     B.box('gloss', '#f2eee6', W, 0.26, 0.02, x, y, 0.01, { r: 0.02 });
     B.box('gloss', '#2f4a78', W - 0.04, 0.22, 0.004, x, y, 0.021, { r: 0.015 });
@@ -618,7 +651,7 @@ export function makeKit(D, H) {
   // one roof slope: courses of tiles / slates as a sawtooth (each course a tilted face + a small drip step), from the
   // eave (u = 0) to the ridge (u = L) in local -Z, lifted along +Y; half-width at the eave hw0 and at the top hw1
   // (hips taper); a flat underside; per-course tone jitter. Cached.
-  function slopeGeo(L, hw0, hw1, course, cc, seed) {
+  function slopeGeo(L: number, hw0: number, hw1: number, course: number, cc: ColorLike, seed: number) {
     return tpl(['slope', L, hw0, hw1, course, cc, seed].map(kf).join('|'), () => {
       const g = new GB(), n = Math.max(2, Math.round(L / course)), step = L / n, lift = 0.035, base = cx3(cc);
       for (let i = 0; i < n; i++) {
@@ -643,7 +676,7 @@ export function makeKit(D, H) {
   }
   // pitched roof over w (X) × d (Z) at y = 0: 'gable' (ridge along X, gable ends in the wall colour), 'hip', 'mansard'
   // (steep lower slopes with dormers + a shallow top), 'flat' (lead roof + parapet kit). Chimneys, dormers, skylights.
-  function roof(B, w, d, r) {
+  function roof(B: Builder, w: number, d: number, r: RoofSpec) {
     const kind = r.kind ?? 'gable', pitch = r.pitch ?? 0.62, ov = r.ov ?? 0.25, cc = r.c ?? K.slate, course = cc === K.tile || r.tiles ? 0.24 : 0.3;
     const seed = r.seed ?? 1;
     if (kind === 'flat') {
@@ -661,8 +694,8 @@ export function makeKit(D, H) {
       for (const s of [-1, 1]) B.box('metal', K.zinc, 0.1, 0.08, d - 2 * inset + 0.1, s * (w / 2 - inset), lo + 0.02, 0, { r: 0.02 });
       B.box('metal', K.zinc, w + ov * 0.8 + 0.06, 0.08, 0.1, 0, lo + 0.02, -(d / 2 - inset) - 0.02, { r: 0.02 });
       // dormers on the long faces
-      for (const s of r.dormerSides ?? [1, -1]) for (let i = 0; i < (r.dormers ?? Math.max(1, Math.round(w / 3.2))); i++) {
-        const n = r.dormers ?? Math.max(1, Math.round(w / 3.2)), x = -w / 2 + ((i + 0.5) * w) / n;
+      for (const s of r.dormerSides ?? [1, -1]) for (let i = 0; i < ((r.dormers as number | undefined) ?? Math.max(1, Math.round(w / 3.2))); i++) {   // (망사르드의 dormers는 개수)
+        const n = (r.dormers as number | undefined) ?? Math.max(1, Math.round(w / 3.2)), x = -w / 2 + ((i + 0.5) * w) / n;
         B.push(x, 0, s * (d / 2 - inset * 0.55), s > 0 ? 0 : PI);
         dormer(B, 0.9, 1.05, cc, r.dormerC ?? K.stoneLt, 'round');
         B.pop();
@@ -702,7 +735,7 @@ export function makeKit(D, H) {
       }
       // gutters along the eaves
       for (const s of [1, -1]) B.cyl(NS('metal'), K.gutter, 0.06, w + (hip ? ov * 2 : ov * 2), 0, -ov * Math.tan(pitch) - 0.07, s * (d / 2 + ov + 0.02), { rz: HP, seg: 6 });
-      for (const [x, s, n] of r.dormers || []) {
+      for (const [x, s, n] of (r.dormers as Array<[number, number, number?]> | undefined) || []) {   // (이 지붕 종류의 dormers는 목록)
         const u = 0.45, zz = s * (d / 2 - (d / 2) * u), yy = (d / 2) * u * Math.tan(pitch);
         B.push(x, yy - 0.2, zz, s > 0 ? 0 : PI); dormer(B, 0.85, 1.0, cc, r.dormerC ?? K.frame, n ?? 'gable'); B.pop();
       }
@@ -722,7 +755,7 @@ export function makeKit(D, H) {
     }
   }
   // roof dormer facing +Z: cheeks, a small gable (or round-topped) roof, a window
-  function dormer(B, w, h, cc, fc, kind = 'gable') {
+  function dormer(B: Builder, w: number, h: number, cc: ColorLike, fc: ColorLike, kind: string | number = 'gable') {   // (목록 지붕은 세 번째 값을 그대로 넘긴다)
     B.box('paint', fc, w + 0.2, h, 0.9, 0, h / 2, -0.35, { r: 0.03 });
     pbox(B, NS('gloss'), K.glass, w - 0.18, h - 0.25, 0.02, 0, h / 2 - 0.02, 0.105);
     pbox(B, NS('paint'), K.frame, 0.035, h - 0.25, 0.03, 0, h / 2 - 0.02, 0.115);
@@ -736,3 +769,6 @@ export function makeKit(D, H) {
     colT, RAIL, rakedRail, letters, textW, glyph, awning, awningGeo, win, flowerBox, balconette, frontDoor, fascia, shopfront, goodsShelf, bracketSign, wallLantern, facade,
     streetPlaque, roof, dormer, slopeGeo, blob, bill, BILLS };
 }
+
+// crossmarket 팩 공용 도구(makeKit 반환): buildings·hall·tram·street·scenery·landing·props가 받는다
+export type Kit = ReturnType<typeof makeKit> & { street?: ReturnType<typeof import('./street.js').registerStreet> };

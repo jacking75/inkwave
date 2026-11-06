@@ -1143,7 +1143,7 @@ export type ColorLike = THREE.ColorRepresentation;
 export interface PropParams {
   // props.ts·마리나·스테이지 팩이 읽는 키 전체(기본값 리터럴에서 모은 타입, 기본값 없이 조건으로만 쓰는 깃발은 boolean)
   L?: number; R?: number; W?: number; a?: string; accent?: string; access?: boolean; align?: string; alongX?: number | boolean; antenna?: number[]; ao?: boolean;
-  apron?: number; arc?: number; arch?: boolean; archC?: string; arches?: number[]; arms?: Array<[string, number]>; awn?: boolean; b?: string; back?: number | false;
+  apron?: number; arc?: number; arch?: boolean; archC?: string; arches?: number[]; arms?: unknown; awn?: boolean; b?: string; back?: number | false;
   balconette?: boolean; balls?: boolean; bars?: number; baskets?: boolean; bay?: number; bd?: number; beam?: number; berth?: string; bev?: number;
   bevel?: boolean; bikes?: number; blind?: boolean; board?: string; boardMat?: string; bollards?: number[]; boom?: number; boot?: string; booth?:
   boolean; boothX?: number; boothZ?: number; border?: string; boss?: boolean; bottom?: boolean; box?: boolean; boxes?: number[]; bronze?: boolean;
@@ -1154,25 +1154,24 @@ export interface PropParams {
   number; depth?: number; dfender?: boolean; diesel?: string; door?: number; doorAt?: number; doorLeft?: boolean; double?: boolean; drop?: number; ds?:
   number; dutch?: boolean; dy?: number; dz?: number; eaves?: number; endHeight?: number; every?: number; ext?: number; ext0?: number; ext1?: number;
   faces?: unknown; fan?: boolean; fascia?: string; fenderSide?: number; fenders?: number[]; fill?: number[][]; finials?: boolean; flag?:
-  string; flat?: number; flip?: boolean; floor?: number; flowers?: string; foot?: boolean; frame?: string; free?: number[]; gable?: boolean; gap?:
+  string; flat?: number; flip?: boolean; floor?: number; flowers?: string; foot?: boolean; frame?: string; free?: number[][]; gable?: boolean; gap?:
   number; gateX?: number; gauge?: number; glass?: string; glassH?: number; glow?: number; glowC?: string; glowLetters?: boolean; goods?: string;
   grille?: boolean; h?: number; h2?: number; half?: boolean; hb?: number; head?: boolean; height?: number; hh?: number; hi?: number; hip?: boolean;
   hood?: boolean; hoop?: number; hs?: number; hull?: string; impost?: boolean; inside?: string; iron?: string; islands?: number[]; kayaks?: number;
-  key?: string; kind?: string; l?: number; ladders?: number[]; lamp?: string; lamp0?: boolean; lamp1?: boolean; lamps?: boolean; land0?: number; land1?:
+  key?: string; kind?: string; l?: number; ladders?: number[]; lamp?: unknown; lamp0?: boolean; lamp1?: boolean; lamps?: boolean; land0?: number; land1?:
   number; lc?: string; leaf?: string; len?: number; length?: number; letterC?: string; lh?: number; lie?: boolean; lift?: number; light?: string; line?:
   string; lines?: number[][]; lintel?: boolean; lit?: number; litC?: string; lo?: number; load?: boolean; logo?: string; logoC?: ColorLike; logoH?: number;
   low?: boolean; lunette?: boolean; lz?: number; mat?: string; motorScale?: number; mull?: number; n?: number; name?: string; noGable?: boolean;
-  noGutter?: boolean; ns?: boolean; num?: string; oboxCols?: boolean; open?: number; outer?: boolean; ov?: number; over?: number; p0?: boolean; p1?:
+  noGutter?: boolean; ns?: boolean; num?: string; oboxCols?: boolean; open?: unknown; outer?: boolean; ov?: number; over?: number; p0?: boolean; p1?:
   boolean; pad?: number; path?: number[][]; pedestals?: number[]; perch?: boolean; pergola?: boolean; phase?: number; piers?: boolean; piles?: Array<number | { s: number; side: number; h?: number }>;
-  pillars?: number[][]; pitch?: number; plain?: boolean; plaque?: boolean; pos?: number[]; post?: boolean; poster?: string; posts?: number | boolean; pots?: boolean;
-  price?: string; proj?: number; pump?: number[]; push?: boolean; pushbar?: boolean; r?: number; r2?: number; radial?: number; radius?: number; railW?: number[]; rails?: number[]; raised?: boolean; rate?: number; reach?: number; reefer?: boolean; render?: boolean; rings?: number[];
-  rise?: number; rolled?: boolean; roof?: string; rope?: string; ropeC?: string; rotY?: number; round?: boolean; rows?: number; rs?: number; run?:
+  pillars?: number[][]; pitch?: number; plain?: boolean; plaque?: number; pos?: number[]; post?: boolean; poster?: string; posts?: number | boolean; pots?: boolean;
+  price?: string; proj?: number; pump?: number[]; push?: boolean; pushbar?: boolean; r?: number; r2?: number; radial?: number; radius?: number; railW?: number[][]; rails?: number[]; raised?: boolean; rate?: number; reach?: number; reefer?: boolean; render?: boolean; rings?: number[];
+  rise?: number; rolled?: boolean; roof?: unknown; rope?: string; ropeC?: string; rotY?: number; round?: boolean; rows?: number; rs?: number; run?:
   number; rx?: number; ry?: number; rz?: number; s?: number; s0?: number; s1?: number; sag?: number; sash?: string; scale?: number; seams?: boolean;
   seed?: number; seedN?: number; seg?: number; segCol?: number; shut?: string; shutter?: boolean; shutters?: boolean; side?: number; sides?: number[];
   sign?: string; sill?: string; sillC?: string; size?: number; skip?: number[][]; skirt?: boolean; skirtZ?: number; slab?: string; slant?: number; slate?:
-  string; solid?: boolean; spacing?: number; speed?: number; split?: number; spread?: number; step?: number; stop?: boolean; stringer?: string; style?:
-  boolean; sub?: string; sur?: string; surC?: string; surround?: boolean; sx?: number; sy?: number; sz?: number; t?: number; tank?: number[]; team?:
-  number | null; text?: string; thick?: number; tie?: number[]; tiers?: number[]; tilt?: number; tint?: number | string; toe?: boolean; top?: number;
+  string; solid?: boolean; spacing?: number; speed?: number; split?: number; spread?: number; step?: number; stop?: boolean; stringer?: string; style?: unknown; sub?: string; sur?: string; surC?: string; surround?: boolean; sx?: number; sy?: number; sz?: number; t?: number; tank?: number[]; team?:
+  number | null; text?: string; thick?: number; tie?: number[]; tiers?: number[][]; tilt?: number; tint?: number | string; toe?: boolean; top?: number;
   top0?: number; top1?: number; track?: number; trackX?: number; trail?: boolean; transom?: boolean; trolley?: number; ts?: number; tx?: number; unit?:
   number; unleaded?: string; up?: number | null; urnC?: boolean; urns?: boolean; uv?: null; uvs?: null; variant?: number; vault?: boolean; vert?:
   boolean; w?: number; wall?: string; walls?: number[][]; washerSide?: number; weight?: number; width?: number; windlass?: boolean; wood?: string; wrap?:

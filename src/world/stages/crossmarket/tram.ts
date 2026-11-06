@@ -1,13 +1,16 @@
 // Crossroads Market — the tramway: the No. 3 tram standing under the Market Hall crossing (dressing around the level's
 // tram blocks), catenary poles with bracket arms + street lamps, and the tram stop shelter on each flank platform.
+import type { Kit } from './kit.js';
+import type * as THREE from 'three';
+import type { PropDefs, PackHelpers, Builder, PropParams, PartOpts, ColorLike } from '../../props.js';
 
-export function registerTram(D, H, KIT) {
+export function registerTram(D: PropDefs, H: PackHelpers, KIT: Kit) {
   const { PI, TAU, HP, P3, NS, K, tpl, kf, pbox, colBox, rod, letters, textW, arcPts, shade, mixc, GB, cx3, latheGeo } = KIT;
   const GREEN = '#3f6b55', GREENDK = '#2c4d3d', CREAM = '#ece2c8', GOLD = K.gold, RED = '#9c3a32';
   const WIRE = 5.3;
 
   // one side of the saloon (x along the body, z = 0 the body face, +Z out): windows, pillars, lining, fleet lettering
-  function saloonSide(B, L) {
+  function saloonSide(B: Builder, L: number) {
     const n = 8, pw = 0.16, ww = (L - 0.4 - pw * (n - 1)) / n, y0 = 1.5, y1 = 2.56;
     for (let i = 0; i < n; i++) {
       const x = -L / 2 + 0.2 + ww / 2 + i * (ww + pw);
@@ -41,8 +44,8 @@ export function registerTram(D, H, KIT) {
   }
   // a cab end (the platform + vestibule) at local x = 0 facing +X, depth dx: rounded dash, three-light windscreen,
   // destination box, headlamp, lifeguard tray, controller + handbrake silhouettes inside
-  function cabEnd(B, dx, hw) {
-    const prof = (y0, y1, r) => tpl(['cab', dx, hw, y0, y1, r].map(kf).join('|'), () => {
+  function cabEnd(B: Builder, dx: number, hw: number) {
+    const prof = (y0: number, y1: number, r: number) => tpl(['cab', dx, hw, y0, y1, r].map(kf).join('|'), () => {
       // plan: a rounded dash (quarter ellipses) from z = -hw to hw, depth dx
       const pts = []; for (let i = 0; i <= 10; i++) { const a = -HP + (i / 10) * PI; pts.push([Math.cos(a) * dx * r, Math.sin(a) * hw]); }
       const g = new GB(), n = pts.length;
@@ -81,7 +84,7 @@ export function registerTram(D, H, KIT) {
   D.crossmarket_tram = {
     desc: 'The No. 3 tram (double-ended, place once at the origin, mirror: false) dressing the level tram blocks (x ±5, z ±1.2, 3.0 tall): saloon windows with lit ceilings, gilt lining + CROSSROADS TRAMWAYS on the rocker panels, trucks + wheels, cab ends (colliders) with windscreens, lit destination boxes (MARKET HALL · 3), headlamps, lifeguard trays; the roof: boards, trolley standard + pole up to the overhead wire.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const L = 10, hw = 1.2;
       for (const s of [-1, 1]) { B.push(0, 0, s * hw, s > 0 ? 0 : PI); saloonSide(B, L); B.pop(); }
@@ -110,7 +113,7 @@ export function registerTram(D, H, KIT) {
   D.crossmarket_catenary = {
     desc: 'Tramway traction pole: fluted cast-iron base, tapered pole with collars, scrolled bracket arm reaching `reach` m toward local +Z to the overhead wire (y 5.3), finial, a street lantern hung off the back. Collider: the pole.',
     params: { reach: 'm (2.1)', lamp: 'bool (true)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const reach = o.reach ?? 2.1, top = 6.1, c = K.iron;
       B.lathe('metal', c, [[0, 0], [0.24, 0], [0.25, 0.05], [0.2, 0.12], [0.2, 0.9], [0.16, 1.0], [0.13, 1.2], [0.12, top], [0.08, top + 0.05], [0, top + 0.08]], 0, 0, 0, { seg: 12 });
       for (let k = 0; k < 8; k++) { const a = (k / 8) * TAU; pbox(B, NS('metal'), shade(c, 0.8), 0.03, 0.7, 0.03, Math.cos(a) * 0.2, 0.5, Math.sin(a) * 0.2); }
@@ -139,7 +142,7 @@ export function registerTram(D, H, KIT) {
   D.crossmarket_tramstop = {
     desc: 'Tram stop shelter: cast-iron frame, glazed back screen along local X at z = 0 facing +Z (the track side), a curved canopy, bench, MARKET HALL stop flag on a post, timetable case, poster. Colliders: back screen (rail: see-through), bench, flag post.',
     params: { length: 'm (4)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const L = o.length ?? 4, Hh = 2.45, c = K.iron;
       // posts + back screen
       for (const x of [-L / 2, 0, L / 2]) { B.box('metal', c, 0.1, Hh, 0.1, x, Hh / 2, 0, { r: 0.02 }); B.sph(NS('metal'), K.gold, 0.06, x, Hh + 0.3, 0, { ws: 8, hs: 5 }); }
@@ -147,7 +150,7 @@ export function registerTram(D, H, KIT) {
       pbox(B, NS('gloss'), K.glassLt, L - 0.1, Hh - 0.5, 0.02, 0, (Hh + 0.35) / 2, 0);
       pbox(B, 'paint', shade(c, 0.9), L, 0.34, 0.05, 0, 0.17, 0);
       // canopy: curved glass on ribs, cantilevered toward +Z, fretwork valance
-      const cp = []; for (let i = 0; i <= 8; i++) { const t = i / 8; cp.push([1.35 * t, Hh + 0.42 * Math.sin(PI * t * 0.8) - 0.12 * t]); }
+      const cp: number[][] = []; for (let i = 0; i <= 8; i++) { const t = i / 8; cp.push([1.35 * t, Hh + 0.42 * Math.sin(PI * t * 0.8) - 0.12 * t]); }
       for (const x of [-L / 2, 0, L / 2]) B.tube('metal', c, cp.map(([z, y]) => P3(x, y, z)), 0.035, { radial: 5 });
       B.add(NS('gloss'), tpl(['stopcan', L].map(kf).join('|'), () => {
         const g = new GB(), col = cx3(K.glassLt);
@@ -184,7 +187,7 @@ export function registerTram(D, H, KIT) {
   D.crossmarket_wire = {
     desc: 'Tram overhead: contact wire along local +X (length) at 5.3 m with a messenger wire above and droppers. No collider.',
     params: { length: 'm (10)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const L = o.length ?? 10;
       rod(B, NS('metal'), '#2b2e33', P3(0, WIRE, 0), P3(L, WIRE, 0), 0.009, 3);
       const pts = []; for (let i = 0; i <= 10; i++) { const x = (i / 10) * L; pts.push(P3(x, WIRE + 0.42 - 0.3 * Math.sin((i / 10) * PI), 0)); }
@@ -198,7 +201,7 @@ export function registerTram(D, H, KIT) {
   D.crossmarket_buffer = {
     desc: 'Tramway buffer stop (facing local -X, the track runs toward -X): a timber buffer beam with sprung heads on a cast-iron trestle, a red lamp, painted hazard boards. Collider.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       for (const sz of [-1, 1]) {
         B.tube('metal', K.ironDk, [P3(0.9, 0, sz * 0.72), P3(0.1, 0.62, sz * 0.72), P3(-0.1, 0.62, sz * 0.72)], 0.05, { radial: 5 });
         B.box('metal', K.ironDk, 0.14, 0.7, 0.14, 0, 0.35, sz * 0.72, { r: 0.02 });
@@ -219,7 +222,7 @@ export function registerTram(D, H, KIT) {
   D.crossmarket_booth = {
     desc: 'Tramways ticket booth (1.6 × 1.3 m, window toward local +Z): panelled timber lower half, glazed upper, hipped zinc roof with a finial, TICKETS board, a lamp. Collider.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const W = 1.6, Dd = 1.3, Hh = 2.3, c = GREEN;
       B.box('paint', c, W, 1.0, Dd, 0, 0.5, 0, { r: 0.03 });
       for (const [fw, fz, ry] of [[W, Dd / 2, 0], [W, -Dd / 2, PI], [Dd, W / 2, HP], [Dd, -W / 2, -HP]]) {

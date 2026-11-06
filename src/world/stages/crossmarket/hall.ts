@@ -2,8 +2,16 @@
 // crossroads. Nave along Z (Market Street runs in through the gable ends), lean-to aisles on ±X, the tramway along X
 // through the transept (the No. 3 tram stands under the crossing). A square clock lantern crowns the crossing.
 // Self-symmetric under the 180° mirror: placed once (mirror: false) at the origin.
+import type { Kit } from './kit.js';
+import type * as THREE from 'three';
+import type { PropDefs, PackHelpers, Builder, PropParams, PartOpts, ColorLike } from '../../props.js';
 
-export function registerHall(D, H, KIT) {
+// 지역 도우미 선택(도우미 본문의 o.키와 호출부 값에서 모은 타입)
+interface GlazedSlopeOpts { apron?: number; glass?: boolean }
+interface GirderOpts { arch?: boolean; boss?: boolean; rise?: number }
+interface ColumnOpts { col?: boolean }
+
+export function registerHall(D: PropDefs, H: PackHelpers, KIT: Kit) {
   const { PI, TAU, HP, P3, NS, K, tpl, kf, pbox, colBox, rod, letters, textW, arcPts, shade, mixc, extrudeGeo, GB, cx3 } = KIT;
 
   // hall frame
@@ -12,7 +20,7 @@ export function registerHall(D, H, KIT) {
   const IRON = K.iron, IRDK = K.ironDk, GOLD = K.gold;
 
   // ---- cast-iron column: stone plinth, moulded base, slender shaft with bands, flared capital with an abacus
-  function column(B, x, z, top, o = {}) {
+  function column(B: Builder, x: number, z: number, top: number, o: ColumnOpts = {}) {
     B.box('paint', K.stone, 0.62, 0.46, 0.62, x, 0.23, z, { r: 0.03 });
     B.box('paint', K.stoneLt, 0.68, 0.06, 0.68, x, 0.49, z, { r: 0.015 });
     B.lathe('metal', IRON, [[0.22, 0.52], [0.24, 0.56], [0.22, 0.62], [0.17, 0.68], [0.16, 0.8], [0.13, 0.86], [0.125, top - 0.62], [0.14, top - 0.58],
@@ -24,7 +32,7 @@ export function registerHall(D, H, KIT) {
     if (o.col !== false) { colBox(B, x, 0, z, 0.62, 0.5, 0.62); colBox(B, x, 0.5, z, 0.36, top - 0.5, 0.36, true); }
   }
   // ---- lattice girder between two points at height y (depth dh), with a decorative arched spandrel under it
-  function girder(B, ax, az, bx, bz, y, dh, o = {}) {
+  function girder(B: Builder, ax: number, az: number, bx: number, bz: number, y: number, dh: number, o: GirderOpts = {}) {
     const L = Math.hypot(bx - ax, bz - az), ry = Math.atan2(-(bz - az), bx - ax);
     B.push((ax + bx) / 2, y, (az + bz) / 2, ry);
     B.box('metal', IRON, L, 0.1, 0.16, 0, 0, 0, { r: 0.02 });                       // top chord
@@ -49,7 +57,7 @@ export function registerHall(D, H, KIT) {
   }
   // ---- glazed roof slope: iron rafters + purlins (open glazing lattice), a zinc apron at the eave, lead ridge flashing.
   // Local frame: slope rises from the eave (z = 0, y = 0) toward -Z; w along X, L up the slope, pitch a.
-  function glazedSlope(B, x, y, z, ry, w, L, a, o = {}) {
+  function glazedSlope(B: Builder, x: number, y: number, z: number, ry: number, w: number, L: number, a: number, o: GlazedSlopeOpts = {}) {
     B.push(x, y, z, ry);
     B.push(0, 0, 0, 0, a);                                  // tilt: local -Z climbs
     const apron = o.apron ?? 0.7;
@@ -61,7 +69,7 @@ export function registerHall(D, H, KIT) {
     B.pop(); B.pop();
   }
   // ---- clock face (faces +Z) with a gilt bezel, chapter ring, hands (glow face: lit from inside at dusk)
-  function clock(B, x, y, z, R, hh = 10, mm = 10) {
+  function clock(B: Builder, x: number, y: number, z: number, R: number, hh = 10, mm = 10) {
     B.cyl('metal', GOLD, R + 0.08, 0.08, x, y, z + 0.04, { rx: HP, seg: 28 });
     B.cyl(NS('glow'), '#f6eed8', R, 0.02, x, y, z + 0.09, { rx: HP, seg: 28, glow: 1.5 });
     for (let i = 0; i < 12; i++) { const a = (i / 12) * TAU; B.box(NS('paint'), K.black, i % 3 ? 0.035 : 0.06, R * 0.16, 0.012, x + Math.sin(a) * R * 0.8, y + Math.cos(a) * R * 0.8, z + 0.105, { rz: -a, r: 0.004 }); }
@@ -71,7 +79,7 @@ export function registerHall(D, H, KIT) {
     B.cyl(NS('metal'), GOLD, 0.05, 0.03, x, y, z + 0.13, { rx: HP, seg: 10 });
   }
   // pendant lamp hanging from y0 (glow globe)
-  function pendant(B, x, y0, z, drop) {
+  function pendant(B: Builder, x: number, y0: number, z: number, drop: number) {
     rod(B, NS('metal'), IRDK, P3(x, y0, z), P3(x, y0 - drop, z), 0.012, 4);
     B.lathe('metal', IRON, [[0, 0.02], [0.08, 0.0], [0.26, -0.14], [0.27, -0.17], [0.0, -0.17]], x, y0 - drop, z, { seg: 10 });
     B.sph(NS('glow'), K.lit, 0.12, x, y0 - drop - 0.22, z, { ws: 10, hs: 6, glow: 2.2 });
@@ -80,7 +88,7 @@ export function registerHall(D, H, KIT) {
   D.crossmarket_hall = {
     desc: 'The Market Hall (place once at the origin, mirror: false): 16 cast-iron columns (colliders), lattice girders with arched spandrels, lean-to glazed aisle roofs, a clerestoried glazed nave roof along Z, glazed gable ends with MARKET HALL signs over the Market Street entrances, the crossing lantern with four clock faces, an ogee copper cap + weathervane, pendant lamps, the overhead tram wire through the transept.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       // ---------------- columns
       const outer = [[-X0, -Z0], [X0, -Z0], [-X0, Z0], [X0, Z0], [-X0, -ZC], [X0, -ZC], [-X0, ZC], [X0, ZC]];
@@ -180,7 +188,7 @@ export function registerHall(D, H, KIT) {
       B.sph('metal', GOLD, 0.16, 0, CY + 2.62, 0, { ws: 10, hs: 6 });
       B.cyl('metal', IRDK, 0.03, 1.4, 0, CY + 3.3, 0, { seg: 6 });
       for (const a of [0, HP]) pbox(B, 'metal', IRDK, 0.7, 0.02, 0.02, 0, CY + 3.05, 0, { ry: a });
-      for (const [lx, lz, ch] of [[0.42, 0, 'E'], [-0.42, 0, 'W'], [0, 0.42, 'N'], [0, -0.42, 'S']]) { B.push(lx, CY + 3.0, lz, Math.atan2(lx, lz)); letters(B, ch, { h: 0.14, x: 0, y: 0, z: 0, c: GOLD, flat: true, wt: 0.24 }); B.pop(); }
+      for (const [lx, lz, ch] of [[0.42, 0, 'E'], [-0.42, 0, 'W'], [0, 0.42, 'N'], [0, -0.42, 'S']] as Array<[number, number, string]>) { B.push(lx, CY + 3.0, lz, Math.atan2(lx, lz)); letters(B, ch, { h: 0.14, x: 0, y: 0, z: 0, c: GOLD, flat: true, wt: 0.24 }); B.pop(); }
       B.push(0, CY + 3.75, 0, 0.5);
       B.add('metal', tpl('cmvane', () => extrudeGeo([[-0.55, 0], [0.3, 0], [0.45, 0.1], [0.3, 0.2], [-0.35, 0.2], [-0.55, 0.36], [-0.45, 0.1]], 0.012, 0.002)), GOLD, 0, 0, 0, { ry: HP });
       B.pop();

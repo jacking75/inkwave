@@ -7,8 +7,11 @@
 //   crossmarket_cargo    the stepped crate stack; one walkable collider per tier
 //   crossmarket_hoist    the stage's structure: piles, bracing, joists, fascias, railings, the iron hand crane
 // (the stage's deck is a layout piece too: an inkable, real position). All three use world heights (place at y = 0).
+import type { Kit } from './kit.js';
+import type * as THREE from 'three';
+import type { PropDefs, PackHelpers, Builder, PropParams, PartOpts, ColorLike } from '../../props.js';
 
-export function registerLanding(D, H, KIT) {
+export function registerLanding(D: PropDefs, H: PackHelpers, KIT: Kit) {
   const { PI, TAU, HP, P3, NS, K, tpl, kf, pbox, colT, rod, letters, textW, shade, GB, cx3, hash, sub } = KIT;
 
   // ------------------------------------------------------------------------------------------ market stock
@@ -18,7 +21,7 @@ export function registerLanding(D, H, KIT) {
   const INK = '#2c2b29';
   // one closed crate, base at (x, y, z) in the current frame, w (x) × h × d (z); kind 0 slatted, 1 tea chest,
   // 2 painted box. `face` = +1 / -1: the ±X face carries a stencil. Lids are closed and flat: people stand on them.
-  function crate(B, x, y, z, w, h, d, kind, seed, face = 1) {
+  function crate(B: Builder, x: number, y: number, z: number, w: number, h: number, d: number, kind: number, seed: number, face = 1) {
     const t = TIMBER[Math.floor(hash(seed) * TIMBER.length)], dk = shade(t, 0.72);
     if (kind === 1) {
       // tea chest: plywood body, tin-strip edges, a stencilled mark
@@ -50,7 +53,7 @@ export function registerLanding(D, H, KIT) {
     }
   }
   // rope lashing across a stack along z (over its top at y, down both sides to y0), at x
-  function lashing(B, x, y, y0, hw) {
+  function lashing(B: Builder, x: number, y: number, y0: number, hw: number) {
     const c = '#b89c6a', r = 0.018;
     B.tube(NS('rubber'), c, [P3(x, y0 + 0.1, -hw - 0.012), P3(x, y - 0.06, -hw - 0.014), P3(x, y + 0.008, -hw + 0.08), P3(x, y + 0.01, hw - 0.08), P3(x, y - 0.06, hw + 0.014), P3(x, y0 + 0.1, hw + 0.012)], r, { radial: 4 });
   }
@@ -58,10 +61,10 @@ export function registerLanding(D, H, KIT) {
   D.crossmarket_cargo = {
     desc: 'The lighter\'s cargo stacked as steps (local +X = toward the bow): tiers [[x0, x1, top]] of slatted crates, tea chests and painted boxes from the deck (deckY) up to each tier\'s flat top, across the width W (local z), lashed with rope. One collider per tier (walkable, not inkable).',
     params: { tiers: '[[x0, x1, top]]', W: 'm (3.1)', deckY: 'm (-0.3)' }, variants: 1, mount: 'ground',
-    build(B, o) {
-      const W = o.W ?? 3.1, y0 = o.deckY ?? -0.3, tiers = o.tiers ?? [], seed0 = Math.round(Math.abs(o.pos[0]) * 7 + Math.abs(o.pos[2]) * 3);
+    build(B: Builder, o: PropParams) {
+      const W = o.W ?? 3.1, y0 = o.deckY ?? -0.3, tiers = o.tiers ?? [], seed0 = Math.round(Math.abs(o.pos![0]) * 7 + Math.abs(o.pos![2]) * 3);
       B.aoBase = y0;
-      tiers.forEach(([x0, x1, top], ti) => {
+      tiers.forEach(([x0, x1, top], ti: number) => {
         const Hh = top - y0, n = Math.max(1, Math.round(Hh / 0.9)), lh = Hh / n, len = x1 - x0, cx = (x0 + x1) / 2;
         // the next tier up (toward -X) hides this tier's -X face below its own top; the tier below hides the +X face
         for (let k = 0; k < n; k++) {
@@ -90,13 +93,13 @@ export function registerLanding(D, H, KIT) {
   D.crossmarket_lighter = {
     desc: 'Market lighter (dumb barge), local +X = bow: flat-sided hull with raked swim ends, tarred below an oxblood sheer strake and a cream line, timber gunwale capping round the deck (the deck itself is a layout piece), rubbing strakes, tyre fenders, a long sweep, her name. `lines`: mooring ropes [[x0, y0, z0, x1, y1, z1]] (local). No collider (the deck is the level).',
     params: { L: 'deck length (5.9)', W: 'deck width (3.1)', deckY: '(-0.3)', lines: '[[x0,y0,z0,x1,y1,z1]]' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const L = o.L ?? 5.9, W = o.W ?? 3.1, dy = o.deckY ?? -0.3;
       const hw = W / 2 + 0.14, hl = L / 2 + 0.14, gy = dy + 0.1, by = -2.2, hb = hl - 0.9;
       const TAR = '#26272a', OX = '#6e3328', CREAM = '#e9dfc6', CAP = '#7a5a3c';
-      const xe = (y) => hb + ((hl - hb) * (y - by)) / (gy - by);
-      const BANDS = [[by, -1.35, TAR], [-1.35, -0.62, OX], [-0.62, -0.5, CREAM], [-0.5, gy, OX]];
+      const xe = (y: number) => hb + ((hl - hb) * (y - by)) / (gy - by);
+      const BANDS: Array<[number, number, string]> = [[by, -1.35, TAR], [-1.35, -0.62, OX], [-0.62, -0.5, CREAM], [-0.5, gy, OX]];
       B.add('paint', tpl(['cmlighter', L, W, dy].map(kf).join('|'), () => {
         const g = new GB();
         for (const [ya, yb2, c] of BANDS) {
@@ -150,7 +153,7 @@ export function registerLanding(D, H, KIT) {
   // cast-iron hand crane (dockside, c. 1880): bolted base, tapered pillar, crab frame with two gear trains and crank
   // handles, a curved jib with a tie, sheave, chain + hook with a net of sacks. Local: pillar at the origin, the jib
   // reaching toward +Z. Collider: the pillar + gearing (roof: nobody stands on it).
-  function crane(B, jibL = 3.0) {
+  function crane(B: Builder, jibL = 3.0) {
     const IR = K.iron, DK = K.ironDk, RED = '#8e3a2e';
     B.box('metal', DK, 0.8, 0.08, 0.8, 0, 0.04, 0, { r: 0.02 });
     for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) B.cyl(NS('metal'), K.black, 0.035, 0.05, sx * 0.3, 0.1, sz * 0.3, { seg: 6 });
@@ -203,9 +206,9 @@ export function registerLanding(D, H, KIT) {
   D.crossmarket_hoist = {
     desc: 'The market\'s goods hoist stage beside the tram pier (the deck is a layout piece: w × d at deckY, local -Z = the pier edge side, overhanging it by `over`): timber piles with weed-line bands in the water, headstocks, joists, X-bracing and walings, fascias (the drop edge painted white), iron railings on the water sides (rail colliders) with a gap in the outer (+Z) one where the lighter\'s cargo comes up, an iron hand crane on the outer +X corner swinging a net of sacks over the lighter, a MARKET HOIST board, a lantern under the overhang.',
     params: { w: 'm along X (3.8)', d: 'm along Z (6.9)', deckY: 'deck top (3.1)', over: 'm the deck reaches past the pier edge (0.9)', open: '[x0, x1] gap in the outer railing for the crates', craneYaw: 'rad (0.64)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
-      const w = o.w ?? 3.8, d = o.d ?? 5.2, top = o.deckY ?? 3.1, bot = top - 0.3, over = o.over ?? 0.9, open = o.open ?? [-1.2, 0.8];
+      const w = o.w ?? 3.8, d = o.d ?? 5.2, top = o.deckY ?? 3.1, bot = top - 0.3, over = o.over ?? 0.9, open = (o.open as number[] | undefined) ?? [-1.2, 0.8];
       const hx = w / 2, hz = d / 2, edgeZ = -hz + over;              // edgeZ: the pier's edge line under the stage
       const PILE = '#6b5a47', PILEDK = '#2f2a25', WEED = '#39432f', BEAM = '#5e4a36', FAS = '#7a5a3c';
       // piles (none on the pier: the first row stands just off the pier's edge, in the water)
@@ -220,7 +223,7 @@ export function registerLanding(D, H, KIT) {
       for (const z of pz) B.box('wood', BEAM, w - 0.1, 0.3, 0.3, 0, bot - 0.35, z, { r: 0.03 });
       for (const x of [-hx + 0.12, -hx / 2, 0, hx / 2, hx - 0.12]) B.box('wood', shade(BEAM, 1.08), 0.16, 0.2, d - 0.06, x, bot - 0.1, 0, { r: 0.02 });
       // walings + X-bracing on the outer rows (along X inside the +Z row, along Z on both ends)
-      const brace = (ax, ay, az, bx, by2, bz) => {
+      const brace = (ax: number, ay: number, az: number, bx: number, by2: number, bz: number) => {
         const L = Math.hypot(bx - ax, by2 - ay, bz - az), ry = Math.atan2(-(bz - az), bx - ax), rz = Math.atan2(by2 - ay, Math.hypot(bx - ax, bz - az));
         B.push((ax + bx) / 2, (ay + by2) / 2, (az + bz) / 2, ry, 0, rz);
         B.box('wood', shade(BEAM, 0.95), L, 0.18, 0.08, 0, 0, 0, { r: 0.02 });

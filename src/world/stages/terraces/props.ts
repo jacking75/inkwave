@@ -542,7 +542,7 @@ export function register(D: PropDefs, H: PackHelpers) {
         });
       }
       // roof
-      const roof = o.roof ?? 'flat';
+      const roof = (o.roof as string | undefined) ?? 'flat';
       if (roof === 'flat') {
         for (const side of o.cope ?? []) {
           onFace(B, W, Dd, side, (L: number) => {

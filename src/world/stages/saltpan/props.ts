@@ -553,7 +553,7 @@ export function register(D: PropDefs, H: PackHelpers) {
     desc: 'Timber sluice headstock on a dyke (pos = dyke top centre; the culvert runs along local Z under the dyke, pans on ±Z): two heavy posts and a head beam, the raised gate paddle with iron straps, rack and pinion with a spoked handwheel, sill timbers, culvert mouths on the pan walls (walls = [[z, depth], …]). Collides.',
     params: { walls: '[[z of pan wall face, pan depth], …]', open: '0..1 paddle raise (0.4)' }, variants: 1, mount: 'ground',
     build(B: Builder, o: PropParams) {
-      const lift = (o.open ?? 0.4) * 0.8, tb = K.timberDk;
+      const lift = ((o.open as number | undefined) ?? 0.4) * 0.8, tb = K.timberDk;
       B.box('wood', shade(K.timberOld, 0.9), 1.8, 0.14, 0.62, 0, 0.07, 0, { r: 0.02 });
       for (const sx of [-0.56, 0.56]) {
         B.box('wood', tb, 0.24, 1.78, 0.24, sx, 0.89, 0, { r: 0.03 });

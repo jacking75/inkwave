@@ -1,8 +1,11 @@
 // Crossroads Market — the town beyond the arena: the far quays across the harbour channels on either side, lined with
 // tall old houses, so the market square sits inside a harbour town rather than on a raft. Scenery only (outside the
 // bounds, unreachable): no colliders, no shadow casting, simplified facades.
+import type { Kit } from './kit.js';
+import type * as THREE from 'three';
+import type { PropDefs, PackHelpers, Builder, PropParams, PartOpts, ColorLike } from '../../props.js';
 
-export function registerScenery(D, H, KIT) {
+export function registerScenery(D: PropDefs, H: PackHelpers, KIT: Kit) {
   const { PI, TAU, HP, P3, NS, K, tpl, kf, pbox, rod, shade, mixc, hash, GB, cx3, extrudeGeo } = KIT;
   const WALLS = ['#e2c48e', '#efe6d3', '#d8b9a2', '#a9bcc4', '#c98e6e', '#e9dcc0', '#b8765c', '#cfd6c9', '#e6cf9a', '#d6a58a'];
   const ROOFS = ['#b0634a', '#5b646e', '#9c5a44', '#6b7079', '#b86e4e'];
@@ -11,7 +14,7 @@ export function registerScenery(D, H, KIT) {
 
   // simplified town house facing +Z at x (width w, eave h, depth d): body, window grid with sills + shutters, a shop
   // band with an awning strip, cornice, gable or hip roof, chimney
-  function farHouse(B, x, w, h, d, i) {
+  function farHouse(B: Builder, x: number, w: number, h: number, d: number, i: number) {
     const M = NS('paint'), wall = WALLS[i % WALLS.length], roofC = ROOFS[(i * 3) % ROOFS.length], sh = SHUT[(i * 7) % SHUT.length];
     pbox(B, M, wall, w - 0.04, h, d, x, h / 2, -d / 2);
     pbox(B, M, shade(wall, 0.9), w, 0.18, 0.2, x, h - 0.1, 0.06);
@@ -35,7 +38,7 @@ export function registerScenery(D, H, KIT) {
       B.add(M, tpl(['fhh', w, d, rise].map(kf).join('|'), () => {
         const g = new GB(), c = cx3('#ffffff'), hw = w / 2 + 0.2, hd = d / 2 + 0.2, r = Math.min(hw, hd) * 0.6;
         const p = [[-hw, 0, hd], [hw, 0, hd], [hw, 0, -hd], [-hw, 0, -hd]], top = [[-hw + r, rise, 0], [hw - r, rise, 0]];
-        const v = (q, n) => g.v(q[0], q[1], q[2], n[0], n[1], n[2], ...c);
+        const v = (q: number[], n: number[]) => g.v(q[0], q[1], q[2], n[0], n[1], n[2], ...c);
         g.quad(v(p[0], [0, 0.7, 0.7]), v(p[1], [0, 0.7, 0.7]), v(top[1], [0, 0.7, 0.7]), v(top[0], [0, 0.7, 0.7]));
         g.quad(v(p[2], [0, 0.7, -0.7]), v(p[3], [0, 0.7, -0.7]), v(top[0], [0, 0.7, -0.7]), v(top[1], [0, 0.7, -0.7]));
         g.tri(v(p[1], [0.7, 0.7, 0]), v(p[2], [0.7, 0.7, 0]), v(top[1], [0.7, 0.7, 0]));
@@ -49,7 +52,7 @@ export function registerScenery(D, H, KIT) {
   D.crossmarket_farside = {
     desc: 'Far quay across the harbour channel (scenery, outside the bounds): a stone quay wall along local +X (length) facing +Z with its coping at y 0.5, a promenade with lamps + bollards, and a row of simplified tall town houses behind it. No colliders, no shadows.',
     params: { length: 'm (44)', seed: 'house mix' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const L = o.length ?? 44, seed = o.seedN ?? 1, M = NS('paint');
       // quay wall + coping + promenade

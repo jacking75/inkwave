@@ -17,11 +17,15 @@ import { registerTram } from './tram.js';
 import { registerStreet } from './street.js';
 import { registerScenery } from './scenery.js';
 import { registerLanding } from './landing.js';
+import type * as THREE from 'three';
+import type { Kit, FacadeSpec, RoofSpec, ShopSpec } from './kit.js';
+import type { Placement } from '../../dressing.js';
+import type { PropDefs, PackHelpers, Builder, PropParams, PartOpts, ColorLike } from '../../props.js';
 
 const P = Math.PI;
 
-export function register(D, H) {
-  const KIT = makeKit(D, H);
+export function register(D: PropDefs, H: PackHelpers) {
+  const KIT: Kit = makeKit(D, H);
   registerBuildings(D, H, KIT);
   registerCivic(D, H, KIT);
   registerHall(D, H, KIT);
@@ -33,13 +37,13 @@ export function register(D, H) {
 
 // ================================================================================================ placements
 // house(x0, x1, z0, z1, h, style, faces, roof): a crossmarket_house dressing the block x0…x1 × z0…z1 (wall top h)
-const house = (x0, x1, z0, z1, h, style, faces, roof, extra = {}) => ({ type: 'crossmarket_house', pos: [(x0 + x1) / 2, 0, (z0 + z1) / 2], w: x1 - x0, d: z1 - z0, h, style, faces, roof, ...extra });
+const house = (x0: number, x1: number, z0: number, z1: number, h: number, style: Partial<FacadeSpec>, faces: Record<string, Partial<FacadeSpec> & { shops?: ShopSpec[] }>, roof?: RoofSpec | null, extra: Partial<Placement> = {}): Placement => ({ type: 'crossmarket_house', pos: [(x0 + x1) / 2, 0, (z0 + z1) / 2], w: x1 - x0, d: z1 - z0, h, style, faces, roof, ...extra });
 const FAS = { green: '#1f3d33', navy: '#23304a', wine: '#5b2230', black: '#202124', teal: '#1f4a4a', brown: '#4a3222' };
 const AWN = { red: ['#b8483e', '#efe6d2'], green: ['#3f7a5a', '#efe6d2'], blue: ['#3f5f86', '#efe6d2'], ochre: ['#cf9a3c', '#efe6d2'], plum: ['#7a3a4c', '#efe6d2'], teal: ['#3f8a85', '#efe6d2'] };
 
 // the tramway frame (layout.js): tw(u, v, y) → world pos; turned placements take rotY = RT (+ a local turn)
 const RT = -TH;
-const tw = (u, v, y = 0) => { const [x, z] = T(u, v); return [x, y, z]; };
+const tw = (u: number, v: number, y = 0) => { const [x, z] = T(u, v); return [x, y, z]; };
 
 const HOUSES = [
   // back corners either side of the spawn terrace (BL +X ochre render, BR −X brick)
@@ -239,9 +243,9 @@ const STREET = [
 //   market lighter in the dock basin, its cargo stacked as steps up to the hoist stage, which overhangs the pier
 const ZC = 'zones';
 const CT = Math.cos(TH), ST = Math.sin(TH);
-const STAGE = [-25.6, 5.65], LIGHTER = [-23.825, 10.0];                // tramway frame (u, v) centres
+const STAGE: [number, number] = [-25.6, 5.65], LIGHTER: [number, number] = [-23.825, 10.0];                // tramway frame (u, v) centres
 // world (x, y, z) → the lighter's local frame (x along u toward the bow, z along v)
-const inLighter = (x, y, z) => [x * CT + z * ST - LIGHTER[0], y, -x * ST + z * CT - LIGHTER[1]];
+const inLighter = (x: number, y: number, z: number) => [x * CT + z * ST - LIGHTER[0], y, -x * ST + z * CT - LIGHTER[1]];
 const ZONES = [
   { type: 'crossmarket_stall', pos: tw(0, -8.1), rotY: RT, w: 2.4, d: 1.3, kind: 'flowers', double: true, onlyIn: ZC },
   { type: 'crossmarket_stall', pos: tw(-7.4, -4.9), rotY: RT, w: 2.6, d: 1.2, kind: 'cheese', onlyIn: ZC },
