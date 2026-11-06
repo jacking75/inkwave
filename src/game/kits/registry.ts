@@ -66,11 +66,20 @@ export type BotCtx = Record<string, unknown>;
 /** 위 주석의 봇 훅(bots.ts가 부른다). */
 export interface KitBotHooks {
   fight?(brain: BotBrain, ctx: BotCtx): boolean; paint?(brain: BotBrain, ctx?: BotCtx): boolean; tactics?(brain: BotBrain, ctx: BotCtx): void;
-  stayIn?(brain: BotBrain, ctx: BotCtx): boolean; targetBias?(brain: BotBrain, enemy: Actor): number;
+  stayIn?(brain: BotBrain, ctx: BotCtx): boolean; targetBias?(brain: BotBrain, enemy: Actor, dist: number): number;
   paintPitch?: number; melee?: boolean; charges?: boolean; long?: boolean; painter?: boolean;
 }
-/** 위협·방패 기술자(봇이 읽는다). 키트마다 필드가 다르다. */
-export type KitDescriptor = Record<string, unknown>;
+/** 적을 노리는 장치(SUB_KITS.threats, 위 주석): 살아 있는 값을 읽는다 */
+export interface Threat {
+  kind: string; obj?: unknown; team: number; owner?: Actor | null; pos: THREE.Vector3; aimY: number; vel: THREE.Vector3; speed: number;
+  radius: number; trigger: number; ground: boolean; live: boolean; state: string; hp: number; shootable: boolean; locked?: boolean;
+  target?: Actor | null; senseRadius?: number; left?: number; lockRange?: number; hover?: boolean;
+}
+/** 방패(MAIN_KITS.shields, 위 주석) */
+export interface Shield {
+  kind: string; held: boolean; team: number; owner?: Actor | null; C: THREE.Vector3; N: THREE.Vector3; R: number; hp: number; hpMax: number;
+  live: boolean; blocksActors: boolean; left: number; pos: THREE.Vector3; halfW: number; planeOff: number; speed?: number;
+}
 /** 주무기 키트(위 주석 참조) */
 export interface MainKit {
   update(runner: WeaponRunner, dt: number, inp: WeaponInput, w: WeaponCfg): void;
@@ -82,7 +91,7 @@ export interface MainKit {
   damageTaken?(runner: WeaponRunner, amount: number, attacker: Actor | null | undefined, source: string): number;
   jump?(runner: WeaponRunner, intent: ActorIntent): boolean;
   bot?: KitBotHooks;
-  shields?(out: KitDescriptor[]): KitDescriptor[];
+  shields?(out: Shield[]): Shield[];
   ghost?(actor: Actor, data: number[]): void; netHurt?(id: number, dmg: number): void;
   netState?(runner: WeaponRunner): number; netApply?(runner: WeaponRunner, bits: number, dt: number): void;
   [tool: `_${string}`]: unknown;   // 시험·도구용 내부 노출(_bolts 등)
@@ -98,7 +107,7 @@ export interface SubKit {
   damageArea?(c: THREE.Vector3, radius: number, dmg: number, team: number): void;
   noArc?: boolean;
   bot?: { fight?(brain: BotBrain, dist: number): boolean; paint?(brain: BotBrain): boolean };
-  threats?(out: KitDescriptor[]): KitDescriptor[];
+  threats?(out: Threat[]): Threat[];
   ghost?(actor: Actor, data: number[]): void; netHurt?(id: number, dmg: number): void;
   [tool: `_${string}`]: unknown;
 }

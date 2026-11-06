@@ -38,13 +38,15 @@ export interface ActiveSpecial {
   speed?: number | null; accel?: number; faceYaw?: number | null; firing?: number; seat?: number; hang?: number;
   jumpBack?: boolean; origin?: THREE.Vector3; kind?: string; charge?: number; bomb?: SubCfg;
   def?: SpecialCfg; nextThrow?: number;
+  // 봇이 읽는 실행 상태: 도장 방패·몸 방향, 응원 구슬 던짐, 타격 지점 조준, 체력, 구역 조준 표시
+  guard?: number; bodyYaw?: number; thrown?: boolean; target?: THREE.Vector3; hp?: number; _zoneAimed?: boolean;
   [key: string]: unknown;
 }
 export interface SuperJumpState {
   phase: 'charge' | 'flight'; t: number; dur?: number; marker: number; home: boolean;
   target: Actor | THREE.Vector3; from: THREE.Vector3; to: THREE.Vector3;
 }
-export interface ActorIntent { move: THREE.Vector3; jump: boolean; squid: boolean; fire: boolean; sub: boolean; special: boolean }
+export interface ActorIntent { move: THREE.Vector3; jump: boolean; squid: boolean; fire: boolean; sub: boolean; special: boolean; cheer?: boolean }
 export interface ActorOptions {
   team: number; name: string; weapon?: string; sub?: string | null; special?: string | null;
   isLocal?: boolean; isBot?: boolean; style?: object; slot?: number; CharacterClass: typeof Character;
