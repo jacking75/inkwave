@@ -7,8 +7,20 @@
 // (deck top y = 0), run along local +X for `length`, and the water is on local +Z (sea surface y = -1.6).
 //
 // Signage uses 3D channel letters from a small stroke font (below): bevelled, lit by the sun, cached per glyph.
+import type * as THREE from 'three';
+import type { PropDefs, PackHelpers, Builder, PropParams, PartOpts, ColorLike, PropDef } from './props.js';
 
-export function registerMarinaDock(D, H) {
+// 지역 도우미 선택(이 팩 안에서만 쓰는 모양): 채널 글자, 말뚝, 펜더, 사다리, 창·문, 간판, 박공지붕
+interface LetterOpts { h?: number; wt?: number; flat?: boolean; dep?: number; bev?: number; track?: number; ds?: number; align?: 'left' | 'right' | 'center'; mat?: string; c?: ColorLike; x?: number; y?: number; z?: number; glow?: number; lit?: number; litC?: ColorLike }
+interface PileOpts { seg?: number; cap?: boolean; wrap?: number; ropeC?: ColorLike; wrapY?: number }
+interface FenderOpts { len?: number; r?: number; vert?: boolean; color?: ColorLike; tie?: number[]; rope?: ColorLike }
+interface LadderOpts { hoop?: number }
+interface WindowOpts { frame?: ColorLike; glass?: ColorLike; t?: number; dz?: number; ns?: boolean; mull?: number; transom?: number; sill?: boolean; sillC?: ColorLike; blind?: ColorLike; lit?: number; shutters?: ColorLike }
+interface DoorOpts { frame?: ColorLike; leaf?: ColorLike; glass?: ColorLike; double?: boolean; glassH?: number; pushbar?: boolean }
+interface BoardOpts extends LetterOpts { pad?: number; w?: number; hb?: number; boardMat?: string; board?: ColorLike; bd?: number; border?: ColorLike }
+interface RoofOpts { roof?: ColorLike; ov?: number; wall?: ColorLike; seams?: number }
+
+export function registerMarinaDock(D: PropDefs, H: PackHelpers) {
   const { THREE, col, shade, mixc, chamferBox, latheGeo, tubeGeo, extrudeGeo, rcylProf, flangeProf, arcPts, woodCrate, drum, pallet, rod, wheel, TIRE, LIFERING, PI, TAU, HP, P3 } = H;
 
   // ------------------------------------------------------------------------------------------ local palette
@@ -29,8 +41,8 @@ export function registerMarinaDock(D, H) {
   // `<mat>_ns` alias bucket the vessels pack uses (the kit decides castShadow per bucket key; an alias of the same
   // material merges like any bucket but skips the shadow pass). Headless kits keep the plain key.
   const before = new Set(Object.keys(D));
-  let curB = null;
-  const NS = (m) => {
+  let curB: Builder | null = null;
+  const NS = (m: string) => {
     if (H.noShadow) return H.noShadow(m);
     const mats = curB && curB.k && curB.k.mat;
     if (!mats || m === 'glow' || m === 'blob' || m.endsWith('_ns')) return m;
@@ -42,9 +54,14 @@ export function registerMarinaDock(D, H) {
   // ------------------------------------------------------------------------------------------ geometry helpers
   // tiny builder (same contract as props.js GB: triangles auto-orient to the supplied outward normals)
   class GB {
+    idx: number[] = [];
+    c: number[] = [];
+    uv: number[] = [];
+    n: number[] = [];
+    p: number[] = [];
     constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.idx = []; }
-    v(x, y, z, nx, ny, nz, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
-    tri(a, b, c) {
+    v(x: number, y: number, z: number, nx: number, ny: number, nz: number, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
+    tri(a: number, b: number, c: number) {
       const P = this.p, N = this.n;
       const ax = P[a * 3], ay = P[a * 3 + 1], az = P[a * 3 + 2];
       const e1x = P[b * 3] - ax, e1y = P[b * 3 + 1] - ay, e1z = P[b * 3 + 2] - az;
@@ -54,7 +71,7 @@ export function registerMarinaDock(D, H) {
       const s = cx * (N[a * 3] + N[b * 3] + N[c * 3]) + cy * (N[a * 3 + 1] + N[b * 3 + 1] + N[c * 3 + 1]) + cz * (N[a * 3 + 2] + N[b * 3 + 2] + N[c * 3 + 2]);
       if (s < 0) this.idx.push(a, c, b); else this.idx.push(a, b, c);
     }
-    quad(a, b, c, d) { this.tri(a, b, c); this.tri(a, c, d); }
+    quad(a: number, b: number, c: number, d: number) { this.tri(a, b, c); this.tri(a, c, d); }
     geo() {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(this.p, 3));
@@ -65,17 +82,17 @@ export function registerMarinaDock(D, H) {
       return g;
     }
   }
-  const TPL = new Map();
-  const tpl = (key, fn) => { let g = TPL.get(key); if (!g) { g = fn(); TPL.set(key, g); } return g; };
-  const kf = (a) => (typeof a === 'number' ? a.toFixed(4) : String(a));
-  const hash = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
-  const cx3 = (c) => { const k = col(c); return [k.r, k.g, k.b]; };
-  const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-  const smooth = (e0, e1, x) => { const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+  const TPL = new Map<string, unknown>();   // (키마다 만드는 값의 모양이 다르다: 형상·글리프·선체 묶음)
+  const tpl = <T,>(key: string, fn: () => T): T => { let g = TPL.get(key) as T | undefined; if (g === undefined) { g = fn(); TPL.set(key, g); } return g; };
+  const kf = (a: unknown) => (typeof a === 'number' ? a.toFixed(4) : String(a));
+  const hash = (n: number) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+  const cx3 = (c: ColorLike) => { const k = col(c); return [k.r, k.g, k.b]; };
+  const lerp3 = (a: number[], b: number[], t: number) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  const smooth = (e0: number, e1: number, x: number) => { const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
 
   // Compose another prop type inside this one (at x,y,z / ry in the current local frame) with its colliders carried
   // along (B.col boxes are prop-local, so nested builds must be re-mapped).
-  function sub(B, type, x, y, z, ry, opts = {}) {
+  function sub(B: Builder, type: string, x: number, y: number, z: number, ry: number, opts = {}) {
     const def = D[type];
     if (!def) return;
     const n0 = B.cols.length, ao = B.aoBase;
@@ -95,13 +112,15 @@ export function registerMarinaDock(D, H) {
     }
   }
   // local-frame collider helper: centre + size
-  const colBox = (B, x, y, z, w, h, d) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2);
+  const colBox = (B: Builder, x: number, y: number, z: number, w: number, h: number, d: number) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2);
 
   // ------------------------------------------------------------------------------------------ stroke font
   // Rounded bold sans (cap height 1): centre-line strokes, round caps + round joins, bevelled front, flat back.
-  const EA = (cx, cy, rx, ry, a0, a1, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
-  const LOOP = (cx, cy, rx, ry, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
-  const GL = {
+  const EA = (cx: number, cy: number, rx: number, ry: number, a0: number, a1: number, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
+  const LOOP = (cx: number, cy: number, rx: number, ry: number, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
+  // 글리프: [폭, 획…], 획은 점 목록 또는 닫힌 곡선 { c: 점 목록 }
+  type Stroke = number[][] | { c: number[][] };
+  const GL: Record<string, Array<number | Stroke>> = {
     A: [0.66, [[0, 0], [0.33, 1], [0.66, 0]], [[0.13, 0.33], [0.53, 0.33]]],
     B: [0.58, [[0, 0], [0, 1]], [[0, 1], ...EA(0.3, 0.755, 0.245, 0.245, 90, -90, 12), [0, 0.51]], [[0, 0.51], ...EA(0.32, 0.255, 0.255, 0.255, 90, -90, 12), [0, 0]]],
     C: [0.64, EA(0.34, 0.5, 0.34, 0.5, 46, 314, 22)],
@@ -144,26 +163,26 @@ export function registerMarinaDock(D, H) {
     "'": [0, [[0, 1], [0, 0.8]]],
     '&': [0.7, [[0.7, 0], ...EA(0.27, 0.72, 0.17, 0.2, -40, 220, 12).reverse(), [0.08, 0.28], ...EA(0.26, 0.24, 0.24, 0.24, 180, 300, 6), [0.62, 0.36]]],
   };
-  const DOTS = { '·': [[0, 0.46]], '.': [[0, 0]], ':': [[0, 0.1], [0, 0.62]] };
+  const DOTS: Record<string, number[][]> = { '·': [[0, 0.46]], '.': [[0, 0]], ':': [[0, 0.1], [0, 0.62]] };
   const SPACE = 0.34;
 
   // Stroke ribbon: flat face at z = d (bevel b down to the sides), side walls to z0. b = 0 → no bevel; d = z0 → flat
   // (paint / stencil lettering: face only).
-  function ribbon(g, pts, closed, hw, b, d, z0) {
+  function ribbon(g: GB, pts: number[][], closed: boolean, hw: number, b: number, d: number, z0: number) {
     const n = pts.length, R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5;
-    const N = pts.map((p, i) => {
+    const N = pts.map((p: number[], i: number) => {
       const a = closed ? pts[(i - 1 + n) % n] : i > 0 ? pts[i - 1] : null;
       const c = closed ? pts[(i + 1) % n] : i < n - 1 ? pts[i + 1] : null;
-      const nrm = (u, v) => { const dx = v[0] - u[0], dy = v[1] - u[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; };
+      const nrm = (u: number[], v: number[]) => { const dx = v[0] - u[0], dy = v[1] - u[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; };
       const n1 = a ? nrm(a, p) : null, n2 = c ? nrm(p, c) : null;
-      if (!n1) return [n2[0], n2[1], 1];
+      if (!n1) return [n2![0], n2![1], 1];
       if (!n2) return [n1[0], n1[1], 1];
       let mx = n1[0] + n2[0], my = n1[1] + n2[1]; const ml = Math.hypot(mx, my) || 1; mx /= ml; my /= ml;
       return [mx, my, Math.min(1.6, 1 / Math.max(0.3, mx * n2[0] + my * n2[1]))];
     });
-    const rings = pts.map((p, i) => {
+    const rings = pts.map((p: number[], i: number) => {
       const [nx, ny, k] = N[i];
-      const at = (s) => [p[0] + nx * k * s, p[1] + ny * k * s];
+      const at = (s: number) => [p[0] + nx * k * s, p[1] + ny * k * s];
       const hi = bev ? hw - b : hw, Li = at(hi), Lo = at(hw), Ri = at(-hi), Ro = at(-hw), dz = bev ? b : 0;
       const r = [g.v(Li[0], Li[1], d, 0, 0, 1), g.v(Ri[0], Ri[1], d, 0, 0, 1)];
       if (bev) r.push(g.v(Li[0], Li[1], d, nx * R, ny * R, R), g.v(Lo[0], Lo[1], d - b, nx * R, ny * R, R), g.v(Ri[0], Ri[1], d, -nx * R, -ny * R, R), g.v(Ro[0], Ro[1], d - b, -nx * R, -ny * R, R));
@@ -177,9 +196,9 @@ export function registerMarinaDock(D, H) {
     }
   }
   // round cap / join: disc (a0..a1 = 0..TAU) or a half disc facing an open stroke end
-  function disc(g, cx, cy, r, b, d, z0, seg, a0 = 0, a1 = TAU) {
+  function disc(g: GB, cx: number, cy: number, r: number, b: number, d: number, z0: number, seg: number, a0 = 0, a1 = TAU) {
     const R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5, ri = bev ? r - b : r, full = a1 - a0 > TAU - 1e-4;
-    const c0 = g.v(cx, cy, d, 0, 0, 1), f = [], bi = [], bo = [], wt = [], wb = [];
+    const c0 = g.v(cx, cy, d, 0, 0, 1), f: number[] = [], bi: number[] = [], bo: number[] = [], wt: number[] = [], wb: number[] = [];
     const n = full ? seg : seg + 1;
     for (let k = 0; k < n; k++) {
       const a = a0 + ((a1 - a0) * k) / seg, cs = Math.cos(a), sn = Math.sin(a);
@@ -196,9 +215,9 @@ export function registerMarinaDock(D, H) {
   }
   // glyph geometry in cap units (baseline y = 0, cap y = 1, back at z = 0, face at z = dep); returns { geo, adv }.
   // dep = 0 → flat painted lettering (face only); ds = round-cap segments.
-  function glyph(ch, wt, dep, bev, ds = 10) {
+  function glyph(ch: string, wt: number, dep: number, bev: number, ds = 10): { geo: THREE.BufferGeometry | null; adv: number } {
     return tpl(['gl', ch, wt, dep, bev, ds].map(kf).join('|'), () => {
-      const s = 1 - wt, hw = wt / 2, T = (p) => [hw + p[0] * s, hw + p[1] * s];
+      const s = 1 - wt, hw = wt / 2, T = (p: number[]) => [hw + p[0] * s, hw + p[1] * s];
       const g = new GB();
       const b = Math.min(bev, hw * 0.6);
       if (DOTS[ch]) {
@@ -207,12 +226,12 @@ export function registerMarinaDock(D, H) {
       }
       const def = GL[ch];
       if (!def) return { geo: null, adv: SPACE };
-      const [w, ...strokes] = def;
-      strokes.forEach((st, si) => {
+      const [w, ...strokes] = def as [number, ...Stroke[]];
+      strokes.forEach((st, si: number) => {
         const d = dep > 0 ? dep - si * 0.006 : si * 0.0004;
         const closed = !Array.isArray(st);
-        let pts = (closed ? st.c : st).map(T);
-        pts = pts.filter((p, i) => i === 0 || Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 1e-4);
+        let pts = (Array.isArray(st) ? st : st.c).map(T);
+        pts = pts.filter((p: number[], i: number) => i === 0 || Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 1e-4);
         if (closed) { ribbon(g, pts, true, hw, b, d, 0); return; }
         // split at sharp turns (round join discs there), round caps at both ends
         let cur = [pts[0]];
@@ -228,17 +247,17 @@ export function registerMarinaDock(D, H) {
         }
         if (cur.length > 1) ribbon(g, cur, false, hw, b, d, 0);
         // half-disc caps at the two open ends (facing outward), full discs at the sharp joints
-        const endCap = (p, q) => { const a = Math.atan2(p[1] - q[1], p[0] - q[0]); disc(g, p[0], p[1], hw, b, d, 0, Math.max(3, Math.round(ds / 2)), a - HP, a + HP); };
+        const endCap = (p: number[], q: number[]) => { const a = Math.atan2(p[1] - q[1], p[0] - q[0]); disc(g, p[0], p[1], hw, b, d, 0, Math.max(3, Math.round(ds / 2)), a - HP, a + HP); };
         endCap(pts[0], pts[1]); endCap(pts[pts.length - 1], pts[pts.length - 2]);
         for (const p of joints.slice(2)) disc(g, p[0], p[1], hw, b, d, 0, ds);
       });
       return { geo: g.geo(), adv: w * s + wt };
     });
   }
-  const textW = (str, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
+  const textW = (str: string, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
   // Lay out a line of letters facing +Z in the current frame (raised channel letters, or flat paint with flat: true).
   // Returns the width (m).
-  function letters(B, str, o = {}) {
+  function letters(B: Builder, str: string, o: LetterOpts = {}) {
     const h = o.h ?? 0.3, wt = o.wt ?? 0.17, flat = !!o.flat;
     const dep = flat ? 0 : o.dep ?? 0.12, bev = flat ? 0 : o.bev ?? (h < 0.34 ? 0 : 0.03), track = o.track ?? 0.12;
     const ds = o.ds ?? (flat || h < 0.12 ? 6 : 8);
@@ -262,12 +281,12 @@ export function registerMarinaDock(D, H) {
   }
 
   // 7-segment LED digits (unit cell 0.62 × 1, slight italic): lit segments on 'glow', the unlit "ghost 8" on 'paint'
-  const SEG7 = { a: [[0.1, 1], [0.46, 1]], b: [[0.53, 0.94], [0.53, 0.56]], c: [[0.53, 0.44], [0.53, 0.06]], d: [[0.1, 0], [0.46, 0]], e: [[0.03, 0.44], [0.03, 0.06]], f: [[0.03, 0.94], [0.03, 0.56]], g: [[0.1, 0.5], [0.46, 0.5]] };
+  const SEG7: Record<string, number[][]> = { a: [[0.1, 1], [0.46, 1]], b: [[0.53, 0.94], [0.53, 0.56]], c: [[0.53, 0.44], [0.53, 0.06]], d: [[0.1, 0], [0.46, 0]], e: [[0.03, 0.44], [0.03, 0.06]], f: [[0.03, 0.94], [0.03, 0.56]], g: [[0.1, 0.5], [0.46, 0.5]] };
   const DIG = ['abcdef', 'bc', 'abged', 'abgcd', 'fgbc', 'afgcd', 'afgedc', 'abc', 'abcdefg', 'abcdfg'];
-  function segGeo(key) {
+  function segGeo(key: string) {
     return tpl('seg7|' + key, () => {
       const g = new GB(), t = 0.1, sk = 0.09;
-      const put = (x, y) => g.v(x + y * sk, y, 0, 0, 0, 1);
+      const put = (x: number, y: number) => g.v(x + y * sk, y, 0, 0, 0, 1);
       for (const ch of key) {
         if (ch === '.') { const q = [put(0.6, 0), put(0.68, 0), put(0.68, 0.08), put(0.6, 0.08)]; g.quad(q[0], q[1], q[2], q[3]); continue; }
         const [p0, p1] = SEG7[ch], dx = p1[0] - p0[0], dy = p1[1] - p0[1], l = Math.hypot(dx, dy), ux = dx / l, uy = dy / l, nx = -uy, ny = ux;
@@ -279,7 +298,7 @@ export function registerMarinaDock(D, H) {
     });
   }
   // a row of LED digits, e.g. '1.89' (the '.' belongs to the digit before it); h = digit height, faces +Z
-  function ledText(B, str, x, y, z, h, c = K.led, glow = 2.4) {
+  function ledText(B: Builder, str: string, x: number, y: number, z: number, h: number, c = K.led, glow = 2.4) {
     let cx = x;
     for (let i = 0; i < str.length; i++) {
       const ch = str[i];
@@ -293,13 +312,13 @@ export function registerMarinaDock(D, H) {
   }
   // plain (unbevelled) box for tiny parts: 12 triangles
   const pboxGeo = () => tpl('pbox', () => new THREE.BoxGeometry(1, 1, 1));
-  const pbox = (B, mat, c, w, h, d, x, y, z, o = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
+  const pbox = (B: Builder, mat: string, c: ColorLike, w: number, h: number, d: number, x: number, y: number, z: number, o: PartOpts = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
 
   // ------------------------------------------------------------------------------------------ pier timber
   const WATER = -1.6;
   // Tarred timber pile, baked two-tone: tar below the splash zone, weathered grey-brown above with vertical grain
   // streaks, lighter end grain on the cut top. Local origin at the pile axis, y = world height.
-  function pileGeo(top, r, seg, seed) {
+  function pileGeo(top: number, r: number, seg: number, seed: number) {
     return tpl(['pile', top, r, seg, seed % 5].map(kf).join('|'), () => {
       const prof = [[r * 1.06, -2.9], [r * 1.045, -1.3], [r * 1.02, -0.92], [r, top - 0.045], null, [r, top - 0.045], [r * 0.84, top], null, [r * 0.84, top], [0, top + 0.016]];
       const g = latheGeo(prof, seg);
@@ -323,9 +342,9 @@ export function registerMarinaDock(D, H) {
     });
   }
   // lumpy mussel collar at the waterline: blue-black shell clumps with pale barnacle flecks, tucked tight at the top
-  function musselGeo(r, seg, seed) {
+  function musselGeo(r: number, seg: number, seed: number) {
     return tpl(['mussel', r, seg, seed % 4].map(kf).join('|'), () => {
-      const g = new GB(), ys = [-1.84, -1.66, -1.5], rows = [];
+      const g = new GB(), ys = [-1.84, -1.66, -1.5], rows: number[][] = [];
       const cM = cx3(K.mussel), cM2 = cx3('#34394a'), cB = cx3('#9a978c'), cW = cx3('#3b4a33');
       ys.forEach((y, j) => {
         const row = [];
@@ -348,14 +367,14 @@ export function registerMarinaDock(D, H) {
     });
   }
   // rope turns wrapped round a pile (helix), local origin at the pile axis / bottom turn
-  function wrapGeo(r, turns, rr, radial) {
+  function wrapGeo(r: number, turns: number, rr: number, radial: number) {
     return tpl(['wrap', r, turns, rr, radial].map(kf).join('|'), () => {
       const pts = [], n = Math.round(turns * 9);
       for (let i = 0; i <= n; i++) { const t = (i / n) * turns * TAU; pts.push([Math.cos(t) * (r + rr * 0.8), (i / n) * turns * rr * 2.05, Math.sin(t) * (r + rr * 0.8)]); }
       return tubeGeo(pts, rr, radial);
     });
   }
-  function pile(B, x, z, top, r, o = {}) {
+  function pile(B: Builder, x: number, z: number, top: number, r: number, o: PileOpts = {}) {
     const seg = Math.max(5, B.seg(o.seg ?? (o.cap ? 7 : 6))), seed = Math.floor(B.r(0, 97));
     B.add(o.cap ? 'wood' : NS('wood'), pileGeo(top, r, seg, seed), 'white', x, 0, z, { ry: B.r(0, TAU), ao: false });
     B.add(NS('rubber'), musselGeo(r * 1.04, seg, seed), 'white', x, 0, z, { ry: B.r(0, TAU), ao: false });
@@ -366,7 +385,7 @@ export function registerMarinaDock(D, H) {
   }
 
   // stainless horn cleat on a base plate (length along local X), pos = deck point
-  function cleat(B, x, y, z, ry, L = 0.3, c = K.stainless) {
+  function cleat(B: Builder, x: number, y: number, z: number, ry: number, L = 0.3, c = K.stainless) {
     B.push(x, y, z, ry);
     pbox(B, NS('metal'), shade(c, 0.86), L * 0.62, 0.014, 0.07, 0, 0.007, 0);
     for (const sx of [-1, 1]) B.lathe(NS('metal'), c, [[0.03, 0.012], [0.02, 0.07], [0, 0.074]], sx * L * 0.2, 0, 0, { seg: 6 });
@@ -377,7 +396,7 @@ export function registerMarinaDock(D, H) {
   }
 
   // black cylindrical (inflatable) fender, axis along local X when horizontal; hangs by a line from the deck edge
-  function fender(B, x, y, z, o = {}) {
+  function fender(B: Builder, x: number, y: number, z: number, o: FenderOpts = {}) {
     const L = o.len ?? 0.62, r = o.r ?? 0.11, vert = !!o.vert, c = o.color ?? K.fender;
     B.push(x, y, z, 0, 0, vert ? HP : 0);
     B.lathe(NS('gloss'), c, [[0, -L / 2 - 0.03], [r * 0.5, -L / 2 - 0.02], [r * 0.9, -L / 2 + r * 0.4], [r, -L / 2 + r], [r, L / 2 - r], [r * 0.9, L / 2 - r * 0.4], [r * 0.5, L / 2 + 0.02], [0, L / 2 + 0.03]], 0, 0, 0, { seg: 8, rz: HP });
@@ -395,7 +414,7 @@ export function registerMarinaDock(D, H) {
   }
 
   // stainless swim ladder on a slab face (face at z = 0, water +Z), grab hoops over the deck edge
-  function swimLadder(B, x, o = {}) {
+  function swimLadder(B: Builder, x: number, o: LadderOpts = {}) {
     const W = 0.46, z = 0.1, bot = -2.25, hoop = o.hoop ?? 0.78, c = K.stainless;
     B.push(x, 0, 0);
     for (const sx of [-1, 1]) {
@@ -417,14 +436,14 @@ export function registerMarinaDock(D, H) {
     desc: 'Pier / quay edge dressing along +X (slab face at z = 0, water on +Z, deck top y = 0): tarred timber fender piles with mussel line + rope wraps, weathered timber whaler with bolts, optional cleats, black cylinder fenders, a rubber D-fender strip, swim ladders. outer: piles rise above deck with galvanised caps (arena perimeter only).',
     params: { length: 'm (8)', outer: 'bool tall piles', spacing: 'pile spacing m (3.4)', s0: 'first pile offset (0.3)', s1: 'last pile offset (0.3)', skip: '[[s0,s1]] no piles/whaler', cleats: '[s] cleat positions', fenders: '[s] hung fenders', ladders: '[s] swim ladders', dfender: 'rubber strip', ext0: 'whaler extension at start (0)', ext1: 'at end (0)' },
     variants: 1, mount: 'wall',
-    build(B, o) {
+    build(B: Builder, o) {
       B.aoBase = null;
       const L = o.length ?? 8, outer = !!o.outer, sp = o.spacing ?? (outer ? 4.4 : 4.6), s0 = o.s0 ?? 0.3, s1 = o.s1 ?? 0.3;
-      const skip = o.skip || [], inSkip = (a, b = a) => skip.some(([p, q]) => b > p && a < q);
+      const skip = o.skip || [], inSkip = (a: number, b = a) => skip.some(([p, q]) => b > p && a < q);
       const r = outer ? 0.17 : 0.155, zc = 0.1 + r * 0.92, top = outer ? 0.82 + B.r(-0.04, 0.05) : -0.06;
       // piles
       const span = L - s0 - s1, n = Math.max(1, Math.round(span / sp) + 1);
-      const piles = [];
+      const piles: number[] = [];
       for (let i = 0; i < n; i++) {
         const s = n === 1 ? s0 + span / 2 : s0 + (span * i) / (n - 1);
         if (inSkip(s - r, s + r)) continue;
@@ -456,7 +475,7 @@ export function registerMarinaDock(D, H) {
         }
       }
       // hung / fixed hardware never clips a pile: slide it to the nearest clear gap
-      const snap = (s, half) => {
+      const snap = (s: number, half: number) => {
         const need = half + r + 0.05, hit = piles.some((p) => Math.abs(s - p) < need);
         if (!hit) return s;
         const edges = [-(o.ext0 ?? 0) + 0.05, ...piles, L + (o.ext1 ?? 0) - 0.05];
@@ -477,7 +496,7 @@ export function registerMarinaDock(D, H) {
 
   // ================================================================================================ required cover
   // ---- marina fuel dispenser: two-sided (displays on ±Z), DIESEL nozzle on +X, UNLEADED on -X; 0.8 × 0.8 × 1.25
-  function nozzle(B, x, y, z, side, grip) {
+  function nozzle(B: Builder, x: number, y: number, z: number, side: number, grip: string) {
     // pistol nozzle resting in its boot: grip + trigger guard + curved spout down into the boot
     B.push(x, y, z, 0, 0, side * -0.25);
     B.box('gloss', grip, 0.038, 0.15, 0.055, 0, 0.02, 0, { r: 0.016 });
@@ -489,7 +508,7 @@ export function registerMarinaDock(D, H) {
   D.fuelpump = {
     desc: 'Marina fuel dispenser (0.8 × 0.8 × 1.25, collider): spill tray, blue cabinet with doors + louvres, white head with LED price displays on both faces, DIESEL (+X) and UNLEADED (-X) nozzles in boots with looping hoses, FUEL letters, NO SMOKING + flammable labels, e-stop.',
     params: { price: 'diesel price text (1.89)', price2: 'unleaded price (2.14)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       const blue = K.fuelBlue, white = K.white;
       // spill tray + plinth
       B.box('metal', K.galvDk, 0.8, 0.05, 0.8, 0, 0.025, 0, { r: 0.015 });
@@ -546,7 +565,7 @@ export function registerMarinaDock(D, H) {
   D.dockbox = {
     desc: 'White fibreglass dock box: moulded tapered body on skids, domed lid with overhanging lip, stainless piano hinge + gas struts, hasp and brass padlock, recessed end handles, moulded nameplate, a coiled line on the lid. Local 1.8 (x) × 1.2 (z) × 1.0; front +Z.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       const W = 1.8, Dd = 1.2, Hh = 1.0, c = mixc(K.white, 'offwhite', 0.4);
       for (const sz of [-1, 1]) B.box('rubber', 'charcoal', W - 0.16, 0.05, 0.1, 0, 0.025, sz * (Dd / 2 - 0.12), { r: 0.018 });
       // tapered body: extruded trapezoid (wider at the top), rounded
@@ -579,7 +598,7 @@ export function registerMarinaDock(D, H) {
   D.pumpout = {
     desc: 'Marina service station (collider 1.6 × 2.2 × 1.8 local, front +Z; back 1.25 solid, open front 0.55 behind the barrier = rail): timber-clad shelter with a mono-pitch roof and PUMP OUT fascia letters, yellow vacuum pump-out unit with gauge and buttons, suction hose on a reel, blue potable-water standpipe with brass taps and a coiled hose, notice + lamp.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       const W = 1.6, Dd = 1.8, clad = mixc(K.cladding, K.white, 0.25), trim = K.white, pumpC = '#d8b04f';
       B.box('paint', K.concrete, W, 0.1, Dd, 0, 0.05, 0, { round: true, r: 0.03 });
       // back + side walls (planked), corner posts
@@ -633,7 +652,7 @@ export function registerMarinaDock(D, H) {
       // front barrier: posts + rails + a chain gate (the open front half is a rail collider, the back half solid)
       for (const x of [-W / 2 + 0.05, -0.05, W / 2 - 0.05]) B.box('metal', K.fuelYel, 0.07, 1.05, 0.07, x, 0.62, Dd / 2 - 0.05, { r: 0.02 });
       for (const yy of [0.62, 1.1]) B.cyl('metal', K.fuelYel, 0.022, W / 2 - 0.1, -W / 4 - 0.02, yy, Dd / 2 - 0.05, { rz: HP, seg: 6 });
-      B.tube('metal', K.galvDk, arcPts(0.37, 1.02, Dd / 2 - 0.05, 0.37, PI, TAU, 8).map((p, i, a) => P3(p[0], 1.02 - Math.sin((i / (a.length - 1)) * PI) * 0.12, p[2])), 0.01, { radial: 3 });
+      B.tube('metal', K.galvDk, arcPts(0.37, 1.02, Dd / 2 - 0.05, 0.37, PI, TAU, 8).map((p, i: number, a) => P3(p[0], 1.02 - Math.sin((i / (a.length - 1)) * PI) * 0.12, p[2])), 0.01, { radial: 3 });
       B.decal('lb6', 0.3, 0.075, -0.4, 0.86, Dd / 2 - 0.01);
       // notice on the back wall
       B.box('paint', K.white, 0.36, 0.5, 0.01, 0.25, 1.55, -Dd / 2 + 0.08, { r: 0.01 });
@@ -644,7 +663,7 @@ export function registerMarinaDock(D, H) {
   };
 
   // ---- keel-block stack (timber cribbing) 1.8 × 2.0 × 1.2: crossed layers, end grain, antifouling smudges, wedges
-  function beamGeo(L, t, seed) {
+  function beamGeo(L: number, t: number, seed: number) {
     return tpl(['beam', L, t, seed % 6].map(kf).join('|'), () => {
       const g = chamferBox(L, t, t, 0.018);
       const C = g.attributes.color, N = g.attributes.normal, P = g.attributes.position;
@@ -661,7 +680,7 @@ export function registerMarinaDock(D, H) {
   D.keelblocks = {
     desc: 'Boatyard keel-block crib (1.8 × 2.0 × 1.2, collider): six crossed layers of 200 mm timbers with end grain and antifouling smudges, carpeted top block with hardwood wedges, a steel boat stand leaning against it.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const t = 0.2, n = 6;
       for (let i = 0; i < n; i++) {
         const along = i % 2 === 0, y = t / 2 + i * t;
@@ -687,7 +706,7 @@ export function registerMarinaDock(D, H) {
   };
 
   // ---- quay crates 2.2 × 1.6 × 1.2: two braced export crates on pallets, a tarp half off, stencils, rope lashing
-  function crate(B, x, y, z, w, h, d, ry, tone) {
+  function crate(B: Builder, x: number, y: number, z: number, w: number, h: number, d: number, ry: number, tone: number) {
     B.push(x, y, z, ry);
     const wc = shade('woodlight', tone), dk = shade('wooddark', tone * 0.95);
     B.box('wood', wc, w - 0.03, h - 0.02, d - 0.03, 0, h / 2, 0, { r: 0.015 });
@@ -702,7 +721,7 @@ export function registerMarinaDock(D, H) {
   D.quaycrates = {
     desc: 'Quay cargo stack (2.2 × 1.6 × 1.2, collider): two braced timber export crates on pallets with painted HALYARD MARINA stencils and arrows, a blue tarp half drawn over one with rope lashings, a strapped fender bundle on top.',
     params: {}, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       const v = (o.variant ?? 0) % 2;
       for (const sx of [-1, 1]) {
         B.push(sx * 0.55, 0, 0);
@@ -757,7 +776,7 @@ export function registerMarinaDock(D, H) {
   // ================================================================================================ building kit
   // Everything below mounts flush on playable walls (≤ 0.12 m proud of the face, wall at local z = 0, facing +Z).
   // striped awning valance strip (scalloped), cached per width / colours; hangs from y = 0 down ~0.2 m
-  function valanceGeo(W, cA, cB) {
+  function valanceGeo(W: number, cA: string, cB: string) {
     return tpl(['val', W, cA, cB].map(kf).join('|'), () => {
       const g = new GB(), n = Math.max(2, Math.round(W / 0.2)), sw = W / n, vh = 0.13, ca = cx3(cA), cb = cx3(cB);
       for (let i = 0; i < n; i++) {
@@ -772,7 +791,7 @@ export function registerMarinaDock(D, H) {
     });
   }
   // rolled-in awning: cassette box + striped scalloped valance (projects 0.13 m)
-  function awningRolled(B, x, y, W, cA = K.fuelBlue, cB = K.white) {
+  function awningRolled(B: Builder, x: number, y: number, W: number, cA = K.fuelBlue, cB = K.white) {
     B.box('gloss', mixc(cA, K.white, 0.1), W + 0.06, 0.13, 0.12, x, y, 0.06, { round: true, r: 0.04 });
     for (const sx of [-1, 1]) B.box('metal', K.galvDk, 0.03, 0.18, 0.05, x + sx * (W / 2 + 0.05), y - 0.02, 0.025, { r: 0.01 });
     B.add('foliage', valanceGeo(W, cA, cB), 'white', x, y - 0.055, 0.125, {});
@@ -780,7 +799,7 @@ export function registerMarinaDock(D, H) {
   }
   // framed window (opening w × h, bottom-left at x - w/2, y): recessed glass, square frame members, bevelled sill,
   // optional mullions / transom / blind / louvred shutters
-  function windowUnit(B, x, y, w, h, o = {}) {
+  function windowUnit(B: Builder, x: number, y: number, w: number, h: number, o: WindowOpts = {}) {
     const fc = o.frame ?? K.frame, gc = o.glass ?? K.glass, t = o.t ?? 0.07, dz = o.dz ?? 0.06, P = o.ns ? NS('paint') : 'paint';
     pbox(B, NS('gloss'), gc, w, h, 0.02, x, y + h / 2, 0.012);
     pbox(B, P, fc, w + t * 2, t, dz, x, y + h + t / 2, dz / 2);
@@ -798,7 +817,7 @@ export function registerMarinaDock(D, H) {
     }
   }
   // glazed door with frame, kick plate, push bar / handle, threshold
-  function doorUnit(B, x, w, h, o = {}) {
+  function doorUnit(B: Builder, x: number, w: number, h: number, o: DoorOpts = {}) {
     const fc = o.frame ?? K.frameDk, leaf = o.leaf ?? K.frameDk, gl = o.glass ?? K.glass, dbl = !!o.double;
     for (const sx of [-1, 1]) pbox(B, 'paint', fc, 0.08, h + 0.08, 0.07, x + sx * (w / 2 + 0.04), (h + 0.08) / 2, 0.035);
     pbox(B, 'paint', fc, w + 0.16, 0.08, 0.07, x, h + 0.04, 0.035);
@@ -815,7 +834,7 @@ export function registerMarinaDock(D, H) {
     }
   }
   // flush sign board with raised letters (board centred at x, y); returns board width
-  function boardSign(B, text, x, y, o = {}) {
+  function boardSign(B: Builder, text: string, x: number, y: number, o: BoardOpts = {}) {
     const h = o.h ?? 0.22, pad = o.pad ?? h * 0.7, W = o.w ?? textW(text, o.wt ?? 0.17, o.track ?? 0.12) * h + pad * 2, Hb = o.hb ?? h + pad * 1.1;
     B.box(o.boardMat ?? 'gloss', o.board ?? K.fuelBlue, W, Hb, o.bd ?? 0.05, x, y, (o.bd ?? 0.05) / 2 + (o.z ?? 0), { round: true, r: Math.min(0.04, Hb * 0.2) });
     if (o.border) B.box('paint', o.border, W - 0.05, Hb - 0.05, 0.004, x, y, (o.bd ?? 0.05) + (o.z ?? 0) + 0.001, { r: 0.01 });
@@ -824,7 +843,7 @@ export function registerMarinaDock(D, H) {
     return W;
   }
   // fire-extinguisher cabinet (wall z = 0, 0.1 m proud): red box, glazed door showing the cylinder, label
-  function extinguisher(B, x, y) {
+  function extinguisher(B: Builder, x: number, y: number) {
     B.box('gloss', K.red, 0.3, 0.62, 0.1, x, y + 0.31, 0.05, { r: 0.02 });
     pbox(B, NS('gloss'), K.glassLt, 0.22, 0.44, 0.01, x, y + 0.34, 0.101);
     B.cyl(NS('gloss'), shade(K.red, 1.15), 0.06, 0.36, x, y + 0.32, 0.07, { seg: 10 });
@@ -835,15 +854,15 @@ export function registerMarinaDock(D, H) {
   D.fuelhut = {
     desc: 'Fuel-dock attendant hut dressing around a w × d × h block (pos = block base centre): door + awning (-Z), service hatch + awning (+Z), windows and FUEL PRICES boards (±X), roof trim, gutters + downpipes, double-sided FUEL · ICE · BAIT roof sign, rooftop AC and vent (roof pieces collide), extinguisher, NO SMOKING plates.',
     params: { w: 'm (3.4)', d: 'm (3.7)', h: 'm (2.7)', diesel: '1.89', unleaded: '2.14' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       B.aoBase = null;
       const W = o.w ?? 3.4, Dd = o.d ?? 3.7, Hh = o.h ?? 2.7;
-      const face = (side, fn) => { // side: 0 +Z, 1 +X, 2 -Z, 3 -X → local frame on that face (x along the face, z out)
+      const face = (side: number, fn: (L: number) => void) => { // side: 0 +Z, 1 +X, 2 -Z, 3 -X → local frame on that face (x along the face, z out)
         const ry = [0, HP, PI, -HP][side], off = side % 2 === 0 ? Dd / 2 : W / 2;
         B.push(Math.sin(ry) * off, 0, Math.cos(ry) * off, ry); fn(side % 2 === 0 ? W : Dd); B.pop();
       };
       // roof trim + gutters, corner beads
-      for (let side = 0; side < 4; side++) face(side, (L) => {
+      for (let side = 0; side < 4; side++) face(side, (L: number) => {
         B.box('paint', K.fuelBlue, L + 0.12, 0.2, 0.06, 0, Hh - 0.02, 0.03, { r: 0.02 });
         B.box('paint', K.white, L + 0.13, 0.035, 0.07, 0, Hh + 0.09, 0.03, { r: 0.012 });
         B.box('paint', mixc(K.white, K.concreteDk, 0.3), L + 0.02, 0.1, 0.04, 0, 0.05, 0.02, { r: 0.012 });
@@ -860,19 +879,20 @@ export function registerMarinaDock(D, H) {
       // +Z (pump side): service hatch with counter ledge + rolled awning
       face(0, (L) => {
         windowUnit(B, 0, 1.0, 1.5, 1.0, { frame: K.white, mull: 1, transom: 0.72 });
-        B.box('wood', K.woodlight ?? 'woodlight', 1.7, 0.05, 0.12, 0, 0.975, 0.06, { r: 0.012 });
+        B.box('wood', 'woodlight',   // (팔레트에 woodlight가 없어 이름 그대로 쓴다)
+           1.7, 0.05, 0.12, 0, 0.975, 0.06, { r: 0.012 });
         awningRolled(B, 0, 2.36, 1.8);
         B.decal('lb11', 0.52, 0.13, 0, 0.62, 0.012);
         B.decal('ferry', 0.45, 0.3, 1.25, 1.55, 0.012);
       });
       // ±X: window + price board
-      for (const side of [1, 3]) face(side, (L) => {
+      for (const side of [1, 3]) face(side, (L: number) => {
         windowUnit(B, -0.95, 1.05, 0.9, 0.9, { frame: K.white, mull: 0, blind: '#e6ddc8', lit: 0.8 });
         B.push(0.72, 0, 0);
         B.box('gloss', K.fuelBlueDk, 1.3, 1.02, 0.05, 0, 1.52, 0.025, { round: true, r: 0.03 });
         B.box('gloss', K.white, 1.2, 0.2, 0.012, 0, 1.9, 0.052, { r: 0.01 });
         letters(B, 'FUEL PRICES', { h: 0.085, x: 0, y: 1.857, z: 0.059, c: K.fuelBlueDk, flat: true, wt: 0.22, track: 0.1 });
-        for (const [row, name, price, cc] of [[0, 'DIESEL', o.diesel ?? '1.89', K.fuelYel], [1, 'UNLEADED', o.unleaded ?? '2.14', '#4f9a57']]) {
+        for (const [row, name, price, cc] of [[0, 'DIESEL', o.diesel ?? '1.89', K.fuelYel], [1, 'UNLEADED', o.unleaded ?? '2.14', '#4f9a57']] as Array<[number, string, string, string]>) {
           const yy = 1.58 - row * 0.3;
           B.box('paint', cc, 0.05, 0.2, 0.01, -0.56, yy, 0.052, { r: 0.006 });
           letters(B, name, { h: 0.06, x: -0.5, y: yy - 0.03, z: 0.052, c: K.white, flat: true, wt: 0.22, align: 'left' });
@@ -905,7 +925,7 @@ export function registerMarinaDock(D, H) {
   D.fueldocksign = {
     desc: 'Tall FUEL DOCK landmark: 6.4 m galvanised mast on a bolted base at the dock edge (pos), cantilever arm toward local -X over the water carrying a double-sided lit panel (FUEL / DOCK + nozzle icon) facing ±Z, gooseneck lamps, wind pennant. Only the mast collides.',
     params: { reach: 'arm length m (2.2)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       const Hm = 6.4, reach = o.reach ?? 2.2, pc = K.galv;
       B.box('metal', K.galvDk, 0.44, 0.04, 0.44, 0, 0.02, 0, { r: 0.012 });
       for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { B.cyl('metal', K.galvDk, 0.022, 0.04, sx * 0.16, 0.055, sz * 0.16, { seg: 6 }); B.cyl('metal', K.galvDk, 0.012, 0.05, sx * 0.16, 0.08, sz * 0.16, { seg: 5 }); }
@@ -949,14 +969,14 @@ export function registerMarinaDock(D, H) {
   // ================================================================================================ clubhouse
   // wall lantern (wall z = 0): bracket, carriage lantern with a warm glowing glass
   // flush marine bulkhead light (wall z = 0, 0.11 m proud): cast back plate, glowing half-dome lens, cage bars
-  function lantern(B, x, y) {
+  function lantern(B: Builder, x: number, y: number) {
     B.box('metal', K.club, 0.2, 0.2, 0.03, x, y, 0.015, { r: 0.012 });
     B.cyl('metal', K.club, 0.085, 0.03, x, y, 0.035, { rx: HP, seg: 10 });
     B.sph('glow', K.lamp, 0.07, x, y, 0.045, { ws: 10, hs: 4, half: true, rx: HP, glow: 1.7 });
     for (const a of [0, HP]) pbox(B, 'metal', K.club, 0.15, 0.014, 0.014, x, y, 0.1, { rz: a });
   }
   // pitched roof over x0..x1 × z0..z1 (ridge along X, eaves at yE, rise r): gable prism + two slate slabs + ridge cap
-  function gableRoof(B, x0, x1, z0, z1, yE, r, o = {}) {
+  function gableRoof(B: Builder, x0: number, x1: number, z0: number, z1: number, yE: number, r: number, o: RoofOpts = {}) {
     const L = x1 - x0, cx = (x0 + x1) / 2, d = z1 - z0, cz = (z0 + z1) / 2, rc = o.roof ?? '#5f6d7c', ov = o.ov ?? 0.18;
     B.add('paint', tpl(['gprism', d, r].map(kf).join('|'), () => extrudeGeo([[-d / 2, 0], [d / 2, 0], [0, r]], 1, 0.001)), o.wall ?? K.render, cx, yE, cz, { sx: L });
     const pitch = Math.atan2(r, d / 2), sl = Math.hypot(r, d / 2) + ov, t = 0.13;
@@ -972,7 +992,7 @@ export function registerMarinaDock(D, H) {
   D.clubhouse = {
     desc: 'HALYARD MARINA yacht club (pos = centre of the back wall face, local z = 0 is the wall face, building behind it): ground-floor fittings on the playable wall (THE GALLEY café + CHANDLERY shopfronts, clubroom French doors behind the terrace, lanterns, rolled awnings, cornice), upper storey + roofs + central gabled pavilion with the big HALYARD MARINA · YACHT CLUB sign, cupola, nautical flagstaff with burgee + signal pennants, chimneys, and the lower building + quay extension behind the wall for outside views. Upper storey collides (camera-safe); nothing sits in front of z = 0 except flush trims ≤ 0.1 m.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       B.aoBase = null;
       const FZ = -0.2, BZ = -6.1, WT = 4.6, EW = 7.7, EP = 9.4, render = K.render, trim = '#f7f4ee', navy = K.club, gold = K.clubGold;
       // ---------------- ground floor fittings on the playable wall face
@@ -986,7 +1006,7 @@ export function registerMarinaDock(D, H) {
       windowUnit(B, -9.9, 0.62, 1.6, 2.0, { frame: trim, mull: 1, transom: 0.74, blind: '#efe2c4', lit: 0.85 });
       doorUnit(B, -12.95, 1.7, 2.45, { double: true, frame: navy, leaf: navy, pushbar: true, glassH: 0.7 });
       for (const [x, w] of [[-16.0, 2.1], [-12.95, 2.0], [-9.9, 1.9]]) awningRolled(B, x, 2.98, w, navy, trim);
-      for (const [x, y, n] of [[-16.55, 1.7, 'menu'], [-9.45, 1.55, 'pst11'], [-15.4, 1.5, 'chalk2']]) B.decal(n, n === 'pst11' ? 0.36 : 0.44, n === 'pst11' ? 0.54 : 0.32, x, y, 0.024);
+      for (const [x, y, n] of [[-16.55, 1.7, 'menu'], [-9.45, 1.55, 'pst11'], [-15.4, 1.5, 'chalk2']] as Array<[number, number, string]>) B.decal(n, n === 'pst11' ? 0.36 : 0.44, n === 'pst11' ? 0.54 : 0.32, x, y, 0.024);
       boardSign(B, 'THE GALLEY', -12.95, 3.72, { h: 0.3, board: navy, c: '#6e5530', bd: 0.05, pad: 0.22, wt: 0.18, track: 0.14, lit: 1.3, litC: gold });
       for (const x of [-17.55, -14.35, -11.45, -8.75]) lantern(B, x, 2.3);
       // back door + meter cabinet behind the kiosk, downpipes
@@ -998,7 +1018,7 @@ export function registerMarinaDock(D, H) {
       windowUnit(B, 10.6, 0.62, 2.6, 2.0, { frame: trim, mull: 2, transom: 0.74, blind: '#efe2c4', lit: 0.85 });
       doorUnit(B, 13.35, 1.0, 2.35, { frame: navy, leaf: navy, glassH: 0.7 });
       awningRolled(B, 10.6, 2.98, 2.9, navy, trim); awningRolled(B, 13.35, 2.98, 1.2, navy, trim);
-      for (const [x, y, n] of [[9.8, 1.6, 'pst4'], [11.55, 1.5, 'pst8'], [10.7, 0.95, 'lb11']]) B.decal(n, n === 'lb11' ? 0.6 : 0.36, n === 'lb11' ? 0.15 : 0.54, x, y, 0.024);
+      for (const [x, y, n] of [[9.8, 1.6, 'pst4'], [11.55, 1.5, 'pst8'], [10.7, 0.95, 'lb11']] as Array<[number, number, string]>) B.decal(n, n === 'lb11' ? 0.6 : 0.36, n === 'lb11' ? 0.15 : 0.54, x, y, 0.024);
       boardSign(B, 'CHANDLERY', 11.5, 3.72, { h: 0.28, board: navy, c: '#6e5530', bd: 0.05, pad: 0.2, wt: 0.18, track: 0.14, lit: 1.3, litC: gold });
       for (const x of [9.05, 12.25, 14.2]) lantern(B, x, 2.3);
       // strip above the boathouse roof (y 3.2 … 4.6) + east end
@@ -1117,19 +1137,19 @@ export function registerMarinaDock(D, H) {
 
   // ================================================================================================ quay buildings
   // face helper for block dressings: side 0 +Z, 1 +X, 2 -Z, 3 -X → frame on that face (x along the face, z out)
-  function onFace(B, W, Dd, side, fn) {
+  function onFace(B: Builder, W: number, Dd: number, side: number, fn: (L: number) => void) {
     const ry = [0, HP, PI, -HP][side], off = side % 2 === 0 ? Dd / 2 : W / 2;
     B.push(Math.sin(ry) * off, 0, Math.cos(ry) * off, ry); fn(side % 2 === 0 ? W : Dd); B.pop();
   }
   // roof edge trim + corner beads + skirt for a flat-roofed block (W × Dd × Hh)
-  function blockTrim(B, W, Dd, Hh, c, sides = [0, 1, 2, 3]) {
-    for (const side of sides) onFace(B, W, Dd, side, (L) => {
+  function blockTrim(B: Builder, W: number, Dd: number, Hh: number, c: ColorLike, sides = [0, 1, 2, 3]) {
+    for (const side of sides) onFace(B, W, Dd, side, (L: number) => {
       B.box('paint', c, L + 0.1, 0.16, 0.05, 0, Hh - 0.02, 0.025, { r: 0.015 });
       pbox(B, 'paint', shade(c, 1.12), L + 0.12, 0.04, 0.06, 0, Hh + 0.07, 0.025);
       pbox(B, 'paint', mixc(c, K.concreteDk, 0.5), L + 0.02, 0.12, 0.035, 0, 0.06, 0.017);
     });
   }
-  function downpipe(B, x, Hh, c) {
+  function downpipe(B: Builder, x: number, Hh: number, c: ColorLike) {
     B.cyl('paint', c, 0.045, Hh - 0.3, x, (Hh - 0.3) / 2 + 0.08, 0.07, { seg: 8 });
     B.cyl('paint', c, 0.055, 0.14, x, 0.08, 0.12, { rx: 0.95, seg: 8 });
     B.box('paint', c, 0.16, 0.08, 0.14, x, Hh - 0.16, 0.07, { r: 0.02 });
@@ -1140,11 +1160,11 @@ export function registerMarinaDock(D, H) {
   D.boathouse = {
     desc: 'Boathouse dressing around a W × D × H block (pos = block base centre): big ribbed roller door with guide rails + drum box + hazard edges + KEEP CLEAR, pedestrian door, BOATHOUSE letters, side windows, gutters/downpipes, roof trim; roof kit (turbine vents, glazed rooflight, solar panels) collides.',
     params: { w: 'm (8)', d: 'm (4.8)', h: 'm (3.2)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       B.aoBase = null;
       const W = o.w ?? 8, Dd = o.d ?? 4.8, Hh = o.h ?? 3.2, trim = K.white, dk = '#2f4a52';
       blockTrim(B, W, Dd, Hh, trim, [0, 1, 3]);
-      onFace(B, W, Dd, 0, (L) => {
+      onFace(B, W, Dd, 0, (L: number) => {
         // roller door (4.3 × 2.7) at x -0.7
         const dx = -0.7, dw = 4.3, dh = 2.36;
         for (const sx of [-1, 1]) { pbox(B, 'metal', K.galvDk, 0.12, dh + 0.1, 0.1, dx + sx * (dw / 2 + 0.06), (dh + 0.1) / 2, 0.05); B.decal('hazard', dh * 0.42, 0.1, dx + sx * (dw / 2 + 0.06), dh * 0.23, 0.101, { rz: HP, tint: K.fuelYel }); }
@@ -1160,7 +1180,7 @@ export function registerMarinaDock(D, H) {
         letters(B, 'BOATHOUSE', { h: 0.24, x: dx, y: 2.78, z: 0.004, c: K.club, dep: 0.12, wt: 0.2, track: 0.16 });
         downpipe(B, L / 2 - 0.12, Hh, trim);
       });
-      for (const side of [1, 3]) onFace(B, W, Dd, side, (L) => {
+      for (const side of [1, 3]) onFace(B, W, Dd, side, (L: number) => {
         windowUnit(B, -0.9, 1.1, 1.2, 1.05, { frame: trim, mull: 1, blind: '#d9e1dc' });
         windowUnit(B, 1.0, 1.1, 1.2, 1.05, { frame: trim, mull: 1 });
         downpipe(B, -L / 2 + 0.14, Hh, trim);
@@ -1190,11 +1210,11 @@ export function registerMarinaDock(D, H) {
   D.harbouroffice = {
     desc: 'Harbour-office kiosk dressing around a W × D × H block (pos = block base centre): service window with rolled awning, counter and bell on +X, HARBOUR OFFICE fascia letters, notice board with notices, door + window on +Z, window on -X, roof trim, antenna mast with blinking light + dish + flagpole (roof pieces collide).',
     params: { w: 'm (4.8)', d: 'm (3.4)', h: 'm (2.8)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       B.aoBase = null;
       const W = o.w ?? 4.8, Dd = o.d ?? 3.4, Hh = o.h ?? 2.8, trim = K.club;
       blockTrim(B, W, Dd, Hh, trim, [0, 1, 3]);
-      onFace(B, W, Dd, 1, (L) => {
+      onFace(B, W, Dd, 1, (L: number) => {
         windowUnit(B, -0.35, 0.95, 1.5, 1.1, { frame: K.white, mull: 1, transom: 0.7 });
         B.box('wood', 'woodlight', 1.7, 0.05, 0.12, -0.35, 0.93, 0.06, { r: 0.012 });
         B.cyl('metal', '#c9a24b', 0.04, 0.03, 0.2, 0.97, 0.08, { seg: 10 }); B.sph('metal', '#c9a24b', 0.035, 0.2, 0.995, 0.08, { ws: 8, hs: 4, half: true });
@@ -1227,7 +1247,7 @@ export function registerMarinaDock(D, H) {
   };
 
   // ---- café set: round bistro table, 3 chairs, striped parasol (collider = table + chairs)
-  function parasolTop(B, x, y, z, R, cA, cB, n = 8) {
+  function parasolTop(B: Builder, x: number, y: number, z: number, R: number, cA: string, cB: string, n = 8) {
     B.add('foliage', tpl(['para', R, cA, cB, n].map(kf).join('|'), () => {
       const g = new GB(), ca = cx3(cA), cb = cx3(cB), rise = 0.38, sub = 3;
       for (let i = 0; i < n; i++) {
@@ -1249,7 +1269,7 @@ export function registerMarinaDock(D, H) {
     B.sph('gloss', cA, 0.045, x, y + 0.42, z, { ws: 8, hs: 6 });
     for (let i = 0; i < n; i++) { const a = ((i + 0.5) / n) * TAU; B.tube('metal', K.galv, [P3(x, y - 0.32, z), P3(x + Math.cos(a) * R * 0.5, y + 0.14, z + Math.sin(a) * R * 0.5)], 0.007, { radial: 3 }); }
   }
-  function bistroChair(B, x, z, ry, c) {
+  function bistroChair(B: Builder, x: number, z: number, ry: number, c: ColorLike) {
     B.push(x, 0, z, ry);
     for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) B.tube('metal', c, [P3(sx * 0.19, 0, sz * 0.19), P3(sx * 0.17, 0.45, sz * 0.17)], 0.013, { radial: 5 });
     B.box('wood', 'woodlight', 0.42, 0.035, 0.4, 0, 0.465, 0, { r: 0.012 });
@@ -1260,7 +1280,7 @@ export function registerMarinaDock(D, H) {
   D.cafeset = {
     desc: 'Café terrace set: round bistro table with a painted steel base, three slatted bistro chairs, striped parasol (2.3 m), a little menu stand and cups. Collider covers table + chairs.',
     params: { color: 'parasol stripe (club navy)' }, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       const cA = o.color ?? K.club, v = (o.variant ?? 0) % 2, fc = '#2f3a47';
       B.lathe('metal', fc, [[0, 0], [0.26, 0], [0.27, 0.02], [0.08, 0.06], [0.03, 0.1], [0.028, 0.7], [0, 0.7]], 0, 0, 0, { seg: 12 });
       B.cyl('wood', 'woodlight', 0.36, 0.035, 0, 0.73, 0, { seg: 18, bevel: 0.01 });
@@ -1277,7 +1297,7 @@ export function registerMarinaDock(D, H) {
   D.mapboard = {
     desc: 'HALYARD MARINA site map on two galvanised posts (front +Z): navy frame, pale blue water with the piers laid out in cream, berth numbers as ticks, a red YOU ARE HERE dot, header letters, little roof.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       const W = 1.5, Hb = 1.0, y0 = 1.0;
       for (const sx of [-1, 1]) { B.box('metal', K.galv, 0.07, y0 + Hb + 0.2, 0.07, sx * (W / 2 + 0.02), (y0 + Hb + 0.2) / 2, 0, { r: 0.015 }); B.box('paint', K.concrete, 0.22, 0.08, 0.22, sx * (W / 2 + 0.02), 0.04, 0, { r: 0.02 }); }
       B.box('gloss', K.club, W + 0.08, Hb + 0.08, 0.06, 0, y0 + Hb / 2, 0.02, { r: 0.02 });
@@ -1285,7 +1305,7 @@ export function registerMarinaDock(D, H) {
       for (let i = 0; i < 5; i++) pbox(B, 'paint', '#4f8ab3', W - 0.08, 0.006, 0.002, 0, y0 + 0.2 + i * 0.13, 0.057);
       letters(B, 'HALYARD MARINA', { h: 0.08, x: 0, y: y0 + Hb - 0.14, z: 0.052, c: K.white, flat: true, wt: 0.22, track: 0.12 });
       // pier plan (x: -0.7..0.7 ↔ world x, y: map z) in cream
-      const M = (x0, x1, z0, z1) => { const sx = 0.68 / 24, sy = (Hb - 0.34) / 92; pbox(B, 'paint', '#f4ead2', Math.abs(x1 - x0) * sx, Math.abs(z1 - z0) * sy, 0.004, ((x0 + x1) / 2) * sx, y0 + 0.05 + (Hb - 0.34) / 2 + ((z0 + z1) / 2) * sy, 0.058); };
+      const M = (x0: number, x1: number, z0: number, z1: number) => { const sx = 0.68 / 24, sy = (Hb - 0.34) / 92; pbox(B, 'paint', '#f4ead2', Math.abs(x1 - x0) * sx, Math.abs(z1 - z0) * sy, 0.004, ((x0 + x1) / 2) * sx, y0 + 0.05 + (Hb - 0.34) / 2 + ((z0 + z1) / 2) * sy, 0.058); };
       for (const f of [1, -1]) {
         M(-24 * f, 24 * f, -46 * f, -31 * f); M(-4.5, 4.5, -31 * f, -8.6 * f); M(-24 * f, -19.5 * f, -31 * f, 0); M(-19.5 * f, -4.5 * f, -12.4 * f, -10.4 * f);
         M(-19.5 * f, -12.5 * f, -26.4 * f, -25.2 * f); M(10 * f, 24 * f, -31 * f, -7 * f); M(19.5 * f, 24 * f, -7 * f, 0); M(4.5 * f, 10 * f, -26 * f, -24 * f);
@@ -1299,11 +1319,11 @@ export function registerMarinaDock(D, H) {
   };
 
   // ---- kayak rack: galvanised frame with padded arms, three sit-on-top kayaks and paddles (front +Z, along X)
-  function kayakGeo(L, Wd, c1) {
+  function kayakGeo(L: number, Wd: number, c1: ColorLike) {
     return tpl(['kayak', L, Wd, c1].map(kf).join('|'), () => {
       const prof = [];
       for (let i = 0; i <= 12; i++) { const t = i / 12, x = (t - 0.5) * L, w = Wd / 2 * Math.pow(Math.sin(t * PI), 0.62); prof.push([x, w]); }
-      const g = new GB(), ring = 8, rows = [], c = cx3(c1), cd = cx3(shade(c1, 0.72));
+      const g = new GB(), ring = 8, rows: number[][] = [], c = cx3(c1), cd = cx3(shade(c1, 0.72));
       prof.forEach(([x, w]) => {
         const row = [];
         for (let k = 0; k <= ring; k++) {
@@ -1324,14 +1344,14 @@ export function registerMarinaDock(D, H) {
   D.kayakrack = {
     desc: 'Galvanised kayak rack (along +X, front +Z): two A-frame uprights with padded arms, three sit-on-top kayaks (hull + deck + seat wells), paddles leaning at the end.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       const L = 3.4, c = K.galv;
       for (const x of [-1.0, 1.0]) {
         for (const sz of [-1, 1]) B.tube('metal', c, [P3(x, 0.02, sz * 0.32), P3(x, 1.6, sz * 0.06)], 0.025, { radial: 6 });
         for (const yy of [0.45, 0.95, 1.45]) { pbox(B, 'metal', c, 0.05, 0.05, 0.9, x, yy, 0.05); B.box('rubber', 'charcoal', 0.08, 0.06, 0.34, x, yy + 0.05, 0.28, { r: 0.02 }); }
         B.box('metal', K.galvDk, 0.1, 0.03, 0.7, x, 0.015, 0, { r: 0.01 });
       }
-      [['#e36a4a', 0.5], ['#e3b23c', 1.0], ['#3f8fb0', 1.5]].forEach(([kc, yy], i) => {
+      ([['#e36a4a', 0.5], ['#e3b23c', 1.0], ['#3f8fb0', 1.5]] as Array<[string, number]>).forEach(([kc, yy], i) => {
         B.add('gloss', kayakGeo(L - 0.1 * i, 0.72, kc), 'white', 0.05 * (i - 1), yy + 0.12, 0.22, { ry: 0.02 * (i - 1) });
         B.box('rubber', 'charcoal', 0.5, 0.02, 0.36, -0.1, yy + 0.17, 0.22, { r: 0.01 });
       });
@@ -1345,7 +1365,7 @@ export function registerMarinaDock(D, H) {
   D.shorepower = {
     desc: 'Marina shore-power pedestal (front +Z, 1.2 m): rounded two-tone fibreglass body on a steel base, glowing dome light, two blue 16 A sockets with flip lids + one plugged-in lead running off, meter window, blinking status LEDs, a brass tap with a coiled hose on the side, berth number.',
     params: { berth: 'label text (A12)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       const c = '#e9ebe6', dk = '#3f4a58';
       B.box('metal', K.galvDk, 0.4, 0.05, 0.34, 0, 0.025, 0, { r: 0.012 });
       B.box('gloss', dk, 0.32, 0.3, 0.26, 0, 0.2, 0, { round: true, r: 0.03 });
@@ -1379,7 +1399,7 @@ export function registerMarinaDock(D, H) {
   D.bollardlight = {
     desc: 'Low dock bollard light (0.85 m): cast base, anodised post, louvred glowing head under a domed cap.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       const c = '#39424d';
       B.lathe('metal', c, [[0, 0], [0.12, 0], [0.12, 0.03], [0.085, 0.07], [0.075, 0.1], [0, 0.1]], 0, 0, 0, { seg: 12 });
       B.cyl('metal', c, 0.068, 0.56, 0, 0.38, 0, { seg: 12 });
@@ -1392,7 +1412,7 @@ export function registerMarinaDock(D, H) {
 
   // ================================================================================================ boatyard
   // big boatyard tyre on a hub (axis along local X)
-  function yardWheel(B, x, y, z, R, wdt) {
+  function yardWheel(B: Builder, x: number, y: number, z: number, R: number, wdt: number) {
     B.lathe('rubber', '#26282d', TIRE.map(([r, yy]) => [r * (R / 0.33), yy * (wdt / 0.2)]), x, y, z, { seg: 9, closed: true, rz: HP });
     B.cyl('metal', K.liftYel, R * 0.52, wdt * 0.9, x, y, z, { rz: HP, seg: 12 });
     B.cyl('metal', K.galvDk, R * 0.2, wdt * 1.05, x, y, z, { rz: HP, seg: 8 });
@@ -1402,7 +1422,7 @@ export function registerMarinaDock(D, H) {
   D.travellift = {
     desc: 'Boatyard travel lift (35 t): four blue box-section legs on yellow twin-tyre bogies (colliders), side beams at 5.4–6.1 m, rear cross beam with knee braces, four winch drums with cables and raised lifting slings, engine house with exhaust, operator console, HALYARD + SWL 35 T markings, hazard bands. Local: W 5.4 between leg centres (X), L 3.8 (Z), open at +Z.',
     params: { w: 'leg span X (5.4)', l: 'leg span Z (3.8)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       const W = o.w ?? 5.4, L = o.l ?? 3.8, BY = 5.45, BH = 0.66, blue = K.liftBlue, yel = K.liftYel;
       for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
         const x = sx * W / 2, z = sz * L / 2;
@@ -1463,7 +1483,7 @@ export function registerMarinaDock(D, H) {
   };
 
   // ---- boat under a tarp on a steel cradle (front +Z along the keel), at the yard edge
-  function hullLoft(L, Bm, Dp, n = 14) {
+  function hullLoft(L: number, Bm: number, Dp: number, n = 14) {
     // sections from the transom (t = 0, x = -L/2) to the stem (t = 1): hard-chine planing hull, raked stem, rising keel
     const secs = [];
     for (let i = 0; i <= n; i++) {
@@ -1477,15 +1497,15 @@ export function registerMarinaDock(D, H) {
     return { secs };
   }
   // ring of section points starboard sheer → chine → keel → port chine → port sheer (9 points)
-  const hullRing = (sc) => {
-    const S = (z, y) => [z, y], cw = sc.bw * 0.9;
+  const hullRing = (sc: { bw: number; sheer: number; chine: number; keel: number }) => {
+    const S = (z: number, y: number) => [z, y], cw = sc.bw * 0.9;
     const pts = [S(sc.bw, sc.sheer), S((sc.bw + cw) / 2 + 0.01, (sc.sheer + sc.chine) / 2), S(cw, sc.chine), S(cw * 0.5, (sc.chine + sc.keel) / 2 - 0.02), S(0, sc.keel)];
     return [...pts, ...pts.slice(0, 4).reverse().map(([z, y]) => [-z, y])];
   };
   D.tarpboat = {
     desc: 'Laid-up motor launch on a painted steel cradle with screw pads, wrapped in a sagging blue tarp with lashings and bungees, white topsides with a navy boot stripe and red antifouling showing below the cover. Keel along local X.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       const L = 3.6, Bm = 1.5, Dp = 0.75, cy = 0.62;
       // cradle: skids, cross beams, pads
       for (const sz of [-0.55, 0.55]) B.box('metal', K.liftBlue, L * 0.8, 0.1, 0.12, 0, 0.05, sz, { r: 0.02 });
@@ -1518,7 +1538,7 @@ export function registerMarinaDock(D, H) {
       // tarp: tented over the sheer (ridge line from a boat hook), sagging between lashings, skirt draped over the side
       const tg = tpl('tarpcover2', () => {
         const { secs } = hullLoft(L + 0.1, Bm + 0.08, Dp);
-        const g = new GB(), rows = [], ring = 12, cA = cx3(K.tarp), cB2 = cx3(K.tarpDk);
+        const g = new GB(), rows: number[][] = [], ring = 12, cA = cx3(K.tarp), cB2 = cx3(K.tarpDk);
         secs.forEach((sc, i) => {
           const row = [], lash = Math.abs(Math.cos(sc.t * PI * 3));
           for (let k = 0; k <= ring; k++) {
@@ -1549,7 +1569,7 @@ export function registerMarinaDock(D, H) {
   D.scaffold = {
     desc: 'Mobile aluminium scaffold tower (1.3 × 1.1 × 4.2): castor wheels, ladder-frame ends, diagonal braces, timber-boarded platform at 3.2 m with toe boards and double guard rails, paint tin + roller tray up top. Collides as a rail block (see-through frame: kids blocked, shots / ink / squids pass, nobody perches).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       const W = 1.3, Dd = 1.1, Hp = 3.2, Ht = 4.2, c = '#c3cad0';
       for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
         const x = sx * (W / 2 - 0.04), z = sz * (Dd / 2 - 0.04);
@@ -1572,7 +1592,7 @@ export function registerMarinaDock(D, H) {
   };
 
   // ---- workbench against a hull / wall behind it (-Z): vice, tools, tins, pressure washer cart beside it
-  function paintTin(B, x, y, z, c, s = 1) {
+  function paintTin(B: Builder, x: number, y: number, z: number, c: ColorLike, s = 1) {
     B.lathe('metal', K.galv, [[0, 0], [0.085 * s, 0], [0.085 * s, 0.17 * s], [0.08 * s, 0.18 * s], [0, 0.18 * s]], x, y, z, { seg: 10 });
     B.cyl('paint', c, 0.086 * s, 0.09 * s, x, y + 0.09 * s, z, { seg: 10, open: true });
     B.tube('paint', c, [P3(x + 0.07 * s, y + 0.18 * s, z), P3(x + 0.087 * s, y + 0.12 * s, z + 0.01), P3(x + 0.087 * s, y + 0.05 * s, z + 0.01)], 0.009 * s, { radial: 4 });
@@ -1580,7 +1600,7 @@ export function registerMarinaDock(D, H) {
   D.workbench = {
     desc: 'Boatyard workbench (1.5 × 0.65 × 0.9, back to a hull at -Z): thick timber top on steel legs, engineer vice, hammer + mallet, antifoul tins and a roller tray on the shelf and the ground, plus a wheeled pressure washer with its hose reel and lance at +X.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       const W = 1.5, Dd = 0.65, Hh = 0.9, ws = o.washerSide ?? 1;
       for (const sx of [-1, 1]) for (const sz of [-1, 1]) pbox(B, 'metal', '#3f4a58', 0.05, Hh - 0.06, 0.05, sx * (W / 2 - 0.06), (Hh - 0.06) / 2, sz * (Dd / 2 - 0.06));
       B.box('wood', '#b08556', W, 0.07, Dd, 0, Hh - 0.035, 0, { r: 0.015 });
@@ -1620,11 +1640,11 @@ export function registerMarinaDock(D, H) {
   D.beacon = {
     desc: 'Harbour beacon crown for the S × S × H beacon block: red band + daymark + nameplate on the block, flush steel wall ladder (-Z face) with grab hoops, galvanised railing ring round the top (collides), red/white lantern house with glazed lantern, blinking red light, domed roof, ventilator ball and lightning rod (collides).',
     params: { s: 'block size (2.4)', h: 'block height (2.4)', color: 'identity colour (red)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       B.aoBase = null;
       const S = o.s ?? 2.4, Hh = o.h ?? 2.4, red = o.color ?? K.red, white = K.white, rail = K.galv;
       // red band round the block top + corner guards, daymark + plate on +X and -X
-      for (let side = 0; side < 4; side++) onFace(B, S, S, side, (Lf) => {
+      for (let side = 0; side < 4; side++) onFace(B, S, S, side, (Lf: number) => {
         B.box('paint', red, Lf + 0.06, 0.34, 0.04, 0, Hh - 0.2, 0.02, { r: 0.012 });
         B.box('paint', white, Lf + 0.06, 0.06, 0.045, 0, Hh - 0.4, 0.022, { r: 0.01 });
       });
@@ -1681,11 +1701,11 @@ export function registerMarinaDock(D, H) {
 
   // ================================================================================================ outside the arena
   // rubble-mound breakwater along local +Z (length L) with a concrete crest + parapet and a rounded head at the +Z end
-  function rockGeo(seed) {
+  function rockGeo(seed: number) {
     return tpl('rock|' + seed, () => {
       let g = new THREE.DodecahedronGeometry(1, 0);
       g.deleteAttribute('normal'); g.deleteAttribute('uv');
-      const P = g.attributes.position, pos = [];
+      const P = g.attributes.position, pos: number[] = [];
       for (let i = 0; i < P.count; i++) {
         const x = P.getX(i), y = P.getY(i), z = P.getZ(i);
         const n = 0.82 + 0.3 * hash(Math.round(x * 7) * 3.1 + Math.round(y * 7) * 1.7 + Math.round(z * 7) * 2.3 + seed * 5.1);
@@ -1703,11 +1723,11 @@ export function registerMarinaDock(D, H) {
   D.breakwater = {
     desc: 'Rubble-mound breakwater arm along local +Z (pos = root at the waterline centre-line): tumbled armour rocks in two rows either side, a concrete crest slab with a seaward parapet, a rounded rock head at the +Z end with a small green pier-head light (blinks).',
     params: { length: 'm (60)', light: 'head light colour (green)' }, variants: 1, mount: 'wall',
-    build(B, o) {
+    build(B: Builder, o) {
       B.aoBase = null;
       const L = o.length ?? 60, Wc = 2.4;
       const tones = [K.rock, K.rockDk, K.rockLt, '#98938a'];
-      const put = (x, y, z, s, k) => B.add(NS('paint'), rockGeo(k % 7), mixc(tones[k % 4], '#6d7a74', y < -1.2 ? 0.35 : 0), x, y, z, { s, ry: hash(k * 3.3) * TAU, rx: (hash(k * 1.7) - 0.5) * 0.5, ao: false });
+      const put = (x: number, y: number, z: number, s: number, k: number) => B.add(NS('paint'), rockGeo(k % 7), mixc(tones[k % 4], '#6d7a74', y < -1.2 ? 0.35 : 0), x, y, z, { s, ry: hash(k * 3.3) * TAU, rx: (hash(k * 1.7) - 0.5) * 0.5, ao: false });
       let k = 0;
       for (let z = 0.8; z < L; z += 2.8) {
         for (const [x, y, sc] of [[-3.1, -1.5, 1.45], [-1.8, -0.5, 1.2], [1.9, -0.55, 1.2], [3.3, -1.7, 1.4]].filter((_, j) => j !== 3 || (Math.round(z / 2.2) % 2 === 0))) {
@@ -1734,7 +1754,7 @@ export function registerMarinaDock(D, H) {
   D.channelmarker = {
     desc: 'Channel marker on the water (pos y = sea level): variant 0 = green steel pile beacon with a ladder, cone topmark and blinking green light; 1 = red floating can buoy with a can topmark and blinking red light.',
     params: {}, variants: 2, mount: 'wall',
-    build(B, o) {
+    build(B: Builder, o) {
       B.aoBase = null;
       if ((o.variant ?? 0) % 2 === 0) {
         B.add(NS('wood'), pileGeo(2.2, 0.26, 10, 3), 'white', 0, 1.6, 0, { ao: false });
@@ -1758,12 +1778,12 @@ export function registerMarinaDock(D, H) {
   // All three dress level ramps whose top surface runs along local +Z from (0, 0, 0) to (0, rise, run); everything sits
   // outside the walking width (|x| ≥ width / 2). The handrails carry `rail` colliders (kids can't walk through or off the
   // side, shots / ink / squids pass); the masonry newels are solid.
-  const slopeY = (rise, run, t) => (rise * t) / run;
+  const slopeY = (rise: number, run: number, t: number) => (rise * t) / run;
   // Rail colliders along a sloped handrail: local x0…x1 (keep ≥ 0.045 outboard of the ramp's side face so the level's
   // face / bevel samples never land inside them), from z = za to zb in `n` stepped boxes; each box starts 0.06 above the
   // slope at its low end (clear of the deck samples) and reaches `top` above the slope at its high end. bot: fixed bottom
   // instead (a full-depth fence beside a solid stair side, so no nav node / edge survives across it).
-  function slopeRail(B, x0, x1, za, zb, rise, run, top, n, bot) {
+  function slopeRail(B: Builder, x0: number, x1: number, za: number, zb: number, rise: number, run: number, top: number, n: number, bot?: number) {
     for (let i = 0; i < n; i++) {
       const s0 = za + ((zb - za) * i) / n, s1 = za + ((zb - za) * (i + 1)) / n;
       const y0 = bot ?? Math.max(0, slopeY(rise, run, Math.min(s0, s1))) + 0.06, y1 = slopeY(rise, run, Math.max(s0, s1)) + top;
@@ -1775,9 +1795,9 @@ export function registerMarinaDock(D, H) {
   D.gangwayrails = {
     desc: 'Marina gangway dressing for a thin level ramp (local +Z from (0,0,0) up to (0,rise,run), width W centred): aluminium side trusses outside the walking width — bottom chord doubling as kick plate, stanchions, sloped top rail + mid rail, N-bracing — hinge brackets with pins at the pier end, landing rollers on forks at the far end. Rail colliders along both trusses (the walkway stays open end to end).',
     params: { run: 'm (3.85)', rise: 'm (1.3)', width: 'm (3.4)', thick: 'plank thickness (0.22)', posts: 'stanchions per side (5)', land0: 'low deck edge along the run (0.2)', land1: 'high deck edge along the run (run - 0.05)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       B.aoBase = null;
-      const run = o.run ?? 3.85, rise = o.rise ?? 1.3, W = o.width ?? 3.4, th = o.thick ?? 0.22, n = Math.max(2, o.posts ?? 5);
+      const run = o.run ?? 3.85, rise = o.rise ?? 1.3, W = o.width ?? 3.4, th = o.thick ?? 0.22, n = Math.max(2, typeof o.posts === 'number' ? o.posts : 5);
       const L = Math.hypot(run, rise), pitch = Math.atan2(rise, run), alu = '#b7bec4', aluLt = '#c9ced3', aluDk = '#8b949c';
       const HR = 1.0, MR = 0.5, xo = W / 2 + 0.035;
       for (const sx of [-1, 1]) {
@@ -1788,17 +1808,17 @@ export function registerMarinaDock(D, H) {
         pbox(B, NS('metal'), aluDk, 0.062, 0.02, L + 0.02, 0, 0.075, 0);
         B.pop();
         // stanchions (vertical) + rails
-        const ts = [];
+        const ts: number[] = [];
         for (let i = 0; i < n; i++) ts.push(0.12 + ((run - 0.24) * i) / (n - 1));
         for (const t of ts) {
           const y = slopeY(rise, run, t);
           B.cyl('metal', aluLt, 0.02, HR - 0.05, x, y + 0.05 + (HR - 0.05) / 2, t, { seg: 6 });
           pbox(B, NS('metal'), aluDk, 0.07, 0.02, 0.07, x, y + 0.075, t);
         }
-        const rail = (h, r, mat) => {
+        const rail = (h: number, r: number, mat: string) => {
           const a = P3(x, h + slopeY(rise, run, ts[0]), ts[0]), b = P3(x, h + slopeY(rise, run, ts[n - 1]), ts[n - 1]);
           B.tube(mat, aluLt, [a, b], r, { radial: 6 });
-          for (const [p, sgn] of [[a, -1], [b, 1]]) B.sph(mat, aluLt, r * 1.05, p[0], p[1], p[2], { ws: 6, hs: 4 });
+          for (const [p] of [[a, -1], [b, 1]] as Array<[number[], number]>) B.sph(mat, aluLt, r * 1.05, p[0], p[1], p[2], { ws: 6, hs: 4 });
         };
         rail(HR, 0.025, 'metal'); rail(MR, 0.015, NS('metal'));
         // N-bracing in the lower bay (shadowless: reads through the rails)
@@ -1834,7 +1854,7 @@ export function registerMarinaDock(D, H) {
   D.grandstair = {
     desc: 'Grand-stair dressing (local +Z from the foot (0,0,0) up to (0,rise,run), width W centred): render cheek stringers + stone coping outside the walking width covering the upper band of the ramp sides, navy stanchions with a varnished teak handrail and two rod rails, square newel pillars with lanterns at the foot and ball finials at the top. Balustrade = rail colliders, newels = solid (off-limits tops).',
     params: { run: 'm (6.1)', rise: 'm (2.4)', width: 'm (6)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o) {
       B.aoBase = null;
       const run = o.run ?? 6.1, rise = o.rise ?? 2.4, W = o.width ?? 6, L = Math.hypot(run, rise), pitch = Math.atan2(rise, run);
       const render = K.render, stone = '#e7e1d4', navy = K.club, teak = '#9a6a3f', HR = 0.95;
@@ -1853,12 +1873,12 @@ export function registerMarinaDock(D, H) {
           B.cyl('metal', navy, 0.02, HR - 0.1, x, y + (HR - 0.1) / 2, t, { seg: 6 });
           B.cyl(NS('metal'), navy, 0.035, 0.02, x, y + 0.01, t, { seg: 8 });
         }
-        const at = (t, h) => P3(x, slopeY(rise, run, t) + h, t);
+        const at = (t: number, h: number) => P3(x, slopeY(rise, run, t) + h, t);
         // teak handrail: rounded, dips into the newels at both ends
         B.tube('wood', teak, [at(0.12, HR - 0.02), at(t0, HR + 0.02), at(t1, HR + 0.02), at(run - 0.1, HR - 0.02)], 0.035, { radial: 7 });
         for (const h of [0.35, 0.62]) B.tube(NS('metal'), navy, [at(0.14, h), at(run - 0.12, h)], 0.011, { radial: 4 });
         // foot newel with a lantern, top newel with a ball finial
-        const newel = (t, y0, hN, lamp) => {
+        const newel = (t: number, y0: number, hN: number, lamp: boolean) => {
           const cx = sx * (W / 2 + 0.14);
           B.box('paint', render, 0.28, hN, 0.28, cx, y0 + hN / 2, t, { r: 0.03 });
           B.box('paint', stone, 0.36, 0.08, 0.36, cx, y0 + hN + 0.04, t, { r: 0.02 });
@@ -1888,6 +1908,6 @@ export function registerMarinaDock(D, H) {
   for (const t of Object.keys(D)) {
     if (before.has(t)) continue;
     const def = D[t], build = def.build;
-    def.build = function (B, o) { const prev = curB; curB = B; try { return build.call(this, B, o); } finally { curB = prev; } };
+    def.build = function (this: PropDef, B: Builder, o: PropParams) { const prev = curB; curB = B; try { return build.call(this, B, o); } finally { curB = prev; } };
   }
 }
