@@ -12,19 +12,20 @@
 import * as THREE from 'three';
 import { CS, MC, PART } from './character-mats.js';
 import * as K from './character-geo.js';
+import type { Weights, PartOpts } from './character-geo.js';
 import { G } from '../core/ctx.js';
 
 const V3 = THREE.Vector3;
 const TAU = Math.PI * 2;
-const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
-const lerp = (a, b, t) => a + (b - a) * t;
-const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
-const gauss = (x, s) => Math.exp(-((x / s) ** 2));
-const spow = (v, e) => Math.sign(v) * Math.pow(Math.abs(v), e);
-const pos = (v) => (v > 0 ? v : 0);
-const cl = (part, cls, param = 0) => [part, cls, param];
+const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+const sstep = (a: number, b: number, x: number) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const gauss = (x: number, s: number) => Math.exp(-((x / s) ** 2));
+const spow = (v: number, e: number) => Math.sign(v) * Math.pow(Math.abs(v), e);
+const pos = (v: number) => (v > 0 ? v : 0);
+const cl = (part: number, cls: number, param = 0): number[] => [part, cls, param];
 /** Catmull-Rom through a keyed table (non-uniform keys, clamped ends). */
-function table(keys, vals, x) {
+function table(keys: number[], vals: number[], x: number) {
   const n = keys.length;
   if (x <= keys[0]) return vals[0];
   if (x >= keys[n - 1]) return vals[n - 1];
@@ -34,17 +35,17 @@ function table(keys, vals, x) {
   const t2 = t * t, t3 = t2 * t;
   return 0.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
 }
-const tab = (pairs) => { const k = pairs.map((p) => p[0]), v = pairs.map((p) => p[1]); return (x) => table(k, v, x); };
+const tab = (pairs: number[][]) => { const k = pairs.map((p) => p[0]), v = pairs.map((p) => p[1]); return (x: number) => table(k, v, x); };
 /** Cheap deterministic value noise on a line (fold phase jitter), period-free. */
-function n1(x, seed = 0) { const i = Math.floor(x), f = x - i; const h = (k) => { const s = Math.sin((k + seed * 17.13) * 127.1) * 43758.5453; return s - Math.floor(s); }; const u = f * f * (3 - 2 * f); return lerp(h(i), h(i + 1), u) * 2 - 1; }
+function n1(x: number, seed = 0) { const i = Math.floor(x), f = x - i; const h = (k: number) => { const s = Math.sin((k + seed * 17.13) * 127.1) * 43758.5453; return s - Math.floor(s); }; const u = f * f * (3 - 2 * f); return lerp(h(i), h(i + 1), u) * 2 - 1; }
 
 // ------------------------------------------------------------------------------------------------
 // Detail ladder
 // ------------------------------------------------------------------------------------------------
 export const BODY_LEVEL_NAMES = ['far', 'low', 'game', 'hero', 'ultra'];
-const QI = { low: 0, medium: 1, high: 2, ultra: 3 };
+const QI: Record<string, number> = { low: 0, medium: 1, high: 2, ultra: 3 };
 /** Body/outfit detail level for a LOD tier ('far' | 'game' | 'hero') at a quality preset ('low' … 'ultra'). */
-export function bodyLevel(lod = 'hero', quality = G.settings?.quality || 'high') {
+export function bodyLevel(lod: string | number = 'hero', quality: string = G.settings?.quality || 'high'): number {
   if (typeof lod === 'number') return clamp(Math.round(lod), 0, 4);
   const q = QI[quality] ?? 2;
   if (lod === 'far') return 0;
@@ -52,7 +53,9 @@ export function bodyLevel(lod = 'hero', quality = G.settings?.quality || 'high')
   return q >= 3 ? 4 : q >= 1 ? 3 : 2; // hero
 }
 // per-level resolution: [around, along] (rows are density-distributed toward joints / edges)
-const RES = [
+// 몸·옷 해상도 단계: [둘레, 길이] 분할(팔·다리·티셔츠·소매·깃·반바지·다리통·양말·끈), 신발·탱크 단계, 주름 세기, 미세 주름
+interface BodyRes { arm: number[]; leg: number[]; tee: number[]; sleeve: number[]; collar: number[]; shorts: number[]; sLeg: number[]; sock: number[]; web: number[]; shoe: number; tank: number; fold: number; micro: number }
+const RES: BodyRes[] = [
   { arm: [7, 10], leg: [7, 10], tee: [20, 10], sleeve: [8, 4], collar: [16, 3], shorts: [20, 7], sLeg: [10, 4], sock: [8, 4], web: [10, 1], shoe: 0, tank: 0, fold: 0.4, micro: 0 },
   { arm: [10, 16], leg: [10, 16], tee: [32, 16], sleeve: [12, 7], collar: [24, 5], shorts: [32, 10], sLeg: [14, 6], sock: [12, 6], web: [16, 1], shoe: 1, tank: 1, fold: 0.55, micro: 0 },
   { arm: [10, 18], leg: [10, 18], tee: [40, 22], sleeve: [16, 9], collar: [28, 4], shorts: [40, 12], sLeg: [18, 8], sock: [12, 7], web: [22, 1], shoe: 1, tank: 1, fold: 0.7, micro: 0 },
@@ -67,20 +70,25 @@ const SHOE_RES = [
   { nP: 52, nT: 13, nH: 8, collar: [32, 6], tongue: [6, 10], pk: 0.85 },
   { nP: 58, nT: 14, nH: 9, collar: [36, 7], tongue: [7, 12], pk: 0.95 },
 ];
-export const bodyRes = (level) => RES[clamp(level | 0, 0, 4)];
+export const bodyRes = (level: number) => RES[clamp(level | 0, 0, 4)];
 
 // ------------------------------------------------------------------------------------------------
 // Limb frames: arc-length parametrised centreline with a stable (lateral, forward) section frame
 // ------------------------------------------------------------------------------------------------
-function limbPath(pts, latHint) {
+// 팔다리 단면 틀: 중심 C, 길이 방향 d, 옆 l, 앞 f
+interface LimbFrame { C?: THREE.Vector3; d?: THREE.Vector3; l?: THREE.Vector3; f?: THREE.Vector3 }
+type FullFrame = Required<LimbFrame>;
+type LimbPath = ReturnType<typeof limbPath>;
+
+function limbPath(pts: THREE.Vector3[], latHint: THREE.Vector3) {
   const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
-  const N = 600; const P = [], S = [0];
+  const N = 600; const P: THREE.Vector3[] = [], S = [0];
   for (let i = 0; i <= N; i++) P.push(curve.getPoint(i / N));
   for (let i = 1; i <= N; i++) S.push(S[i - 1] + P[i].distanceTo(P[i - 1]));
   const len = S[N];
   const Z = new V3(0, 0, 1);
   /** frame at arc length s: { C, d (along), l (lateral), f (forward) } */
-  const at = (s, out = {}) => {
+  const at = (s: number, out: LimbFrame = {}): FullFrame => {
     const x = clamp(s, 0, len);
     let lo = 0, hi = N; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (S[m] <= x) lo = m; else hi = m; }
     const f = (x - S[lo]) / Math.max(1e-9, S[hi] - S[lo]);
@@ -91,7 +99,7 @@ function limbPath(pts, latHint) {
     const l = (out.l || new V3()).copy(latHint).addScaledVector(d, -latHint.dot(d)).normalize();
     const fw = (out.f || new V3()).copy(Z).addScaledVector(d, -Z.dot(d)).addScaledVector(l, -Z.dot(l)).normalize();
     out.C = C; out.d = d; out.l = l; out.f = fw;
-    return out;
+    return out as FullFrame;
   };
   return { at, len };
 }
@@ -101,22 +109,22 @@ function limbPath(pts, latHint) {
  * sec(theta, s) → [rLat, rFwd] (signed cos/sin already applied by the caller's shape). Returns { geo, S, TH } with the
  * per-vertex arc length / angle so weights and AO can use limb coordinates.
  */
-function loftLimb(path, ss, nTh, sec, opt = {}) {
-  const rows = []; const fr = {};
+function loftLimb(path: LimbPath, ss: number[], nTh: number, sec: (th: number, s: number) => number[], opt: { capStart?: number; capEnd?: number } = {}) {
+  const rows: THREE.Vector3[][] = []; const fr: LimbFrame = {};
   for (const s of ss) {
-    path.at(s, fr); const row = [];
+    const F = path.at(s, fr); const row: THREE.Vector3[] = [];
     for (let i = 0; i < nTh; i++) {
       const th = (i / nTh) * TAU; const [a, b] = sec(th, s);
-      row.push(fr.C.clone().addScaledVector(fr.l, a).addScaledVector(fr.f, b));
+      row.push(F.C.clone().addScaledVector(F.l, a).addScaledVector(F.f, b));
     }
     rows.push(row);
   }
-  const poles = {};
-  if (opt.capStart) { path.at(ss[0], fr); const r = sec(0, ss[0])[0]; poles.start = fr.C.clone().addScaledVector(fr.d, -r * opt.capStart); }
-  if (opt.capEnd) { path.at(ss[ss.length - 1], fr); const r = sec(0, ss[ss.length - 1])[0]; poles.end = fr.C.clone().addScaledVector(fr.d, r * opt.capEnd); }
+  const poles: { start?: THREE.Vector3; end?: THREE.Vector3 } = {};
+  if (opt.capStart) { const F = path.at(ss[0], fr); const r = sec(0, ss[0])[0]; poles.start = F.C.clone().addScaledVector(F.d, -r * opt.capStart); }
+  if (opt.capEnd) { const F = path.at(ss[ss.length - 1], fr); const r = sec(0, ss[ss.length - 1])[0]; poles.end = F.C.clone().addScaledVector(F.d, r * opt.capEnd); }
   const geo = K.gridGeo(rows, {
     wrapU: true, poles,
-    outward: (p, out) => { let best = 0, bd = 1e9; for (let j = 0; j < ss.length; j += Math.max(1, (ss.length / 24) | 0)) { path.at(ss[j], fr); const dd = fr.C.distanceToSquared(p); if (dd < bd) { bd = dd; best = ss[j]; } } path.at(best, fr); out.copy(fr.C); },
+    outward: (p: THREE.Vector3, out: THREE.Vector3) => { let best = 0, bd = 1e9; for (let j = 0; j < ss.length; j += Math.max(1, (ss.length / 24) | 0)) { const F = path.at(ss[j], fr); const dd = F.C.distanceToSquared(p); if (dd < bd) { bd = dd; best = ss[j]; } } out.copy(path.at(best, fr).C); },
     uv: (i, j) => [i / nTh, ss[j]],
     poleUv: { start: [0, ss[0]], end: [0, ss[ss.length - 1]] },
   });
@@ -131,14 +139,14 @@ function loftLimb(path, ss, nTh, sec, opt = {}) {
 const ARM_R = tab([[0.0, 0.0372], [0.04, 0.0368], [0.08, 0.0352], [0.12, 0.0334], [0.16, 0.0314], [0.19, 0.0296], [0.212, 0.0284], [0.235, 0.0294], [0.265, 0.0302], [0.3, 0.0288], [0.34, 0.0262], [0.375, 0.0240], [0.4, 0.0229], [0.43, 0.0228]]);
 const ARM_LAT = tab([[0.0, 1.0], [0.18, 0.98], [0.212, 1.05], [0.25, 0.98], [0.3, 0.9], [0.36, 0.8], [0.4, 0.74], [0.43, 0.73]]);
 const ARM_FWD = tab([[0.0, 1.0], [0.12, 1.04], [0.19, 1.0], [0.212, 0.95], [0.26, 1.04], [0.34, 1.03], [0.4, 1.04], [0.43, 1.04]]);
-export function armSpec(s) {
+export function armSpec(s: string) {
   const R = K.REST;
   const sx = s === 'L' ? 1 : -1;
   const sh = R['uArm' + s], el = R['fArm' + s], wr = R['hand' + s];
   const fd = wr.clone().sub(el).normalize();
   const path = limbPath([sh.clone(), sh.clone().lerp(el, 0.5), el.clone(), el.clone().lerp(wr, 0.5), wr.clone(), wr.clone().addScaledVector(fd, 0.03)], new V3(sx, 0, 0));
   const sE = sh.distanceTo(el), sW = sE + el.distanceTo(wr);
-  const sec = (th, s2) => {
+  const sec = (th: number, s2: number) => {
     const c = Math.cos(th), n = Math.sin(th);
     const lat = pos(c), med = pos(-c), front = pos(n), back = pos(-n);
     let k = 1;
@@ -159,7 +167,7 @@ export function armSpec(s) {
   return { sx, sh, el, wr, path, sE, sW, sec };
 }
 
-function addArms(B, lv) {
+function addArms(B: K.Builder, lv: number) {
   const [nTh, nS] = RES[lv].arm;
   for (const s of ['L', 'R']) {
     const A = armSpec(s);
@@ -170,7 +178,7 @@ function addArms(B, lv) {
     B.add(geo, {
       v3: [0, 0, 0],
       color: (p, i) => _white,
-      weights: (p, i) => {
+      weights: (p, i: number) => {
         const s2 = uvA.getY(i), th = uvA.getX(i) * TAU;
         const back = pos(-Math.sin(th));
         // elbow: tight at the crease, wide behind so the olecranon keeps its point when the arm bends
@@ -190,14 +198,14 @@ const _white = new THREE.Color(1, 1, 1);
 // theta: 0 lateral · pi/2 forward · pi medial · 3pi/2 back
 // ------------------------------------------------------------------------------------------------
 const LEG_R = tab([[0.0, 0.05], [0.05, 0.0515], [0.11, 0.0495], [0.16, 0.0468], [0.2, 0.0438], [0.235, 0.0408], [0.26, 0.0386], [0.278, 0.0372], [0.3, 0.0374], [0.33, 0.0386], [0.36, 0.0372], [0.4, 0.0334], [0.44, 0.0302], [0.48, 0.0284], [0.52, 0.0272], [0.57, 0.027]]);
-export function legSpec2(s) {
+export function legSpec2(s: string) {
   const R = K.REST;
   const sx = s === 'L' ? 1 : -1;
   const hp = R['thigh' + s], kn = R['shin' + s], an = R['foot' + s];
   const dn = an.clone().sub(kn).normalize();
   const path = limbPath([hp.clone(), hp.clone().lerp(kn, 0.5), kn.clone(), kn.clone().lerp(an, 0.5), an.clone(), an.clone().addScaledVector(dn, 0.04)], new V3(sx, 0, 0));
   const sK = hp.distanceTo(kn), sA = sK + kn.distanceTo(an);
-  const sec = (th, s2) => {
+  const sec = (th: number, s2: number) => {
     const c = Math.cos(th), n = Math.sin(th);
     const lat = pos(c), med = pos(-c), front = pos(n), back = pos(-n);
     let k = 1;
@@ -220,9 +228,9 @@ export function legSpec2(s) {
   return { sx, hp, kn, an, path, sK, sA, sec };
 }
 /** Hip → thigh weight shared by the leg skin and the shorts legs (so the loose shorts never lag the thigh). */
-export const thighW = (s2) => sstep(-0.005, 0.075, s2);
+export const thighW = (s2: number) => sstep(-0.005, 0.075, s2);
 
-function addLegs(B, lv) {
+function addLegs(B: K.Builder, lv: number) {
   const [nTh, nS] = RES[lv].leg;
   for (const s of ['L', 'R']) {
     const Lg = legSpec2(s);
@@ -232,7 +240,7 @@ function addLegs(B, lv) {
     const uvA = geo.attributes.uv;
     B.add(geo, {
       v3: [0, 0, 0], color: () => _white,
-      weights: (p, i) => {
+      weights: (p, i: number) => {
         const s2 = uvA.getY(i), th = uvA.getX(i) * TAU;
         const front = pos(Math.sin(th));
         const wt = thighW(s2);
@@ -246,7 +254,7 @@ function addLegs(B, lv) {
 }
 
 /** Arms + legs of the skin mesh (the hands stay in character-geo.js handParts: grip contract). */
-export function addBodyLimbs(B, level = 3) {
+export function addBodyLimbs(B: K.Builder, level = 3) {
   const lv = clamp(level | 0, 0, 4);
   addArms(B, lv);
   addLegs(B, lv);
@@ -267,27 +275,28 @@ const TT = {
   n: [2.3, 2.3, 2.35, 2.4, 2.5, 2.6, 2.7, 2.8, 2.8, 2.6, 2.4, 2.2, 2.05, 2.0],
   zc: [-0.012, -0.012, -0.012, -0.012, -0.011, -0.011, -0.011, -0.012, -0.012, -0.012, -0.011, -0.01, -0.009, -0.008],
 };
-const ttA = (y) => table(TT.y, TT.a, y), ttB = (y) => table(TT.y, TT.b, y), ttN = (y) => table(TT.y, TT.n, y), ttZ = (y) => table(TT.y, TT.zc, y);
+const ttA = (y: number) => table(TT.y, TT.a, y), ttB = (y: number) => table(TT.y, TT.b, y), ttN = (y: number) => table(TT.y, TT.n, y), ttZ = (y: number) => table(TT.y, TT.zc, y);
 const LOBE_R = tab([[0.868, 0], [0.88, 0.023], [0.893, 0.0412], [0.91, 0.0487], [0.932, 0.0494], [0.95, 0.0458], [0.963, 0.0378], [0.974, 0.0266], [0.983, 0.0132], [0.989, 0]]);
 /** Upper-arm axis at height y (rest pose), bent inward above the joint so the lobe caps round toward the neck. */
-function lobeCenter(y, sx, out) {
+function lobeCenter(y: number, sx: number, out: THREE.Vector3) {
   const d = 0.946 - y;
   // the lobe grows out of the torso side (never a separate blob), then follows the arm axis
   const inK = 0.045 * (1 - sstep(0.866, 0.912, y));
   return out.set(sx * (0.146 + 0.1143 * d - 0.25 * pos(-d) - inK), 0, -0.014 - 0.038 * d);
 }
 const SMIN_K = 0.028;
-function smin(a, b, k) { const h = clamp(0.5 + 0.5 * (b - a) / k, 0, 1); return lerp(b, a, h) - k * h * (1 - h); }
+function smin(a: number, b: number, k: number) { const h = clamp(0.5 + 0.5 * (b - a) / k, 0, 1); return lerp(b, a, h) - k * h * (1 - h); }
 const _lc = new V3();
 /** Section parameters at height y (torso superellipse + the two lobe circles). */
-function secParams(y) {
+type SecParams = ReturnType<typeof secParams>;
+function secParams(y: number) {
   const S = { a: ttA(y), b: ttB(y), n: ttN(y), zc: ttZ(y), lr: LOBE_R(y), lx: 0, lz: 0 };
   if (S.lr > 1e-4) { lobeCenter(y, 1, _lc); S.lx = _lc.x; S.lz = _lc.z; }
   return S;
 }
-function sdSec(x, z, S) {
+function sdSec(x: number, z: number, S: SecParams) {
   const dz0 = z - S.zc, r = Math.hypot(x, dz0);
-  let d;
+  let d: number;
   // radial distance to the superellipse (exact along the ray from its centre; good enough to blend)
   if (r < 1e-9) d = -Math.min(S.a, S.b);
   else { const ux = Math.abs(x) / r, uz = Math.abs(dz0) / r; d = r - 1 / Math.pow(Math.pow(ux / S.a, S.n) + Math.pow(uz / S.b, S.n), 1 / S.n); }
@@ -298,18 +307,18 @@ function sdSec(x, z, S) {
   return d;
 }
 /** Signed distance (approx.) of (x, z) to the tee body section at height y (torso ∪ lobes). */
-function teeSD(x, z, y) { return sdSec(x, z, secParams(y)); }
+function teeSD(x: number, z: number, y: number) { return sdSec(x, z, secParams(y)); }
 /** Outermost boundary crossing along the ray (dx, dz) from the section centre (hidden concavities are bridged). */
-function rayHitS(dx, dz, S) {
+function rayHitS(dx: number, dz: number, S: SecParams) {
   let hi = 0.235, lo = hi;
   while (lo > 0.02 && sdSec(dx * lo, S.zc + dz * lo, S) > 0) { hi = lo; lo -= 0.007; }
   for (let it = 0; it < 14; it++) { const mid = (lo + hi) / 2; if (sdSec(dx * mid, S.zc + dz * mid, S) < 0) lo = mid; else hi = mid; }
   return (lo + hi) / 2;
 }
-function rayHit(dx, dz, zc, y) { return rayHitS(dx, dz, secParams(y)); }
+function rayHit(dx: number, dz: number, zc: number, y: number) { return rayHitS(dx, dz, secParams(y)); }
 /** Section ring at height y: m points uniformly spaced by arc length per quarter (front centre, +X side, back, -X). */
-function teeRing(y, m, N = 168) {
-  const S = secParams(y), zc = S.zc, P = [];
+function teeRing(y: number, m: number, N = 168) {
+  const S = secParams(y), zc = S.zc, P: number[][] = [];
   for (let i = 0; i < N; i++) {
     const al = (i / N) * TAU, dx = Math.sin(al), dz = Math.cos(al);
     const rr = rayHitS(dx, dz, S); P.push([dx * rr, zc + dz * rr]);
@@ -317,7 +326,7 @@ function teeRing(y, m, N = 168) {
   // quarter anchors: front centre (i=0), lateral-most on +X, back centre (N/2), lateral-most on -X
   let iL = 0, iR = 0; for (let i = 0; i < N; i++) { if (P[i][0] > P[iL][0]) iL = i; if (P[i][0] < P[iR][0]) iR = i; }
   const anchors = [0, iL, N / 2, iR, N];
-  const out = [];
+  const out: number[][] = [];
   const q = m / 4;
   for (let k = 0; k < 4; k++) {
     const i0 = anchors[k], i1 = anchors[k + 1];
@@ -335,28 +344,30 @@ function teeRing(y, m, N = 168) {
   return out;
 }
 /** Tee surface normal (3D: the shoulder top faces up) from the section SDF gradient. */
-function teeNormal(x, z, y, out) {
+function teeNormal(x: number, z: number, y: number, out: THREE.Vector3) {
   const h = 2e-4;
   const gx = teeSD(x + h, z, y) - teeSD(x - h, z, y), gz = teeSD(x, z + h, y) - teeSD(x, z - h, y);
   const gy = teeSD(x, z, y + h) - teeSD(x, z, y - h);
   const l = Math.hypot(gx, gy, gz) || 1; return out.set(gx / l, gy / l, gz / l);
 }
 /** Point on the (undisplaced) tee at ray angle al (0 = front, +pi/2 = +X) and height y. */
-function teeBase(al, y, out) {
+function teeBase(al: number, y: number, out: THREE.Vector3) {
   const zc = ttZ(y), dx = Math.sin(al), dz = Math.cos(al);
   const r = rayHit(dx, dz, zc, y); return out.set(dx * r, y, zc + dz * r);
 }
 const NECK_DIP = 0.015;
-const neckDip = (y, frontK) => NECK_DIP * frontK * sstep(TEE_TOP - 0.034, TEE_TOP, y);
+const neckDip = (y: number, frontK: number) => NECK_DIP * frontK * sstep(TEE_TOP - 0.034, TEE_TOP, y);
 
 // ---- harness strap paths on the tee (shared by the tee's compression field and the harness itself) -----------------
 // (ray angle, y) waypoints: back plate top → over the shoulder → down the front → under the arm at the waist → plate
 const STRAP_AY = [[1.05, 0.988], [0.66, 0.975], [0.5, 0.935], [0.52, 0.87], [0.58, 0.8], [0.9, 0.75], [1.55, 0.744], [2.1, 0.748]];
 const STRAP = { w: 0.0112, t: 0.0021, groove: 0.0016 };
-let _strapCache = null;
+// 멜빵 경로: 좌우(sx ±1, 가슴끈 0), 곡선, 간격 표본, 가슴끈 여부
+interface StrapPath { sx: number; curve: THREE.Curve<THREE.Vector3>; poly: THREE.Vector3[]; chest?: boolean }
+let _strapCache: StrapPath[] | null = null;
 function strapPaths() {
   if (_strapCache) return _strapCache;
-  const out = [];
+  const out: StrapPath[] = [];
   for (const sx of [1, -1]) {
     const pts = [new V3(0.05 * sx, 0.934, -0.127), new V3(0.056 * sx, 0.96, -0.113), new V3(0.062 * sx, 0.978, -0.088)];
     for (const [al, y] of STRAP_AY) pts.push(teeBase(al * sx, y, new V3()));
@@ -367,14 +378,14 @@ function strapPaths() {
   }
   // chest (sternum) strap across the front
   {
-    const pts = []; for (let a = -0.56; a <= 0.561; a += 0.04) pts.push(teeBase(a, 0.886, new V3()));
+    const pts: THREE.Vector3[] = []; for (let a = -0.56; a <= 0.561; a += 0.04) pts.push(teeBase(a, 0.886, new V3()));
     const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
     out.push({ sx: 0, curve, poly: curve.getSpacedPoints(40), chest: true });
   }
   return (_strapCache = out);
 }
 /** Re-sample a curve and snap the samples that lie near the tee onto its surface (chords never cut inside). */
-function projectOnTee(p, out = p) {
+function projectOnTee(p: THREE.Vector3, out = p) {
   const q = out.copy(p), n = new V3();
   for (let it = 0; it < 3; it++) {
     const h = 2e-4, sd = teeSD(q.x, q.z, q.y);
@@ -384,7 +395,7 @@ function projectOnTee(p, out = p) {
   }
   return q;
 }
-function projectedCurve(curve, n) {
+function projectedCurve(curve: THREE.CatmullRomCurve3, n: number) {
   const pts = curve.getSpacedPoints(n).map((p) => {
     const sd = teeSD(p.x, p.z, p.y);
     if (sd > 0.012) return p;                                   // in the air: keep
@@ -393,7 +404,7 @@ function projectedCurve(curve, n) {
   });
   return new THREE.CatmullRomCurve3(pts, false, 'centripetal');
 }
-function distToPoly(p, poly) {
+function distToPoly(p: THREE.Vector3, poly: THREE.Vector3[]) {
   let best = 1e9;
   for (let i = 0; i < poly.length - 1; i++) {
     const a = poly[i], b = poly[i + 1];
@@ -405,7 +416,7 @@ function distToPoly(p, poly) {
   return Math.sqrt(best);
 }
 // the tank back plate footprint on the tee (tank-local rect ±0.074 × ±0.1, tilted like the tank)
-function plateMask(p) {
+function plateMask(p: THREE.Vector3) {
   const c = K.TANK.center, t = K.TANK.tilt;
   const dy = p.y - c.y, dz = p.z - c.z;
   const ly = dy * Math.cos(t) + dz * Math.sin(t);
@@ -415,7 +426,7 @@ function plateMask(p) {
 }
 
 /** A soft fold ridge from A to B in a 2D (x, y) chart: tapered ends, shallow valleys either side. */
-function ridge(x, y, x0, y0, x1, y1, w, amp) {
+function ridge(x: number, y: number, x0: number, y0: number, x1: number, y1: number, w: number, amp: number) {
   const bx = x1 - x0, by = y1 - y0, L2 = bx * bx + by * by;
   const t = ((x - x0) * bx + (y - y0) * by) / L2;
   if (t < -0.15 || t > 1.15) return 0;
@@ -426,16 +437,16 @@ function ridge(x, y, x0, y0, x1, y1, w, amp) {
   return amp * taper * (Math.exp(-((d / w) ** 2)) - 0.42 * Math.exp(-((d / (2.3 * w)) ** 2)));
 }
 // fold charts (left side; mirrored): [x0, y0, x1, y1, width, amplitude]
-const FOLDS_FRONT = [
+const FOLDS_FRONT: Array<[number, number, number, number, number, number]> = [
   [0.112, 0.888, 0.05, 0.798, 0.0105, 0.0036], [0.115, 0.872, 0.072, 0.766, 0.0098, 0.0032], [0.103, 0.908, 0.05, 0.852, 0.009, 0.0022],
   [0.044, 0.79, 0.052, 0.704, 0.013, 0.0026], [0.088, 0.766, 0.103, 0.7, 0.012, 0.0028], [0.012, 0.758, 0.01, 0.702, 0.011, 0.0014],
 ];
-const FOLDS_BACK = [
+const FOLDS_BACK: Array<[number, number, number, number, number, number]> = [
   [0.112, 0.886, 0.088, 0.786, 0.0105, 0.0032], [0.114, 0.868, 0.101, 0.766, 0.0098, 0.0028],
   [0.048, 0.742, 0.058, 0.698, 0.012, 0.0026], [0.092, 0.752, 0.105, 0.698, 0.012, 0.0028], [0.0, 0.745, 0.004, 0.7, 0.012, 0.0018],
 ];
 /** Fold / compression displacement (metres, + = outward) at a tee surface point p (base position). */
-function teeFold(p, lvF, micro) {
+function teeFold(p: THREE.Vector3, lvF: number, micro: number) {
   const y = p.y, ax = Math.abs(p.x), zc = ttZ(y);
   const zr = p.z - zc, front = sstep(-0.025, 0.035, zr), back = sstep(0.025, -0.035, zr);
   const al = Math.atan2(p.x, p.z - zc);                   // around, 0 = front
@@ -473,29 +484,29 @@ function teeFold(p, lvF, micro) {
   return D;
 }
 
-function addTee(B, lv) {
+function addTee(B: K.Builder, lv: number) {
   const R = RES[lv];
   const [nTh, nRows] = R.tee;
   const lvF = R.fold, micro = R.micro;
   // rows: spaced by the mean movement of the whole ring (so the lobe underside doesn't hog rows), denser at the hem
   // and over the shoulder
-  const prof = []; let prev = null;
-  const arc = [];
+  const prof: number[] = []; let prev: number[][] | null = null;
+  const arc: number[] = [];
   for (let i = 0; i <= 90; i++) {
     const y = lerp(TEE_HEM, TEE_TOP, i / 90); const r = teeRing(y, 24, 72);
     let m = 0; if (prev) { for (let k = 0; k < 24; k++) m += Math.hypot(r[k][0] - prev[k][0], r[k][1] - prev[k][1], y - prof[i - 1]); m /= 24; }
     arc.push((arc.length ? arc[arc.length - 1] : 0) + m); prof.push(y); prev = r;
   }
-  const yAtArc = (a) => { let i = 0; while (i < arc.length - 2 && arc[i + 1] < a) i++; const f = (a - arc[i]) / Math.max(1e-9, arc[i + 1] - arc[i]); return lerp(prof[i], prof[Math.min(i + 1, prof.length - 1)], f); };
+  const yAtArc = (a: number) => { let i = 0; while (i < arc.length - 2 && arc[i + 1] < a) i++; const f = (a - arc[i]) / Math.max(1e-9, arc[i + 1] - arc[i]); return lerp(prof[i], prof[Math.min(i + 1, prof.length - 1)], f); };
   const totA = arc[arc.length - 1];
   const as = K.densitySamples(nRows, 0, totA, (a) => { const y = yAtArc(a); return 1 + 1.2 * gauss(y - TEE_HEM, 0.02) + 0.7 * gauss(y - 0.975, 0.02); });
   const ys = as.map(yAtArc);
   const nrm = new V3();
-  const rows = [], rowY = [];
-  const ringCache = new Map();
-  const ringAt = (y, off) => {
+  const rows = [], rowY: number[] = [];
+  const ringCache = new Map<number, number[][]>();
+  const ringAt = (y: number, off: number) => {
     let ring = ringCache.get(y); if (!ring) { ring = teeRing(y, nTh); ringCache.set(y, ring); }
-    return ring.map(([x, z], i) => {
+    return ring.map(([x, z], i: number) => {
       teeNormal(x, z, y, nrm);
       const p = new V3(x, y, z);
       const D = teeFold(p, lvF, micro);
@@ -521,10 +532,10 @@ function addTee(B, lv) {
 }
 
 /** Weight field of the tee body (also used by the sleeve tops so they stay hidden inside the lobes). */
-function teeWeights(p) {
+function teeWeights(p: THREE.Vector3): Weights {
   const y = p.y, ax = Math.abs(p.x), sd = p.x > 0 ? 'L' : 'R';
   const a = sstep(0.715, 0.8, y), b = sstep(0.8, 0.9, y);
-  let w = [['hips', 1 - a], ['spine', a * (1 - b)], ['chest', b]];
+  const w: Weights = [['hips', 1 - a], ['spine', a * (1 - b)], ['chest', b]];
   const wu = sstep(0.098, 0.158, ax) * sstep(0.866, 0.9, y);                 // lobe → upper arm (the cap rides the arm)
   const wc = 0.55 * sstep(0.055, 0.11, ax) * sstep(0.9, 0.955, y) * (1 - wu); // shoulder slope → clavicle
   if (wu + wc > 0) { for (const e of w) e[1] *= 1 - wu - wc; w.push(['uArm' + sd, wu], ['clav' + sd, wc]); }
@@ -534,7 +545,7 @@ function teeWeights(p) {
 }
 
 // ---- rib crew collar: a double-layer band standing on the neckline, leaning in toward the neck ---------------------
-function addTeeCollar(B, lv, ringAt) {
+function addTeeCollar(B: K.Builder, lv: number, ringAt: (y: number, off: number) => THREE.Vector3[]) {
   const [nC, nPsi0] = RES[lv].collar; const nPsi = nPsi0 + 4;
   const top = ringAt(TEE_TOP, 0);
   const m = top.length;
@@ -572,7 +583,7 @@ function addTeeCollar(B, lv, ringAt) {
 
 // ---- sleeves ------------------------------------------------------------------------------------------------------
 const SLEEVE = { s0: -0.03, L: 0.098 };
-function addSleeve(B, lv, s) {
+function addSleeve(B: K.Builder, lv: number, s: string) {
   const [nTh, nS] = RES[lv].sleeve;
   const R = K.REST;
   const sx = s === 'L' ? 1 : -1;
@@ -582,9 +593,9 @@ function addSleeve(B, lv, s) {
   const fwd = new V3(0, 0, 1).addScaledVector(d, -d.z).addScaledVector(lat, -lat.z).normalize();
   const L = SLEEVE.L;
   // nominal sleeve radius (around the arm, + a flatter inner side toward the torso)
-  const rS = (x) => lerp(0.0478, 0.0468, sstep(0.0, L, x)) + 0.0012 * sstep(L - 0.02, L, x);
+  const rS = (x: number) => lerp(0.0478, 0.0468, sstep(0.0, L, x)) + 0.0012 * sstep(L - 0.02, L, x);
   const lvF = RES[lv].fold, micro = RES[lv].micro;
-  const fold = (phi, x) => {
+  const fold = (phi: number, x: number) => {
     const c = Math.cos(phi), sn = Math.sin(phi);
     const inner = pos(-c);
     let D = 0;
@@ -595,7 +606,7 @@ function addSleeve(B, lv, s) {
     if (micro > 0) D += 0.0003 * micro * n1(x * 160 + Math.sin(phi * 3) * 2, 13) * n1(phi * 9, 17);
     return D * lvF;
   };
-  const ringPt = (x, phi, off) => {
+  const ringPt = (x: number, phi: number, off: number) => {
     const c = sh.clone().addScaledVector(d, x);
     const r0 = rS(x) + off, r = r0 + fold(phi, x);
     const base = c.clone().addScaledVector(lat, r0 * Math.cos(phi)).addScaledVector(fwd, r0 * 0.97 * Math.sin(phi));
@@ -613,7 +624,7 @@ function addSleeve(B, lv, s) {
     return p;
   };
   const xs = K.densitySamples(nS, SLEEVE.s0, L, (x) => 1 + 1.2 * gauss(x - 0.035, 0.02) + 1.4 * gauss(x - L, 0.015));
-  const rows = [], sv = [];
+  const rows = [], sv: number[] = [];
   for (const x of xs) { rows.push(Array.from({ length: nTh }, (_, i) => ringPt(x, (i / nTh) * TAU, 0))); sv.push(x); }
   // rolled hem + inner lip
   for (const [dx, off] of [[0.0012, -0.0006], [0.0021, -0.0024], [0.0012, -0.0043], [-0.004, -0.0049], [-0.013, -0.0046]]) {
@@ -621,8 +632,8 @@ function addSleeve(B, lv, s) {
   }
   // set-in seam: a slim raised seam allowance along the line where the sleeve leaves the shoulder lobe (hero)
   if (lv >= 3) {
-    const nS2 = nTh, loop = [], xsSeam = [];
-    const outside = (x, phi) => { const q = ringPt(x, phi, 0); return teeSD(q.x, q.z, q.y) - teeFold(q, lvF, micro) > 0.0002; };
+    const nS2 = nTh, loop = [], xsSeam: number[] = [];
+    const outside = (x: number, phi: number) => { const q = ringPt(x, phi, 0); return teeSD(q.x, q.z, q.y) - teeFold(q, lvF, micro) > 0.0002; };
     for (let i = 0; i < nS2; i++) {
       const phi = (i / nS2) * TAU;
       let lo = -0.02, hi = 0.075;
@@ -653,7 +664,7 @@ function addSleeve(B, lv, s) {
   const uvA = g.attributes.uv;
   B.add(g, {
     ex: CS.shirt, uv: true, v3: cl(PART.sleeve, MC.jersey, L - SLEEVE.s0),
-    weights: (p, i) => {
+    weights: (p, i: number) => {
       const x = uvA.getY(i) + SLEEVE.s0;
       const k = sstep(0.02, 0.065, x);                    // lobe weights at the top → rigid upper arm below the seam
       const w = teeWeights(p);
@@ -670,21 +681,21 @@ function addSleeve(B, lv, s) {
 // tank bone behind the shoulders.
 // ------------------------------------------------------------------------------------------------
 /** Surface frame on the tee at base point P: { n (outward normal), D (fold displacement at P) }. */
-function teeFrameAt(P, lvF, micro) {
+function teeFrameAt(P: THREE.Vector3, lvF: number, micro: number) {
   const n = teeNormal(P.x, P.z, P.y, new V3());
   return { n, D: teeFold(P, lvF, micro) };
 }
 /** Flat webbing band along a curve: width 2w, thickness t, sitting on the tee (offset along its normal). */
-function webbing(curve, w, t, nSeg, nAcross, lvF, micro, opt = {}) {
+function webbing(curve: THREE.Curve<THREE.Vector3>, w: number, t: number, nSeg: number, nAcross: number, lvF: number, micro: number, opt: { frame?: (P: THREE.Vector3, u: number) => { n: THREE.Vector3; D: number }; lift?: (u: number) => number } = {}) {
   const len = curve.getLength();
-  const prof = []; // rounded-rectangle section (a = across -1..1, b = through -1..1)
+  const prof: number[][] = []; // rounded-rectangle section (a = across -1..1, b = through -1..1)
   const nA = Math.max(1, nAcross);
   const roll = nAcross >= 3 ? [[1.06, 0.55], [1.08, 0], [1.06, -0.55]] : [[1.07, 0]];
   for (let k = 0; k <= nA; k++) prof.push([-1 + (2 * k) / nA, 1]);           // top face
   prof.push(...roll);                                                          // edge roll
   for (let k = nA; k >= 0; k--) prof.push([-1 + (2 * k) / nA, -1]);          // bottom face
   prof.push(...roll.map(([a, b]) => [-a, -b]).reverse());
-  const rows = [], meta = [];
+  const rows: THREE.Vector3[][] = [], meta: number[] = [];
   const T = new V3(), b = new V3();
   for (let j = 0; j <= nSeg; j++) {
     const u = j / nSeg;
@@ -695,7 +706,7 @@ function webbing(curve, w, t, nSeg, nAcross, lvF, micro, opt = {}) {
     // on the tee: sit in the groove; in the air (bridging to the tank frame): stay on the path
     const air = opt.frame ? 0 : sstep(0.003, 0.009, teeSD(P.x, P.z, P.y));
     const C = P.clone().addScaledVector(n, (fr.D + t * 0.5 + 0.0003) * (1 - air) + (opt.lift ? opt.lift(u) : 0));
-    const row = [];
+    const row: THREE.Vector3[] = [];
     for (const [a, c] of prof) row.push(C.clone().addScaledVector(b, a * w).addScaledVector(n, c * t * 0.5));
     rows.push(row); meta.push(u * len);
   }
@@ -706,13 +717,13 @@ function webbing(curve, w, t, nSeg, nAcross, lvF, micro, opt = {}) {
   // orientation: normals must point away from the band centre line
   const P0 = curve.getPointAt(0.5), N = g.attributes.normal, Pp = g.attributes.position; let acc = 0;
   for (let i = 0; i < Pp.count; i += 7) { const dx = Pp.getX(i) - P0.x, dy = Pp.getY(i) - P0.y, dz = Pp.getZ(i) - P0.z; if (dx * dx + dy * dy + dz * dz < 0.0009) acc += N.getX(i) * dx + N.getY(i) * dy + N.getZ(i) * dz; }
-  if (acc < 0) { const ix = g.index.array; for (let q = 0; q < ix.length; q += 3) { const tt = ix[q + 1]; ix[q + 1] = ix[q + 2]; ix[q + 2] = tt; } for (let i = 0; i < N.count; i++) N.setXYZ(i, -N.getX(i), -N.getY(i), -N.getZ(i)); }
+  if (acc < 0) { const ix = g.index!.array; for (let q = 0; q < ix.length; q += 3) { const tt = ix[q + 1]; ix[q + 1] = ix[q + 2]; ix[q + 2] = tt; } for (let i = 0; i < N.count; i++) N.setXYZ(i, -N.getX(i), -N.getY(i), -N.getZ(i)); }
   return { geo: g, len };
 }
 /** Tee weights for hardware riding on the tee (no hem flap). */
-function onTeeWeights(p) { return teeWeights(p).filter((e) => e[0] !== 'hemF' && e[0] !== 'hemB'); }
+function onTeeWeights(p: THREE.Vector3): Weights { return teeWeights(p).filter((e) => e[0] !== 'hemF' && e[0] !== 'hemB'); }
 
-function addHarness(B, lv) {
+function addHarness(B: K.Builder, lv: number) {
   const R = RES[lv];
   const lvF = R.fold, micro = R.micro;
   const hi = R.tank >= 2;
@@ -727,17 +738,19 @@ function addHarness(B, lv) {
     });
     // ladder-lock adjuster on the front run at chest height + the loose tail hanging below it
     if (lv < 1) continue;
-    let best = null;
+    let best: { t: number; P: THREE.Vector3 } | null = null;
     for (let k = 0; k <= 300; k++) { const t = k / 300; const P = curve.getPointAt(t); if (P.z > 0.03 && (!best || Math.abs(P.y - 0.842) < Math.abs(best.P.y - 0.842))) best = { t, P }; }
-    const Tg = curve.getTangentAt(best.t).normalize();
-    const fr = teeFrameAt(best.P, lvF, micro);
+    if (!best) continue;
+    const at0 = best;
+    const Tg = curve.getTangentAt(at0.t).normalize();
+    const fr = teeFrameAt(at0.P, lvF, micro);
     const o = fr.n.clone().addScaledVector(Tg, -fr.n.dot(Tg)).normalize();
     const bd = new V3().crossVectors(Tg, o).normalize();
-    const base = best.P.clone().addScaledVector(o, fr.D + STRAP.t + 0.0003);
-    const w8 = () => onTeeWeights(best.P);
+    const base = at0.P.clone().addScaledVector(o, fr.D + STRAP.t + 0.0003);
+    const w8 = () => onTeeWeights(at0.P);
     // frame: two side rails + three bars (ladder), bevelled dark plastic
     const lock = new THREE.Group();
-    const partsL = [];
+    const partsL: Array<[THREE.BufferGeometry, THREE.Vector3]> = [];
     if (hi) {
       for (const sgn of [1, -1]) { const rail = K.superEllipsoid(0.0021, 0.0112, 0.0026, 0.55, 0.6, 6, 8); partsL.push([rail, new V3(sgn * 0.0145, 0, 0.0018)]); }
       for (const yy of [-0.0085, 0.0, 0.0085]) { const bar = K.superEllipsoid(0.0142, 0.0016, 0.0019, 0.55, 0.6, 10, 4); partsL.push([bar, new V3(0, yy, yy === 0 ? 0.0034 : 0.0016)]); }
@@ -751,14 +764,14 @@ function addHarness(B, lv) {
   }
   // ---- sternum strap + side-release buckle
   if (lv >= 1) {
-    const sp = strapPaths().find((q) => q.chest);
-    const { geo } = webbing(sp.curve, 0.0072, 0.0018, Math.max(8, Math.round(seg * 0.45)), across, lvF, micro, { lift: (u) => 0.0022 * Math.sin(Math.PI * u) });
+    const sp = strapPaths().find((q) => q.chest)!;
+    const { geo } = webbing(sp.curve, 0.0072, 0.0018, Math.max(8, Math.round(seg * 0.45)), across, lvF, micro, { lift: (u: number) => 0.0022 * Math.sin(Math.PI * u) });
     B.add(geo, { ex: CS.strap, uv: true, v3: cl(PART.strap, MC.webbing), weights: (p) => onTeeWeights(p) });
     const c = teeBase(0, 0.886, new V3()); const fr = teeFrameAt(c, lvF, micro);
     const n = fr.n.clone(); const X = new V3(1, 0, 0).addScaledVector(n, -n.x).normalize(); const Y = new V3().crossVectors(n, X).normalize();
     const at = c.clone().addScaledVector(n, fr.D + 0.0072);
     const w8 = () => onTeeWeights(c);
-    const put = (g2, x, y, z, ex, mc = MC.plastic) => { g2.translate(x, y, z); K.placeBasis(g2, X, Y, at); B.add(g2, { ex, v3: cl(PART.none, mc), weights: w8 }); };
+    const put = (g2: THREE.BufferGeometry, x: number, y: number, z: number, ex: number, mc = MC.plastic) => { g2.translate(x, y, z); K.placeBasis(g2, X, Y, at); B.add(g2, { ex, v3: cl(PART.none, mc), weights: w8 }); };
     // female housing (left half) with its open mouth, male tongue (right half) with two prongs and a thumb grip
     put(K.superEllipsoid(0.0118, 0.0112, 0.0044, 0.3, 0.34, hi ? 14 : 8, hi ? 8 : 4), 0.0072, 0, 0, CS.darkPlastic);                 // female housing
     put(K.superEllipsoid(0.0082, 0.0098, 0.0038, 0.35, 0.4, hi ? 12 : 6, hi ? 6 : 4), -0.0112, 0, -0.0004, CS.darkPlastic);          // male tongue
@@ -781,18 +794,18 @@ const SHX = { yc: 0.573, hipY: 0.622, yHem: 0.466, top: 0.782, k: 0.02 };
 const SH_A = tab([[0.573, 0.03], [0.582, 0.074], [0.595, 0.104], [0.613, 0.1185], [0.635, 0.1245], [0.66, 0.1235], [0.685, 0.118], [0.705, 0.1125], [0.725, 0.1075], [0.75, 0.1035], [0.782, 0.1005]]);
 const SH_B = tab([[0.58, 0.044], [0.595, 0.068], [0.613, 0.0795], [0.635, 0.0848], [0.66, 0.0845], [0.685, 0.0818], [0.705, 0.0785], [0.725, 0.0765], [0.75, 0.0745], [0.782, 0.0725]]);
 const SH_Z = tab([[0.573, -0.004], [0.595, -0.005], [0.613, -0.006], [0.635, -0.007], [0.66, -0.008], [0.685, -0.01], [0.705, -0.011], [0.782, -0.011]]);
-const shB = (y) => (y < 0.58 ? 0.044 * Math.sqrt(clamp((y - SHX.yc) / (0.58 - SHX.yc), 0, 1)) : SH_B(y));
+const shB = (y: number) => (y < 0.58 ? 0.044 * Math.sqrt(clamp((y - SHX.yc) / (0.58 - SHX.yc), 0, 1)) : SH_B(y));
 /** Leg lobe / leg tube: centre on the (rest) thigh axis, flaring outward toward the hem; radius grows (A-line). */
-function shLegC(y, sx, out) { const t = (SHX.hipY - y) / 0.275; return out.set(sx * (0.078 + 0.003 * t + 0.0085 * sstep(0.6, SHX.yHem, y)), y, 0.012 * t - 0.004); }
-const shLegR = (y) => (y > 0.6 ? lerp(0.0605, 0.0, sstep(0.605, 0.69, y)) : lerp(0.0605, 0.0728, sstep(0.6, SHX.yHem, y)));
-function shSec(y) {
+function shLegC(y: number, sx: number, out: THREE.Vector3) { const t = (SHX.hipY - y) / 0.275; return out.set(sx * (0.078 + 0.003 * t + 0.0085 * sstep(0.6, SHX.yHem, y)), y, 0.012 * t - 0.004); }
+const shLegR = (y: number) => (y > 0.6 ? lerp(0.0605, 0.0, sstep(0.605, 0.69, y)) : lerp(0.0605, 0.0728, sstep(0.6, SHX.yHem, y)));
+function shSec(y: number) {
   const S = { a: SH_A(y), b: shB(y), n: 2.3, zc: SH_Z(y), lr: shLegR(y), lx: 0, lz: 0 };
   shLegC(y, 1, _lc); S.lx = _lc.x; S.lz = _lc.z;
   return S;
 }
-function shSD(x, z, S) {
+function shSD(x: number, z: number, S: ReturnType<typeof shSec>) {
   const dz0 = z - S.zc, r = Math.hypot(x, dz0);
-  let d;
+  let d: number;
   if (S.b < 1e-5) d = Math.hypot(Math.max(0, Math.abs(x) - S.a), dz0);
   else if (r < 1e-9) d = -Math.min(S.a, S.b);
   else { const ux = Math.abs(x) / r, uz = Math.abs(dz0) / r; d = r - 1 / Math.pow(Math.pow(ux / S.a, S.n) + Math.pow(uz / S.b, S.n), 1 / S.n); }
@@ -802,8 +815,8 @@ function shSD(x, z, S) {
   }
   return d;
 }
-function shRing(y, m, N = 168) {
-  const S = shSec(y), P = [];
+function shRing(y: number, m: number, N = 168) {
+  const S = shSec(y), P: number[][] = [];
   for (let i = 0; i < N; i++) {
     const al = (i / N) * TAU, dx = Math.sin(al), dz = Math.cos(al);
     let hi = 0.2, lo = hi;
@@ -815,11 +828,11 @@ function shRing(y, m, N = 168) {
   return resampleQuarters(P, m);
 }
 /** Resample a closed polyline (from the front centre, +X next) uniformly by arc length within each quarter. */
-function resampleQuarters(P, m) {
+function resampleQuarters(P: number[][], m: number) {
   const N = P.length;
   let iL = 0, iR = 0; for (let i = 0; i < N; i++) { if (P[i][0] > P[iL][0]) iL = i; if (P[i][0] < P[iR][0]) iR = i; }
   const anchors = [0, iL, N / 2, iR, N];
-  const out = [], q = m / 4;
+  const out: number[][] = [], q = m / 4;
   for (let k = 0; k < 4; k++) {
     const i0 = anchors[k], i1 = anchors[k + 1];
     const L = [0]; for (let i = i0 + 1; i <= i1; i++) { const a = P[(i - 1) % N], b = P[i % N]; L.push(L[L.length - 1] + Math.hypot(b[0] - a[0], b[1] - a[1])); }
@@ -834,14 +847,14 @@ function resampleQuarters(P, m) {
   }
   return out;
 }
-function shNormal(x, z, y, out) {
+function shNormal(x: number, z: number, y: number, out: THREE.Vector3) {
   const h = 2e-4;
   const S0 = shSec(y), S1 = shSec(y + h), S2 = shSec(y - h);
   const gx = shSD(x + h, z, S0) - shSD(x - h, z, S0), gz = shSD(x, z + h, S0) - shSD(x, z - h, S0), gy = shSD(x, z, S1) - shSD(x, z, S2);
   const l = Math.hypot(gx, gy, gz) || 1; return out.set(gx / l, gy / l, gz / l);
 }
 /** Pelvis displacement at base point p (fly, pockets, whiskers, back pockets, yoke, side seams). */
-function shortsFold(p, lvF) {
+function shortsFold(p: THREE.Vector3, lvF: number) {
   const y = p.y, ax = Math.abs(p.x), zc = SH_Z(y);
   const th = Math.atan2(p.x, p.z - zc), c = Math.cos(th), front = pos(c), back = pos(-c);
   let D = 0;
@@ -879,7 +892,7 @@ function shortsFold(p, lvF) {
   return D * lvF;
 }
 /** Leg tube displacement: psi 0 = inseam, pi/2 = front (+X leg; back for the -X leg), pi = outer seam. */
-function shortsLegFold(psi, y, sx, lvF) {
+function shortsLegFold(psi: number, y: number, sx: number, lvF: number) {
   const s = SHX.hipY - y, L = SHX.hipY - SHX.yHem;
   const fr = sx > 0 ? psi : TAU - psi;                  // mirror so 'front' means +Z on both legs
   let D = 0;
@@ -891,14 +904,14 @@ function shortsLegFold(psi, y, sx, lvF) {
   return D * lvF;
 }
 
-function addShorts(B, lv) {
+function addShorts(B: K.Builder, lv: number) {
   const R = RES[lv];
   let [nTh, nRows] = R.shorts; nTh = Math.round(nTh / 8) * 8;
   const lvF = R.fold;
   const nrm = new V3();
   // ---- pelvis shell: rows from the waist down to the crotch closure
   const ys = K.densitySamples(nRows, SHX.yc, SHX.top - 0.004, (y) => 1 + 2.2 * gauss(y - SHX.yc, 0.012) + 0.8 * gauss(y - 0.6, 0.02) + 0.4 * gauss(y - 0.7, 0.04)).reverse();
-  const rows = [], rowY = [];
+  const rows = [], rowY: number[] = [];
   for (const y of ys) {
     const ring = shRing(y, nTh);
     rows.push(ring.map(([x, z]) => { shNormal(x, z, y, nrm); const p = new V3(x, y, z); return p.addScaledVector(nrm, shortsFold(p, lvF)); }));
@@ -906,7 +919,7 @@ function addShorts(B, lv) {
   }
   // crotch closure: front + back centre points of the last ring meet
   { const last = rows[rows.length - 1]; const c = last[0].clone().lerp(last[nTh / 2], 0.5); last[0].copy(c); last[nTh / 2].copy(c); }
-  const pelvisW = (p) => {
+  const pelvisW = (p: THREE.Vector3): Weights => {
     const a = sstep(0.7, 0.77, p.y);
     const wt = thighW(SHX.hipY - p.y) * sstep(0.012, 0.045, Math.abs(p.x)) * sstep(0.66, 0.62, p.y);
     return [['hips', (1 - a) * (1 - wt)], ['spine', a * (1 - wt)], [p.x > 0 ? 'thighL' : 'thighR', wt]];
@@ -923,7 +936,7 @@ function addShorts(B, lv) {
     const yEnd = SHX.yHem + 0.019;
     const nL = R.sLeg[1];
     const lys = K.densitySamples(nL, yEnd, SHX.yc, (y) => 1 + 1.4 * gauss(y - SHX.yc, 0.02) + 1.0 * gauss(y - SHX.yHem, 0.03)).reverse();
-    const circ = (y, off) => {
+    const circ = (y: number, off: number) => {
       const C = shLegC(y, sx, new V3()), r = shLegR(y);
       return Array.from({ length: half }, (_, k) => {
         const psi = (k / half) * TAU;
@@ -931,7 +944,7 @@ function addShorts(B, lv) {
         return sx > 0 ? new V3(C.x - rr * Math.cos(psi), y, C.z + rr * Math.sin(psi)) : new V3(C.x + rr * Math.cos(psi), y, C.z - rr * Math.sin(psi));
       });
     };
-    const lrows = [], lv2 = [];
+    const lrows = [], lv2: number[] = [];
     for (const y of lys) {
       const bl = Math.pow(sstep(SHX.yc, SHX.yc - 0.07, y), 0.8);
       const c = circ(y, 0);
@@ -940,7 +953,7 @@ function addShorts(B, lv) {
       lv2.push(SHX.hipY - y);
     }
     lrows[0] = tear.map((t) => t.clone());
-    const axisOut = (p, out) => { shLegC(p.y, sx, out); };
+    const axisOut = (p: THREE.Vector3, out: THREE.Vector3) => { shLegC(p.y, sx, out); };
     const lg = K.gridGeo(lrows, { wrapU: true, outward: axisOut, uv: (i, j) => [i / half, lv2[j]] });
     legs.push({ s, sx, geo: lg, circ, axisOut });
   }
@@ -961,7 +974,7 @@ function addShorts(B, lv) {
   B.add(pg, { ex: CS.shorts, uv: true, v3: cl(PART.shorts, MC.twill), weights: pelvisW });
   for (const lg of legs) {
     // matches the pelvis weights along the shared crotch ring (no seam opening when the legs spread), then pure leg
-    const legW = (p) => { const w = thighW(SHX.hipY - p.y) * lerp(sstep(0.012, 0.045, Math.abs(p.x)), 1, sstep(SHX.yc, SHX.yc - 0.03, p.y)); return [['hips', 1 - w], ['thigh' + lg.s, w]]; };
+    const legW = (p: THREE.Vector3): Weights => { const w = thighW(SHX.hipY - p.y) * lerp(sstep(0.012, 0.045, Math.abs(p.x)), 1, sstep(SHX.yc, SHX.yc - 0.03, p.y)); return [['hips', 1 - w], ['thigh' + lg.s, w]]; };
     B.add(lg.geo, { ex: CS.shorts, uv: true, v3: cl(PART.shortLeg, MC.twill, SHX.hipY - SHX.yHem), weights: legW });
     // turned-up cuff: outer face (team), rolled bottom, tucked inside lip; proud of the leg by its own thickness
     const prof = lv >= 4 ? [[-0.0205, -0.0002], [-0.0196, 0.0026], [-0.017, 0.0036], [-0.004, 0.0038], [0.0045, 0.0034], [0.0061, 0.0016], [0.0064, -0.0006], [0.0052, -0.0024], [0.0028, -0.0032], [-0.004, -0.0034], [-0.014, -0.003]]
@@ -987,7 +1000,7 @@ function addShorts(B, lv) {
     const pts = [new V3(x, 0.712, 0.0712), new V3(x, 0.7, 0.0748), new V3(x + 0.0018 * sx, 0.684, 0.0848), new V3(x + 0.0036 * sx, 0.668, 0.0932)];
     const sw = K.sweep(pts, { seg: lv >= 3 ? 12 : 7, radial: lv >= 3 ? 8 : 5, capSteps: 2, radius: () => 0.0021, outward: (P, o) => o.set(0, 0, 1) });
     const len = sw.curve.getLength(); const tA = sw.t, cA = sw.cs;
-    B.add(sw.geo, { ex: CS.lace, uv: (i) => [tA[i] * len, cA[i]], v3: cl(PART.cord, MC.lace), bone: 'hips' });
+    B.add(sw.geo, { ex: CS.lace, uv: (i: number) => [tA[i] * len, cA[i]], v3: cl(PART.cord, MC.lace), bone: 'hips' });
     const tipP = sw.curve.getPointAt(1), tipT = sw.curve.getTangentAt(1);
     const ag = K.lathe([[0, -0.0052], [0.0022, -0.0052], [0.0027, -0.0044], [0.0027, 0.0038], [0.0024, 0.0048], [0, 0.005]], lv >= 3 ? 12 : 8);
     K.alongAxis(ag, tipP.clone().addScaledVector(tipT, 0.004), tipT.clone().negate());
@@ -1000,16 +1013,16 @@ function addShorts(B, lv) {
 // with a slouch of soft rings above the ankle and a rolled double-layer cuff at the top.
 // ------------------------------------------------------------------------------------------------
 const SOCK = { top: 0.2065, off: 0.0024 };
-function addSocks(B, lv) {
+function addSocks(B: K.Builder, lv: number) {
   const [nTh, nS] = RES[lv].sock;
   const lvF = RES[lv].fold;
   for (const s of ['L', 'R']) {
     const Lg = legSpec2(s);
-    const fr = {};
+    const fr = {} as FullFrame;   // Lg.path.at()가 채운다
     // arc length where the leg path crosses the sock top
     let sTop = Lg.sK; for (let q = Lg.sK; q < Lg.sA; q += 0.0005) { Lg.path.at(q, fr); if (fr.C.y < SOCK.top) { sTop = q; break; } }
     const sBot = Lg.sA + 0.028;
-    const sockR = (th, s2, extra) => {
+    const sockR = (th: number, s2: number, extra: number) => {
       const [a, b] = Lg.sec(th, s2); const r = Math.hypot(a, b) || 1e-6;
       const slouch = 0.0012 * Math.sin((s2 - sTop) / 0.0125 * TAU + 1.6 * n1(th * 1.3, 31 + (s === 'L' ? 1 : 2))) * gauss(s2 - Lg.sA + 0.06, 0.03);
       const cuffK = 0.0006 * sstep(sTop + 0.02, sTop + 0.012, s2);                                   // cuff band sits a touch proud
@@ -1017,8 +1030,8 @@ function addSocks(B, lv) {
       return [a * k, b * k];
     };
     const ss = K.densitySamples(nS, sTop, sBot, (x) => 1 + 1.2 * gauss(x - sTop, 0.012) + 0.6 * gauss(x - Lg.sA + 0.06, 0.03));
-    const rows = [], sv = [];
-    const ringAt = (s2, extra, dy = 0) => { Lg.path.at(s2, fr); const row = []; for (let i = 0; i < nTh; i++) { const th = (i / nTh) * TAU; const [a, b] = sockR(th, s2, extra); row.push(fr.C.clone().addScaledVector(fr.l, a).addScaledVector(fr.f, b).addScaledVector(fr.d, -dy)); } return row; };
+    const rows: THREE.Vector3[][] = [], sv: number[] = [];
+    const ringAt = (s2: number, extra: number, dy = 0) => { Lg.path.at(s2, fr); const row: THREE.Vector3[] = []; for (let i = 0; i < nTh; i++) { const th = (i / nTh) * TAU; const [a, b] = sockR(th, s2, extra); row.push(fr.C.clone().addScaledVector(fr.l, a).addScaledVector(fr.f, b).addScaledVector(fr.d, -dy)); } return row; };
     // rolled top edge: inner lip → over the top → outside
     for (const [dy, extra] of [[-0.009, -0.0036], [-0.0015, -0.0034], [0.0006, -0.0022], [0.0011, -0.0006]]) { rows.push(ringAt(sTop, extra, dy)); sv.push(-Math.abs(dy) * 0.3); }
     for (const x of ss) { rows.push(ringAt(x, 0)); sv.push(x - sTop); }
@@ -1026,7 +1039,7 @@ function addSocks(B, lv) {
     const uvA = g.attributes.uv;
     B.add(g, {
       ex: CS.sock, uv: true, v3: cl(PART.sock, MC.rib),
-      weights: (p, i) => { const s2 = uvA.getY(i) + sTop; const wA = sstep(Lg.sA - 0.02, Lg.sA + 0.012, s2); return [['shin' + s, 1 - wA], ['foot' + s, wA]]; },
+      weights: (p, i: number) => { const s2 = uvA.getY(i) + sTop; const wA = sstep(Lg.sA - 0.02, Lg.sA + 0.012, s2); return [['shin' + s, 1 - wA], ['foot' + s, wA]]; },
     });
   }
 }
@@ -1040,9 +1053,9 @@ function addSocks(B, lv) {
 //   padded collar + lining · heel pull loop. Rubber wear / stitching / textures are in the cloth shader.
 // ------------------------------------------------------------------------------------------------
 const SK = { L: 0.125, cz: 0.05 };
-const skSpring = (zl) => 0.018 * sstep(0.05, 0.125, zl) ** 2 + 0.004 * sstep(-0.09, -0.125, zl) ** 2;
+const skSpring = (zl: number) => 0.018 * sstep(0.05, 0.125, zl) ** 2 + 0.004 * sstep(-0.09, -0.125, zl) ** 2;
 /** Footprint outline point at phi (0 toe, pi/2 lateral, pi heel, 3pi/2 medial), grown by `inset`. */
-function skOutline(phi, inset, out) {
+function skOutline(phi: number, inset: number, out: THREE.Vector3) {
   const c = Math.cos(phi), sn = Math.sin(phi);
   const zN = spow(c, 2 / 2.25);
   const zl = SK.L * zN;
@@ -1051,14 +1064,14 @@ function skOutline(phi, inset, out) {
   return out.set((w + inset) * spow(sn, 2 / 2.7), 0, SK.cz + (SK.L + inset * 0.9) * zN);
 }
 /** Midsole top height above the ground line (heel-to-toe drop, bumper climbing up the toe). */
-const skMid = (zl) => 0.027 + 0.008 * sstep(0.01, -0.07, zl) + 0.0085 * sstep(0.098, 0.124, zl);
+const skMid = (zl: number) => 0.027 + 0.008 * sstep(0.01, -0.07, zl) + 0.0085 * sstep(0.098, 0.124, zl);
 /** Collar ring (ankle opening) point at phi. */
-function skCollar(phi, out) {
+function skCollar(phi: number, out: THREE.Vector3) {
   const c = Math.cos(phi), sn = Math.sin(phi), back = pos(-c), front = pos(c);
   return out.set(0.0405 * sn, 0.093 + 0.016 * back * back + 0.005 * front * front - 0.003 * sn * sn, -0.004 + 0.051 * c);
 }
 /** Upper loft: phi around, t 0 (sole line) → 1 (collar). */
-function skUpper(phi, t, out) {
+function skUpper(phi: number, t: number, out: THREE.Vector3) {
   const b = skOutline(phi, -0.0042, new V3()); const zl = b.z - SK.cz;
   b.y = skMid(zl) - 0.0022 + skSpring(zl);
   const c = skCollar(phi, new V3());
@@ -1071,7 +1084,7 @@ function skUpper(phi, t, out) {
   const u = 1 - t;
   return out.set(u * u * b.x + 2 * u * t * m.x + t * t * c.x, u * u * b.y + 2 * u * t * m.y + t * t * c.y, u * u * b.z + 2 * u * t * m.z + t * t * c.z);
 }
-function skUpperN(phi, t, out) {
+function skUpperN(phi: number, t: number, out: THREE.Vector3) {
   const p = skUpper(phi, t, new V3()), a = skUpper(phi + 0.003, t, new V3()), b = skUpper(phi, Math.min(1, t + 0.003), new V3());
   if (t + 0.003 > 1) b.subVectors(p, skUpper(phi, t - 0.003, new V3())).add(p);
   out.crossVectors(a.sub(p), b.sub(p)).normalize();
@@ -1080,9 +1093,9 @@ function skUpperN(phi, t, out) {
 }
 // throat: the lace opening along the top of the vamp (phi ≈ 0), eyestays either side
 const SK_THROAT = { t0: 0.6, t1: 1.0 };
-const throatHalf = (t) => lerp(0.1, 0.26, sstep(SK_THROAT.t0, SK_THROAT.t1, t));  // half-width in phi
+const throatHalf = (t: number) => lerp(0.1, 0.26, sstep(SK_THROAT.t0, SK_THROAT.t1, t));  // half-width in phi
 /** Upper displacement: throat recess, vamp flex creases, heel counter pad, toe box. */
-function skUpperD(phi, t, lvF) {
+function skUpperD(phi: number, t: number, lvF: number) {
   const a = Math.atan2(Math.sin(phi), Math.cos(phi)), aa = Math.abs(a);
   let D = 0;
   const inThroat = sstep(SK_THROAT.t0 - 0.03, SK_THROAT.t0 + 0.04, t) * (1 - sstep(throatHalf(t) - 0.03, throatHalf(t) + 0.02, aa));
@@ -1093,22 +1106,23 @@ function skUpperD(phi, t, lvF) {
 }
 
 let _shoeCache = new Map();
-function shoeParts(lv) {
+function shoeParts(lv: number) {
   if (_shoeCache.has(lv)) return _shoeCache.get(lv);
   const q = RES[lv].shoe, lvF = RES[lv].fold, SR = SHOE_RES[lv];
   const nP = SR.nP;
-  const pr = (n) => Math.max(1, Math.round(n * SR.pk));
-  const phis = []; for (let i = 0; i < nP; i++) phis.push((i / nP) * TAU);
-  const parts = []; // { geo, ex, v3, uv }
+  const pr = (n: number) => Math.max(1, Math.round(n * SR.pk));
+  const phis: number[] = []; for (let i = 0; i < nP; i++) phis.push((i / nP) * TAU);
+  // 신발 부품: 형상, 색 출처(고정 또는 uv로 고르는 함수), 재질 분류, uv 여부·함수
+  const parts: Array<{ geo: THREE.BufferGeometry; ex: number | ((p: THREE.Vector3, i: number, uvA: THREE.BufferAttribute | THREE.InterleavedBufferAttribute) => number); v3: number[]; uv?: boolean; uvFn?: (i: number) => number[] }> = [];
   const tmp = new V3(), nn = new V3();
   // ---- outsole: bottom plate + lugged rubber wall
   {
-    const rows = [];
+    const rows: THREE.Vector3[][] = [];
     for (const k of [0.4, 0.78, 0.95]) rows.push(phis.map((ph) => { const o = skOutline(ph, -0.0024, new V3()); const p = new V3(o.x * k, 0, SK.cz + (o.z - SK.cz) * k); p.y = skSpring(p.z - SK.cz); return p; }));
     const g = K.gridGeo(rows, { wrapU: true, poles: { start: new V3(0, skSpring(0), SK.cz) }, outward: (p, out) => out.set(p.x, p.y + 1, p.z), uv: (i, j) => { const p = rows[j][i % nP]; return [p.x, p.z - SK.cz]; }, poleUv: { start: [0, 0] } });
     parts.push({ geo: g, ex: CS.outsole, v3: cl(PART.outsole, MC.rubber, 0), uv: true });
-    const lug = (ph) => { const z = skOutline(ph, 0, tmp).z; const per = 0.0094; const f = (Math.abs(z * 1000 + Math.sin(ph) * 3) / (per * 1000)) % 1; return q >= 1 ? 0.0011 * sstep(0.3, 0.45, f) * sstep(0.95, 0.8, f) : 0; };
-    const wr = [];
+    const lug = (ph: number) => { const z = skOutline(ph, 0, tmp).z; const per = 0.0094; const f = (Math.abs(z * 1000 + Math.sin(ph) * 3) / (per * 1000)) % 1; return q >= 1 ? 0.0011 * sstep(0.3, 0.45, f) * sstep(0.95, 0.8, f) : 0; };
+    const wr: THREE.Vector3[][] = [];
     for (const [y, inset, lugK] of (q >= 2 ? [[0.0, -0.0024, 0.4], [0.0016, -0.0004, 1], [0.0048, 0.0006, 1], [0.0062, 0.0004, 0.6], [0.0072, -0.0006, 0]] : [[0.0, -0.0024, 0], [0.0032, 0.0004, 0], [0.0072, -0.0006, 0]])) wr.push(phis.map((ph) => { const p = skOutline(ph, inset + lug(ph) * lugK, new V3()); p.y = y + skSpring(p.z - SK.cz); return p; }));
     const wg = K.gridGeo(wr, { wrapU: true, outward: (p, out) => out.set(0, p.y, SK.cz), uv: (i, j) => { const p = wr[j][i % nP]; return [p.x, p.z - SK.cz]; } });
     parts.push({ geo: wg, ex: CS.outsole, v3: cl(PART.outsole, MC.rubber, 1), uv: true });
@@ -1144,10 +1158,10 @@ function shoeParts(lv) {
     // lining folding inside the collar
     for (const [dy, k] of [[-0.0024, 0.9], [-0.018, 0.84]]) { rows.push(phis.map((ph) => { const c = skCollar(ph, new V3()); return new V3(c.x * k, c.y + dy, -0.004 + (c.z + 0.004) * k); })); tv.push(1 + (1 - k)); }
     const g = K.gridGeo(rows, { wrapU: true, outward: (p, out) => out.set(0, 0.03, SK.cz - 0.03), uv: (i, j) => [i / nP, tv[j]] });
-    parts.push({ geo: g, ex: (p, i, uvA) => (uvA.getY(i) > 1.001 ? CS.teamDark : CS.shoe), v3: cl(PART.upper, MC.leather, 1), uv: true });
+    parts.push({ geo: g, ex: (p: THREE.Vector3, i: number, uvA: THREE.BufferAttribute | THREE.InterleavedBufferAttribute) => (uvA.getY(i) > 1.001 ? CS.teamDark : CS.shoe), v3: cl(PART.upper, MC.leather, 1), uv: true });
   }
   // ---- overlays with thickness: patch over (phi, t) given per-row phi range or per-column t range
-  const patch = (nu, nv, map, h, ex, v3, opt = {}) => {
+  const patch = (nu: number, nv: number, map: (u: number, v: number) => number[], h: number, ex: number, v3: number[], opt: { skipEdge?: (u: number, v: number) => boolean } = {}) => {
     const rows = [];
     for (let j = 0; j <= nv; j++) rows.push(Array.from({ length: nu + 1 }, (_, i) => { const [ph, t] = map(i / nu, j / nv); const p = skUpper(ph, t, new V3()); skUpperN(ph, t, nn); return p.addScaledVector(nn, skUpperD(ph, t, lvF) + h); }));
     const g = K.gridGeo(rows, { wrapU: false, outward: (p, out) => out.set(0, 0.03, SK.cz - 0.01), uv: (i, j) => [i / nu, j / nv] });
@@ -1168,13 +1182,13 @@ function shoeParts(lv) {
   const H = 0.0011;
   if (q >= 1) {
     // mudguard / toe cap: around the toe, top edge scalloped up toward the vamp
-    patch(pr(26), pr(3), (u, v) => { const ph = lerp(-1.05, 1.05, u); const tTop = 0.34 + 0.12 * Math.cos(ph * 1.5) ** 2; return [ph, lerp(0.0, tTop, v)]; }, H, CS.shoe2, cl(PART.toeCap, MC.leather, 0));
+    patch(pr(26), pr(3), (u: number, v: number) => { const ph = lerp(-1.05, 1.05, u); const tTop = 0.34 + 0.12 * Math.cos(ph * 1.5) ** 2; return [ph, lerp(0.0, tTop, v)]; }, H, CS.shoe2, cl(PART.toeCap, MC.leather, 0));
     // heel counter
-    patch(pr(22), pr(3), (u, v) => { const ph = lerp(Math.PI - 1.2, Math.PI + 1.2, u); const d = Math.abs(ph - Math.PI); const tTop = 0.78 - 0.34 * sstep(0.35, 1.2, d); return [ph, lerp(0.0, tTop, v)]; }, H, CS.shoe2, cl(PART.toeCap, MC.leather, 1));
+    patch(pr(22), pr(3), (u: number, v: number) => { const ph = lerp(Math.PI - 1.2, Math.PI + 1.2, u); const d = Math.abs(ph - Math.PI); const tTop = 0.78 - 0.34 * sstep(0.35, 1.2, d); return [ph, lerp(0.0, tTop, v)]; }, H, CS.shoe2, cl(PART.toeCap, MC.leather, 1));
     // eyestays (lateral + medial), eyelet strips along the throat
-    if (q >= 2) for (const sd of [1, -1]) patch(pr(4), pr(11), (u, v) => { const t = lerp(SK_THROAT.t0 - 0.02, 1.0, v); const a0 = throatHalf(t) - 0.02, a1 = a0 + 0.3 + 0.06 * (1 - v); return [sd * lerp(a0, a1, u), t]; }, H * 1.1, CS.shoe2, cl(PART.toeCap, MC.leather, 2));
+    if (q >= 2) for (const sd of [1, -1]) patch(pr(4), pr(11), (u: number, v: number) => { const t = lerp(SK_THROAT.t0 - 0.02, 1.0, v); const a0 = throatHalf(t) - 0.02, a1 = a0 + 0.3 + 0.06 * (1 - v); return [sd * lerp(a0, a1, u), t]; }, H * 1.1, CS.shoe2, cl(PART.toeCap, MC.leather, 2));
     // side wave panel (team) on both sides: a swept band from the midfoot up to the heel
-    for (const sd of [1, -1]) patch(pr(22), pr(3), (u, v) => { const ph = sd * lerp(0.95, 2.28, u); const mid = 0.2 + 0.4 * Math.pow(u, 1.25); const w = 0.085 * Math.sin(Math.PI * Math.pow(u, 0.62)) + 0.006; return [ph, lerp(mid - w, mid + w, v)]; }, H * 1.25, CS.team, cl(PART.toeCap, MC.leather, 3));
+    for (const sd of [1, -1]) patch(pr(22), pr(3), (u: number, v: number) => { const ph = sd * lerp(0.95, 2.28, u); const mid = 0.2 + 0.4 * Math.pow(u, 1.25); const w = 0.085 * Math.sin(Math.PI * Math.pow(u, 0.62)) + 0.006; return [ph, lerp(mid - w, mid + w, v)]; }, H * 1.25, CS.team, cl(PART.toeCap, MC.leather, 3));
   }
   // ---- padded collar roll
   {
@@ -1224,11 +1238,11 @@ function shoeParts(lv) {
   }
   // ---- eyelets + laces
   const eyeT = [0.64, 0.72, 0.8, 0.88, 0.955];
-  const eyeAt = (sd, t) => { const ph = sd * (throatHalf(t) + 0.075); const p = skUpper(ph, t, new V3()); skUpperN(ph, t, nn); return { p: p.addScaledVector(nn, skUpperD(ph, t, lvF) + H * 1.1 + 0.0004), n: nn.clone() }; };
-  const laceFlat = (pts, nSeg) => {
+  const eyeAt = (sd: number, t: number) => { const ph = sd * (throatHalf(t) + 0.075); const p = skUpper(ph, t, new V3()); skUpperN(ph, t, nn); return { p: p.addScaledVector(nn, skUpperD(ph, t, lvF) + H * 1.1 + 0.0004), n: nn.clone() }; };
+  const laceFlat = (pts: (THREE.Vector3 | number[])[], nSeg: number) => {
     const sw = K.sweep(pts, { seg: Math.max(2, Math.round(nSeg * SR.pk * 0.8)), radial: lv >= 4 ? 5 : 4, capSteps: 1, radius: () => 0.0024, flat: 0.42, outward: (P, o) => { o.set(P.x * 0.3, 1, (P.z - SK.cz) * 0.2).normalize(); } });
     const len = sw.curve.getLength(); const tA = sw.t, cA = sw.cs;
-    parts.push({ geo: sw.geo, ex: CS.lace, v3: cl(PART.cord, MC.lace), uvFn: (i) => [tA[i] * len, cA[i]] });
+    parts.push({ geo: sw.geo, ex: CS.lace, v3: cl(PART.cord, MC.lace), uvFn: (i: number) => [tA[i] * len, cA[i]] });
   };
   if (q >= 1) {
     if (q >= 2) for (const sd of [1, -1]) for (const t of eyeT) {
@@ -1237,7 +1251,7 @@ function shoeParts(lv) {
       ring.lookAt(e.n); ring.translate(e.p.x, e.p.y, e.p.z);
       parts.push({ geo: ring, ex: CS.metal, v3: cl(PART.none, MC.metal) });
     }
-    const lift = (a, b, k) => { const m = a.clone().lerp(b, 0.5); m.addScaledVector(a.clone().add(b).multiplyScalar(0.5).sub(new V3(0, 0.02, SK.cz)).normalize(), k); return m; };
+    const lift = (a: THREE.Vector3, b: THREE.Vector3, k: number) => { const m = a.clone().lerp(b, 0.5); m.addScaledVector(a.clone().add(b).multiplyScalar(0.5).sub(new V3(0, 0.02, SK.cz)).normalize(), k); return m; };
     if (q >= 2) {
       // criss-cross: bottom bar, then diagonals alternating over/under at the crossing
       const E = eyeT.map((t) => [eyeAt(1, t).p, eyeAt(-1, t).p]);
@@ -1270,15 +1284,15 @@ function shoeParts(lv) {
     const pts = [new V3(-0.0075, c.y - 0.012, c.z - 0.0045), new V3(-0.0078, c.y + 0.008, c.z - 0.0075), new V3(0, c.y + 0.0185, c.z - 0.0105), new V3(0.0078, c.y + 0.008, c.z - 0.0075), new V3(0.0075, c.y - 0.012, c.z - 0.0045)];
     const sw = K.sweep(pts, { seg: q >= 2 ? 12 : 6, radial: 6, capSteps: 2, radius: () => 0.0042, flat: 0.28, outward: (P, o) => o.set(0, 0, -1) });
     const len = sw.curve.getLength(); const tA = sw.t, cA = sw.cs;
-    parts.push({ geo: sw.geo, ex: CS.team, v3: cl(PART.heelTab, MC.webbing), uvFn: (i) => [tA[i] * len, cA[i]] });
+    parts.push({ geo: sw.geo, ex: CS.team, v3: cl(PART.heelTab, MC.webbing), uvFn: (i: number) => [tA[i] * len, cA[i]] });
   }
   _shoeCache.set(lv, parts);
   return parts;
 }
 
-function addShoes(B, lv) {
+function addShoes(B: K.Builder, lv: number) {
   const parts = shoeParts(lv);
-  for (const [s, sx] of [['L', 1], ['R', -1]]) {
+  for (const [s, sx] of [['L', 1], ['R', -1]] as Array<[string, number]>) {
     const F = K.REST['foot' + s];
     for (const pt of parts) {
       const g = pt.geo.clone();
@@ -1286,7 +1300,7 @@ function addShoes(B, lv) {
       g.translate(F.x, 0, F.z);
       const uvA = g.attributes.uv;
       B.add(g, {
-        ex: typeof pt.ex === 'function' ? (p, i) => pt.ex(p, i, uvA) : pt.ex,
+        ex: typeof pt.ex === 'function' ? ((exFn) => (p: THREE.Vector3, i: number) => exFn(p, i, uvA))(pt.ex) : pt.ex,
         uv: pt.uvFn ? (i) => pt.uvFn(i) : !!pt.uv,
         v3: pt.v3,
         weights: (p) => { const zl = p.z - F.z; const w = sstep(0.056, 0.092, zl) * sstep(0.1, 0.06, p.y); return [['toe' + s, w], ['foot' + s, 1 - w]]; },
@@ -1317,12 +1331,12 @@ export function tankGlass(level = 3) {
   const f = K.lathe(K.smoothProfile([[0, 0.0], [0.05, 0.0], [0.0598, 0.006], [0.0614, 0.03], [0.0614, 0.972], [0.0616, 0.996], [0.0605, 1.004], [0.054, 0.992], [0.036, 0.986], [0, 0.985]], lv >= 3 ? 14 : 8), T.seg);
   return { glass: g, fill: f };
 }
-function addTank(B, lv) {
+function addTank(B: K.Builder, lv: number) {
   const T = TK_RES[lv], seg = T.seg;
   const TKN = K.TANK;
   const M = new THREE.Matrix4().makeRotationX(TKN.tilt).setPosition(TKN.center);
-  const add = (g, ex, v3, extra = {}) => { g.applyMatrix4(M); B.add(g, { ex, v3, bone: 'tank', uv: !!g.attributes.uv, ...extra }); };
-  const prof = (pts, n) => (T.prof >= 1 ? K.smoothProfile(pts, n) : pts);
+  const add = (g: THREE.BufferGeometry, ex: number, v3: number[], extra: PartOpts = {}) => { g.applyMatrix4(M); B.add(g, { ex, v3, bone: 'tank', uv: !!g.attributes.uv, ...extra }); };
+  const prof = (pts: number[][], n: number) => (T.prof >= 1 ? K.smoothProfile(pts, n) : pts);
   // ---- end caps: dark anodised body, chamfered rim, recessed groove, flat face
   const capBody = [[0, -0.1292], [0.048, -0.1292], [0.0612, -0.1286], [0.0664, -0.127], [0.0692, -0.1238], [0.0699, -0.1198], [0.0699, -0.114], [0.0688, -0.1128], [0.0688, -0.1112], [0.0699, -0.11], [0.0699, -0.1072], [0.072, -0.1068], [0, -0.1068]];
   const lowT = lv <= 2;
@@ -1394,7 +1408,7 @@ function addTank(B, lv) {
 }
 
 /** Garments of the cloth mesh (tee, …) at a detail level. */
-export function addOutfit(B, level = 3) {
+export function addOutfit(B: K.Builder, level = 3) {
   const lv = clamp(level | 0, 0, 4);
   addTee(B, lv);
   addHarness(B, lv);
@@ -1412,8 +1426,8 @@ export function addOutfit(B, level = 3) {
 //   skin  → multiplied into the vertex colour of limbs / hands / neck (head vertices, aHead ≠ 0, are left alone)
 // ------------------------------------------------------------------------------------------------
 /** Laplacian smoothing of a per-vertex scalar over the mesh edges (+ coincident seam vertices share values). */
-function smoothOnMesh(g, v, iters, mask = null) {
-  const ix = g.index.array, n = v.length;
+function smoothOnMesh(g: THREE.BufferGeometry, v: Float32Array, iters: number, mask: Uint8Array | null = null) {
+  const ix = g.index!.array, n = v.length;
   const acc = new Float32Array(n), cnt = new Float32Array(n);
   for (let it = 0; it < iters; it++) {
     acc.fill(0); cnt.fill(0);
@@ -1424,15 +1438,15 @@ function smoothOnMesh(g, v, iters, mask = null) {
     for (let i = 0; i < n; i++) if (cnt[i] > 0 && (!mask || mask[i])) v[i] = 0.5 * v[i] + 0.5 * acc[i] / cnt[i];
   }
 }
-export function bakeBodyAO(skin, cloth, level = 3) {
+export function bakeBodyAO(skin: THREE.BufferGeometry, cloth: THREE.BufferGeometry, level = 3) {
   const lv = clamp(level | 0, 0, 4);
   const cell = [0.016, 0.012, 0.0105, 0.0088, 0.0078][lv];
   const RAD = 0.04, R2 = RAD * RAD, GC = RAD / 2;
   // ---- emitter clusters (grid cell × dominant normal axis so thin shells keep both faces)
-  const cmap = new Map();
-  let cx = [], cy = [], cz = [], cnx = [], cny = [], cnz = [], ca = [];
+  const cmap = new Map<string, number>();
+  let cx: number[] | null = [], cy: number[] | null = [], cz: number[] | null = [], cnx: number[] | null = [], cny: number[] | null = [], cnz: number[] | null = [], ca: number[] | null = [];
   for (const g of [skin, cloth]) {
-    const P = g.attributes.position, N = g.attributes.normal, ix = g.index.array;
+    const P = g.attributes.position, N = g.attributes.normal, ix = g.index!.array;
     const area = new Float32Array(P.count);
     for (let t = 0; t < ix.length; t += 3) {
       const a = ix[t], b = ix[t + 1], c = ix[t + 2];
@@ -1464,12 +1478,12 @@ export function bakeBodyAO(skin, cloth, level = 3) {
   for (let k = 0; k < nC; k++) { x0 = Math.min(x0, EX[k]); y0 = Math.min(y0, EY[k]); z0 = Math.min(z0, EZ[k]); x1 = Math.max(x1, EX[k]); y1 = Math.max(y1, EY[k]); z1 = Math.max(z1, EZ[k]); }
   x0 -= RAD; y0 -= RAD; z0 -= RAD;
   const NX = Math.ceil((x1 - x0 + RAD) / GC) + 1, NY = Math.ceil((y1 - y0 + RAD) / GC) + 1, NZ = Math.ceil((z1 - z0 + RAD) / GC) + 1;
-  const cellOf = (x, y, z) => (Math.floor((x - x0) / GC) * NY + Math.floor((y - y0) / GC)) * NZ + Math.floor((z - z0) / GC);
+  const cellOf = (x: number, y: number, z: number) => (Math.floor((x - x0) / GC) * NY + Math.floor((y - y0) / GC)) * NZ + Math.floor((z - z0) / GC);
   const start = new Int32Array(NX * NY * NZ + 1), order = new Int32Array(nC), cellK = new Int32Array(nC);
   for (let k = 0; k < nC; k++) { cellK[k] = cellOf(EX[k], EY[k], EZ[k]); start[cellK[k] + 1]++; }
   for (let c = 0; c < NX * NY * NZ; c++) start[c + 1] += start[c];
   { const fill = start.slice(0, -1); for (let k = 0; k < nC; k++) order[fill[cellK[k]]++] = k; }
-  const occAt = (x, y, z, nx, ny, nz) => {
+  const occAt = (x: number, y: number, z: number, nx: number, ny: number, nz: number) => {
     const gi = Math.floor((x - x0) / GC), gj = Math.floor((y - y0) / GC), gkk = Math.floor((z - z0) / GC);
     let occ = 0;
     for (let di = -2; di <= 2; di++) {
@@ -1528,12 +1542,12 @@ export function bakeBodyAO(skin, cloth, level = 3) {
 
 // ---- compatibility probes for code that dresses the body (the hair module's accessories: wristbands, headphones) --------------
 /** Forearm radius (forward axis) at the old sweep parameter t (0 shoulder … ~0.96 wrist) — wristbands size to it. */
-export function armRadiusAt(t) { const s = 0.012 + t * 0.412; return ARM_R(s) * ARM_FWD(s); }
+export function armRadiusAt(t: number) { const s = 0.012 + t * 0.412; return ARM_R(s) * ARM_FWD(s); }
 /** Point on the (undisplaced) tee at ray angle th (0 = front, +pi/2 = +X), height y, pushed out along the normal. */
-export function teeSurfacePoint(th, y, off, out = new V3()) {
+export function teeSurfacePoint(th: number, y: number, off: number, out = new V3()) {
   teeBase(th, y, out);
   const n = teeNormal(out.x, out.z, out.y, new V3());
   return out.addScaledVector(n, off + Math.max(0, teeFold(out, 1, 0)));
 }
 /** Lateral / forward section ratio of the forearm at the old sweep parameter t (the wrist flattens). */
-export function armFlatAt(t) { const s = 0.012 + t * 0.412; return ARM_LAT(s) / ARM_FWD(s); }
+export function armFlatAt(t: number) { const s = 0.012 + t * 0.412; return ARM_LAT(s) / ARM_FWD(s); }

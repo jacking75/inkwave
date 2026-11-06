@@ -58,7 +58,10 @@ const HURT_FRAG = /* glsl */`
   }
 `;
 
-function inject(shader, o) {
+// 셰이더 주입 조각: 정점(선언·시작)과 조각(선언·색·거칠기·금속·법선·발광·조명·AO·최종) 지점별 GLSL
+interface ShaderInject { vPars?: string; vBegin?: string; fPars?: string; fColor?: string; fRough?: string; fMetal?: string; fNormal?: string; fEmissive?: string; fLights?: string; fAO?: string; fOpaque?: string }
+
+function inject(shader: THREE.WebGLProgramParametersWithUniforms, o: ShaderInject) {
   let v = shader.vertexShader, f = shader.fragmentShader;
   if (o.vPars) v = v.replace('#include <common>', '#include <common>\n' + o.vPars);
   if (o.vBegin) v = v.replace('#include <begin_vertex>', '#include <begin_vertex>\n' + o.vBegin);
@@ -73,6 +76,9 @@ function inject(shader, o) {
   if (o.fOpaque) f = f.replace('#include <opaque_fragment>', o.fOpaque + '\n#include <opaque_fragment>');
   shader.vertexShader = v; shader.fragmentShader = f;
 }
+
+/** 캐릭터별 유니폼 묶음(makeCharUniforms 결과, 재질 함수는 일부 키만 쓴다). */
+export type CharUniforms = Partial<ReturnType<typeof makeCharUniforms>> & Record<string, THREE.IUniform>;
 
 /** Per-character uniform bundle (shared by that character's body materials). */
 export function makeCharUniforms() {
@@ -167,7 +173,7 @@ vec2 iwLidClose(int si, vec4 lid){
 }
 `;
 
-export function makeSkinMaterial(u, skinHex) {
+export function makeSkinMaterial(u: CharUniforms, skinHex?: THREE.ColorRepresentation) {
   const m = new THREE.MeshPhysicalMaterial({
     color: skinHex, roughness: 0.6, metalness: 0, vertexColors: true, specularIntensity: 0.32,
     sheen: 1, sheenRoughness: 0.85, sheenColor: new THREE.Color('#ffd2c0'),
@@ -363,8 +369,8 @@ export function makeSkinMaterial(u, skinHex) {
   m.customProgramCacheKey = () => 'iw-skin4';
   return m;
 }
-const clampN = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
-const lerpN = (a, b, t) => a + (b - a) * t;
+const clampN = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const lerpN = (a: number, b: number, t: number) => a + (b - a) * t;
 
 // ================================================================================================
 // CLOTH — tee, shorts, socks, sneakers, tank harness. One program; per-vertex colour source (aEx),
@@ -586,7 +592,7 @@ vec3 iwShirtCol(vec3 p, vec2 uv, float part) {
 ${EMBLEM}
 `;
 
-export function makeClothMaterial(u) {
+export function makeClothMaterial(u: CharUniforms) {
   const m = new THREE.MeshPhysicalMaterial({
     color: 0xffffff, roughness: 0.82, metalness: 0, vertexColors: true,
     sheen: 1, sheenRoughness: 0.6, sheenColor: new THREE.Color(1, 1, 1), clearcoat: 1, clearcoatRoughness: 0.3,
@@ -1055,11 +1061,11 @@ const GUMMY_AMBIENT = /* glsl */`
   reflectedLight.indirectDiffuse += iwGumOn * iwGumTrans * RECIPROCAL_PI * ( irradiance + iblIrradiance ) * ( 0.015 + 0.14 * iwGumThin * iwGumThin ) * iwAO;
 #endif
 `;
-function injectGummy(shader) {
+function injectGummy(shader: THREE.WebGLProgramParametersWithUniforms) {
   shader.fragmentShader = shader.fragmentShader.replace('#include <lights_physical_pars_fragment>', '#include <lights_physical_pars_fragment>\n' + GUMMY_LIGHT);
 }
 
-export function makeHairMaterial(u) {
+export function makeHairMaterial(u: CharUniforms) {
   const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.34, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.05, sheen: 1, sheenRoughness: 0.4, sheenColor: new THREE.Color(1, 1, 1), specularIntensity: 1 });
   m.onBeforeCompile = (shader) => {
     for (const k of ['uHurt', 'uHurtSeed', 'uFlash', 'uTeam', 'uGlow', 'uShirt', 'uShorts', 'uStrap']) shader.uniforms[k] = u[k];
@@ -1193,7 +1199,7 @@ export function makeHairMaterial(u) {
   return m;
 }
 
-let _dark = null;
+let _dark: THREE.MeshPhysicalMaterial | null = null;
 export function getDarkMaterial() {
   if (!_dark) {
     _dark = new THREE.MeshPhysicalMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.25, metalness: 0.0, clearcoat: 1, clearcoatRoughness: 0.03 });
@@ -1209,7 +1215,7 @@ export function getDarkMaterial() {
 // glow), pupil (uPupil), clearcoat cornea + a view-anchored catch-light that stays crisp up close and widens with
 // distance. Legacy flat eye patches (aEx = ±1, e.g. the squid form) keep the painted look.
 // ================================================================================================
-export function makeEyeMaterial(u) {
+export function makeEyeMaterial(u: CharUniforms) {
   const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.14, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.03, specularIntensity: 0.5 });
   m.onBeforeCompile = (shader) => {
     for (const k of ['uLook', 'uIris', 'uIris2', 'uFlash']) shader.uniforms[k] = u[k];
@@ -1389,7 +1395,7 @@ export function makeEyeMaterial(u) {
 // TANK — glass capsule with an etched level gauge; ink fill whose surface stays level in world space
 // (onBeforeRender feeds world-up in fill space), with a bright meniscus and suspended bubbles.
 // ================================================================================================
-let _glass = null;
+let _glass: THREE.MeshPhysicalMaterial | null = null;
 export function getGlassMaterial() {
   if (!_glass) {
     const m = new THREE.MeshPhysicalMaterial({ color: 0xf2fbff, roughness: 0.04, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.02, transparent: true, opacity: 0.14, depthWrite: false, envMapIntensity: 1.5 });
@@ -1493,7 +1499,7 @@ export function makeInkFillMaterial() {
 // SQUID — glossy team ink + tentacle wiggle in the vertex shader. colour = (tint, wiggle, phase);
 // uv = (t along tentacle, cos(angle)) with aEx = 1 on tentacles (suckers on the inner face).
 // ================================================================================================
-export function makeSquidMaterial(u, ghost = false) {
+export function makeSquidMaterial(u: CharUniforms, ghost = false) {
   const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.3, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.05, sheen: 1, sheenRoughness: 0.4, sheenColor: new THREE.Color(1, 1, 1), specularIntensity: 1 });
   if (ghost) {
     m.transparent = true; m.depthWrite = false; m.depthFunc = THREE.GreaterDepth; m.opacity = 0.42;
@@ -1608,7 +1614,7 @@ export function makeSquidMaterial(u, ghost = false) {
 // 0 satin plastic · 1 gloss paint · 2 rubber (diamond knurl) · 3 metal (brushed) · 4 lens/dark glass ·
 // 5 LED (emissive vertex colour) · 6 matte print
 // ================================================================================================
-let _plastic = null;
+let _plastic: THREE.MeshPhysicalMaterial | null = null;
 export const WMAT = { satin: 0, gloss: 1, rubber: 2, metal: 3, lens: 4, led: 5, print: 6 };
 export function getPlasticMaterial() {
   if (!_plastic) {
@@ -1650,9 +1656,9 @@ export function getPlasticMaterial() {
   }
   return _plastic;
 }
-const _inkCache = new Map();
+const _inkCache = new Map<string, THREE.MeshPhysicalMaterial>();
 /** Glossy team ink for weapon parts, cached by hex. */
-export function getInkMaterial(color) {
+export function getInkMaterial(color: THREE.Color) {
   const hex = color.getHexString();
   if (!_inkCache.has(hex)) {
     const m = new THREE.MeshPhysicalMaterial({ color: color.clone(), roughness: 0.16, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.04, sheen: 0.4, sheenRoughness: 0.3, sheenColor: color.clone().lerp(new THREE.Color(1, 1, 1), 0.5), name: 'iw-ink-' + hex });
