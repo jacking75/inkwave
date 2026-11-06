@@ -93,6 +93,8 @@ interface DesktopPerformancePolicy {
   warmVisible(roots: THREE.Object3D[], group: THREE.Group, renderer: THREE.WebGLRenderer, camera: THREE.Camera, scene: THREE.Scene, target: THREE.WebGLRenderTarget): Promise<void>;
   frameCap(requested: number, menu: boolean): number;
   configureSettings(settings: Record<string, unknown>, stored: Record<string, unknown> | null): void;
+  characterTiers(quality: string): readonly number[];
+  lodFade(quality: string): boolean;
 }
 interface DesktopBridge {
   performance: DesktopPerformancePolicy;
@@ -884,7 +886,7 @@ class Game {
     this.decor.setTeamColors(G.teamColors as [THREE.Color, THREE.Color]);   // (바로 위에서 두 팀 색을 채웠다)
     this.props?.setTeamColors?.(G.teamColors[0], G.teamColors[1]);
     G.projectiles!.refreshColors();
-    for (const a of G.actors) a.character.setColor(G.teamColors[a.team]);
+    for (const a of G.actors) a.character.setColor(G.teamColors[a.team]!);
     this.minimap.version = -1;
     this.menus?.setAccent?.(p.a, p.b);
   }

@@ -1587,7 +1587,7 @@ export const BROW_KINDS = [
 ];
 
 // 가닥 스프링 정보(방향·길이·강성 K·감쇠 G)
-interface HairMeta { dir: THREE.Vector3; len: number; K: number; G: number }
+export interface HairMeta { dir: THREE.Vector3; len: number; K: number; G: number }
 
 function buildHair(styleIdx: number, hatIdx = 0, browIdx = 0, lod = 'hero') {
   const style = STYLES[styleIdx % STYLES.length];

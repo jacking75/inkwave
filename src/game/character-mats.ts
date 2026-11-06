@@ -1664,7 +1664,7 @@ export function getInkMaterial(color: THREE.Color) {
     const m = new THREE.MeshPhysicalMaterial({ color: color.clone(), roughness: 0.16, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.04, sheen: 0.4, sheenRoughness: 0.3, sheenColor: color.clone().lerp(new THREE.Color(1, 1, 1), 0.5), name: 'iw-ink-' + hex });
     _inkCache.set(hex, m);
   }
-  return _inkCache.get(hex);
+  return _inkCache.get(hex)!;
 }
 export function makeGlowMaterial() {
   return new THREE.MeshStandardMaterial({ color: 0x222222, emissive: 0xffffff, emissiveIntensity: 0.4, roughness: 0.3 });

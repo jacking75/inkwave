@@ -143,7 +143,7 @@ function spring(S: Float32Array, i: number, target: number, hz: number, zeta: nu
   return S[i];
 }
 /** 장갑 러너 상태 중 모델이 읽는 것(kits/mitts.ts가 runner.kit에 둔다) */
-export interface MittsKitView { mitts: true; charging: boolean; charge: number; cling: boolean; leaping: boolean; landT: number }
+export interface MittsKitView { mitts: true; charging: boolean; charge: number; cling: boolean; leaping: boolean; landT: number; clingN?: THREE.Vector3 | null; clingPt?: THREE.Vector3 | null }
 /** 장갑 인스턴스 상태: 스프링 버퍼, 스펀지 재질, 직전 주먹 경과 */
 type MittsInst = WeaponInst & { ms?: Float32Array; sponge?: ReturnType<typeof makeSpongeMaterial>; lastPunch?: number };
 function animateMitts(w: MittsInst, st: WeaponAnimState) {

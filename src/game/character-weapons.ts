@@ -76,6 +76,8 @@ export interface WeaponInst {
   pivotL: THREE.Group | null; inkL: THREE.Mesh | null;
   // animateWeapon 상태(ps가 없으면 첫 호출에서 모두 초기화한다)
   ps: Float32Array | null; heat: number; drumW: number; drumA: number; spinW: number; spinA: number;
+  bowDraw?: number;   // 활: 주먹 당김 0..1(character.ts poseBow가 쓴다)
+  farDec?: boolean;   // 원거리 단계용 단순화 형상을 쓰는 중(character.ts)
 }
 /** 무기를 든 쪽 러너에서 부품 애니메이션이 읽는 것(weapons.ts WeaponRunner의 일부) */
 export interface AnimRunner { charging: boolean; streaming: boolean; charge: number; burstFrac: number; sinceHand?: number[]; kit?: unknown; a?: { isLocal?: boolean } | null }
@@ -2023,7 +2025,7 @@ export function getWeaponDef(kind: string) {
     }
     _cache.set(kind, d);
   }
-  return _cache.get(kind);
+  return _cache.get(kind)!;
 }
 
 /** Shared modelling kit (Parts merger, palette, surface classes and shape helpers) for other procedural prop modules

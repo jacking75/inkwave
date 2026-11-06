@@ -26,7 +26,7 @@ import {
   getGlassMaterial, makeInkFillMaterial, makeSquidMaterial, getPlasticMaterial, getInkMaterial, makeGlowMaterial,
 } from './character-mats.js';
 import * as MATS from './character-mats.js';
-import { getWeaponDef, getSubDef, FIST_OFFSET, GRIP_HOLE_L, WEAPON_KINDS, makeLampMaterial, makeCoilMaterial, animateWeapon } from './character-weapons.js';
+import { getWeaponDef, getSubDef, FIST_OFFSET, GRIP_HOLE_L, WEAPON_KINDS, makeLampMaterial, makeCoilMaterial, animateWeapon, type WeaponInst, type WeaponDef, type WeaponAnimState } from './character-weapons.js';
 import { TIERS, T_HERO, T_GAME, T_FAR, LOD_QUALITY, KID_H, FADE_S, pickTier, ditherMaterial, farGeometry } from './character-lod.js';
 
 // ------------------------------------------------------------------------------------------------
@@ -34,42 +34,83 @@ import { TIERS, T_HERO, T_GAME, T_FAR, LOD_QUALITY, KID_H, FADE_S, pickTier, dit
 // ------------------------------------------------------------------------------------------------
 // (the catalog lives in character-style.js — owned by the appearance stream; re-exported here for older importers)
 import * as STYLE from './character-style.js';
+import type { Actor } from './actor.js';
+import type { Physics } from './physics.js';
+import type { WeaponRunner } from './weapons.js';
+import type { MittsKitView } from './kits/mitts-model.js';
+import type { Environment } from '../world/environment.js';
+import type { HairMeta } from './character-geo.js';
+import type { CharUniforms } from './character-mats.js';
+/** 이 캐릭터의 유니폼 묶음(기본 + 테두리빛 uIwRim·uIwRimL·uIwFill 등 덧붙인 것) */
+type CharUniformSet = ReturnType<typeof makeCharUniforms> & Record<string, THREE.IUniform>;
+import type { StyleInput } from './character-style.js';
+/** 캐릭터가 든 무기 인스턴스(활은 bowDraw를 쓴다) */
+export type CharWeapon = WeaponInst;
 const { SKIN_TONES, OUTFITS, IRIS, HAIR_STYLES, resolveStyle } = STYLE;
 export { SKIN_TONES, OUTFITS, IRIS, HAIR_STYLES };
 
 // ------------------------------------------------------------------------------------------------
 // Math helpers (allocation-free)
 // ------------------------------------------------------------------------------------------------
-const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
-const lerp = (a, b, t) => a + (b - a) * t;
-const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
-const damp = (a, b, l, dt) => a + (b - a) * (1 - Math.exp(-l * dt));
-const ease = (t) => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
-const easeOut = (t) => { t = clamp(t, 0, 1); return 1 - (1 - t) * (1 - t); };
-const easeIn = (t) => { t = clamp(t, 0, 1); return t * t; };
-const mj = (t) => { t = clamp(t, 0, 1); return t * t * t * (10 + t * (6 * t - 15)); }; // minimum-jerk
-const backOut = (t, s = 2.2) => { t = clamp(t, 0, 1) - 1; return t * t * ((s + 1) * t + s) + 1; };
-const frac = (x) => x - Math.floor(x);
+const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+const sstep = (a: number, b: number, x: number) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const damp = (a: number, b: number, l: number, dt: number) => a + (b - a) * (1 - Math.exp(-l * dt));
+const ease = (t: number) => { t = clamp(t, 0, 1); return t * t * (3 - 2 * t); };
+const easeOut = (t: number) => { t = clamp(t, 0, 1); return 1 - (1 - t) * (1 - t); };
+const easeIn = (t: number) => { t = clamp(t, 0, 1); return t * t; };
+const mj = (t: number) => { t = clamp(t, 0, 1); return t * t * t * (10 + t * (6 * t - 15)); }; // minimum-jerk
+const backOut = (t: number, s = 2.2) => { t = clamp(t, 0, 1) - 1; return t * t * ((s + 1) * t + s) + 1; };
+const frac = (x: number) => x - Math.floor(x);
+/** 포즈 버퍼(레이어 하나): PN개 채널 */
+type Pose = Float32Array;
+/** 무기 손 위치: p = 위치, r = YXZ 오일러 [pitch(+아래), yaw(+왼쪽), roll] */
+interface Anchor { p: number[]; r: number[] }
+/** 무기 쥐는 자세(위 주석): 운반·달리기·조준·고정, 두 손 비율, 무릎 극, 반동, 허리·가슴 비틀기, 웅크림, 발 자세, 들기·로비 자세 */
+interface Hold {
+  carry: Anchor; run?: Anchor; aim: Anchor; lock?: Anchor; twoCarry: number; twoAim: number; poleR: number[]; poleL: number[];
+  rc: { kick: number; back: number; hz: number; z: number; jit: number; torso: number; head: number; crouch: number; brace?: number };
+  hip: number; chest: number; crouch: number; stance: number[]; raise: Anchor; lobby: Anchor; lobbyTwo: number; dual?: boolean; fire?: string; roll?: Anchor;
+  [k: string]: unknown;
+}
+/** 표정 충격 슬롯 */
+/** 탭: 시각, 몸체 */
+interface TierSet { t: number; meshes: Record<string, THREE.SkinnedMesh>; list: THREE.SkinnedMesh[] }
+/** 몸 부품 하나(LOD 단계) */
+interface TierPart { key: string; geo: THREE.BufferGeometry; mat: string; shadow: boolean; order?: number }
+/** 빌더가 덧붙이는 부품 */
+interface ExtraPart { name?: string; geo?: THREE.BufferGeometry; mat?: string; shadow?: boolean; renderOrder?: number; tiers?: string[] }
+/** trigger 인수: 수(착지 속도·휘두르기 쪽), 방향 벡터(구르기), 또는 {x,z,t|dur|amp|amount|hand} */
+export type TriggerArg = number | THREE.Vector3 | { x?: number; z?: number; t?: number; dur?: number; hand?: number; amount?: number; amp?: number; [k: string]: unknown } | null;   // (배우는 valueOf로 수처럼도 쓴다)
+/** 캐릭터 생성 선택 */
+export interface CharacterOpts { name?: string; isLocal?: boolean; style?: StyleInput; color?: THREE.ColorRepresentation; weapon?: string }
+interface MicroExpr { X: number[] | null; w: number; t: number; a: number; h: number; d: number; bras: number; E?: number[] | null }
+type Foot = ReturnType<Character['_mkFoot']>;
+/** IK 팔다리: 위·아래·끝 뼈, 길이, 휴지 기준 행렬 */
+interface Limb { up: THREE.Bone; lo: THREE.Bone; end: THREE.Bone; a: number; b: number; Mu0T: THREE.Matrix4; Mf0T: THREE.Matrix4 }
+/** 들고 있는 보조무기 소품 */
+interface BombProp { group: THREE.Group; ink: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>; spinInk: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial> | null; kind: string }
+
 const TAU = Math.PI * 2;
-function hashStr(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
-function mulberry(seed) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function hashStr(s: string) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+function mulberry(seed: number) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 // impulse envelope: quick attack, exponential decay
-const pulse = (t, atk, dec) => (t < 0 ? 0 : t < atk ? t / atk : Math.exp(-(t - atk) * dec));
+const pulse = (t: number, atk: number, dec: number) => (t < 0 ? 0 : t < atk ? t / atk : Math.exp(-(t - atk) * dec));
 // window: 0 outside [a,d], eases up a..b, holds, eases down c..d
-const win = (t, a, b, c, d) => (t <= a || t >= d ? 0 : t < b ? ease((t - a) / (b - a)) : t > c ? 1 - ease((t - c) / (d - c)) : 1);
+const win = (t: number, a: number, b: number, c: number, d: number) => (t <= a || t >= d ? 0 : t < b ? ease((t - a) / (b - a)) : t > c ? 1 - ease((t - c) / (d - c)) : 1);
 /** hand-shape keys: h = -1 fist, 0 grip, 1 relaxed, 2 open */
-function hk(h, fist, grip, relaxed, open) { return h < 0 ? grip + (fist - grip) * Math.min(1, -h) : h < 1 ? grip + (relaxed - grip) * h : relaxed + (open - relaxed) * Math.min(1, h - 1); }
-function wrapA(a) { while (a > Math.PI) a -= TAU; while (a < -Math.PI) a += TAU; return a; }
-function dampAngle(a, b, l, dt) { return a + wrapA(b - a) * (1 - Math.exp(-l * dt)); }
+function hk(h: number, fist: number, grip: number, relaxed: number, open: number) { return h < 0 ? grip + (fist - grip) * Math.min(1, -h) : h < 1 ? grip + (relaxed - grip) * h : relaxed + (open - relaxed) * Math.min(1, h - 1); }
+function wrapA(a: number) { while (a > Math.PI) a -= TAU; while (a < -Math.PI) a += TAU; return a; }
+function dampAngle(a: number, b: number, l: number, dt: number) { return a + wrapA(b - a) * (1 - Math.exp(-l * dt)); }
 /** Keyed curve with eased (held) keys: T ascending times, V values. */
-function kf(t, T, V) {
+function kf(t: number, T: number[], V: number[]) {
   const n = T.length; if (t <= T[0]) return V[0]; if (t >= T[n - 1]) return V[n - 1];
   let i = 1; while (T[i] < t) i++;
   const u = (t - T[i - 1]) / (T[i] - T[i - 1]);
   return V[i - 1] + (V[i] - V[i - 1]) * (u * u * (3 - 2 * u));
 }
 /** Keyed curve through keys with Catmull-Rom tangents (fluid, no stops at keys; flat at the ends). */
-function kc(t, T, V) {
+function kc(t: number, T: number[], V: number[]) {
   const n = T.length; if (t <= T[0]) return V[0]; if (t >= T[n - 1]) return V[n - 1];
   let i = 1; while (T[i] < t) i++;
   const t0 = T[i - 1], h = T[i] - t0, u = (t - t0) / h;
@@ -79,7 +120,7 @@ function kc(t, T, V) {
   return (2 * u3 - 3 * u2 + 1) * V[i - 1] + (u3 - 2 * u2 + u) * h * m0 + (-2 * u3 + 3 * u2) * V[i] + (u3 - u2) * h * m1;
 }
 /** Damped spring (semi-implicit Euler, sub-stepped). S[i] = x, S[i+1] = v. Returns x. */
-function spr(S, i, target, hz, zeta, dt) {
+function spr(S: Float32Array, i: number, target: number, hz: number, zeta: number, dt: number) {
   const w = TAU * hz, k = w * w, c = 2 * zeta * w;
   let x = S[i], v = S[i + 1];
   const n = Math.max(1, Math.ceil(dt * w * 1.1)), h = dt / n;
@@ -89,7 +130,7 @@ function spr(S, i, target, hz, zeta, dt) {
 
 /** Damped spring advanced with the exact (analytic) solution — stable for any damping ratio / step, so heavily damped
  *  weapon kicks keep their shape (spr's Euler sub-steps flip the velocity when 2ζω·h > 1). Same S layout as spr. */
-function sprA(S, i, target, hz, zeta, dt) {
+function sprA(S: Float32Array, i: number, target: number, hz: number, zeta: number, dt: number) {
   const w = TAU * hz, x0 = S[i] - target, v0 = S[i + 1];
   let x, v;
   if (zeta < 0.999) {
@@ -118,11 +159,11 @@ const IDENT = new THREE.Matrix4();
 const _cW = new THREE.Color(1, 1, 1);
 const _vVH = new THREE.Vector2(), _lodC = new THREE.Vector3(), _lodK = new THREE.Vector3();
 // far-tier triangle targets per part (decimated from the game tier when the builders give no far mesh)
-const FAR_TRIS = { skin: 2600, cloth: 3800, hair: 2000, eyes: 260 };
-let _warmRT = null;
+const FAR_TRIS: Record<string, number | undefined> = { skin: 2600, cloth: 3800, hair: 2000, eyes: 260 };
+let _warmRT: THREE.WebGLRenderTarget | null = null;
 // G.env.getSkyColors() builds a new object per call: one shared snapshot, refreshed ~4×/s (its colours are live
 // references anyway; only the sun intensity / night numbers are copied) — no per-kid per-frame allocation
-let _sky = null, _skyEnv = null, _skyT = 0;
+let _sky: ReturnType<Environment['getSkyColors']> | null = null, _skyEnv: Environment | null = null, _skyT = 0;
 function skyColors() {
   const E = G.env; if (!E || !E.getSkyColors) return null;
   const now = performance.now();
@@ -132,16 +173,22 @@ function skyColors() {
 /** character rim light strength (0 = off) — exported for labs / A-B renders. Above 1 since the lighting pass cut the
  *  world's sky IBL (deeper, bluer shade): kids standing in shade or back-lit by a low sun keep their read. */
 export const CHAR_RIM = { k: 1.25, fill: 1.4 };
-const EMPTY_STATE = { localMove: { x: 0, z: 0 } };
+/** update(dt, s)의 애니메이션 상태(docs/CONTRACTS.md §1). 배우는 전부, 실험실·로비는 일부만 채운다. */
+export interface CharAnimState {
+  localMove: { x: number; z: number }; time?: number; speed?: number; grounded?: boolean; vy?: number; aimPitch?: number; firing?: boolean;
+  charge?: number; rolling?: boolean; form?: string; wallNormal?: THREE.Vector3 | null; ink?: number; lowInk?: boolean; special?: number; invuln?: boolean;
+  turnRate?: number; hp?: number; inEnemyInk?: boolean; surface?: number; subAim?: boolean; specialId?: string | null; runner?: WeaponRunner | null;
+}
+const EMPTY_STATE: CharAnimState = { localMove: { x: 0, z: 0 } };
 // Small moving weapon parts sit out override passes (GTAO normals): their AO is invisible and it saves the draws.
-function partGate(renderer, scene, camera, geometry) { geometry.drawRange.count = scene.overrideMaterial ? 0 : Infinity; }
+function partGate(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, geometry: THREE.BufferGeometry) { geometry.drawRange.count = scene.overrideMaterial ? 0 : Infinity; }
 // …and the shadow pass (which runs no onBeforeRender) must not inherit a gated count from the previous frame's AO pass
-function shadowUngate(renderer, object, camera, shadowCamera, geometry) { geometry.drawRange.count = Infinity; }
+function shadowUngate(renderer: THREE.WebGLRenderer, object: THREE.Object3D, camera: THREE.Camera, shadowCamera: THREE.Camera, geometry: THREE.BufferGeometry) { geometry.drawRange.count = Infinity; }
 /** Character light: a sky/sun-tinted fresnel rim, strongest on the silhouette edge facing the sun (a back-lit kid gets
  *  a bright contour, a front-lit one a soft sky edge) — separates the kids from busy backgrounds. Wraps a body
  *  material's onBeforeCompile (runs after the material's own injections); strength per material (hair > skin > cloth).
  *  uIwRim = (rgb, power), uIwRimL = key-light direction in view space. Both live in the per-kid uniform bundle. */
-function withRim(m, u, k) {
+function withRim(m: THREE.MeshPhysicalMaterial, u: CharUniforms, k: number) {
   const prev = m.onBeforeCompile, key = (m.customProgramCacheKey ? m.customProgramCacheKey() : '') + '|iwRim';
   m.onBeforeCompile = function (sh, r) {
     if (prev) prev.call(this, sh, r);
@@ -188,7 +235,7 @@ const ANL = S(3), ANLR = S(3), TIPTOE = S();
 const BRAS = S(), PUPIL = S(), BREATH = S(), SNEER = S(), PUCKER = S(), BLUSH = S();
 const PN = _k;
 
-function poseNeutral(P) {
+function poseNeutral(P: Pose) {
   P.fill(0);
   P[FOOTL] = HIPW; P[FOOTL + 1] = ANKLE_H; P[FOOTL + 2] = -0.004; P[FOOTLR + 1] = 0.1;
   P[FOOTR] = -HIPW; P[FOOTR + 1] = ANKLE_H; P[FOOTR + 2] = -0.004; P[FOOTRR + 1] = -0.1;
@@ -199,9 +246,9 @@ function poseNeutral(P) {
   P[UARML + 2] = 0.1; P[UARMR + 2] = -0.1; P[FARML] = -0.3; P[FARMR] = -0.3;
   P[HANDL + 2] = -0.1; P[HANDR + 2] = 0.1;
 }
-function poseLerp(out, a, b, t) { for (let i = 0; i < PN; i++) out[i] = a[i] + (b[i] - a[i]) * t; }
-function setE(P, i, x, y, z) { P[i] = x; P[i + 1] = y; P[i + 2] = z; }
-function lerpE(P, i, x, y, z, w) { P[i] += (x - P[i]) * w; P[i + 1] += (y - P[i + 1]) * w; P[i + 2] += (z - P[i + 2]) * w; }
+function poseLerp(out: Pose, a: Pose, b: Pose, t: number) { for (let i = 0; i < PN; i++) out[i] = a[i] + (b[i] - a[i]) * t; }
+function setE(P: Float32Array, i: number, x: number, y: number, z: number) { P[i] = x; P[i + 1] = y; P[i + 2] = z; }
+function lerpE(P: Float32Array, i: number, x: number, y: number, z: number, w: number) { P[i] += (x - P[i]) * w; P[i + 1] += (y - P[i + 1]) * w; P[i + 2] += (z - P[i + 2]) * w; }
 
 // springs (index into the spring bank; each spring owns 2 floats)
 let _sk = 0; const SPG = () => (_sk++) * 2;
@@ -230,7 +277,7 @@ const M_GAIT = 0, M_CATCH = 1, M_SETTLE = 2;
 // [lx, lz, lyaw, rx, rz, ryaw] (kid space); hip/chest = aim-stance yaw distribution.
 // ------------------------------------------------------------------------------------------------
 const AIM_PIVOT = new THREE.Vector3(-0.03, 0.93, 0.05);
-const HOLD = {
+const HOLD: Record<string, Hold> = {
   shooter: {
     carry: { p: [-0.19, 0.76, 0.14], r: [0.62, 0.12, -0.16] }, twoCarry: 0,
     run: { p: [-0.175, 0.8, 0.2], r: [0.12, 0.06, -0.3] },
@@ -395,7 +442,7 @@ const XCH = [BROW, BROWY, EYE, MCURVE, MWIDTH, MOPEN, MTILT, SQUINT];
 const K_NONE = 0, K_VIEWER = 1, K_NEIGHBOUR = 2, K_GLANCE = 3;
 const EYE_MID = new THREE.Vector3(0, 0.188, 0.15);   // between the eyes, head-bone space
 /** Lid closure of a blink `b` (close c · hold h · open o, seconds) at time t: accelerating close, quick-start open. */
-function blinkCurve(b, t) {
+function blinkCurve(b: { c: number; h: number; o: number }, t: number) {
   if (t <= 0) return 0;
   if (t < b.c) { const u = t / b.c; return u * u; }
   t -= b.c; if (t < b.h) return 1;
@@ -403,7 +450,7 @@ function blinkCurve(b, t) {
   return 0;
 }
 /** every live character (menus: neighbours to glance at; bus reactions) */
-const LIVE = new Set();
+const LIVE = new Set<Character>();
 // game-bus reactions (one subscription for all kids): splatting someone → a lopsided grin; an ally going down nearby →
 // a wince. Pure face acting — no gameplay coupling.
 let _busOn = false;
@@ -420,7 +467,7 @@ function hookBus() {
     }
   });
 }
-function addExpr(P, X, w) { if (w <= 0.001) return; for (let i = 0; i < 8; i++) P[XCH[i]] += X[i] * w; }
+function addExpr(P: Pose, X: number[], w: number) { if (w <= 0.001) return; for (let i = 0; i < 8; i++) P[XCH[i]] += X[i] * w; }
 
 const FIDGETS = ['goggles', 'twirl', 'look', 'stretch', 'tank', 'bounce', 'shake'];
 const K_GOG_T = [0, 0.3, 0.45, 0.62, 0.8, 1.0, 1.35], K_GOG_V = [0, 1, 1, 1, 1, 1, 0];
@@ -434,9 +481,9 @@ const K_DV_KT = [0, 0.03, 0.07, 0.095], K_DV_KY = [1, 0.82, 0.34, 0.16], K_DV_KX
 const K_DV_ST = [0.045, 0.08, 0.13, 0.2, 0.28, 0.38], K_DV_SY = [0.3, 0.72, 1.3, 0.9, 1.045, 1], K_DV_SX = [1.5, 1.2, 0.83, 1.07, 0.98, 1];
 const _dAxis = new THREE.Vector3(), _dQ = new THREE.Quaternion(), _dC = new THREE.Vector3(), _fwdZ = new THREE.Vector3(0, 0, 1);
 // weapons animated with another kind's pose family (this.animKind); every other kind is its own family
-const ANIM_OF = { twins: 'shooter', brush: 'roller', sp_blower: 'shooter', sp_jetgun: 'blaster', sp_stamp: 'roller' };
+const ANIM_OF: Record<string, string> = { twins: 'shooter', brush: 'roller', sp_blower: 'shooter', sp_jetgun: 'blaster', sp_stamp: 'roller' };
 // families too heavy / long for the idle and dance weapon twirls
-const NO_TWIRL = { roller: true, charger: true, spinner: true, bucket: true, sp_zooka: true, sp_stamp: true };
+const NO_TWIRL: Record<string, boolean> = { roller: true, charger: true, spinner: true, bucket: true, sp_zooka: true, sp_stamp: true };
 // ---- Canopy Brolly (kits/brolly.js): held and aimed like a shooter
 ANIM_OF.brolly = 'shooter';
 // ---- Sponge Mitts (kits/mitts.js): a sponge boxing glove in each fist (dual wield), a boxer's guard in front of the
@@ -456,8 +503,8 @@ HOLD.mitts = {
 NO_TWIRL.mitts = true;
 // punch extension over time since that glove fired (out in 45 ms, back by 210 ms) · a kid-space point pushed onto the
 // wall plane p·n = wd (n = the wall normal in kid space), `off` metres out from it (o = [x, z])
-const mitPunch = (u) => (u < 0.045 ? easeOut(u / 0.045) : u < 0.21 ? 1 - ease((u - 0.045) / 0.165) : 0);
-function mitOnWall(x, z, off, nx, nz, wd, o) { const d = x * nx + z * nz - wd - off; o[0] = x - nx * d; o[1] = z - nz * d; return o; }
+const mitPunch = (u: number) => (u < 0.045 ? easeOut(u / 0.045) : u < 0.21 ? 1 - ease((u - 0.045) / 0.165) : 0);
+function mitOnWall(x: number, z: number, off: number, nx: number, nz: number, wd: number, o: number[]) { const d = x * nx + z * nz - wd - off; o[0] = x - nx * d; o[1] = z - nz * d; return o; }
 // ---- Tideline Bow (kits/bow.js; model + part animation in kits/bow-model.js). Animates as the charger family but
 // with its own HOLD (setWeapon prefers HOLD[kind]). The weapon origin is the nock on the string in the RIGHT fist; the
 // left fist holds the riser `brace` ahead. The anchors below are the undrawn (string at rest) fist; poseBow pulls that
@@ -476,7 +523,7 @@ HOLD.bow = {
   lobby: { p: [-0.12, 0.76, 0.2], r: [0.5, 0.35, 0.1] }, lobbyTwo: 1,
 };
 const BOW_CANT = -0.85;   // roll of the whole bow about the arrow on the ground (rad; top limb to the kid's left)
-function poseBow(ch, P, dt) {
+function poseBow(ch: Character, P: Pose, dt: number) {
   const w = ch.weapon, len = w.def.drawLen || 0.2;
   // draw 0..1: a quick first pull, heavier toward full. After a release the fist holds at the cheek a beat, then eases
   // forward to the string again (the model snaps the string home by itself)
@@ -499,19 +546,305 @@ const K_SL_T = [0, 0.13, 0.25, 0.4, 0.62];
 const K_SL_X = [0, -0.08, 0.02, 0.025, 0], K_SL_Y = [0, -0.22, 0.24, 0.33, 0], K_SL_Z = [0, -0.34, 0.04, -0.04, 0];
 const K_SL_P = [0, -0.55, 1.5, 1.95, 0], K_SL_W = [0, 0.32, -0.08, -0.14, 0];
 
-function setAnc(D, h) { setE(D, ANC, h.p[0], h.p[1], h.p[2]); setE(D, ANCR, h.r[0], h.r[1], h.r[2]); }
+function setAnc(D: Pose, h: Anchor) { setE(D, ANC, h.p[0], h.p[1], h.p[2]); setE(D, ANCR, h.r[0], h.r[1], h.r[2]); }
 const FIDGET_LEN = [1.35, 1.2, 2.3, 1.9, 1.3, 1.25, 0.95];
-const DANCE_VARIANTS = { victory: 3, defeat: 3 };
+const DANCE_VARIANTS: Record<string, number | undefined> = { victory: 3, defeat: 3 };
 const FINGER_SPREAD = [-0.1, -0.03, 0.04, 0.11]; // index … pinky, about local X (fan toward the thumb / away)
 
 // ------------------------------------------------------------------------------------------------
 // Character
 // ------------------------------------------------------------------------------------------------
 export class Character {
+  declare _tankRest: THREE.Vector3 | undefined;
+  declare _turnBl: number;
+  declare _mxLast: number;
+  declare _mitO: number[];
+  declare mitCl: number | undefined;
+  declare mitLp: number | undefined;
+  declare mitCh: number | undefined;
+  declare _tugged: boolean | undefined;
+  declare blRaise: number | undefined;
+  declare _labStream: boolean | undefined;
+  declare onEvent: ((name: string, data?: object) => void) | undefined;
+  declare blHeavy: boolean;
+  declare blSide: number | undefined;
+  declare blT: number;
+  declare hold: Hold;
+  declare weapon: CharWeapon;
+  declare _warmed: Promise<unknown> | undefined;
+  declare meshes: Record<string, THREE.SkinnedMesh>;
+  declare squid: { pivot: THREE.Group; body: THREE.Mesh; ghost: THREE.Mesh; dark: THREE.Mesh; eyes: THREE.Mesh };
+  declare tank: { group: THREE.Group; glass: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>; fill: THREE.Mesh; h: number; bottom: number; tilt: number };
+  declare bomb: BombProp;
+  declare hairPh: Float32Array;
+  declare hairA2: Float32Array;
+  declare hairA1: Float32Array;
+  declare hairAx: Float32Array;
+  declare hairTips: Array<THREE.Bone | null>;
+  declare handS: Float32Array;
+  declare fing: Array<{ t1: THREE.Bone; t2: THREE.Bone; f1: THREE.Bone[]; f2: THREE.Bone[] } | null>;
+  declare cheekRest: Array<THREE.Vector3 | null>;
+  declare xb: Record<'jaw' | 'lidL' | 'lidR' | 'tank' | 'hem' | 'hemF' | 'hemB' | 'toeL' | 'toeR' | 'earL' | 'earR' | 'cheekL' | 'cheekR', THREE.Bone | null>;
+  declare hairIn: Float32Array;
+  declare hairBones: THREE.Bone[];
+  declare faceRest: { browL: THREE.Vector3; browR: THREE.Vector3 };
+  declare legReach: number;
+  declare limbs: { armL: Limb; armR: Limb; legL: Limb; legR: Limb };
+  declare lodSets: Array<TierSet | null>;
+  // 활 자세 상태(poseBow): 직전 놓음 경과, 놓은 뒤 붙잡은 당김, 이번 당김, 기울임
+  declare _bowLR?: number; declare _bowHold?: number; declare _bowDraw?: number; declare _bowCant?: number;
+  declare skeleton: THREE.Skeleton;
+  declare rest: Record<string, THREE.Vector3>;
+  declare boneList: THREE.Bone<THREE.Object3DEventMap>[];
+  declare bones: Record<string, THREE.Bone>;
+  declare hairMeta: HairMeta[];
+  declare _wq: THREE.Quaternion;
+  declare _wst: WeaponAnimState;
+  declare bombSwap: number;
+  declare streamW: number;
+  declare spinW: number;
+  declare lockW: number;
+  declare dodgeDur: number;
+  declare dodgeZ: number;
+  declare dodgeX: number;
+  declare rcZ2: number;
+  declare rcP2: number;
+  declare armL: number;
+  declare dual: boolean;
+  declare dodge: { t: number; dir: THREE.Vector3; dur: number } | null;
+  declare spinAngle: number;
+  declare spinRate: number;
+  declare swipeSide: number;
+  declare subPropHidden: boolean;
+  declare weaponHidden: boolean;
+  declare _dt: number;
+  declare tumbleDrop: number;
+  declare tumbleZ: number;
+  declare tumbleX: number;
+  declare tumble: number;
+  declare kidLift: number;
+  declare sqSXZ: number;
+  declare sqSY: number;
+  declare kidSXZ: number;
+  declare kidSY: number;
+  declare jumpLead: number;
+  declare jumpRun: number;
+  declare _hpData: { pos: THREE.Vector3 };
+  declare _hpPos: THREE.Vector3;
+  declare kidForm: boolean;
+  declare phys: Physics | null;
+  declare inWorld: boolean;
+  declare lastFidget: number;
+  declare _tapped: boolean;
+  declare _toeUp: number;
+  declare _effort: number;
+  declare rcZ: number;
+  declare rcP: number;
+  declare aimP: number;
+  declare armR: number;
+  declare shiftS: number;
+  declare kgz: number;
+  declare kgx: number;
+  declare _fRq: THREE.Quaternion;
+  declare _fLq: THREE.Quaternion;
+  declare _fR: THREE.Vector3;
+  declare _fL: THREE.Vector3;
+  declare _fsData: { foot: string; pos: THREE.Vector3; speed: number };
+  declare _fsPos: THREE.Vector3;
+  declare headInit: boolean;
+  declare headPrevQuat: THREE.Quaternion;
+  declare headVel: THREE.Vector3;
+  declare headAcc: THREE.Vector3;
+  declare headPrevVel: THREE.Vector3;
+  declare headPrevPos: THREE.Vector3;
+  declare _subPrev: boolean;
+  declare bombT: number;
+  declare bombHeld: boolean;
+  declare earT: number;
+  declare headRZ: number;
+  declare headRY: number;
+  declare tipV: Float32Array;
+  declare tipX: Float32Array;
+  declare hv: Float32Array;
+  declare hx: Float32Array;
+  declare ikErr: number[];
+  declare visible: boolean;
+  declare drumAngle: number;
+  declare sqRoll: number;
+  declare sqBlink: number;
+  declare sqInit: boolean;
+  declare sqQuat: THREE.Quaternion;
+  declare sqPos: THREE.Vector3;
+  declare sqYaw: number;
+  declare hopAir: boolean;
+  declare hopPhase: number;
+  declare slosh: number;
+  declare hurt: number;
+  declare inkS: number;
+  declare xw: Float32Array;
+  declare _ownT: number;
+  declare team: number;
+  declare actor: Actor | null;
+  declare glancePitch: number;
+  declare glanceYaw: number;
+  declare lookPitch: number;
+  declare lookYaw: number;
+  declare lookActor: Actor | null;
+  declare lookT: number;
+  declare _hairOdd: boolean;
+  declare _hairAcc: number;
+  declare lifeLv: number;
+  declare face: { blinkL: number; blinkR: number; lidL: number; lidR: number; squintL: number; squintR: number; gazeX: number; gazeY: number; verge: number; pupil: number; browInL: number; browInR: number; browOutL: number; browOutR: number; furrow: number; curve: number; width: number; open: number; tilt: number; jaw: number; smile: number; sneer: number; pucker: number; breath: number; };
+  declare eyeY: number;
+  declare eyeX: number;
+  declare gripT: number;
+  declare sigh: number;
+  declare sighT: number;
+  declare brRate: number;
+  declare brAmp: number;
+  declare brN: number;
+  declare _headSet: boolean;
+  declare _headQW: THREE.Quaternion;
+  declare extGl: number;
+  declare mxT: number;
+  declare mx: MicroExpr[];
+  declare att: { kind: number; prev: number; t: number; p: THREE.Vector3; on: boolean; who: Character | null; gy: number; gp: number; dist: number; };
+  declare gz: { x: number; y: number; x0: number; y0: number; x1: number; y1: number; st: number; sd: number; fx: number; fy: number; mx: number; my: number; mT: number; };
+  declare bl: { t: number; c: number; h: number; o: number; amp: number; lag: number; next: number; dbl: boolean; squeeze: number; };
+  declare blinkR: number;
+  declare blinkL: number;
+  declare blinkK: number;
+  declare kidPop: number;
+  declare sqScale: number;
+  declare kidScale: number;
+  declare formT: number;
+  declare formPrev: string;
+  declare form: string;
+  declare danceOfs: number;
+  declare danceVar: number;
+  declare lastDance: string | null;
+  declare danceFade: number;
+  declare prevDanceT: number;
+  declare prevDance: string | null;
+  declare danceT: number;
+  declare dance: string | null;
+  declare slamGround: boolean;
+  declare hitAcc: number;
+  declare hitAmp: number;
+  declare hitZ: number;
+  declare hitX: number;
+  declare landAmp: number;
+  declare leapEnd: number;
+  declare ikErrPre: number;
+  declare lReach: number;
+  declare _fireWant: number;
+  declare fireHold: number;
+  declare fullT: number;
+  declare chargeFlash: number;
+  declare charge: number;
+  declare lastRelease: number;
+  declare lastShot: number;
+  declare nextFidget: number;
+  declare fidgetT: number;
+  declare fidget: number;
+  declare shiftTgt: number;
+  declare shiftT: number;
+  declare idleT: number;
+  declare brPh: number;
+  declare exert: number;
+  declare wGoo: number;
+  declare wTired: number;
+  declare wLow: number;
+  declare wGlow: number;
+  declare wTwo: number;
+  declare wDance: number;
+  declare wAir: number;
+  declare wRoll: number;
+  declare wAim: number;
+  declare wSub: number;
+  declare stepOfsZ: number;
+  declare stepOfsX: number;
+  declare shufT: number;
+  declare stVar: Float32Array;
+  declare hipDrop: number;
+  declare footTwist: number;
+  declare stance: Float32Array;
+  declare plantW: number;
+  declare settleCd: number;
+  declare replant: boolean;
+  declare feetValid: boolean;
+  declare feet: Foot[];
+  declare liftH: number;
+  declare cad: number;
+  declare duty: number;
+  declare runW: number;
+  declare gaitW: number;
+  declare moving: boolean;
+  declare phase: number;
+  declare grounded: boolean;
+  declare airT: number;
+  declare gnd: number;
+  declare vyS: number;
+  declare hipTwist: number;
+  declare mdz: number;
+  declare mdx: number;
+  declare tvz: number;
+  declare tvx: number;
+  declare tread: boolean;
+  declare gvz: number;
+  declare gvx: number;
+  declare gs: number;
+  declare gv: number;
+  declare hs: number;
+  declare kaz: number;
+  declare kax: number;
+  declare kvz: number;
+  declare kvx: number;
+  declare yawRate: number;
+  declare prevYaw: number;
+  declare yaw: number;
+  declare rootInit: boolean;
+  declare ra: THREE.Vector3;
+  declare rv: THREE.Vector3;
+  declare rp: THREE.Vector3;
+  declare t: number;
+  declare tr: Float32Array;
+  declare sp: Float32Array;
+  declare PY: Float32Array;
+  declare PX: Float32Array;
+  declare PD: Float32Array;
+  declare P: Float32Array;
+  declare animKind: string | null;
+  declare weaponKind: string | null;
+  declare weapons: Record<string, CharWeapon>;
+  declare _camHook: (renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera) => void;
+  declare _camFrame: number;
+  declare _rendered: boolean;
+  declare _camOK: boolean;
+  declare _camVH: number;
+  declare _camE5: number;
+  declare _camPos: THREE.Vector3;
+  declare _ownMats: THREE.Material[];
+  declare matsD: Array<Record<string, THREE.Material>>;
+  declare lod: { tier: number; to: number; f: number; px: number; force: number; fadeOut: { value: THREE.Vector2 }; fadeIn: { value: THREE.Vector2 }; q?: string; props?: boolean };
+  declare mats: { skin: THREE.MeshPhysicalMaterial; cloth: THREE.MeshPhysicalMaterial; hair: THREE.MeshPhysicalMaterial; dark: THREE.MeshPhysicalMaterial; eye: THREE.MeshPhysicalMaterial; fill: THREE.MeshPhysicalMaterial; squid: THREE.MeshPhysicalMaterial; squidGhost: THREE.MeshPhysicalMaterial; glow: THREE.MeshStandardMaterial; };
+  declare u: CharUniformSet;
+  declare squidRoot: THREE.Group<THREE.Object3DEventMap>;
+  declare kid: THREE.Group<THREE.Object3DEventMap>;
+  declare model: THREE.Group<THREE.Object3DEventMap>;
+  declare root: THREE.Group<THREE.Object3DEventMap>;
+  declare climbInset: number;
+  declare enemyColor: THREE.Color;
+  declare color: THREE.Color;
+  declare rng: () => number;
+  declare style: STYLE.ResolvedStyle;
+  declare seed: number;
+  declare isLocal: boolean;
+  declare name: string;
   /**
    * @param {{color?: THREE.Color|string, weapon?: string, style?: {hair?: number, skin?: number, outfit?: number, eyes?: number}, name?: string, isLocal?: boolean}} opts
    */
-  constructor(opts = {}) {
+  constructor(opts: CharacterOpts = {}) {
     this.name = opts.name || 'Squidkid';
     this.isLocal = !!opts.isLocal;
     const st = opts.style || {};
@@ -530,7 +863,7 @@ export class Character {
     this.squidRoot = new THREE.Group(); this.model.add(this.squidRoot);
 
     // materials
-    const u = this.u = makeCharUniforms();
+    const u: CharUniformSet = this.u = makeCharUniforms();
     // outfit colourway / pattern / iris (+ any face uniforms) come from the appearance stream's catalogue
     if (typeof STYLE.applyStyleUniforms === 'function') STYLE.applyStyleUniforms(u, this.style);
     else {
@@ -559,7 +892,7 @@ export class Character {
     this.matsD = [{}, {}]; this._ownMats = [];
     this._camPos = new THREE.Vector3(); this._camE5 = 1.5; this._camVH = 900; this._camOK = false; this._rendered = false; this._camFrame = -1;
     this._camHook = (renderer, scene, camera) => {
-      if (!camera || !camera.isPerspectiveCamera) return;
+      if (!camera || !(camera as THREE.PerspectiveCamera).isPerspectiveCamera) return;
       this._camPos.setFromMatrixPosition(camera.matrixWorld); this._camE5 = camera.projectionMatrix.elements[5];
       const rt = renderer.getRenderTarget();
       this._camVH = rt ? rt.height / (renderer.getPixelRatio() || 1) : renderer.getSize(_vVH).y;
@@ -639,7 +972,7 @@ export class Character {
     this.weaponHidden = false; this.subPropHidden = false; this.swipeSide = 1; this.spinRate = 0; this.spinAngle = 0; this.dodge = null;
     this.dual = false; this.armL = 0; this.rcP2 = 0; this.rcZ2 = 0; this.dodgeX = 0; this.dodgeZ = 1; this.dodgeDur = 0.3; this.lockW = 0; this.spinW = 0; this.streamW = 0; this.bombSwap = 0;
     this._wst = { t: 0, dt: 0, color: this.color, near: true, hand: 0, runner: null, sinceShoot: 99, sinceFlick: 99, sinceRelease: 99,
-      charge: 0, full: false, chargeFlash: 0, lowInk: 0, firing: false, rolling: 0, grounded: true, groundSpeed: 0, worldQuat: null };
+      charge: 0, full: false, chargeFlash: 0, lowInk: 0, firing: false, rolling: 0, grounded: true, groundSpeed: 0, worldQuat: undefined };
     this._wq = new THREE.Quaternion();
 
     this.setColor(opts.color ?? '#ff8a14');
@@ -647,7 +980,7 @@ export class Character {
     poseNeutral(this.P);
   }
 
-  _mkFoot(i) {
+  _mkFoot(i: number) {
     return {
       i, side: i === 0 ? 1 : -1, name: i === 0 ? 'L' : 'R',
       pw: new THREE.Vector3(), yaw: 0, n: new THREE.Vector3(0, 1, 0), planted: true, inSt: true, stU: 0.5, stT: 1,
@@ -663,7 +996,7 @@ export class Character {
     const hair = getHairStyle(this.style);   // keyed on the style object (hair + hat + brows)
     this.hairMeta = hair.meta;
     const rest = getRestPositions(this.style);
-    const bones = []; const byName = {};
+    const bones: THREE.Bone[] = []; const byName: Record<string, THREE.Bone> = {};
     const yxz = new Set(['hips', 'spine', 'chest', 'neck', 'head', 'clavL', 'clavR']);
     for (const n of BONE_NAMES) {
       const b = new THREE.Bone(); b.name = n; byName[n] = b; bones.push(b);
@@ -681,10 +1014,10 @@ export class Character {
     this.lodSets = [null, null, null];
     this._setTier(T_GAME);
     // limb constants for IK (rest directions / lengths)
-    const lim = (up, lo, end, h0) => {
+    const lim = (up: string, lo: string, end: string, h0: THREE.Vector3) => {
       const a = this.bones[lo].position.length(), b = this.bones[end].position.length();
       const ru = this.bones[lo].position.clone().normalize(), rf = this.bones[end].position.clone().normalize();
-      const mk0 = (r) => { const h = h0.clone().addScaledVector(r, -h0.dot(r)).normalize(); const c = new THREE.Vector3().crossVectors(r, h); return new THREE.Matrix4().makeBasis(r, h, c).transpose(); };
+      const mk0 = (r: THREE.Vector3) => { const h = h0.clone().addScaledVector(r, -h0.dot(r)).normalize(); const c = new THREE.Vector3().crossVectors(r, h); return new THREE.Matrix4().makeBasis(r, h, c).transpose(); };
       return { up: this.bones[up], lo: this.bones[lo], end: this.bones[end], a, b, Mu0T: mk0(ru), Mf0T: mk0(rf) };
     };
     this.limbs = {
@@ -706,7 +1039,7 @@ export class Character {
       this.hairIn[s * 3] = _v1.x; this.hairIn[s * 3 + 1] = _v1.y; this.hairIn[s * 3 + 2] = _v1.z;
     }
     // optional bones added by the modelling stream (docs/RIG.md) — animated when present
-    const opt = (n) => this.bones[n] || null;
+    const opt = (n: string) => this.bones[n] || null;
     this.xb = {
       jaw: opt('jaw'), lidL: opt('lidL'), lidR: opt('lidR'), tank: opt('tank'), hem: opt('hem'), hemF: opt('hemF'), hemB: opt('hemB'),
       toeL: opt('toeL'), toeR: opt('toeR'), earL: opt('earL'), earR: opt('earR'), cheekL: opt('cheekL'), cheekR: opt('cheekR'),
@@ -717,7 +1050,7 @@ export class Character {
     for (let sd = 0; sd < 2; sd++) {
       const sn = sd === 0 ? 'L' : 'R';
       const t1 = this.bones[`hand${sn}_thumb1`], t2 = this.bones[`hand${sn}_thumb2`];
-      const f1 = [], f2 = [];
+      const f1: THREE.Bone[] = [], f2: THREE.Bone[] = [];
       for (const fn of ['index', 'middle', 'ring', 'pinky']) { const b1 = this.bones[`hand${sn}_${fn}1`], b2 = this.bones[`hand${sn}_${fn}2`]; if (b1 && b2) { f1.push(b1); f2.push(b2); } }
       this.fing[sd] = t1 && t2 && f1.length === 4 ? { t1, t2, f1, f2 } : null;
     }
@@ -754,11 +1087,11 @@ export class Character {
   // the sub prop held in the left hand while a throw is aimed (any sub kind; see getSubDef)
   _buildBomb(kind = 'bomb') {
     const d = getSubDef(kind);
-    const g = new THREE.Group(); g.position.copy(d.inHandL.pos); g.quaternion.copy(d.inHandL.quat);
-    const body = new THREE.Mesh(d.body, getPlasticMaterial()); body.castShadow = true;
-    const ink = new THREE.Mesh(d.ink, getInkMaterial(this.color)); ink.castShadow = true;
+    const g = new THREE.Group(); g.position.copy(d.inHandL!.pos); g.quaternion.copy(d.inHandL!.quat);   // (getSubDef가 붙인다)
+    const body = new THREE.Mesh(d.body!, getPlasticMaterial()); body.castShadow = true;
+    const ink = new THREE.Mesh(d.ink!, getInkMaterial(this.color)); ink.castShadow = true;
     g.add(body, ink);
-    let spinInk = null;
+    let spinInk: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial> | null = null;
     if (d.spin) { const sp = new THREE.Mesh(d.spin, getPlasticMaterial()); sp.castShadow = true; g.add(sp); }
     if (d.spinInk) { spinInk = new THREE.Mesh(d.spinInk, getInkMaterial(this.color)); g.add(spinInk); }
     if (d.glow) g.add(new THREE.Mesh(d.glow, this.mats.glow));
@@ -766,7 +1099,7 @@ export class Character {
     this.bones.handL.add(g);
     this.bomb = { group: g, ink, spinInk, kind };
   }
-  setSub(kind) {
+  setSub(kind: string | undefined) {
     if (this.bomb && this.bomb.kind === kind) return;
     if (this.bomb) this.bones.handL.remove(this.bomb.group);
     this._buildBomb(kind);
@@ -795,7 +1128,7 @@ export class Character {
     this.squidRoot.visible = false;
   }
 
-  _getWeapon(kind) {
+  _getWeapon(kind: string) {
     if (this.weapons[kind]) return this.weapons[kind];
     const d = getWeaponDef(kind);
     const w = this._weaponInstance(d, false);
@@ -806,11 +1139,12 @@ export class Character {
       // q → (x, -y, -z, w)); a static copy that rides the left hand's pose (no parts, no second anchor)
       const pivotL = new THREE.Group(); pivotL.position.set(-FIST_OFFSET.x, FIST_OFFSET.y, FIST_OFFSET.z);
       const offL = new THREE.Group();
-      offL.position.copy(d.inHand.pos).sub(FIST_OFFSET); offL.position.x = -offL.position.x;
-      offL.quaternion.set(d.inHand.quat.x, -d.inHand.quat.y, -d.inHand.quat.z, d.inHand.quat.w);
+      const ih = d.inHand!;
+      offL.position.copy(ih.pos).sub(FIST_OFFSET); offL.position.x = -offL.position.x;
+      offL.quaternion.set(ih.quat.x, -ih.quat.y, -ih.quat.z, ih.quat.w);
       const mir = new THREE.Group(); mir.scale.set(-1, 1, 1);
-      const bodyL = new THREE.Mesh(d.body, getPlasticMaterial()); bodyL.castShadow = true;
-      const inkL = new THREE.Mesh(d.ink, getInkMaterial(this.color)); inkL.castShadow = true;
+      const bodyL = new THREE.Mesh(d.body!, getPlasticMaterial()); bodyL.castShadow = true;
+      const inkL = new THREE.Mesh(d.ink!, getInkMaterial(this.color)); inkL.castShadow = true;
       mir.add(bodyL, inkL); offL.add(mir); pivotL.add(offL);
       w.pivotL = pivotL; w.inkL = inkL;
     }
@@ -819,22 +1153,22 @@ export class Character {
   }
 
   /** One held weapon: pivot at the fist's grip axis (twirls spin about the handle) → off = weapon space. */
-  _weaponInstance(d, left) {
-    const hole = left ? GRIP_HOLE_L : FIST_OFFSET, inHand = left ? d.inHandL : d.inHand;
+  _weaponInstance(d: WeaponDef, left: boolean): WeaponInst {
+    const hole = left ? GRIP_HOLE_L : FIST_OFFSET, inHand = (left ? d.inHandL : d.inHand)!;   // (getWeaponDef가 붙인다)
     const pivot = new THREE.Group(); pivot.position.copy(hole);
     const off = new THREE.Group(); off.position.copy(inHand.pos).sub(hole); off.quaternion.copy(inHand.quat);
     // NB: inHand.pos is relative to the hand origin; the pivot sits at the fist, rotation-free at twirl 0.
     pivot.add(off);
     // two LODs: near = static shell + animated parts (trigger, bolts, pump, gauge, lamps…); far = the complete weapon
     // merged at rest (2 draws, like before) — toggled by camera distance in _animWeapon
-    const body = new THREE.Mesh(d.bodyStatic || d.body, getPlasticMaterial()); body.castShadow = true;
-    const ink = new THREE.Mesh(d.inkStatic || d.ink, getInkMaterial(this.color)); ink.castShadow = true;
-    const bodyFar = new THREE.Mesh(d.body, getPlasticMaterial()); bodyFar.castShadow = true; bodyFar.visible = false;
-    const inkFar = new THREE.Mesh(d.ink, getInkMaterial(this.color)); inkFar.castShadow = true; inkFar.visible = false;
+    const body = new THREE.Mesh((d.bodyStatic || d.body)!, getPlasticMaterial()); body.castShadow = true;
+    const ink = new THREE.Mesh((d.inkStatic || d.ink)!, getInkMaterial(this.color)); ink.castShadow = true;
+    const bodyFar = new THREE.Mesh(d.body!, getPlasticMaterial()); bodyFar.castShadow = true; bodyFar.visible = false;
+    const inkFar = new THREE.Mesh(d.ink!, getInkMaterial(this.color)); inkFar.castShadow = true; inkFar.visible = false;
     off.add(body, ink, bodyFar, inkFar);
-    const parts = {}, partList = [], lamps = [];
+    const parts: Record<string, THREE.Group> = {}, partList: THREE.Group[] = [], lamps: THREE.Material[] = [];
     for (const k in d.parts || {}) {
-      const pd = d.parts[k];
+      const pd = d.parts![k];
       const g = new THREE.Group(); g.position.copy(pd.pivot);
       const mat = pd.mat === 'ink' ? getInkMaterial(this.color) : pd.mat === 'lamp' ? makeLampMaterial(pd.lamp) : getPlasticMaterial();
       const m = new THREE.Mesh(pd.geo, mat); m.onBeforeRender = partGate;
@@ -843,29 +1177,29 @@ export class Character {
       parts[k] = g; partList.push(g);
       if (pd.mat === 'lamp') lamps.push(mat);
     }
-    let glow = null, drum = null, coil = null;
+    let glow: THREE.Mesh | null = null, drum: THREE.Group | null = null, coil: THREE.MeshStandardMaterial | null = null;
     if (d.glow) { coil = makeCoilMaterial(); coil.emissive.copy(this.color); glow = new THREE.Mesh(d.glow, coil); off.add(glow); }
     if (d.drum) {
-      drum = new THREE.Group(); drum.position.copy(d.drumAt);
+      drum = new THREE.Group(); drum.position.copy(d.drumAt!);
       const dm = new THREE.Mesh(d.drum, getInkMaterial(this.color)); dm.castShadow = true;
-      const dc = new THREE.Mesh(d.drumCaps, getPlasticMaterial());
+      const dc = new THREE.Mesh(d.drumCaps!, getPlasticMaterial());
       drum.add(dm, dc); off.add(drum); drum.userData.ink = dm;
     }
-    let spin = null;
+    let spin: THREE.Group | null = null;
     if (d.spin && !left) {
       // spinner / zooka: the barrel cluster turns about its own axis (weapon +Z through spinAt); geometry is authored in
       // weapon space. Driven by this character (_applyPose), not animateWeapon.
-      spin = new THREE.Group(); spin.position.copy(d.spinAt);
-      const sm = new THREE.Mesh(d.spin, getPlasticMaterial()); sm.castShadow = true; sm.position.copy(d.spinAt).negate();
+      spin = new THREE.Group(); spin.position.copy(d.spinAt!);
+      const sm = new THREE.Mesh(d.spin, getPlasticMaterial()); sm.castShadow = true; sm.position.copy(d.spinAt!).negate();
       spin.add(sm); off.add(spin);
     }
     const muzzle = new THREE.Object3D(); muzzle.position.copy(d.muzzle); off.add(muzzle);
     // part state (pump, trig, ps, drum, spin…) is owned by animateWeapon (character-weapons.js); pump/trig read here
-    return { def: d, pivot, off, body, ink, bodyFar, inkFar, glow, drum, muzzle, parts, partList, lamps, coil, near: true, pump: 0, trig: 0, left: null, hidden: 0, spin, pivotL: null, inkL: null };
+    return { def: d, pivot, off, body, ink, bodyFar, inkFar, glow, drum, muzzle, parts, partList, lamps, coil, near: true, pump: 0, trig: 0, left: null, hidden: 0, spin, pivotL: null, inkL: null, ps: null, heat: 0, drumW: 0, drumA: 0, spinW: 0, spinA: 0 };
   }
 
   // Dodge roll (twin pistols): one forward tumble about the body centre toward the roll direction, ~0.3 s.
-  _updateDodge(dt) {
+  _updateDodge(dt: number) {
     const m = this.model;
     if (!this.dodge) return;
     const R = this.dodge; R.t += dt;
@@ -887,21 +1221,21 @@ export class Character {
   // getClothGeo(style, lod), plus any `extra` parts they list. A builder that ignores `lod` hands
   // back the same mesh for every tier; the far tier is then decimated here.
   // ---------------------------------------------------------------------------------------------
-  _tierParts(t) {
+  _tierParts(t: number) {
     const tn = TIERS[t];
     const K = getKidShared(tn), H = getHairStyle(this.style, tn);
-    const parts = [
+    const parts: TierPart[] = [
       { key: 'skin', geo: K.skin, mat: 'skin', shadow: true },
       { key: 'cloth', geo: (getClothGeo && getClothGeo(this.style, tn)) || K.cloth, mat: 'cloth', shadow: true },
       { key: 'hair', geo: H.geo, mat: 'hair', shadow: true },
       { key: 'eyes', geo: K.eyes, mat: 'eye', shadow: false },
     ];
-    for (const x of [...(K.extra || []), ...(H.extra || [])]) {
+    for (const x of [...((K as { extra?: ExtraPart[] }).extra || []), ...((H as { extra?: ExtraPart[] }).extra || [])]) {
       if (!x || !x.geo || (x.tiers && !x.tiers.includes(tn))) continue;
       parts.push({ key: x.name || 'part' + parts.length, geo: x.geo, mat: x.mat || 'skin', shadow: x.shadow !== false, order: x.renderOrder || 0 });
     }
     if (t === T_FAR) {
-      const gp = this._tierParts(T_GAME), byKey = {};
+      const gp = this._tierParts(T_GAME), byKey: Record<string, THREE.BufferGeometry> = {};
       for (const p of gp) byKey[p.key] = p.geo;
       for (const p of parts) {
         const tgt = FAR_TRIS[p.key] ?? 500, n = p.geo.index ? p.geo.index.count / 3 : p.geo.attributes.position.count / 3;
@@ -913,9 +1247,9 @@ export class Character {
   }
 
   /** The body meshes of tier t (built on first use, invisible until shown). */
-  _tierSet(t) {
-    if (this.lodSets[t]) return this.lodSets[t];
-    const S = { t, meshes: {}, list: [] };
+  _tierSet(t: number): TierSet {
+    if (this.lodSets[t]) return this.lodSets[t]!;
+    const S: TierSet = { t, meshes: {}, list: [] };
     for (const p of this._tierParts(t)) {
       const m = new THREE.SkinnedMesh(p.geo, this._matFor(p.mat));
       m.bind(this.skeleton, IDENT);
@@ -939,25 +1273,26 @@ export class Character {
 
   /** A per-kid material by key: the base set (skin, cloth, hair, eye, dark, squid …) or a character-mats.js factory
    *  named by a builder's extra part (`makeXMaterial(u)` → owned by this kid; `getXMaterial()` → shared). */
-  _matFor(k) {
-    let m = this.mats[k];
+  _matFor(k: string) {
+    const mats = this.mats as unknown as Record<string, THREE.Material>;   // (기본 재질 + 빌더 부품이 부른 공장 재질)
+    let m = mats[k];
     if (m) return m;
-    const f = MATS[k];
+    const f = (MATS as unknown as Record<string, ((u?: CharUniforms) => THREE.Material) | undefined>)[k];
     if (typeof f === 'function') {
       m = /^make/.test(k) ? f(this.u) : f();
-      if (m) { this.mats[k] = m; if (/^make/.test(k)) this._ownMats.push(m); return m; }
+      if (m) { mats[k] = m; if (/^make/.test(k)) this._ownMats.push(m); return m; }
     }
     console.warn('[character] unknown part material', k);
-    return (this.mats[k] = this.mats.skin);
+    return (mats[k] = this.mats.skin);
   }
 
-  _ditherMat(k, side) {
+  _ditherMat(k: string, side: number) {
     const D = this.matsD[side];
     return D[k] || (D[k] = ditherMaterial(this._matFor(k), side ? this.lod.fadeIn : this.lod.fadeOut));
   }
 
   /** Show tier t now (no fade): first frame, menus, forced tiers. */
-  _setTier(t) {
+  _setTier(t: number) {
     const L = this.lod, S = this._tierSet(t);
     for (let i = 0; i < 3; i++) {
       const X = this.lodSets[i]; if (!X) continue;
@@ -969,7 +1304,7 @@ export class Character {
   }
 
   /** Rigid props follow the tier too (instant swap — small on screen): squid form, tank glass + fill. */
-  _tierProps(t) {
+  _tierProps(t: number) {
     if (!this.squid || !this.tank) return;
     const K = getKidShared(TIERS[t]), sq = K.squid, T = K.tank;
     if (sq && sq.body) {
@@ -999,7 +1334,7 @@ export class Character {
   }
 
   /** Pick the tier for this frame; fade between tiers with the screen-door dither (0.3 s) once the kid is on screen. */
-  _updateLod(dt) {
+  _updateLod(dt: number) {
     const L = this.lod;
     // fallback when the host did not warm this kid before the match (see warmAll): at first sight, not at first fade
     if (!this._warmed && this.inWorld && this._rendered && window.inkwaveNative?.performance?.warmCharacterVariants !== false) this.warmAll();
@@ -1016,7 +1351,7 @@ export class Character {
       if (L.f >= 1) this._setTier(L.to);
       return;
     }
-    const Q = LOD_QUALITY[G.settings?.quality] || LOD_QUALITY.high;
+    const Q = LOD_QUALITY[(G.settings?.quality ?? 'high') as keyof typeof LOD_QUALITY] || LOD_QUALITY.high;
     let want;
     const px = L.px = this._screenPx();
     if (L.force >= 0) want = L.force;
@@ -1030,18 +1365,18 @@ export class Character {
   }
 
   /** Cross-fade from the current tier to t: outgoing parts keep the IGN ≥ f pixels, incoming the rest; 0.3 s. */
-  _startFade(t) {
+  _startFade(t: number) {
     const L = this.lod;
     if (L.to >= 0 || t === L.tier) return;
     if (window.inkwaveNative?.performance?.lodFade(G.settings?.quality || 'high') === false) { this._setTier(t); return; }
     const A = this.lodSets[L.tier], B = this._tierSet(t);
-    for (const m of A.list) { m.material = this._ditherMat(m.userData.iwMat, 0); m.castShadow = false; }
+    for (const m of A!.list) { m.material = this._ditherMat(m.userData.iwMat, 0); m.castShadow = false; }
     for (const m of B.list) { m.material = this._ditherMat(m.userData.iwMat, 1); m.castShadow = m.userData.iwShadow; m.visible = true; }
     L.to = t; L.f = 0; L.props = false; L.fadeOut.value.x = L.fadeIn.value.x = 1e-4;
   }
 
   /** Force a tier ('hero' | 'game' | 'far' | index), or null for automatic. Labs / showcase portraits / audits. */
-  setLod(t) {
+  setLod(t: string) {
     const i = typeof t === 'string' ? TIERS.indexOf(t) : t ?? -1;
     this.lod.force = i >= 0 && i < 3 ? i : -1;
     if (this.lod.force >= 0) this._setTier(this.lod.force);
@@ -1076,9 +1411,9 @@ export class Character {
       }
       this.kid.add(grp);
       // far weapon decimation (CPU, cached per weapon geometry) — built now rather than at the first far switch
-      for (const k in this.weapons) for (let w = this.weapons[k]; w; w = w.left) { farGeometry(w.def.body, 700); farGeometry(w.def.ink, 300); }
+      for (const k in this.weapons) for (let w: WeaponInst | null = this.weapons[k]; w; w = w.left) { farGeometry(w.def.body!, 700); farGeometry(w.def.ink!, 300); }
       // everything a match can show, shown for the synchronous part only (compile + one shadow pass)
-      const vis = [];
+      const vis: Array<THREE.Object3D | boolean> = [];
       this.root.traverse((o) => { vis.push(o, o.visible); o.visible = true; });
       const rt0 = renderer.getRenderTarget();
       let p = null;
@@ -1088,15 +1423,15 @@ export class Character {
         renderer.setRenderTarget(G.post?.composer?.readBuffer || (_warmRT || (_warmRT = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType }))));
         p = renderer.compileAsync(this.root, camera, target);
       } finally { renderer.setRenderTarget(rt0); }
-      const sm = renderer.shadowMap, lights = [];
-      if (sm.enabled) target.traverseVisible((o) => { if (o.isLight && o.castShadow && o.shadow) lights.push(o); });
+      const sm = renderer.shadowMap, lights: THREE.Light[] = [];
+      if (sm.enabled) target.traverseVisible((o) => { const l = o as THREE.DirectionalLight; if (l.isLight && l.castShadow && l.shadow) lights.push(l); });
       if (lights.length) {
         const nu = sm.needsUpdate;
         this.root.updateMatrixWorld(true);
-        try { sm.needsUpdate = true; sm.render(lights, this.root, camera); } catch (e) { console.warn('[character] shadow warm', e); }
+        try { sm.needsUpdate = true; (sm as unknown as { render(lights: THREE.Light[], scene: THREE.Object3D, camera: THREE.Camera): void }).render(lights, this.root, camera); } catch (e) { console.warn('[character] shadow warm', e); }   // (WebGLShadowMap.render: 타입 정의에 없음)
         finally { sm.needsUpdate = nu; }
       }
-      for (let i = 0; i < vis.length; i += 2) vis[i].visible = vis[i + 1];
+      for (let i = 0; i < vis.length; i += 2) (vis[i] as THREE.Object3D).visible = vis[i + 1] as boolean;
       this.kid.remove(grp);
       await p;
       return q;
@@ -1107,7 +1442,7 @@ export class Character {
   // ---------------------------------------------------------------------------------------------
   // Public API
   // ---------------------------------------------------------------------------------------------
-  setColor(color) {
+  setColor(color: THREE.ColorRepresentation) {
     this.color.set(color);
     this.u.uTeam.value.copy(this.color);
     this.mats.fill.color.copy(this.color);
@@ -1115,7 +1450,7 @@ export class Character {
     this.mats.glow.color.copy(this.color).multiplyScalar(0.3);
     if (this.bomb) { this.bomb.ink.material = getInkMaterial(this.color); if (this.bomb.spinInk) this.bomb.spinInk.material = getInkMaterial(this.color); }
     for (const k in this.weapons) {
-      for (let w = this.weapons[k]; w; w = w.left) {
+      for (let w: WeaponInst | null = this.weapons[k]; w; w = w.left) {
         w.ink.material = getInkMaterial(this.color); w.inkFar.material = w.ink.material;
         if (w.inkL) w.inkL.material = w.ink.material;
         if (w.drum) w.drum.userData.ink.material = getInkMaterial(this.color);
@@ -1126,7 +1461,7 @@ export class Character {
   }
 
   // kind = weapon model; the pose family (animKind) comes from ANIM_OF — new weapons borrow an existing family's animation
-  setWeapon(kind) {
+  setWeapon(kind: string) {
     if (!HOLD[ANIM_OF[kind] || kind]) kind = 'shooter';
     if (kind === this.weaponKind) return;
     const old = this.weaponKind && this.weapons[this.weaponKind];
@@ -1144,13 +1479,14 @@ export class Character {
     this.dual = !!w.left;
   }
 
-  trigger(name, arg) {
+  trigger(name: string, arg?: TriggerArg) {
     const tr = this.tr, sp = this.sp;
+    const o = arg && typeof arg === 'object' && !(arg instanceof THREE.Vector3) ? arg : null;   // {x,z,…} 인수
     switch (name) {
       case 'shoot': {
         if (this.animKind === 'roller') { tr[T_FLICK] = 0; break; }
         if (this.animKind === 'slosher') { if (tr[T_SLOSH] > 0.3) tr[T_SLOSH] = 0; this.lastShot = 0; break; }
-        const hand = arg && typeof arg === 'object' ? (arg.hand | 0) : 0;   // dualies alternate hands: { hand: 0|1 }
+        const hand = arg && typeof arg === 'object' ? ((arg as { hand?: number }).hand! | 0) : 0;   // dualies alternate hands: { hand: 0|1 }
         if (this.dual && hand === 1) { tr[T_SHOOTL] = 0; this._recoil(1, 1); sp[S_GRIPL + 1] += 2.2; } else { tr[T_SHOOT] = 0; this._recoil(1, 0); sp[S_GRIP + 1] += 2.2; if (!this.dual) sp[S_GRIPL + 1] += 1.2; }
         this.lastShot = 0;
         break;
@@ -1163,23 +1499,23 @@ export class Character {
       case 'dodge': {
         // dualies roll: arg { x, z, t } = unit roll direction in root space (+z forward, +x = the character's left), duration
         let x = 0, z = 1, d = 0.3;
-        if (arg && typeof arg === 'object') { x = +arg.x || 0; z = +arg.z || 0; d = clamp(+arg.t || 0.3, 0.15, 0.8); }
+        if (o) { x = +o.x! || 0; z = +o.z! || 0; d = clamp(+o.t! || 0.3, 0.15, 0.8); }
         const l = Math.hypot(x, z); if (l > 1e-4) { x /= l; z /= l; } else { x = 0; z = 1; }
         tr[T_DODGE] = 0; this.dodgeX = x; this.dodgeZ = z; this.dodgeDur = d; this.lockW = Math.max(this.lockW, 0.001);
         sp[S_SQ + 1] -= 1.6; sp[S_TANKL + 1] += 1.5; this._hairKick(-x * 2, 1.2, -z * 2);
         break;
       }
       // roller-family flick / bucket heave / brush swipe (arg = swipe side ±1, alternating)
-      case 'flick': tr[T_FLICK] = 0; this.lastShot = 0; if (arg) this.swipeSide = arg; sp[S_GRIP + 1] += 3; sp[S_GRIPL + 1] += 3; break;
+      case 'flick': tr[T_FLICK] = 0; this.lastShot = 0; if (arg) this.swipeSide = arg as number; sp[S_GRIP + 1] += 3; sp[S_GRIPL + 1] += 3; break;
       // Brine Cutlass (kits/blade.js): a quick cut (arg = side ±1, +1 sweeps right → left) / the charged overhead cut
-      case 'blade_slash': this.blT = 0; this.blSide = arg || 1; this.blHeavy = false; this.lastShot = 0; sp[S_GRIP + 1] += 2.4; break;
+      case 'blade_slash': this.blT = 0; this.blSide = (arg as number) || 1; this.blHeavy = false; this.lastShot = 0; sp[S_GRIP + 1] += 2.4; break;
       case 'blade_heavy': this.blT = 0; this.blHeavy = true; this.lastShot = 0; sp[S_SQ + 1] -= 1.2; sp[S_GRIP + 1] += 3.2; break;
       case 'stream': this.lastShot = 0; break;   // spinner burst in progress: keep the aim pose and the barrels spinning
       // twins dodge roll: arg = world-space unit direction (Vector3); one forward tumble of this.model (see _updateDodge)
-      case 'roll': this.dodge = { t: 0, dir: (this.dodge?.dir || new THREE.Vector3()).copy(arg || _fwdZ), dur: (arg && arg.dur) || 0.3 }; break;
+      case 'roll': this.dodge = { t: 0, dir: (this.dodge?.dir || new THREE.Vector3()).copy((arg as THREE.Vector3) || _fwdZ), dur: (arg && (arg as { dur?: number }).dur) || 0.3 }; break;
       case 'throw': tr[T_THROW] = 0; this.bombHeld = false; break;
       case 'land': {
-        const a = clamp(((arg ?? 8) - 2.5) / 13, 0.12, 1);
+        const a = clamp((((arg as number) ?? 8) - 2.5) / 13, 0.12, 1);
         this.landAmp = tr[T_LAND] < 0.25 ? Math.max(this.landAmp, a) : a; tr[T_LAND] = 0;
         sp[S_PELY + 1] -= 3.0 * a; sp[S_SQ + 1] -= 3.6 * a; sp[S_LEANP + 1] += 2.2 * a; sp[S_HEADP + 1] += 3.5 * a;
         sp[S_ARML + 1] -= 4 * a; sp[S_ARMR + 1] -= 4 * a; sp[S_WPY + 1] -= 0.9 * a; sp[S_WRX + 1] += 4 * a; sp[S_TANKL + 1] -= 3 * a;
@@ -1200,7 +1536,7 @@ export class Character {
       case 'hit': {
         tr[T_HIT] = 0;
         let hx = 0, hz = 1, amp = 1;
-        if (arg && typeof arg === 'object') { hx = +arg.x || 0; hz = +arg.z || 0; const l = Math.hypot(hx, hz); if (l > 1e-4) { hx /= l; hz /= l; } else { hz = 1; } amp = clamp(arg.amount ?? arg.amp ?? 1, 0.3, 1.6); }
+        if (o) { hx = +o.x! || 0; hz = +o.z! || 0; const l = Math.hypot(hx, hz); if (l > 1e-4) { hx /= l; hz /= l; } else { hz = 1; } amp = clamp(o.amount ?? o.amp ?? 1, 0.3, 1.6); }
         else { hx = (this.rng() - 0.5) * 1.2; hz = 1; if (typeof arg === 'number') amp = clamp(arg, 0.3, 1.4); }
         this.hitX = hx; this.hitZ = hz; this.hitAmp = amp;
         this.hitAcc += amp;
@@ -1229,33 +1565,33 @@ export class Character {
     }
   }
 
-  setDance(name) {
+  setDance(name: string | null) {
     name = name || null;
     if (name === this.dance) return;
     if (this.dance && name) { this.prevDance = this.dance; this.prevDanceT = this.danceT; this.danceFade = 0; }
     this.dance = name; this.danceT = 0;
-    const nv = DANCE_VARIANTS[name] || 1;
+    const nv = DANCE_VARIANTS[name!] || 1;
     this.danceVar = (this.seed >>> 5) % nv;
     // the moment it lands: a burst of joy (win) / a sinking breath out (lose) on top of the dance's own face
     if (name === 'victory') { this._mxPlay(X_JOY, 0.7, 0.08, 0.5, 0.8, 0, E_BLUSH); this._blinkStart(1, false); }
     else if (name === 'defeat') { this._mxPlay(X_SIGH, 0.9, 0.3, 0.8, 1.2); this.sigh = 1; }
   }
 
-  setHurt(amount, enemyColor) {
+  setHurt(amount: number, enemyColor: THREE.ColorRepresentation | null) {
     this.hurt = clamp(amount || 0, 0, 1);
     if (enemyColor) this.enemyColor.set(enemyColor);
     const h = this.u.uHurt.value; h.set(this.enemyColor.r, this.enemyColor.g, this.enemyColor.b, this.hurt);
   }
 
-  setVisible(v) { this.visible = !!v; this.root.visible = this.visible; if (!this.visible) { this.feetValid = false; this.rootInit = false; } }
+  setVisible(v: boolean) { this.visible = !!v; this.root.visible = this.visible; if (!this.visible) { this.feetValid = false; this.rootInit = false; } }
 
-  getMuzzle(out) {
+  getMuzzle(out: THREE.Vector3) {
     if (this.form !== 'kid' || !this.weapon) return this.getHeadPosition(out);
     return this.weapon.muzzle.getWorldPosition(out);
   }
 
   /** World muzzle of one hand's weapon: hand 0 = the main (right) one, hand 1 = the left pistol when dual wielding. */
-  getMuzzleHand(out, hand = 0) {
+  getMuzzleHand(out: THREE.Vector3, hand = 0) {
     if (hand === 1 && this.form === 'kid' && this.weapon && this.weapon.left) return this.weapon.left.muzzle.getWorldPosition(out);
     return this.getMuzzle(out);
   }
@@ -1265,7 +1601,7 @@ export class Character {
 
   /** World-space muzzle of the full aim pose at `pitch` — where the gun is springing to when the trigger is pulled
    *  from the carry pose (weapons.js spawns the first shot of a burst there instead of at the hip). false if n/a. */
-  getAimMuzzle(out, pitch) {
+  getAimMuzzle(out: THREE.Vector3, pitch: number) {
     if (this.form !== 'kid' || !this.weapon || this.animKind === 'roller') return false;
     const a = this.hold.aim;
     const aimP = clamp(pitch ?? 0, -1.0, 1.15), aimPose = clamp(aimP, -0.8, 1.0);
@@ -1277,7 +1613,7 @@ export class Character {
   }
 
   /** World position of the head centre (for name tags, cameras). */
-  getHeadPosition(out) {
+  getHeadPosition(out: THREE.Vector3) {
     if (this.form !== 'kid') return this.squid.pivot.getWorldPosition(out);
     this.bones.head.updateWorldMatrix(true, false);
     return out.copy(HEAD_CTR).applyMatrix4(this.bones.head.matrixWorld);
@@ -1286,10 +1622,10 @@ export class Character {
   dispose() {
     LIVE.delete(this);
     this.root.parent?.remove(this.root);
-    for (const k of ['skin', 'cloth', 'hair', 'eye', 'fill', 'squid', 'squidGhost', 'glow']) this.mats[k].dispose();
+    for (const k of ['skin', 'cloth', 'hair', 'eye', 'fill', 'squid', 'squidGhost', 'glow'] as const) this.mats[k].dispose();
     for (const m of this._ownMats) m.dispose();
     for (const D of this.matsD) for (const k in D) D[k].dispose();
-    for (const k in this.weapons) for (let w = this.weapons[k]; w; w = w.left) { for (const m of w.lamps) m.dispose(); w.coil?.dispose(); }
+    for (const k in this.weapons) for (let w: WeaponInst | null = this.weapons[k]; w; w = w.left) { for (const m of w.lamps) m.dispose(); w.coil?.dispose(); }
     this.skeleton.dispose();
   }
 
@@ -1303,7 +1639,7 @@ export class Character {
   // ---------------------------------------------------------------------------------------------
   // internal event helpers
   // ---------------------------------------------------------------------------------------------
-  _recoil(k, hand = 0) {
+  _recoil(k: number, hand = 0) {
     const rc = this.hold.rc, sp = this.sp, w = TAU * rc.hz;
     if (hand === 1) {
       sp[S_RCP2 + 1] += rc.kick * w * 1.35 * k; sp[S_RCZ2 + 1] += rc.back * w * 1.35 * k;
@@ -1316,13 +1652,13 @@ export class Character {
     }
     sp[S_TANKX + 1] += (this.rng() - 0.5) * 0.4 * k; sp[S_TANKL + 1] -= 0.4 * k;
   }
-  _hairKick(x, y, z) { for (let i = 0; i < this.hv.length; i += 3) { this.hv[i] += z * 0.6 + x * 0.3; this.hv[i + 1] += x * 0.4; this.hv[i + 2] += y * 0.5 - x * 0.2; } }
+  _hairKick(x: number, y: number, z: number) { for (let i = 0; i < this.hv.length; i += 3) { this.hv[i] += z * 0.6 + x * 0.3; this.hv[i + 1] += x * 0.4; this.hv[i + 2] += y * 0.5 - x * 0.2; } }
   _blink(hard = false) { this._blinkStart(1, hard); }
 
   // ---------------------------------------------------------------------------------------------
   // Update
   // ---------------------------------------------------------------------------------------------
-  update(dt, s) {
+  update(dt: number, s?: CharAnimState | null) {
     dt = clamp(dt || 0, 0, 0.1);
     s = s || EMPTY_STATE;
     this._dt = dt;
@@ -1373,7 +1709,7 @@ export class Character {
   }
 
   // Root motion → world velocity/acceleration (+ kid-space versions), turn rate, ground distance while airborne.
-  _trackRoot(dt, s) {
+  _trackRoot(dt: number, s: CharAnimState) {
     const r = this.root.position;
     const yaw = this.root.rotation.y;
     if (!this.rootInit || r.distanceToSquared(this.rp) > 9) {
@@ -1424,7 +1760,7 @@ export class Character {
   }
 
   // Blend weights and slow state (aiming, rolling, air, exertion, tiredness, stance presets, hip twist).
-  _updateStates(dt, s) {
+  _updateStates(dt: number, s: CharAnimState) {
     const kid = this.kidForm, dance = this.dance, H = this.hold;
     const ch = s.charge ?? 0;
     let sub = s.subAim;
@@ -1518,7 +1854,7 @@ export class Character {
   //   squid → kid: the squid crouches, shoots up thin and pops; the kid springs out of it tall and thin (rising out of
   //                the ink when it was swimming), lands in a squash and wobbles to rest.
   // Rapid toggles start the new gesture where the current shapes are, so nothing ever pops.
-  _updateFormScales(dt) {
+  _updateFormScales(dt: number) {
     const toKid = this.form === 'kid', fromKid = this.formPrev === 'kid';
     const t = this.formT;
     let kU = toKid ? 1 : 0, kY = 1, kXZ = 1, sU = toKid ? 0 : 1, sY = 1, sXZ = 1, lift = 0;
@@ -1541,7 +1877,7 @@ export class Character {
   }
 
   /** A form change arriving mid-gesture: enter the new timeline at the point that matches what is on screen now. */
-  _formEnter(newForm) {
+  _formEnter(newForm: string) {
     const wasKidT = this.formT, prev = this.form;
     this.formPrev = prev; this.form = newForm; this.formT = 0; this.tr[T_FORM] = 0;
     if (wasKidT < 0.1) {
@@ -1553,7 +1889,7 @@ export class Character {
   // ---------------------------------------------------------------------------------------------
   // Stepping: world-locked plants, phase-driven gait, settle / catch-up steps
   // ---------------------------------------------------------------------------------------------
-  _ground(x, z, n) {
+  _ground(x: number, z: number | undefined, n: THREE.Vector3) {
     const ry = this.root.position.y;
     if (this.phys) {
       _gO.set(x, ry + 0.55, z);
@@ -1568,7 +1904,7 @@ export class Character {
   }
 
   /** Ideal standing plant (world) for a foot under the current body; returns the foot's world yaw. */
-  _idealFoot(f, out) {
+  _idealFoot(f: Foot, out: THREE.Vector3) {
     const st = this.stance, R = this.root.position;
     const kx = (f.side > 0 ? st[0] : st[3]) + this.stepOfsX, kz = (f.side > 0 ? st[1] : st[4]) + this.stepOfsZ;
     const c = Math.cos(this.yaw), sn = Math.sin(this.yaw);
@@ -1577,7 +1913,7 @@ export class Character {
   }
 
   /** Predicted gait landing (world) for a swing that touches down in tRem seconds. */
-  _gaitTarget(f, tRem, out) {
+  _gaitTarget(f: Foot, tRem: number, out: THREE.Vector3) {
     const R = this.root.position;
     const stHalf = (this.duty / this.cad) * 0.5;
     const yawP = this.yaw + this.yawRate * Math.min(tRem, 0.25) * 0.8;
@@ -1595,7 +1931,7 @@ export class Character {
     return hy + f.side * lerp(0.1, 0.04, this.runW);
   }
 
-  _liftOff(f, mode) {
+  _liftOff(f: Foot, mode: number) {
     f.planted = false; f.sw = true; f.mode = mode; f.su = 0;
     f.from.copy(f.pw); f.fromYaw = f.yaw; f.to.copy(f.pw); f.toYaw = f.yaw;
     const fwd = clamp(this.mdz * Math.cos(this.hipTwist) + this.mdx * Math.sin(this.hipTwist), -1, 1);
@@ -1605,7 +1941,7 @@ export class Character {
     f.dur = mode === M_CATCH ? 0.13 : (1 - this.duty) / this.cad;
   }
 
-  _touchDown(f, loud) {
+  _touchDown(f: Foot, loud: number) {
     f.pw.copy(f.to); f.n.copy(f.tn); f.yaw = f.toYaw;
     f.planted = true; f.sw = false; f.stU = 0; f.su = 0; f.stT = 0;
     // off-beat touchdown (first step, catch-up): re-sync the gait clock to this foot so the other one follows in rhythm
@@ -1620,7 +1956,7 @@ export class Character {
     }
   }
 
-  _startSettle(f, err) {
+  _startSettle(f: Foot, err: number) {
     f.planted = false; f.sw = true; f.mode = M_SETTLE; f.su = 0;
     f.from.copy(f.pw); f.fromYaw = f.yaw;
     f.toYaw = this._idealFoot(f, f.to); f.to.y = this._ground(f.to.x, f.to.z, f.tn);
@@ -1629,12 +1965,12 @@ export class Character {
     f.toe = 0.25; f.land = 0.12;
   }
 
-  _footErr(f) {
+  _footErr(f: Foot) {
     const yawI = this._idealFoot(f, _v6);
     return Math.hypot(f.pw.x - _v6.x, f.pw.z - _v6.z) + 0.11 * Math.abs(wrapA(f.yaw - yawI));
   }
 
-  _updateFeet(dt, s) {
+  _updateFeet(dt: number, s: CharAnimState) {
     const F = this.feet, R = this.root.position;
     const plantOK = this.kidForm && this.grounded && !this.dance && this.tr[T_LEAP] > 1.9 && this.tr[T_SLAM] > 1.4 && this.tr[T_DODGE] > this.dodgeDur * 0.86;
     // treadmill: the ground (and everything planted on it) slides back under a stationary root
@@ -1733,7 +2069,7 @@ export class Character {
   }
 
   /** Current world contact, yaw and pitch of a foot (planted or mid-swing). */
-  _footPose(f) {
+  _footPose(f: Foot) {
     if (f.planted || !f.sw) {
       f.cw.copy(f.pw); f.cyaw = f.yaw; f.cn.copy(f.n);
       if (this.moving) {
@@ -1760,7 +2096,7 @@ export class Character {
   // ---------------------------------------------------------------------------------------------
   // Pose construction (gameplay layers → P)
   // ---------------------------------------------------------------------------------------------
-  _buildPose(dt, s) {
+  _buildPose(dt: number, s: CharAnimState) {
     const P = this.P, sp = this.sp, H = this.hold, tr = this.tr;
     const t = this.t;
     poseNeutral(P);
@@ -1927,7 +2263,7 @@ export class Character {
   // Air: push-off stretch → knees tuck while rising (a running jump is a leap: the swing knee drives up, the push-off
   // leg trails) → floaty apex → the legs come through and reach for the ground while falling (arms up for balance,
   // windmilling on long falls). The takeoff speed and lead leg are captured by trigger('jump').
-  _poseAir(P, dt, air) {
+  _poseAir(P: Pose, dt: number, air: number) {
     const X = this.PX; X.set(P);
     const vy = this.vyS, jt = this.tr[T_JUMP];
     const up = sstep(-1.5, 4, vy);                                  // 1 rising … 0 falling
@@ -1979,7 +2315,7 @@ export class Character {
 
   // Weapon anchor (rest-torso kid space) blended over carry / aim / roll + follow weights, stance yaw, recoil, charge.
   // Kinds are data (HOLD): dual wield mirrors the anchor into the left fist; lock / spin / slosh are generic layers.
-  _poseWeapon(dt, s) {
+  _poseWeapon(dt: number, s: CharAnimState) {
     const P = this.P, H = this.hold, sp = this.sp, t = this.t;
     const aimP = clamp(s.aimPitch ?? 0, -1.0, 1.15);
     const aimPose = clamp(aimP, -0.8, 1.0);
@@ -2001,11 +2337,11 @@ export class Character {
     }
     // aim: rotate about the aim pivot with the camera pitch (the dualies' post-roll lock is a lower, wider variant)
     if (wAim > 0.001) {
-      const a = H.aim, lk = H.lock ? this.lockW : 0;
-      const ax = lerp(a.p[0], lk ? H.lock.p[0] : 0, lk), ay = lerp(a.p[1], lk ? H.lock.p[1] : 0, lk), az = lerp(a.p[2], lk ? H.lock.p[2] : 0, lk);
+      const a = H.aim, lk = H.lock ? this.lockW : 0, L0 = H.lock || a;   // (lk = 0이면 L0는 쓰이지 않는다)
+      const ax = lerp(a.p[0], lk ? L0.p[0] : 0, lk), ay = lerp(a.p[1], lk ? L0.p[1] : 0, lk), az = lerp(a.p[2], lk ? L0.p[2] : 0, lk);
       _v1.set(ax, ay, az).applyAxisAngle(XAX, -aimPose).add(AIM_PIVOT);
       lerpE(P, ANC, _v1.x, _v1.y, _v1.z, wAim);
-      lerpE(P, ANCR, a.r[0] - aimP, lerp(a.r[1], lk ? H.lock.r[1] : 0, lk), lerp(a.r[2], lk ? H.lock.r[2] : 0, lk), wAim);
+      lerpE(P, ANCR, a.r[0] - aimP, lerp(a.r[1], lk ? L0.r[1] : 0, lk), lerp(a.r[2], lk ? L0.r[2] : 0, lk), wAim);
       lerpE(P, POLER, H.poleR[0], H.poleR[1], H.poleR[2], wAim);
       lerpE(P, POLEL, H.poleL[0], H.poleL[1], H.poleL[2], wAim);
       P[AFOLR] = lerp(P[AFOLR], 0, wAim);
@@ -2131,23 +2467,23 @@ export class Character {
 
   // Moving weapon parts are owned by the arsenal stream: animateWeapon(w, st) (character-weapons.js) runs once per held
   // instance per frame with one reused state object. Near/far LOD by camera distance (far = merged static weapon).
-  _animWeapon(dt, s, w) {
+  _animWeapon(dt: number, s: CharAnimState, w: WeaponInst) {
     let near = true;
     if (this.inWorld && !this.isLocal && G.camera) near = G.camera.position.distanceToSquared(this.root.position) < 15 * 15;
     // a far-tier kid holds the merged weapon, decimated like the body (a 4–6k-tri gun on a 60 px kid is all waste)
     const farT = this.lod.tier === T_FAR && this.lod.to < 0;
     if (farT) near = false;
-    for (let x = w; x; x = x.left) {
+    for (let x: WeaponInst | null = w; x; x = x.left) {
       if (x.farDec === farT) continue;
       x.farDec = farT;
-      x.bodyFar.geometry = farT ? farGeometry(x.def.body, 700) : x.def.body; x.inkFar.geometry = farT ? farGeometry(x.def.ink, 300) : x.def.ink;
+      x.bodyFar.geometry = farT ? farGeometry(x.def.body!, 700) : x.def.body!; x.inkFar.geometry = farT ? farGeometry(x.def.ink!, 300) : x.def.ink!;
     }
     const st = this._wst;
     st.t = this.t; st.dt = dt; st.color = this.color; st.near = near; st.hand = 0;
     st.runner = this._runner(s); st.sinceShoot = this.tr[T_SHOOT]; st.sinceFlick = this.tr[T_FLICK]; st.sinceRelease = this.lastRelease;
     st.charge = this.charge; st.full = this.fullT > 0; st.chargeFlash = this.chargeFlash; st.lowInk = this.wLow; st.firing = !!s.firing;
     st.rolling = this.wRoll; st.grounded = this.grounded; st.groundSpeed = this.gv;
-    st.worldQuat = w.def.kind === 'slosher' && near ? w.off.getWorldQuaternion(this._wq) : null;
+    st.worldQuat = w.def.kind === 'slosher' && near ? w.off.getWorldQuaternion(this._wq) : undefined;
     animateWeapon(w, st);
     if (w.left) {
       st.hand = 1; st.sinceShoot = this.tr[T_SHOOTL];
@@ -2156,14 +2492,14 @@ export class Character {
   }
 
   /** The actor's WeaponRunner (read-only: charging / streaming / dodge / lockT …); labs may pass s.runner. */
-  _runner(s) {
+  _runner(s: CharAnimState | null | undefined) {
     if (s && s.runner !== undefined) return s.runner;
     const a = this._owner();
     return a ? a.weaponRunner || null : null;
   }
 
   // Roller flick: coiled windup over the shoulder → whip (release at the weapon's windup time) → follow-through.
-  _poseFlick(P, ft) {
+  _poseFlick(P: Pose, ft: number) {
     const X = this.PX; X.set(P);
     const kUp = ease(ft / 0.15);                 // coil
     const kWhip = ease((ft - 0.15) / 0.08);      // whip through release (~0.22 s)
@@ -2188,7 +2524,7 @@ export class Character {
 
   // Bucket (trigger 'flick'): two-handed underarm throw — dip and swing the pail back beside the hip, heave it forward
   // and up so the mouth tips out (ink leaves at ~0.12 s), follow through, settle back into the hold.
-  _poseBucket(P, ft) {
+  _poseBucket(P: Pose, ft: number) {
     const X = this.PX; X.set(P);
     const kBack = ease(ft / 0.11);
     const kFwd = ease((ft - 0.09) / 0.1);
@@ -2211,7 +2547,7 @@ export class Character {
   }
 
   // Brush: a quick sideways swipe low across the body (alternating direction), torso twisting with the sweep.
-  _poseSwipe(P, ft) {
+  _poseSwipe(P: Pose, ft: number) {
     const X = this.PX; X.set(P);
     const sd = this.swipeSide || 1;
     const k = ease(ft / 0.13);
@@ -2233,7 +2569,7 @@ export class Character {
   // with it; follow-through, then back to the guard. Charging (runner charge > 0): the blade rises over the right
   // shoulder, cocked back, the body coiling as it fills (a tremble at full). Charged cut ('blade_heavy'): the blade
   // whips over and down in front, the kid lunging into it, then recovers.
-  _poseBlade(P, dt, s) {
+  _poseBlade(P: Pose, dt: number, s: CharAnimState) {
     this.blT = (this.blT ?? 99) + dt;
     const bt = this.blT, sd = this.blSide || 1, heavy = !!this.blHeavy;
     const ch = clamp(s.charge ?? 0, 0, 1);
@@ -2292,7 +2628,7 @@ export class Character {
   // Heavy landing (falls from height): the springs give the squash; this adds the absorb — a deep squat with the chest
   // folding over the knees, the free arm flung down and out (a hand to the deck on the biggest drops), head dipping,
   // then a push back up. Scaled by the impact; small hops only get the springs.
-  _poseLand(P, lt) {
+  _poseLand(P: Pose, lt: number) {
     const a = this.landAmp, X = this.PX; X.set(P);
     const k = win(lt, 0, 0.035, 0.07 + 0.13 * a, 0.3 + 0.38 * a) * sstep(0.3, 0.75, a);
     if (k <= 0.001) return;
@@ -2311,7 +2647,7 @@ export class Character {
 
   // Locker one-shots: 'admire' (glance down at the new outfit, tug the tee hem, a satisfied nod), 'hairflip' (a head
   // toss that flings the tentacles, the free hand brushing past), 'wink' (tilt, wink, grin).
-  _poseLocker(P) {
+  _poseLocker(P: Pose) {
     const tr = this.tr, X = this.PX; X.set(P);
     let w = 0;
     if (tr[T_ADMIRE] < 1.6) {
@@ -2344,7 +2680,7 @@ export class Character {
 
   // Kid-side acting for the transform: diving in, a dip with the free arm thrown up (like diving into water); springing
   // out, the free arm flings up and out, ears perk, a quick grin — the kid arrives with a flourish, not a fade.
-  _poseForm(P) {
+  _poseForm(P: Pose) {
     const t = this.formT;
     if (this.form !== 'kid' && this.formPrev === 'kid') {
       if (t > 0.1) return;
@@ -2369,7 +2705,7 @@ export class Character {
   // Slosher heave (trigger 'slosh' at the start of the windup; the ink leaves at +0.13 s): dip the bucket back and low,
   // a big upward-forward heave that turns the open top to the target over the lip, follow-through, settle by ~0.6 s.
   // The support hand lets go of the carry bar for the throw and swings back for balance.
-  _poseSlosh(P, st) {
+  _poseSlosh(P: Pose, st: number) {
     const X = this.PX; X.set(P);
     const dx = kc(st, K_SL_T, K_SL_X), dy = kc(st, K_SL_T, K_SL_Y), dz = kc(st, K_SL_T, K_SL_Z);
     const rp = kc(st, K_SL_T, K_SL_P), ry = kc(st, K_SL_T, K_SL_W);
@@ -2397,7 +2733,7 @@ export class Character {
   // Dualies dodge roll (trigger 'dodge' { x, z, t }; root motion comes from the engine): squash → tucked roll over the
   // shoulder along the roll direction, pistols hugged to the chest → unfurl with the feet landing wide, straight into
   // the lock stance. The tumble itself is a kid-group rotation (this.tumble about this.tumbleX/Z) applied in _applyPose.
-  _poseDodge(P, tt) {
+  _poseDodge(P: Pose, tt: number) {
     const X = this.PX; X.set(P);
     const D = this.dodgeDur, u = clamp(tt / D, 0, 1);
     const tuck = win(u, 0, 0.1, 0.62, 0.96), out = sstep(0.6, 1, u);
@@ -2425,7 +2761,7 @@ export class Character {
   }
 
   // Bomb / storm throw with the free (left) arm: cocked → whip → follow-through (the projectile leaves at t≈0).
-  _poseThrow(P, tt) {
+  _poseThrow(P: Pose, tt: number) {
     const X = this.PX; X.set(P);
     const w = win(tt, 0, 0.03, 0.4, 0.62);
     const cock = 1 - ease(tt / 0.06), whip = ease(tt / 0.1) * (1 - ease((tt - 0.1) / 0.16)), fol = ease((tt - 0.08) / 0.14);
@@ -2442,7 +2778,7 @@ export class Character {
   }
 
   // Holding the splat bomb up behind the head (free arm cocked, chest turned), ready to throw.
-  _poseSubAim(P, w) {
+  _poseSubAim(P: Pose, w: number) {
     const X = this.PX; X.set(P);
     X[IKL] = 0; X[LTW] = 0;
     X[UARML] = -2.55; X[UARML + 2] = 0.48; X[FARML] = -1.85; X[HANDL] = 0.2;
@@ -2454,7 +2790,7 @@ export class Character {
   }
 
   // Respawn drop: superhero dive → three-point landing → pop up.
-  _poseSpawn(P, st) {
+  _poseSpawn(P: Pose, st: number) {
     const X = this.PX; X.set(P);
     const landed = this.tr[T_LAND] < st; // landed during this spawn
     const lt = landed ? this.tr[T_LAND] : -1;
@@ -2488,7 +2824,7 @@ export class Character {
   }
 
   // Tidal Slam: crouch → launch stretch → forward somersault → overhead hang (engine: rise 0.55 s, hang 0.25 s).
-  _poseLeap(P, lt) {
+  _poseLeap(P: Pose, lt: number) {
     const X = this.PX; X.set(P);
     const launch = win(lt, 0, 0.04, 0.12, 0.24);
     const tuck = win(lt, 0.12, 0.26, 0.42, 0.56);
@@ -2525,7 +2861,7 @@ export class Character {
   }
 
   // Slam: whip the weapon down while diving, then a crouched impact with the weapon smashed into the ground.
-  _poseSlam(P, st) {
+  _poseSlam(P: Pose, st: number) {
     const X = this.PX; X.set(P);
     if (!this.slamGround && this.grounded && st > 0.02) { this.slamGround = true; this.tr[T_IMPACT] = 0; this.sp[S_SQ + 1] -= 3.2; this.sp[S_PELY + 1] -= 0.8; this._hairKick(0, -3, 0); }
     const it = this.slamGround ? this.tr[T_IMPACT] : -1;
@@ -2560,8 +2896,8 @@ export class Character {
   //    the way down; landing: a crouched double-glove smash into the ground
   //  · wall cling: the left glove stuck flat on the wall beside the shoulder, feet against the wall with the knees up,
   //    the body hugging in; the right glove keeps its guard and punches
-  _poseMitts(P, dt, s) {
-    const R = this._runner(s), K = R && R.kit && R.kit.mitts ? R.kit : null, tr = this.tr, t = this.t;
+  _poseMitts(P: Pose, dt: number, s: CharAnimState) {
+    const R = this._runner(s), kit = R && (R.kit as MittsKitView | null | undefined), K = kit && kit.mitts ? kit : null, tr = this.tr, t = this.t;
     const kid = this.kidForm && !this.dance;
     // ---- punches
     const eR = kid ? mitPunch(tr[T_SHOOT]) : 0, eL = kid ? mitPunch(tr[T_SHOOTL]) : 0;
@@ -2654,7 +2990,7 @@ export class Character {
   }
 
   // Idle fidgets (hand-keyed-style one-offs while standing around).
-  _poseFidget(P, id, ft) {
+  _poseFidget(P: Pose, id: number, ft: number) {
     const X = this.PX; X.set(P);
     const L = FIDGET_LEN[id];
     const w = win(ft, 0, 0.22, L - 0.28, L);
@@ -2741,7 +3077,7 @@ export class Character {
   // yaw/pitch targets for the stabilised head (springs: the eyes lead, the head follows with a slight overshoot).
   // In a match: the aim / nearby actors (enemies first) / the attacker right after a hit / into turns and the travel
   // direction / idle glances. Out of one (showcase, locker, lobby, podium): see _attendMenu.
-  _poseLook(dt, s) {
+  _poseLook(dt: number, s: CharAnimState) {
     const P = this.P, sp = this.sp, A = this.att;
     let ty = 0, tp = 0;
     if (!this.inWorld) {
@@ -2801,7 +3137,7 @@ export class Character {
   // Out of a match the kid mostly looks at the viewer (the camera it is drawn with), with glances at a neighbour (a
   // kid sharing its parent within 4 m: lobby line-up, podium) and idle glances away. Dances bias it (victory: the
   // viewer; defeat: mostly away). A glance applied by the showcase (it turns the head after our update) takes over.
-  _attendMenu(dt) {
+  _attendMenu(dt: number) {
     const A = this.att;
     A.t -= dt;
     if (A.t <= 0) {
@@ -2843,7 +3179,7 @@ export class Character {
 
   // Post-dance life layer (runs after every pose layer incl. dances, so menus get it too): micro-expression impulses +
   // idle flickers, the menu head turn toward the attention target, pupils.
-  _lifePost(dt) {
+  _lifePost(dt: number) {
     const P = this.P, sp = this.sp, A = this.att;
     if (this.lifeLv === 0) return;
     this._breathe(P);
@@ -2885,7 +3221,7 @@ export class Character {
   // Breathing: inhale (~40 %) → exhale (~45 %) → a short pause; each breath a little different in depth and length; now
   // and then a deep sigh when idle. The rib cage lifts and opens (chest extends, shoulders ride up, arms float out a
   // hair), the head counters so it stays level. Rate + depth follow exertion / tiredness (brPh in _updateStates).
-  _breathe(P) {
+  _breathe(P: Pose) {
     const bu = frac(this.brPh), bn = Math.floor(this.brPh);
     if (bn !== this.brN) {
       this.brN = bn; this.brAmp = 0.8 + 0.4 * this.rng(); this.brRate = 0.88 + 0.24 * this.rng();
@@ -2912,12 +3248,12 @@ export class Character {
 
   /** Start a micro-expression impulse: X = expression vector, w = weight (negative flips MTILT: the other side),
    *  a/h/d = attack/hold/decay (s), bras = brow asymmetry (+ left brow up). Reuses the weakest of 6 slots. */
-  _mxPlay(X, w, a = 0.1, h = 0.2, d = 0.4, bras = 0, E = null) {
+  _mxPlay(X: number[], w: number, a = 0.1, h = 0.2, d = 0.4, bras = 0, E: number[] | null = null) {
     let best = this.mx[0], bw = Infinity;
     for (const m of this.mx) { const r = m.t > m.a + m.h + m.d ? -1 : m.w * m.w; if (r < bw) { bw = r; best = m; } }
     best.X = X; best.w = w; best.t = 0; best.a = a; best.h = h; best.d = d; best.bras = bras; best.E = E;
   }
-  _mxTick(P, dt) {
+  _mxTick(P: Pose, dt: number) {
     for (const m of this.mx) {
       if (!m.X) continue;
       m.t += dt;
@@ -2966,7 +3302,7 @@ export class Character {
   // (≈150 ms); the right lid trails by a few ms; some are partial; ~14 % come as doubles. Spontaneous intervals are
   // skewed-random around a state mean (focus/aim/charging suppress, exertion/tiredness raise); saccades, hits and hard
   // landings trigger their own (_blinkStart).
-  _blinkTick(dt) {
+  _blinkTick(dt: number) {
     const b = this.bl;
     b.next -= dt;
     // a big fast head / body turn (camera flick, snap turn) takes a blink with it, at most one per second
@@ -3005,7 +3341,7 @@ export class Character {
   }
 
   // Facial animation: expression mixing from state (gameplay), mouth breathing.
-  _poseFace(dt, s) {
+  _poseFace(dt: number, s: CharAnimState) {
     const P = this.P, tr = this.tr;
     if (this.lifeLv === 0) { this._effort = 0; this.blinkL = this.blinkR = this.blinkK = 0; return; }
     this._blinkTick(dt);
@@ -3040,7 +3376,7 @@ export class Character {
   // ---------------------------------------------------------------------------------------------
   // Dances / showcase poses (kid-space feet; variants picked per character)
   // ---------------------------------------------------------------------------------------------
-  _poseDance(D, name, t, dt) {
+  _poseDance(D: Pose, name: string, t: number, dt: number) {
     D[WPL] = 0; D[WPR] = 0; D[STAB] = 0; D[AFOLT] = 0; D[AFOLR] = 0;
     if (name === 'victory') {
       if (this.danceVar === 0) this._dVictoryPump(D, t);
@@ -3060,7 +3396,7 @@ export class Character {
   }
 
   // Victory A: bouncing fist pumps → hop-spin → hero pose + wink (8 beats @ 126 bpm)
-  _dVictoryPump(D, t) {
+  _dVictoryPump(D: Pose, t: number) {
     const H = this.hold;
     const b = (t * 2.1) % 8, bf = frac(b);
     const pump = Math.pow(Math.abs(Math.sin(Math.PI * b)), 0.6);
@@ -3103,7 +3439,7 @@ export class Character {
   }
 
   // Victory B: anticipation dip → weapon twirl overhead on tiptoe → point it at the camera, hand on hip, wink
-  _dVictoryFlourish(D, t) {
+  _dVictoryFlourish(D: Pose, t: number) {
     const H = this.hold;
     const c = t % 4.6;
     const dip = win(c, 0, 0.3, 0.42, 0.62), rise = win(c, 0.45, 0.7, 1.4, 1.7), strike = win(c, 1.45, 1.62, 3.9, 4.45);
@@ -3116,7 +3452,7 @@ export class Character {
     setAnc(D, H.carry);
     lerpE(D, ANC, -0.16, 0.8, -0.02, dip); lerpE(D, ANCR, 0.9, 0.3, 0.2, dip);
     lerpE(D, ANC, -0.15, 1.36, 0.06, rise); lerpE(D, ANCR, -1.6, 0.2, 0, rise);
-    D[SPIN] = wrapA(TAU * 2 * ease((c - 0.55) / 0.85)) * (NO_TWIRL[this.animKind] ? 0 : 1);
+    D[SPIN] = wrapA(TAU * 2 * ease((c - 0.55) / 0.85)) * (NO_TWIRL[this.animKind!] ? 0 : 1);
     lerpE(D, ANC, -0.1, 1.02, 0.32, strike); lerpE(D, ANCR, -0.12, -0.05, 0.25, strike);
     D[IKL] = 0; D[POLER] = -0.9; D[POLER + 1] = 0.05; D[POLER + 2] = -0.3;
     // free hand: up with the twirl, then on the hip
@@ -3131,7 +3467,7 @@ export class Character {
   }
 
   // Victory C: side-to-side happy hops with alternating arm waves → big V jump (8 beats @ 150 bpm)
-  _dVictoryHops(D, t) {
+  _dVictoryHops(D: Pose, t: number) {
     const H = this.hold;
     const b = (t * 2.5) % 8, bf = frac(b), bi = Math.floor(b);
     const sd = bi % 2 ? -1 : 1;
@@ -3166,7 +3502,7 @@ export class Character {
   }
 
   // Defeat A: slumped sway, big sigh, head drop
-  _dDefeatSlump(D, t) {
+  _dDefeatSlump(D: Pose, t: number) {
     const H = this.hold;
     const cyc = t % 6;
     const sw = Math.sin(t * TAU * 0.28);
@@ -3186,7 +3522,7 @@ export class Character {
   }
 
   // Defeat B: two frustrated stomps → turn away, arms crossed, pouting, sneaking a glance back
-  _dDefeatSulk(D, t) {
+  _dDefeatSulk(D: Pose, t: number) {
     const c = t % 6.5;
     const st1 = win(c, 0.1, 0.25, 0.3, 0.42), st2 = win(c, 0.55, 0.7, 0.75, 0.87);
     const stomp = Math.max(st1, st2);
@@ -3212,7 +3548,7 @@ export class Character {
   }
 
   // Defeat C: droop, scuff the ground with a foot, sigh, sniff
-  _dDefeatKick(D, t) {
+  _dDefeatKick(D: Pose, t: number) {
     const c = t % 5.2;
     const k1 = win(c, 0.6, 0.85, 0.95, 1.2), k2 = win(c, 1.4, 1.65, 1.75, 2.05);
     const scuff = Math.max(k1, k2);
@@ -3230,7 +3566,7 @@ export class Character {
   }
 
   // Menu idle: relaxed weight shifts + fidgets + look-arounds (same systems as gameplay idle, feet in kid space)
-  _dMenuIdle(D, t) {
+  _dMenuIdle(D: Pose, t: number) {
     const H = this.hold;
     const cyc = t % 8;
     const w = Math.sin(t * TAU / 8);
@@ -3247,7 +3583,7 @@ export class Character {
     setAnc(D, H.carry);
     D[IKL] = H.twoCarry ? 1 : 0;
     const tw = cyc >= 6.1 && cyc < 7.1 ? (cyc - 6.1) / 1.0 : -1;
-    if (tw >= 0 && !NO_TWIRL[this.animKind]) {
+    if (tw >= 0 && !NO_TWIRL[this.animKind!]) {
       const k = ease(clamp(tw / 0.8, 0, 1));
       const lift = Math.sin(Math.PI * clamp(tw, 0, 1));
       D[SPIN] = wrapA(TAU * 2 * k); D[IKL] = 0;
@@ -3262,7 +3598,7 @@ export class Character {
   }
 
   // Locker: relaxed hand-on-hip weight shifts, looking at the camera (the viewer), a head tilt now and then
-  _dLocker(D, t) {
+  _dLocker(D: Pose, t: number) {
     const H = this.hold;
     const w = Math.sin(t * TAU / 6.5), br = 0, cyc = t % 9;   // breathing: _breathe
     setE(D, FOOTL, 0.12, ANKLE_H, 0.02); setE(D, FOOTR, -0.115, ANKLE_H, -0.02); D[FOOTLR + 1] = 0.26; D[FOOTRR + 1] = -0.24;
@@ -3281,7 +3617,7 @@ export class Character {
   }
 
   // Loadout / lobby: confident weapon-presenting stance with breathing and a periodic flourish
-  _dLobby(D, t) {
+  _dLobby(D: Pose, t: number) {
     const H = this.hold;
     const br = 0;   // breathing: _breathe
     const cyc = t % 7;
@@ -3310,7 +3646,7 @@ export class Character {
   // ---------------------------------------------------------------------------------------------
   // Pose application: kid transform → pelvis reach → torso FK → head → leg IK → arm IK → face → hair → tank
   // ---------------------------------------------------------------------------------------------
-  _applyPose(dt, s) {
+  _applyPose(dt: number, s: CharAnimState) {
     const P = this.P, B = this.bones, R = this.root.position, sp = this.sp;
     // ---- hand-held splat bomb: appears (pop) when the sub is aimed, leaves the hand on 'throw'
     if (this.bomb) {
@@ -3466,8 +3802,8 @@ export class Character {
     // recoil: kick back along the barrel + muzzle climb + jitter
     _v1.set(0, 0, -this.rcZ).applyQuaternion(_aQ); _aP.add(_v1);
     _e1.set(-this.rcP, sp[S_RCY], sp[S_RCR], 'YXZ'); _q2.setFromEuler(_e1); _aQ.multiply(_q2);
-    _q2.copy(_aQ).multiply(d.handR.quat);
-    _pT.copy(d.handR.pos).applyQuaternion(_aQ).add(_aP);
+    _q2.copy(_aQ).multiply(d.handR!.quat);
+    _pT.copy(d.handR!.pos).applyQuaternion(_aQ).add(_aP);
     _pN.set(P[POLER], P[POLER + 1], P[POLER + 2]);
     if (P[IKR] > 0.001) this._solveLimb(this.limbs.armR, _pT, _pN, _q2, P[IKR], 1);
     w.pivot.rotation.set(P[SPIN], 0, 0);
@@ -3486,25 +3822,25 @@ export class Character {
       _e1.set(rx * swW, ry * swW, 0, 'YXZ'); _q2.setFromEuler(_e1); _aQ.premultiply(_q2);
       _v1.set(0, 0, -this.rcZ2).applyQuaternion(_aQ); _aP.add(_v1);
       _e1.set(-this.rcP2, -sp[S_RCY2], 0, 'YXZ'); _q2.setFromEuler(_e1); _aQ.multiply(_q2);
-      _q2.copy(_aQ).multiply(d.handL.quat);
-      _pT.copy(d.handL.pos).applyQuaternion(_aQ).add(_aP);
+      _q2.copy(_aQ).multiply(d.handL!.quat);
+      _pT.copy(d.handL!.pos).applyQuaternion(_aQ).add(_aP);
       if (P[LTW] > 0.001) _pT.lerp(_v6.set(P[LTGT], P[LTGT + 1], P[LTGT + 2]), P[LTW]);
       _pN.set(P[POLEL], P[POLEL + 1], P[POLEL + 2]);
       const wgt = clamp(Math.max(P[IKL], P[LTW]), 0, 1) * (1 - this.bombSwap);
       if (wgt > 0.001) this._solveLimb(this.limbs.armL, _pT, _pN, P[LTW] > 0.5 ? null : _q2, wgt, 0);
-      wl.pivot.rotation.set(-P[SPIN], 0, 0);
+      wl!.pivot.rotation.set(-P[SPIN], 0, 0);
       // the splat bomb needs the left fist: the pistol shrinks away while it is held and pops back after the throw
       const k = 1 - this.bombSwap;
-      wl.pivot.scale.setScalar(Math.max(0.001, k < 1 ? backOut(k, 2) : 1));
-      wl.pivot.visible = k > 0.01 && !this.weaponHidden;
+      wl!.pivot.scale.setScalar(Math.max(0.001, k < 1 ? backOut(k, 2) : 1));
+      wl!.pivot.visible = k > 0.01 && !this.weaponHidden;
     } else if (P[IKL] > 0.001 || P[LTW] > 0.001) {
       // left arm → foregrip, an explicit target (hip / visor / tank), or free FK
       this._kidXform(B.handR, _v3, _q3);
       _v4.copy(w.pivot.position).applyQuaternion(_q3).add(_v3); _q4.copy(_q3).multiply(w.pivot.quaternion);
       _v5.copy(w.off.position).applyQuaternion(_q4).add(_v4); _q5.copy(_q4).multiply(w.off.quaternion);
-      _pT.copy(d.handL.pos); if (w.pump) _pT.z -= 0.036 * w.pump;   // blaster: the support hand racks the pump
+      _pT.copy(d.handL!.pos); if (w.pump) _pT.z -= 0.036 * w.pump;   // blaster: the support hand racks the pump
       _pT.applyQuaternion(_q5).add(_v5);
-      _q2.copy(_q5).multiply(d.handL.quat);
+      _q2.copy(_q5).multiply(d.handL!.quat);
       if (P[LTW] > 0.001) {
         _pT.lerp(_v6.set(P[LTGT], P[LTGT + 1], P[LTGT + 2]), P[LTW]);
         const wgt = Math.max(P[IKL], P[LTW]);
@@ -3565,7 +3901,7 @@ export class Character {
   // Gaze: eye yaw/pitch in head space. Big changes of the wanted direction fire a saccade (minimum-jerk, main-sequence
   // duration ≈ 22 ms + 100 ms/rad, big ones undershoot and land with a correction, may trigger a blink); small ones are
   // tracked at once (the eyes stay locked on target while the head moves — VOR) with fixation micro-saccades on top.
-  _gazeTick(dt, dx, dy) {
+  _gazeTick(dt: number, dx: number, dy: number) {
     const g = this.gz;
     dx = clamp(dx, -0.62, 0.62); dy = clamp(dy, -0.42, 0.38);
     if (g.st >= 0) {
@@ -3589,7 +3925,7 @@ export class Character {
     g.x = damp(g.x, g.fx + g.mx, 45, dt); g.y = damp(g.y, g.fy + g.my, 45, dt);
   }
 
-  _applyFace(P, dt) {
+  _applyFace(P: Pose, dt: number) {
     const B = this.bones, F = this.face, A = this.att;
     // ---- gaze: exact eye-in-head direction to the attention point (real head orientation: dances, lobby turns)
     let ex = P[LOOKX] / 0.9, ey = (P[LOOKY] - 0.02) / 0.8;
@@ -3651,7 +3987,7 @@ export class Character {
       const pout = clamp((-mc - 1.2) / 0.4, 0, 1);
       const puff = clamp(Math.max(smile, pout * 0.85) + 0.3 * sqz, 0, 1);
       for (let c = 0; c < 2; c++) {
-        const b = c === 0 ? xb.cheekL : xb.cheekR, r = this.cheekRest[c]; if (!b) continue;
+        const b = c === 0 ? xb.cheekL : xb.cheekR, r = this.cheekRest[c]; if (!b || !r) continue;   // (뼈가 있으면 휴지 위치도 있다)
         b.position.set(r.x, r.y + 0.0035 * smile + 0.001 * pout, r.z); b.scale.setScalar(1 + 0.06 * puff);
       }
     }
@@ -3659,7 +3995,7 @@ export class Character {
     if (xb.lidR) xb.lidR.rotation.x = (1 - openR) * 1.2;
   }
 
-  _applyJiggle(P, dt) {
+  _applyJiggle(P: Pose, dt: number) {
     const xb = this.xb, sp = this.sp;
     // toes stay flat on the ground while the heel peels up (planted feet; posed feet only when they touch the ground)
     for (let i = 0; i < 2; i++) {
@@ -3708,7 +4044,7 @@ export class Character {
 
   // Articulated hands (docs/RIG.md → Fingers). h: −1 fist · 0 grip (rest) · 1 relaxed · 2 open. Curl is about local Z
   // (left + opens, right mirrored); spread about local X (same sign both sides). A gripped weapon or the bomb forces 0.
-  _applyFingers(P, dt) {
+  _applyFingers(P: Pose, dt: number) {
     const bombOn = this.bomb && this.bomb.group.visible, sp = this.sp;
     const gL = Math.max(clamp(P[IKL], 0, 1) * (1 - clamp(P[LTW], 0, 1)), bombOn ? 1 : 0);
     // micro-grip: fingers squeeze on every shot / hit and settle back (spring); an idle re-grip now and then (the
@@ -3741,7 +4077,7 @@ export class Character {
     }
   }
 
-  _updateTank(dt) {
+  _updateTank(dt: number) {
     const sp = this.sp, T = this.tank;
     // slosh driven by body acceleration (kid space), lagging and ringing like a liquid
     const tx = spr(sp, S_TANKX, clamp(this.kax * 0.004, -0.1, 0.1), 1.6, 0.14, dt);
@@ -3756,18 +4092,18 @@ export class Character {
   }
 
   /** kid-space transform of a bone (walks up to this.kid; ignores bone scale). */
-  _kidXform(bone, pos, quat) {
+  _kidXform(bone: THREE.Bone, pos: THREE.Vector3, quat: THREE.Quaternion) {
     pos.set(0, 0, 0); quat.identity();
-    let o = bone;
+    let o: THREE.Object3D | null = bone;
     while (o && o !== this.kid) { pos.applyQuaternion(o.quaternion).add(o.position); quat.premultiply(o.quaternion); o = o.parent; }
     return pos;
   }
 
   /** Analytic two-bone IK in kid space. target = end-bone origin, pole = bend direction, endQuat = kid-space end orientation. */
-  _solveLimb(L, target, pole, endQuat, weight, errSlot) {
+  _solveLimb(L: Limb, target: THREE.Vector3, pole: THREE.Vector3, endQuat: THREE.Quaternion | null, weight: number, errSlot: number) {
     if (endQuat) _sEnd.copy(endQuat);
     _sT.copy(target); _sPole.copy(pole);
-    this._kidXform(L.up.parent, _sP, _sQp);
+    this._kidXform(L.up.parent as THREE.Bone, _sP, _sQp);
     _pA.copy(L.up.position).applyQuaternion(_sQp).add(_sP);
     const a = L.a, b = L.b;
     _pD.subVectors(_sT, _pA);
@@ -3807,7 +4143,7 @@ export class Character {
   // Hair: per-strand spring chains driven by head inertia (linear + angular), drag and gravity; the "into the head"
   // component of every bend is removed so strands never swing through the skull.
   // ---------------------------------------------------------------------------------------------
-  _updateHair(dt) {
+  _updateHair(dt: number) {
     const B = this.bones;
     this.model.updateWorldMatrix(true, false);
     this.kid.updateMatrix(); this.kid.matrixWorld.multiplyMatrices(this.model.matrixWorld, this.kid.matrix);
@@ -3921,7 +4257,7 @@ export class Character {
   // ---------------------------------------------------------------------------------------------
   // Squid form: transform pops, dry hops with anticipation, dolphin arcs, swim undulation, climb wiggle, blinks.
   // ---------------------------------------------------------------------------------------------
-  _updateSquid(dt, s) {
+  _updateSquid(dt: number, s: CharAnimState) {
     const sq = this.squid, sp = this.sp;
     if (this.sqScale <= 0.001) { this.sqInit = false; return; }
     const form = this.form === 'kid' ? (this.formPrev === 'kid' ? 'squid' : this.formPrev) : this.form;
@@ -4025,7 +4361,7 @@ export class Character {
     if (!this.kidForm) this._squidBlink(dt);
   }
 
-  _squidBlink(dt) { this._blinkTick(dt); }
+  _squidBlink(dt: number) { this._blinkTick(dt); }
 
   /** Rim light inputs: in a match from the environment (sky horizon + sun colour, sun direction → view space); out of
    *  one the showcase lights its own stage, so the rim stays a faint neutral edge. CHAR_RIM scales it (0 = off). */
@@ -4049,7 +4385,7 @@ export class Character {
   }
 
   // ---------------------------------------------------------------------------------------------
-  _updateMaterials(dt, s) {
+  _updateMaterials(dt: number, s: CharAnimState) {
     const t = this.t; const u = this.u;
     this._updateRim();
     const fl = s.invuln ? 0.22 * (0.5 + 0.5 * Math.sin(t * TAU * 6)) : 0;
