@@ -9,7 +9,7 @@
 //             A tap (< ring 1) = short, weak arrows that just splat. Ring 1+ = the arrows LODGE where they land (or at
 //             a victim's feet on a direct hit), glow and tick, then burst after a short fuse. Full draw = full reach,
 //             top damage and a bigger burst. Centre + side direct hits, or a direct hit + its burst, splat.
-//   arrows    this module's own projectiles (not G.projectiles.list): fast with a light arc, the same flight model
+//   arrows    this module's own projectiles (not G.projectiles!.list): fast with a light arc, the same flight model
 //             Projectiles uses (straight phase → gravity) so its ballistic solver lands them on the crosshair; past
 //             their reach they nose down into the ground. Drawn as instanced meshes + additive streaks and glows.
 import * as THREE from 'three';
@@ -17,13 +17,19 @@ import { G, emit, clamp, lerp, angleDiff } from '../../core/ctx.js';
 import { WEAPONS, PLAYER } from '../../config.js';
 import { Physics, Hit } from '../physics.js';
 import { MAIN_KITS, netRec } from './registry.js';
+import type { BotFightCtx, BotPaintCtx } from './registry.js';
+import type { Actor } from '../actor.js';
+import type { WeaponRunner, WeaponInput } from '../weapons.js';
+import type { WeaponCfg } from '../../config.js';
+import type { BotBrain } from '../bots.js';
+import type { ColorIn } from '../../fx/fx.js';
 import { CHARGES, LONG } from '../bots.js';
 import './bow-model.js';
 import './bow-sfx.js';
 
 const W = WEAPONS.bow;
 const DEG = Math.PI / 180;
-const r2 = (x) => Math.round(x * 100) / 100, r3 = (x) => Math.round(x * 1000) / 1000;
+const r2 = (x: number) => Math.round(x * 100) / 100, r3 = (x: number) => Math.round(x * 1000) / 1000;
 const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0), ZAX = new THREE.Vector3(0, 0, 1);
 const MAX = 192;             // arrows alive at once (flying + lodged)
 const ARROW_R = 0.11;        // added to the victim's capsule radius (a thin shaft, a fair hitbox)
@@ -34,16 +40,20 @@ const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vecto
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _c = new THREE.Color();
 const _hit = new Hit(), _hit2 = new Hit(), _res = { t: 0, dist: 0 };
 
-function rumble(a, strong, weak, ms) { if (a && a.isLocal && !a.isBot) G.input?.rumble?.(strong, weak, ms); }
-function near(p, d) { const c = G.camera; return !!c && c.position.distanceToSquared(p) < d * d; }
-function credit(owner, area) { if (!(area > 0)) return; if (owner.specialActive) owner.addTurfNoSpecial(area); else owner.addTurf(area); }
-function kitOf(r) { return r.kit || (r.kit = { ring: 0, stall: 0, lastC: 0, botYaw: 0, botWant: 0, botJump: 0, botJumped: false, botPaint: 0 }); }
+function rumble(a: Actor, strong: number, weak: number, ms: number) { if (a && a.isLocal && !a.isBot) G.input?.rumble?.(strong, weak, ms); }
+function near(p: THREE.Vector3, d: number) { const c = G.camera; return !!c && c.position.distanceToSquared(p) < d * d; }
+function credit(owner: Actor, area: number) { if (!(area > 0)) return; if (owner.specialActive) owner.addTurfNoSpecial(area); else owner.addTurf(area); }
+/** 활 러너 상태(runner.kit): 고리 단계·당김 정체 시간·직전 당김, 마지막 갱신 시각, 봇의 부채 방향·목표 당김·점프 사격·칠하기 당김 */
+interface BowKit { ring: number; stall: number; lastC: number; seen?: number; botYaw: number; botWant: number; botJump: number; botJumped: boolean; botPaint: number }
+function kitOf(r: WeaponRunner): BowKit { return (r.kit as BowKit | null) || (r.kit = { ring: 0, stall: 0, lastC: 0, botYaw: 0, botWant: 0, botJump: 0, botJumped: false, botPaint: 0 } as BowKit); }
 
 // ---------------------------------------------------------------------------------------------- shot tiers
 // charge → { tier 0 tap | 1 ring | 2 full, range (straight flight before the dive), speed, damage (centre / side), fan
 // (deg), lodge + burst }
-const _shot = {};
-export function bowShot(c) {
+/** 당김 단계별 사격 값(재사용 객체) */
+interface BowShot { tier: number; range: number; speed: number; dmg: number; side: number; fan: number; lodge: boolean; fuse: number; br: number; bd: number; be: number; bp: number }
+const _shot = {} as BowShot;
+export function bowShot(c: number): BowShot {
   const S = _shot;
   if (c >= 0.999) {
     Object.assign(S, { tier: 2, range: W.flightFull, speed: W.speedFull, dmg: W.damageFull, side: W.sideFull, fan: W.fanFull, lodge: true,
@@ -61,18 +71,24 @@ export function bowShot(c) {
 }
 
 // ---------------------------------------------------------------------------------------------- arrows
-const arrows = [];            // live records (flying: st 0, lodged: st 1)
-const STATS = { grouped: 0 };   // bots' fan nudges toward a second foe (tests read it)
-const pool = [];
-function newArrow() {
-  return pool.pop() || { pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), dir: new THREE.Vector3(), fdir: new THREE.Vector3(),
-    hitP: new THREE.Vector3(), nrm: new THREE.Vector3() };
+/** 화살 기록(풀에서 재사용): 위치·이전 위치·속도·진행/비행 방향, 박힌 지점·면 법선, 사격 값과 상태 */
+interface Arrow extends Omit<BowShot, 'fan'> {
+  pos: THREE.Vector3; prev: THREE.Vector3; vel: THREE.Vector3; dir: THREE.Vector3; fdir: THREE.Vector3; hitP: THREE.Vector3; nrm: THREE.Vector3;
+  owner: Actor; team: number; st: number; age: number; dist: number; t: number; trail: number; seed: number; noHit: boolean; ticks: number;
+  spawnT: number; center: boolean; ghost: boolean;
 }
-function kill(i) { const p = arrows[i]; arrows[i] = arrows[arrows.length - 1]; arrows.pop(); p.owner = null; pool.push(p); }
+const arrows: Arrow[] = [];            // live records (flying: st 0, lodged: st 1)
+const STATS = { grouped: 0 };   // bots' fan nudges toward a second foe (tests read it)
+const pool: Arrow[] = [];
+function newArrow(): Arrow {
+  return pool.pop() || { pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), dir: new THREE.Vector3(), fdir: new THREE.Vector3(),
+    hitP: new THREE.Vector3(), nrm: new THREE.Vector3() } as Arrow;   // (나머지 필드는 volley가 채운다)
+}
+function kill(i: number) { const p = arrows[i]; arrows[i] = arrows[arrows.length - 1]; arrows.pop(); p.owner = null as unknown as Actor; pool.push(p); }   // (풀에서 쉬는 동안 주인을 놓는다)
 
 // Loose a volley from actor a at charge c (weapons-side: ink, sounds, pose are the runner's).
-export function looseVolley(a, c) {
-  const S = bowShot(c), P = G.projectiles;
+export function looseVolley(a: Actor, c: number) {
+  const S = bowShot(c), P = G.projectiles!;
   const m = P._muzzle(a, _v.set(0, 0, 0)).clone();
   const dir = P._aimFrom(a, m, _dir);
   P._ballistic(m, dir, a.aimPoint, S.speed, W.straight, W.grav, 0, S.range);
@@ -94,9 +110,9 @@ export function looseVolley(a, c) {
 
 // the three arrows of a volley from m along dir (the fan: about the vertical on the ground, about the aim's right axis
 // in the air). ghost: a remote player's volley (online) — the arrows fly, lodge and burst for the eye only
-function volley(a, S, m, dir, air, ghost = false) {
+function volley(a: Actor, S: BowShot, m: THREE.Vector3, dir: THREE.Vector3, air: boolean, ghost = false) {
   if (air) { _ax.crossVectors(dir, UP); if (_ax.lengthSq() < 1e-4) _ax.set(1, 0, 0); _ax.normalize(); } else _ax.copy(UP);
-  const col = G.teamColors[a.team];
+  const col = G.teamColors[a.team]!;
   for (let i = -1; i <= 1; i++) {
     if (arrows.length >= MAX) kill(0);
     const p = newArrow();
@@ -111,7 +127,7 @@ function volley(a, S, m, dir, air, ghost = false) {
     G.fx?.muzzle?.(m, dir, col, S.tier === 2 ? 'charger' : 'shooter');
   }
 }
-function ghost(a, d) {
+function ghost(a: Actor, d: number[]) {
   if (!Array.isArray(d)) return;
   const S = bowShot(d[6]);
   volley(a, S, _gm.set(d[0], d[1], d[2]), _gd.set(d[3], d[4], d[5]).normalize(), !!d[7], true);
@@ -119,27 +135,27 @@ function ghost(a, d) {
 const _gm = new THREE.Vector3(), _gd = new THREE.Vector3();
 
 // stick arrow p into a surface at `point` (normal n); `d` = the direction it sinks in
-function lodge(p, point, n, d) {
+function lodge(p: Arrow, point: THREE.Vector3, n: THREE.Vector3, d: THREE.Vector3) {
   // (point / n / d may be shared temporaries: copy them first, then only read the arrow's own fields)
   p.st = 1; p.t = 0; p.hitP.copy(point); p.nrm.copy(n); p.dir.copy(d).normalize();
   p.pos.copy(p.hitP).addScaledVector(p.dir, 0.12);      // tip buried; the shaft sticks out behind it
   _v.copy(p.hitP).addScaledVector(p.nrm, 0.08);
-  credit(p.owner, G.paint.splat(_v, W.paintStick, p.team, { seed: p.seed, stretch: p.dir, stretchAmt: 0.5 }));
+  credit(p.owner, G.paint!.splat(_v, W.paintStick, p.team, { seed: p.seed, stretch: p.dir, stretchAmt: 0.5 }));
   if (p.owner.isLocal || near(p.hitP, 26)) {
     G.audio?.play('bow_thunk', { pos: p.hitP, volume: 0.5 + 0.15 * p.tier, pitch: p.center ? 1 : 1.07 });
-    G.fx?.burst(p.hitP, p.nrm, G.teamColors[p.team], { count: 5, speed: 2.4, size: 0.06, paint: false });
+    G.fx?.burst(p.hitP, p.nrm, G.teamColors[p.team]!, { count: 5, speed: 2.4, size: 0.06, paint: false });
   }
 }
 
 // the lodged arrow bursts: paint, splash damage (falloff past burstInner, needs line of sight), devices, fx
-function burst(p) {
+function burst(p: Arrow) {
   const c = _v3.copy(p.hitP).addScaledVector(p.nrm, 0.18);
-  const col = G.teamColors[p.team], owner = p.owner;
-  let area = G.paint.splat(_v.copy(p.hitP).addScaledVector(p.nrm, 0.1), p.bp, p.team, { seed: p.seed });
+  const col = G.teamColors[p.team]!, owner = p.owner;
+  let area = G.paint!.splat(_v.copy(p.hitP).addScaledVector(p.nrm, 0.1), p.bp, p.team, { seed: p.seed });
   for (let i = 0; i < 2; i++) {
     const a = p.seed * 20 + i * 2.7, r = p.bp * 0.55;
     _v.set(c.x + Math.cos(a) * r, c.y + 0.1, c.z + Math.sin(a) * r);
-    area += G.paint.splat(_v, p.bp * 0.45, p.team, { seed: p.seed + i });
+    area += G.paint!.splat(_v, p.bp * 0.45, p.team, { seed: p.seed + i });
   }
   credit(owner, area);
   if (p.ghost) { burstFx(p, c, col, owner); return; }
@@ -152,15 +168,15 @@ function burst(p) {
     _v.set(e.pos.x, clamp(c.y, by + 0.25, by + Math.max(0.3, h - 0.25)), e.pos.z);
     const d = Math.max(0, _v.distanceTo(c) - (e.hitR || PLAYER.radius) * 0.6);
     if (d > p.br) continue;
-    if (!G.physics.los(c, _v)) continue;
+    if (!G.physics!.los(c, _v)) continue;
     const dmg = d <= inner ? p.bd : lerp(p.bd, p.be, (d - inner) / Math.max(0.01, p.br - inner));
-    G.projectiles.applyHit(owner, e, dmg, W.id);
+    G.projectiles!.applyHit(owner, e, dmg, W.id);
   }
   G.subs?.damageArea(c, p.br, p.be, p.team);
   G.boss?.splash(owner, c, p.br, p.bd, p.be, W.id);   // Boss Battle
   burstFx(p, c, col, owner);
 }
-function burstFx(p, c, col, owner) {
+function burstFx(p: Arrow, c: THREE.Vector3, col: ColorIn, owner: Actor) {
   const loud = owner.isLocal || near(c, 34);
   if (loud) {
     G.fx?.explosion(c, col, p.br * (p.tier === 2 ? 0.7 : 0.55));
@@ -170,9 +186,9 @@ function burstFx(p, c, col, owner) {
   emit('weapon:impact', { pos: c.clone(), normal: p.nrm.clone(), team: p.team, kind: 'blast', radius: p.br });
 }
 
-function hitBase(e) { return _v2.set(e.pos.x, e.pos.y + (e.smoothY || 0), e.pos.z); }
+function hitBase(e: Actor) { return _v2.set(e.pos.x, e.pos.y + (e.smoothY || 0), e.pos.z); }
 
-function stepArrow(p, i, dt) {
+function stepArrow(p: Arrow, i: number, dt: number) {
   if (p.st === 1) {
     p.t += dt;
     // countdown ticks: three, closing in on the burst
@@ -180,7 +196,7 @@ function stepArrow(p, i, dt) {
     if (p.ticks < 3 && left < [0.42, 0.24, 0.1][p.ticks]) {
       p.ticks++;
       if (p.center && (p.owner.isLocal || near(p.hitP, 24))) G.audio?.play('bow_tick', { pos: p.hitP, volume: 0.35 + 0.1 * p.ticks, pitch: 1 + 0.12 * p.ticks });
-      if (near(p.hitP, 30)) G.fx?.beepPulse?.(_v.copy(p.hitP).addScaledVector(p.nrm, 0.1), null, null, G.teamColors[p.team], p.br, p.t / p.fuse);
+      if (near(p.hitP, 30)) G.fx?.beepPulse?.(_v.copy(p.hitP).addScaledVector(p.nrm, 0.1), null, null, G.teamColors[p.team]!, p.br, p.t / p.fuse);
     }
     if (p.t >= p.fuse) { burst(p); kill(i); }
     return;
@@ -202,8 +218,8 @@ function stepArrow(p, i, dt) {
       Physics.segmentCapsuleDist(p.prev, p.pos, hitBase(e), hr, h, _res);
       if (_res.dist < hr * 0.95 + ARROW_R) {
         _v.copy(p.prev).lerp(p.pos, _res.t);
-        if (!p.ghost) G.projectiles.applyHit(p.owner, e, p.dmg, W.id);
-        G.fx?.burst(_v, _v3.copy(p.dir).negate(), G.teamColors[p.team], { count: 6, speed: 3, size: 0.07 });
+        if (!p.ghost) G.projectiles!.applyHit(p.owner, e, p.dmg, W.id);
+        G.fx?.burst(_v, _v3.copy(p.dir).negate(), G.teamColors[p.team]!, { count: 6, speed: 3, size: 0.07 });
         emit('weapon:impact', { pos: _v.clone(), normal: _v3.clone(), team: p.team, kind: 'shot', radius: 0.3, victim: e });
         if (!p.lodge) { kill(i); return; }
         p.noHit = true; p.fdir.copy(p.dir);
@@ -230,7 +246,7 @@ function stepArrow(p, i, dt) {
     return;
   }
   // world
-  const hit = G.physics.segment(p.prev, p.pos, _hit, true);
+  const hit = G.physics!.segment(p.prev, p.pos, _hit, true);
   if (hit.hit) {
     if (p.lodge) {
       // a dropped arrow (after a direct hit) sticks in at a slant along its old flight line
@@ -238,10 +254,10 @@ function stepArrow(p, i, dt) {
       lodge(p, hit.point, hit.normal, _dir);
     } else {
       _v.copy(hit.point).addScaledVector(hit.normal, 0.12);
-      credit(p.owner, G.paint.splat(_v, W.paintTap * (0.85 + 0.3 * p.seed), p.team, { seed: p.seed, stretch: p.dir, stretchAmt: 0.7 }));
+      credit(p.owner, G.paint!.splat(_v, W.paintTap * (0.85 + 0.3 * p.seed), p.team, { seed: p.seed, stretch: p.dir, stretchAmt: 0.7 }));
       emit('weapon:impact', { pos: hit.point.clone(), normal: hit.normal.clone(), team: p.team, kind: 'shot', radius: W.paintTap });
       if (p.owner.isLocal || near(hit.point, 22)) {
-        G.fx?.burst(hit.point, hit.normal, G.teamColors[p.team], { count: 5, speed: 3, size: 0.07, paint: false });
+        G.fx?.burst(hit.point, hit.normal, G.teamColors[p.team]!, { count: 5, speed: 3, size: 0.07, paint: false });
         if (p.center) G.audio?.play('splat_small', { pos: hit.point, volume: 0.35 });
       }
       kill(i);
@@ -253,8 +269,8 @@ function stepArrow(p, i, dt) {
     p.trail += sp * dt;
     if (p.trail > W.trailEvery) {
       p.trail = 0;
-      const g = G.physics.raycast(p.pos, DOWN, 4, _hit2, true);
-      if (g.hit) credit(p.owner, G.paint.splat(_v.copy(g.point).addScaledVector(g.normal, 0.1), W.trailRadius * (0.8 + Math.random() * 0.4), p.team, { seed: Math.random() }));
+      const g = G.physics!.raycast(p.pos, DOWN, 4, _hit2, true);
+      if (g.hit) credit(p.owner, G.paint!.splat(_v.copy(g.point).addScaledVector(g.normal, 0.1), W.trailRadius * (0.8 + Math.random() * 0.4), p.team, { seed: Math.random() }));
     }
   }
   if (p.age > LIFE || p.pos.y < PLAYER.waterY - 1.2) {
@@ -264,18 +280,18 @@ function stepArrow(p, i, dt) {
 }
 
 // ---------------------------------------------------------------------------------------------- drawing
-let R = null;   // render objects (built on first use; the scene lives for the whole session)
-function gate(renderer, scene, camera, geometry) { geometry.drawRange.count = scene.overrideMaterial ? 0 : Infinity; }
+let R: { ink: THREE.InstancedMesh; fl: THREE.InstancedMesh; glow: THREE.InstancedMesh; streak: THREE.InstancedMesh } | null = null;   // render objects (built on first use; the scene lives for the whole session)
+function gate(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, geometry: THREE.BufferGeometry) { geometry.drawRange.count = scene.overrideMaterial ? 0 : Infinity; }
 function arrowGeometry() {
   // shaft + ink-bulb head (team ink) · fletching + nock (white / dark) — tip at the origin, the shaft runs back along -Z
-  const lz = (prof, seg) => { const g = new THREE.LatheGeometry(prof.map(([r, z]) => new THREE.Vector2(r, z)), seg); g.rotateX(Math.PI / 2); return g; };
+  const lz = (prof: number[][], seg: number) => { const g = new THREE.LatheGeometry(prof.map(([r, z]) => new THREE.Vector2(r, z)), seg); g.rotateX(Math.PI / 2); return g; };
   const shaft = lz([[0, -LEN], [0.015, -LEN + 0.005], [0.015, -0.08], [0, -0.07]], 8);
   const hp = new THREE.SplineCurve([[0, -0.12], [0.018, -0.11], [0.034, -0.07], [0.028, -0.032], [0.012, -0.007], [0, 0]].map(([r, z]) => new THREE.Vector2(r, z))).getSpacedPoints(14);
   const head = lz(hp.map((p) => [Math.max(0, p.x), p.y]), 12);
   shaft.deleteAttribute('uv'); head.deleteAttribute('uv');
   const ink = mergeSimple([shaft, head]);
-  const parts = [], cols = [];
-  const vane = (roll) => {
+  const parts: THREE.BufferGeometry[] = [], cols: number[] = [];
+  const vane = (roll: number) => {
     const g = new THREE.BoxGeometry(0.003, 0.036, 0.1);
     const pz = g.attributes.position;
     for (let k = 0; k < pz.count; k++) { const y = pz.getY(k), z = pz.getZ(k); pz.setY(k, y > 0 ? y - (z + 0.0425) * 0.12 : y); }
@@ -291,7 +307,7 @@ function arrowGeometry() {
   }
   return { ink, fletch: mergeSimple(parts) };
 }
-function mergeSimple(list) {
+function mergeSimple(list: THREE.BufferGeometry[]) {
   // non-indexed merge of position / normal (/ color) — enough for these little meshes
   const geos = list.map((g) => (g.index ? g.toNonIndexed() : g));
   let n = 0; for (const g of geos) n += g.attributes.position.count;
@@ -339,11 +355,11 @@ function ensureRender() {
   const inkMat = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.2, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.08 });
   const flMat = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.55, metalness: 0 });
   const glowMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
-  const mk = (g, mat, color) => {
+  const mk = (g: THREE.BufferGeometry, mat: THREE.Material, color: boolean) => {
     const m = new THREE.InstancedMesh(g, mat, MAX);
     m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    if (color) { m.setColorAt(0, _c.set(0xffffff)); m.instanceColor.setUsage(THREE.DynamicDrawUsage); }
-    m.frustumCulled = false; m.count = 0; G.scene.add(m);
+    if (color) { m.setColorAt(0, _c.set(0xffffff)); m.instanceColor!.setUsage(THREE.DynamicDrawUsage); }
+    m.frustumCulled = false; m.count = 0; G.scene!.add(m);
     return m;
   };
   const streakGeo = new THREE.CylinderGeometry(1, 1, 1, 6, 1, true); streakGeo.rotateX(Math.PI / 2); streakGeo.translate(0, 0, -0.5);
@@ -360,7 +376,7 @@ function draw() {
   let n = 0, ng = 0, ns = 0;
   const t = G.time;
   for (const p of arrows) {
-    const col = G.teamColors[p.team];
+    const col = G.teamColors[p.team]!;
     _q.setFromUnitVectors(ZAX, p.dir);
     _m.compose(p.pos, _q, _s.set(1, 1, 1));
     r.ink.setMatrixAt(n, _m); r.ink.setColorAt(n, col); r.fl.setMatrixAt(n, _m); n++;
@@ -386,7 +402,7 @@ function draw() {
 }
 
 // ---------------------------------------------------------------------------------------------- the runner
-function update(runner, dt, inp, w) {
+function update(runner: WeaponRunner, dt: number, inp: WeaponInput, w: WeaponCfg) {
   const a = runner.a, k = kitOf(runner);
   k.seen = G.time;
   const pos = a.isLocal ? undefined : a.pos;
@@ -417,10 +433,10 @@ function update(runner, dt, inp, w) {
     // bots only: a draw that can't grow (tank-capped / held at full) while not duelling lets go after a beat, so a
     // bot painting a puddle to refill never stands there holding the string
     k.stall = runner.charge > k.lastC + 1e-4 ? 0 : k.stall + dt; k.lastC = runner.charge;
-    if (a.bot && k.stall > 0.45 && a.bot.mode !== 'fight') release(runner, w, k);
+    if (a.bot && k.stall > 0.45 && (a.bot as { mode?: string }).mode !== 'fight') release(runner, w, k);
   } else if (runner.charging) release(runner, w, k);
 }
-function release(runner, w, k) {
+function release(runner: WeaponRunner, w: WeaponCfg, k: BowKit) {
   const a = runner.a;
   runner.charging = false;
   runner.chargeLoop?.stop(0.06); runner.chargeLoop = null;
@@ -437,7 +453,7 @@ function release(runner, w, k) {
 // ---------------------------------------------------------------------------------------------- bots
 // fight: a full draw at range, ring 1 up close; the flat fan leans toward a second foe beside the target; a target
 // above / below (ledge, stairs), or now and then at mid range, gets a jump shot with the upright fan
-function groupYaw(a, t, fanRad) {
+function groupYaw(a: Actor, t: Actor, fanRad: number) {
   let best = null, bd = 3.5;
   for (const e of G.actors) {
     if (e === t || e.team === a.team || !e.alive) continue;
@@ -450,7 +466,7 @@ function groupYaw(a, t, fanRad) {
 }
 const bot = {
   paintPitch: -0.18,
-  fight(brain, ctx) {
+  fight(brain: BotBrain, ctx: BotFightCtx) {
     const { a, w, dist, range, it, move, target } = ctx;
     const wr = a.weaponRunner, k = kitOf(wr);
     if (!wr.charging) {
@@ -473,7 +489,7 @@ const bot = {
     if (a.grounded) k.botYaw = groupYaw(a, target, bowShot(wr.charge).fan * DEG);
     return false;
   },
-  paint(brain, ctx) {
+  paint(brain: BotBrain, ctx: BotPaintCtx) {
     const { a, w, needPaint, inkFrac } = ctx;
     const wr = a.weaponRunner, k = kitOf(wr);
     if (wr.charging) {
@@ -496,14 +512,14 @@ LONG.bow = true;
 MAIN_KITS.bow = {
   update,
   ghost,
-  reset(runner) { runner.kit = null; },
-  moveSpeed(runner, w) {
+  reset(runner: WeaponRunner) { runner.kit = null; },
+  moveSpeed(runner: WeaponRunner, w: WeaponCfg) {
     if (runner.charging) return lerp(PLAYER.runSpeed * 0.75, w.moveSpeedDrawing, Math.min(1, runner.charge * 2.5));
     if (runner.firingT > 0) return w.moveSpeedFiring;
     return 0;
   },
   spreadDeg() { return 0; },
-  tick(dt) {
+  tick(dt: number) {
     const nm = G.netm;
     for (let i = arrows.length - 1; i >= 0; i--) {
       const p = arrows[i], g = p.ghost && nm;   // (a ghost arrow's splats are its owner's to send)
@@ -513,8 +529,9 @@ MAIN_KITS.bow = {
     // a draw left hanging (a special took over the trigger mid-draw, so the runner stopped updating): let it go quietly
     for (const a of G.actors) {
       const r = a.weaponRunner;
-      if (r && r.charging && r.kit && a.weapon?.kind === 'bow' && G.time - (r.kit.seen ?? G.time) > 0.15) {
-        r.charging = false; r.charge = 0; r.chargeT = 0; r.kit.ring = 0; r.chargeLoop?.stop(0.06); r.chargeLoop = null;
+      const rk = r?.kit as BowKit | null | undefined;
+      if (r && r.charging && rk && a.weapon?.kind === 'bow' && G.time - (rk.seen ?? G.time) > 0.15) {
+        r.charging = false; r.charge = 0; r.chargeT = 0; rk.ring = 0; r.chargeLoop?.stop(0.06); r.chargeLoop = null;
       }
     }
     draw();

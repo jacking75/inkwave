@@ -13,9 +13,14 @@
 // 'bomb:arm' / 'bomb:explode' { actor, pos, team, radius, kind: 'shaker', n } per blast.
 import * as THREE from 'three';
 import { G, emit, on, clamp, lerp, angleDiff } from '../../core/ctx.js';
-import { PLAYER, SUBS } from '../../config.js';
+import { PLAYER, SUB_CFG } from '../../config.js';
+import type { SubCfg } from '../../config.js';
+import type { Actor } from '../actor.js';
+import type { SubSystem } from '../subs.js';
+import type { WeaponRunner, WeaponInput } from '../weapons.js';
+import type { BotBrain } from '../bots.js';
 import { SUB_KITS, netRec, netId, ghostMute } from './registry.js';
-const r2 = (x) => Math.round(x * 100) / 100;
+const r2 = (x: number) => Math.round(x * 100) / 100;
 import { registerSubModel, getSubDef, GEO_KIT } from '../character-weapons.js';
 import { superEllipsoid, lathe, smoothProfile } from '../character-geo.js';
 import { getPlasticMaterial, getInkMaterial } from '../character-mats.js';
@@ -23,6 +28,7 @@ import { Hit } from '../physics.js';
 import { THROWN } from '../bots.js';
 import { SUB_ICONS } from '../../ui/ui-icons.js';
 import { SFX, texture } from '../../audio/audio.js';
+import type { LoopHandle } from '../../audio/audio.js';
 
 const { Parts, C, M, hring, wrapY, screw, decal, squidShape, chevrons, gripSleeve, orient } = GEO_KIT;
 const V3 = THREE.Vector3;
@@ -73,15 +79,15 @@ function buildShaker() {
 }
 registerSubModel('shaker', buildShaker);
 const LAMP_GEO = superEllipsoid(0.0057, 0.0057, 0.0034, 1, 1, 12, 6);   // a lamp dome facing +Z
-function lampMat(color) { return new THREE.MeshStandardMaterial({ color: 0x141418, emissive: color.clone(), emissiveIntensity: 0.05, roughness: 0.3 }); }
+function lampMat(color: THREE.Color) { return new THREE.MeshStandardMaterial({ color: 0x141418, emissive: color.clone(), emissiveIntensity: 0.05, roughness: 0.3 }); }
 
 // the thrown can: outer (world position = the can's middle) → inner (tumble) → model (scaled prop, lifted by CY)
-function makeMesh(team) {
-  const d = getSubDef('shaker'), col = G.teamColors[team];
+function makeMesh(team: number) {
+  const d = getSubDef('shaker'), col = G.teamColors[team]!;
   const outer = new THREE.Group(), inner = new THREE.Group(), model = new THREE.Group();
   model.scale.setScalar(SCALE); model.position.y = -CY * SCALE;
-  const body = new THREE.Mesh(d.body, getPlasticMaterial()); body.castShadow = true;
-  const ink = new THREE.Mesh(d.ink, getInkMaterial(col)); ink.castShadow = true;
+  const body = new THREE.Mesh(d.body!, getPlasticMaterial()); body.castShadow = true;
+  const ink = new THREE.Mesh(d.ink!, getInkMaterial(col)); ink.castShadow = true;
   model.add(body, ink);
   const mats = LAMP_Y.map(() => lampMat(col));
   const lamps = LAMP_Y.map((y, i) => { const m = new THREE.Mesh(LAMP_GEO, mats[i]); m.position.set(0, y, LAMP_R); model.add(m); return m; });
@@ -164,15 +170,31 @@ SFX.shaker_fizzle = {
 };
 
 // ================================================================================================= charging (hold)
-function newState(a) {
+/** 흔들기 충전(runner.shaker): 게이지·단계, 시작·마지막 갱신, 속도 예산, 점프·흔들기 수, 흔들림·거품, 직전 입력, 소리, 봇 목표 단계·한계 */
+interface ShakeState {
+  meter: number; level: number; t0: number; t1: number; budget: number; jumps: number; shakes: number; kick: number; fizz: number;
+  jumpPrev: boolean; yawPrev: number; lookSign: number; axis: number[]; lastWag: number; loop: LoopHandle | null; botLevel: number | null; botMax: number;
+}
+/** 흔들기 충전을 들고 있는 러너 */
+type ShakerRunner = WeaponRunner & { shaker?: ShakeState | null };
+const stOf = (a: Actor | null | undefined) => (a?.weaponRunner as ShakerRunner | undefined)?.shaker;
+/** 손에 든 캔의 흔들림·램프(bomb 그룹의 userData.shaker) */
+interface HandProp { group: THREE.Group; lamps: THREE.Mesh[]; mats: THREE.MeshStandardMaterial[]; pb: THREE.Vector3; qb: THREE.Quaternion; pivot: THREE.Vector3; nDir: THREE.Vector3 }
+/** 던진 캔: 주인·팀·설정, 단계·남은 폭발·터진 수, 위치·속도·방향, 모양, 상태·나이·도화선·다음, 꼬리, 바닥, 무장, 스페셜 중, 회전, 바닥점·법선, 유령 */
+interface Can {
+  owner: Actor; team: number; sub: SubCfg; level: number; left: number; blasts: number; pos: THREE.Vector3; vel: THREE.Vector3; dir: THREE.Vector3;
+  m: ReturnType<typeof makeMesh>; state: string; age: number; fuse: number; next: number; trail: number; ground: number; armed: boolean; sp: boolean;
+  spin: THREE.Vector3; gp: THREE.Vector3; gn: THREE.Vector3; gOk: boolean; ghost: boolean; gid: number;
+}
+function newState(a: Actor): ShakeState {
   return { meter: 0, level: 1, t0: G.time, t1: G.time, budget: 0.1, jumps: 0, shakes: 0, kick: 0, fizz: 0,
     jumpPrev: !!a.intent?.jump, yawPrev: a.aimYaw, lookSign: 0, axis: [0, 0], lastWag: -9, loop: null, botLevel: null, botMax: 0 };
 }
-const isBot = (a) => !!a.bot;   // bot brains drive the intent (a human local player has none; the autopilot does)
+const isBot = (a: Actor) => !!a.bot;   // bot brains drive the intent (a human local player has none; the autopilot does)
 
 // Waggles this frame, for the local player: fast reversals of the aim's turn direction (mouse / right stick) and the left
 // stick thrown from one side to the other.
-function waggles(st, a, dt) {
+function waggles(st: ShakeState, a: Actor, dt: number) {
   let n = 0;
   const dy = angleDiff(st.yawPrev, a.aimYaw); st.yawPrev = a.aimYaw;
   if (dt > 0 && Math.abs(dy) / dt > 3) {
@@ -180,7 +202,7 @@ function waggles(st, a, dt) {
     if (s !== st.lookSign) { if (st.lookSign && G.time - st.lastWag > 0.05) { n++; st.lastWag = G.time; } st.lookSign = s; }
   }
   const inp = G.input, pad = inp?.pad;
-  if (pad && inp.lastDevice === 'pad') {
+  if (pad && inp!.lastDevice === 'pad') {
     for (let i = 0; i < 2; i++) {
       const x = pad.axes[i] || 0, s = x > 0.6 ? 1 : x < -0.6 ? -1 : 0;
       if (s && s !== st.axis[i]) { if (st.axis[i] && G.time - st.lastWag > 0.04) { n++; st.lastWag = G.time; } st.axis[i] = s; }
@@ -189,11 +211,11 @@ function waggles(st, a, dt) {
   return n;
 }
 
-function hold(runner, dt, inp, sub) {
-  const a = runner.a;
-  let st = runner.shaker;
+function hold(runner: WeaponRunner, dt: number, inp: WeaponInput, sub: SubCfg) {
+  const a = runner.a, R = runner as ShakerRunner;
+  let st = R.shaker;
   if (st && G.time - st.t1 > 0.15) { drop(a, false); st = null; }   // a stale charge (the hold was interrupted)
-  if (!st) st = runner.shaker = newState(a);
+  if (!st) st = R.shaker = newState(a);
   st.t1 = G.time;
   const paid = (a.specialActive && a.specialActive.kind === 'barrage') || a.ink >= sub.inkCost;
   const jump = !!a.intent.jump, jp = jump && !st.jumpPrev; st.jumpPrev = jump;
@@ -218,7 +240,7 @@ function hold(runner, dt, inp, sub) {
   handFx(a, st, dt);
 }
 
-function clink(a, lv) {
+function clink(a: Actor, lv: number) {
   const near = a.isLocal || a._nearCamera();
   if (!near) return;
   G.audio?.play(lv >= 3 ? 'shaker_clink_max' : 'shaker_clink', { pos: a.isLocal ? undefined : a.pos, volume: a.isLocal ? 1 : 0.75, pitch: lv >= 3 ? 1 : 0.94 });
@@ -232,47 +254,47 @@ function clink(a, lv) {
 }
 
 // Bots can't mash: they press once, then hold here until the charge they planned (by the fight's range), or ~3 s.
-function botHold(a, st, inp) {
-  const b = a.bot;
+function botHold(a: Actor, st: ShakeState, inp: WeaponInput) {
+  const b = a.bot as BotBrain;
   if (st.botLevel == null) {
     // (Boss Battle: the target is a boss hit-shape / crablet record — its position may sit on .shape)
-    const t = b.target, tp = t && (t.pos || (t.shape && t.shape.pos)), d = tp ? Math.hypot(tp.x - a.pos.x, tp.z - a.pos.z) : 8;
+    const t = b.target as (Actor & { shape?: { pos: THREE.Vector3 } }) | null, tp = t && (t.pos || (t.shape && t.shape.pos)), d = tp ? Math.hypot(tp.x - a.pos.x, tp.z - a.pos.z) : 8;
     if (b.mode === 'fight') st.botLevel = d > 10 ? 3 : d > 6.5 ? (Math.random() < 0.6 ? 3 : 2) : (Math.random() < 0.55 ? 2 : 1);
     else st.botLevel = Math.random() < 0.5 ? 3 : 2;   // painting / a zone lob: a long ink line
     st.botMax = b.mode === 'fight' ? 3.2 : 2.2;
   }
-  const keep = a.alive && a.form === 'kid' && st.level < st.botLevel && G.time - st.t0 < st.botMax;
+  const keep = a.alive && a.form === 'kid' && st.level < st.botLevel! && G.time - st.t0 < st.botMax;
   if (keep) { inp.sub = true; inp.subReleased = false; }
   else if (!inp.sub) inp.subReleased = true;       // the brain let go frames ago: throw now
 }
 
 // ---- the can in the fist: rattles harder as it charges (jolts on each clink), its lamps count the charges, the vent fizzes
-function handProp(a) {
+function handProp(a: Actor) {
   const b = a.character?.bomb;
   if (!b || b.kind !== 'shaker') return null;
   const g = b.group;
-  let hp = g.userData.shaker;
+  let hp = g.userData.shaker as HandProp | undefined;
   if (!hp) {
     const d = getSubDef('shaker');
     const mats = LAMP_Y.map(() => lampMat(a.color));
     const lamps = LAMP_Y.map((y, i) => { const m = new THREE.Mesh(LAMP_GEO, mats[i]); m.position.set(0, y, LAMP_R); g.add(m); return m; });
-    hp = g.userData.shaker = { group: g, lamps, mats, pb: g.position.clone(), qb: g.quaternion.clone(), pivot: d.grip.pos.clone(), nDir: new V3() };
+    hp = g.userData.shaker = { group: g, lamps, mats, pb: g.position.clone(), qb: g.quaternion.clone(), pivot: d.grip.pos.clone(), nDir: new V3() } as HandProp;
   }
   return hp;
 }
-function nozzleWorld(hp, out) {
+function nozzleWorld(hp: HandProp, out: THREE.Vector3) {
   hp.group.updateWorldMatrix(true, false);
   out.copy(NOZ.p).applyMatrix4(hp.group.matrixWorld);
   hp.nDir.copy(NOZ.n).transformDirection(hp.group.matrixWorld);
   return out;
 }
-function restoreHand(a) {
-  const hp = a.character?.bomb?.group?.userData?.shaker;
+function restoreHand(a: Actor) {
+  const hp = a.character?.bomb?.group?.userData?.shaker as HandProp | undefined;
   if (!hp) return;
   hp.group.position.copy(hp.pb); hp.group.quaternion.copy(hp.qb);
   for (const m of hp.mats) m.emissiveIntensity = 0.05;
 }
-function handFx(a, st, dt) {
+function handFx(a: Actor, st: ShakeState, dt: number) {
   const hp = handProp(a);
   if (!hp) return;
   const near = a.isLocal || a._nearCamera();
@@ -316,8 +338,8 @@ function handFx(a, st, dt) {
 const _c = new THREE.Color(), _white = new THREE.Color(1, 1, 1);
 
 // a charge that's dropped (splatted, dived into ink, loadout swap …): no throw, no ink; the fizz stops
-function drop(a, fizzle) {
-  const r = a.weaponRunner, st = r?.shaker;
+function drop(a: Actor, fizzle: boolean) {
+  const r = a.weaponRunner as ShakerRunner, st = r?.shaker;
   if (!st) return;
   r.shaker = null;
   st.loop?.stop(0.1);
@@ -330,13 +352,13 @@ function drop(a, fizzle) {
   }
   restoreHand(a);
 }
-on('splatted', ({ victim }) => { if (victim?.weaponRunner?.shaker) drop(victim, G.time - victim.weaponRunner.shaker.t1 < 0.25); });
+on('splatted', ({ victim }) => { const st = stOf(victim); if (st) drop(victim, G.time - st.t1 < 0.25); });
 
 // ================================================================================================= thrown can
 // Bots lob it at their foe: the aim pitch that lands a throw (throwVelocity: pitch + 0.28 rad, +1.5 m/s up, released
 // 1.35 m up, gravity 24) d m out and dy above the thrower's feet; null if it can't reach (as bots.js lobPitch).
-function lobPitch(d, dy, speed) {
-  let best = null, be = Infinity;
+function lobPitch(d: number, dy: number, speed: number) {
+  let best: number | null = null, be = Infinity;
   for (let p = -0.5; p <= 0.75; p += 0.025) {
     const tp = clamp(p + 0.28, -0.3, 1.1), vx = Math.cos(tp) * speed, vy = Math.sin(tp) * speed + 1.5, disc = vy * vy + 48 * (1.35 - dy);
     if (disc < 0) continue;
@@ -345,23 +367,23 @@ function lobPitch(d, dy, speed) {
   }
   return be < 1.2 ? best : null;
 }
-function botLob(a, sub, short) {
-  const b = a.bot, t = b?.target;
-  if (!t || !t.alive || b.mode !== 'fight') return;
+function botLob(a: Actor, sub: SubCfg, short: number) {
+  const b = a.bot as BotBrain | null, t = b?.target;
+  if (!t || !t.alive || b!.mode !== 'fight') return;
   const tx = t.pos.x + t.vel.x * 0.5, tz = t.pos.z + t.vel.z * 0.5;          // lead it by about the flight time
   const p = lobPitch(Math.max(1.5, Math.hypot(tx - a.pos.x, tz - a.pos.z) - short), t.pos.y - a.pos.y, sub.throwSpeed);
   if (p == null) return;
   a.aimYaw = Math.atan2(tx - a.pos.x, tz - a.pos.z); a.aimPitch = p;
 }
-const items = [];
-function use(subs, a, sub) {
-  const r = a.weaponRunner, st = r.shaker;
+const items: Can[] = [];
+function use(subs: SubSystem, a: Actor, sub: SubCfg) {
+  const r = a.weaponRunner as ShakerRunner, st = r.shaker;
   const level = st && G.time - st.t1 < 0.25 ? st.level : 1;
   if (st) { st.loop?.stop(0.08); r.shaker = null; }
   restoreHand(a);
   if (isBot(a)) botLob(a, sub, 0.9);   // its first blast (after the landing slide) on the foe
   const pos = a.pos.clone(); pos.y += 1.35;
-  const vel = G.projectiles.throwVelocity(a, sub.throwSpeed, new V3());
+  const vel = G.projectiles!.throwVelocity(a, sub.throwSpeed, new V3());
   const it = spawn(a, sub, pos, vel, level, false, netId(a));
   netRec(a, 'shaker', [0, it.gid, r2(pos.x), r2(pos.y), r2(pos.z), r2(vel.x), r2(vel.y), r2(vel.z), level]);
   if (a.isLocal || a._nearCamera()) G.audio?.play('bomb_throw', { pos: a.isLocal ? undefined : a.pos, volume: 0.65, pitch: 0.95 + 0.06 * level });
@@ -369,27 +391,27 @@ function use(subs, a, sub) {
 }
 // the can in flight (ghost: a remote player's, online — it flies and hops the same, but blasts only when its owner's
 // did: records [1, gid, x, y, z]; [2, gid] ends one that sank without going off)
-function spawn(a, sub, pos, vel, level, ghost, gid) {
+function spawn(a: Actor, sub: SubCfg, pos: THREE.Vector3, vel: THREE.Vector3, level: number, ghost: boolean, gid: number) {
   const dir = new V3(vel.x, 0, vel.z);
   if (dir.lengthSq() < 1e-6) dir.set(Math.sin(a.aimYaw), 0, Math.cos(a.aimYaw));
   dir.normalize();
   const m = makeMesh(a.team);
   m.outer.position.copy(pos);
   m.inner.rotation.set(Math.random() * 6, Math.random() * 6, 0);
-  G.scene.add(m.outer);
-  const it = { owner: a, team: a.team, sub, level, left: level, blasts: 0, pos, vel, dir, m, state: 'fly', age: 0, fuse: -1, next: 0, trail: 0,
+  G.scene!.add(m.outer);
+  const it: Can = { owner: a, team: a.team, sub, level, left: level, blasts: 0, pos, vel, dir, m, state: 'fly', age: 0, fuse: -1, next: 0, trail: 0,
     ground: 0, armed: false, sp: !!a.specialActive, spin: new V3(4 + Math.random() * 5, 0, 3 + Math.random() * 5), gp: new V3(), gn: new V3(0, 1, 0), gOk: false,
     ghost, gid };
   items.push(it);
   lamps(it);
   return it;
 }
-function ghost(a, d) {
+function ghost(a: Actor, d: number[]) {
   if (!Array.isArray(d)) return;
   const [op, gid] = d;
   if (op === 0) {
     if (items.some((x) => x.gid === gid)) return;
-    spawn(a, SUBS.shaker, new V3(d[2], d[3], d[4]), new V3(d[5], d[6], d[7]), clamp(d[8] | 0, 1, 3), true, gid);
+    spawn(a, SUB_CFG.shaker!, new V3(d[2], d[3], d[4]), new V3(d[5], d[6], d[7]), clamp(d[8] | 0, 1, 3), true, gid);
     if (a._nearCamera()) G.audio?.play('bomb_throw', { pos: a.pos, volume: 0.65, pitch: 0.95 + 0.06 * d[8] });
     return;
   }
@@ -399,12 +421,12 @@ function ghost(a, d) {
   else if (op === 2) it.state = 'dead';
 }
 
-function lamps(it) {
-  const col = G.teamColors[it.team];
+function lamps(it: Can) {
+  const col = G.teamColors[it.team]!;
   for (let i = 0; i < 3; i++) { it.m.mats[i].emissive.copy(col); it.m.mats[i].emissiveIntensity = i < it.left ? 2.3 : 0.05; }
 }
 
-function update(it, dt) {
+function update(it: Can, dt: number) {
   const s = it.sub;
   it.age += dt;
   // ---- motion: gravity, swept centre vs the world, then a resting contact (the centre kept RAD off the floor)
@@ -412,7 +434,7 @@ function update(it, dt) {
   _v.copy(it.pos);
   it.pos.addScaledVector(it.vel, dt);
   let floor = false;
-  const h = G.physics.segment(_v, it.pos, _hit);
+  const h = G.physics!.segment(_v, it.pos, _hit);
   if (h.hit) {
     const n = h.normal;
     it.pos.copy(h.point).addScaledVector(n, RAD);
@@ -426,7 +448,7 @@ function update(it, dt) {
     }
   }
   if (!floor) {
-    const g = G.physics.raycast(_v2.copy(it.pos), DOWN, RAD, _hit2);
+    const g = G.physics!.raycast(_v2.copy(it.pos), DOWN, RAD, _hit2);
     if (g.hit && g.normal.y > 0.6) { it.pos.y += RAD - g.dist; floor = contactFloor(it, g.normal, dt); }
   }
   it.ground = floor ? 0.12 : Math.max(0, it.ground - dt);
@@ -459,50 +481,50 @@ function update(it, dt) {
   if (it.armed && G.fx && near(it.pos, 40)) {
     if (!it.gOk || it.ground) groundUnder(it);
     const k = it.fuse >= 0 ? 1 - it.fuse / s.fuse : 1 - it.next / s.gap;
-    if (it.gOk) G.fx.dangerRing?.(_v.copy(it.gp).addScaledVector(it.gn, 0.02), it.gn, G.teamColors[it.team], s.radius, clamp(k, 0, 1));
+    if (it.gOk) G.fx.dangerRing?.(_v.copy(it.gp).addScaledVector(it.gn, 0.02), it.gn, G.teamColors[it.team]!, s.radius, clamp(k, 0, 1));
     const lit = 2.3 + 2.5 * Math.max(0, Math.sin(it.age * (14 + 20 * k)));
     for (let i = 0; i < 3; i++) it.m.mats[i].emissiveIntensity = i < it.left ? lit : 0.05;
   }
 }
-function contactFloor(it, n, dt) {
+function contactFloor(it: Can, n: THREE.Vector3, dt: number) {
   const vn = it.vel.dot(n);
   if (vn < -2.2) { it.vel.addScaledVector(n, -vn).multiplyScalar(0.45).addScaledVector(n, -vn * 0.3); }   // a dull bounce: it lands near where it hits
   else if (vn < 0) { it.vel.addScaledVector(n, -vn); const f = Math.exp(-6 * dt); it.vel.x *= f; it.vel.z *= f; }   // resting: slide to a stop
   if (!it.armed) arm(it);
   return true;
 }
-function arm(it) {
+function arm(it: Can) {
   it.armed = true; it.fuse = it.sub.fuse;
   groundUnder(it);
   if (near(it.pos, 30)) G.audio?.play('bomb_beep', { pos: it.pos, volume: 0.55, pitch: 1.25 });
   emit('bomb:arm', { actor: it.owner, pos: it.pos.clone(), team: it.team, radius: it.sub.radius, kind: 'shaker' });
 }
-function groundUnder(it) {
-  const g = G.physics.raycast(_v2.copy(it.pos).setY(it.pos.y + 0.1), DOWN, 2.5, _hit2, true);
+function groundUnder(it: Can) {
+  const g = G.physics!.raycast(_v2.copy(it.pos).setY(it.pos.y + 0.1), DOWN, 2.5, _hit2, true);
   it.gOk = g.hit;
   if (g.hit) { it.gp.copy(g.point); it.gn.copy(g.normal); }
 }
-function near(p, r) { const c = G.rig?.gameCam || G.camera; return !!c && c.position.distanceToSquared(p) < r * r; }
-function credit(it, area) { if (it.sp) it.owner.addTurfNoSpecial(area); else it.owner.addTurf(area); }
+function near(p: THREE.Vector3, r: number) { const c = G.rig?.gameCam || G.camera; return !!c && c.position.distanceToSquared(p) < r * r; }
+function credit(it: Can, area: number) { if (it.sp) it.owner.addTurfNoSpecial(area); else it.owner.addTurf(area); }
 
-function drip(it) {
+function drip(it: Can) {
   _v.copy(it.pos); _v.y -= 0.1;
-  G.projectiles.spawnDrop(it.owner, _v, it.vel.x * 0.2 + (Math.random() - 0.5) * 0.5, -2.2 - Math.random(), it.vel.z * 0.2 + (Math.random() - 0.5) * 0.5,
+  G.projectiles!.spawnDrop(it.owner, _v, it.vel.x * 0.2 + (Math.random() - 0.5) * 0.5, -2.2 - Math.random(), it.vel.z * 0.2 + (Math.random() - 0.5) * 0.5,
     { damage: 0, radius: it.sub.trailRadius * (0.85 + Math.random() * 0.3), size: 0.045 });
 }
 
-function blast(it) {
-  const s = it.sub, a = it.owner, team = it.team, col = G.teamColors[team];
+function blast(it: Can) {
+  const s = it.sub, a = it.owner, team = it.team, col = G.teamColors[team]!;
   const c = it.pos.clone();
   if (!it.ghost) netRec(a, 'shaker', [1, it.gid, r2(c.x), r2(c.y), r2(c.z)]);
   it.blasts++; it.left--;
   // ink: the floor it stands on + a few satellite splats
   let area = 0;
-  const g = G.physics.raycast(_v.copy(c).setY(c.y + 0.2), DOWN, 3.5, _hit);
-  area += G.paint.splat(g.hit ? _v2.copy(g.point).addScaledVector(g.normal, 0.1) : c, s.paintRadius, team, { seed: Math.random() });
+  const g = G.physics!.raycast(_v.copy(c).setY(c.y + 0.2), DOWN, 3.5, _hit);
+  area += G.paint!.splat(g.hit ? _v2.copy(g.point).addScaledVector(g.normal, 0.1) : c, s.paintRadius, team, { seed: Math.random() });
   for (let k = 0; k < 3; k++) {
     const ang = Math.random() * Math.PI * 2, r = s.paintRadius * (0.55 + Math.random() * 0.4);
-    area += G.paint.splat(_v3.set(c.x + Math.cos(ang) * r, c.y + 0.3, c.z + Math.sin(ang) * r), 0.45 + Math.random() * 0.3, team, { seed: Math.random() });
+    area += G.paint!.splat(_v3.set(c.x + Math.cos(ang) * r, c.y + 0.3, c.z + Math.sin(ang) * r), 0.45 + Math.random() * 0.3, team, { seed: Math.random() });
   }
   credit(it, area);
   G.fx?.explosion(c, col, s.radius * 0.95);
@@ -517,9 +539,9 @@ function blast(it) {
     if (e.team === team || !e.alive) continue;
     _v.copy(e.pos); _v.y += e.form === 'squid' ? 0.3 : 0.7;
     const d = _v.distanceTo(c);
-    if (d > s.radius || !G.physics.los(_v2, _v)) continue;
+    if (d > s.radius || !G.physics!.los(_v2, _v)) continue;
     const k = 1 - clamp((d - 0.8) / (s.radius - 0.8), 0, 1);
-    G.projectiles.applyHit(a, e, lerp(s.damageMin, s.damageMax, k * k), 'shaker');
+    G.projectiles!.applyHit(a, e, lerp(s.damageMin, s.damageMax, k * k), 'shaker');
   }
   G.subs?.damageArea(c, s.radius, 40, team);
   G.boss?.splash(a, c, s.radius, s.damageMax, s.damageMin, 'shaker');   // Boss Battle
@@ -533,16 +555,16 @@ function blast(it) {
   } else it.state = 'dead';
 }
 
-function dispose(it) {
+function dispose(it: Can) {
   G.scene?.remove(it.m.outer);
   for (const m of it.m.mats) m.dispose();
 }
 
 // ================================================================================================= HUD: three pips by the sub chip
-let pipEl = null, pipL = null;
+let pipEl: HTMLDivElement | null = null, pipL: { on: boolean | null; lv: number; p: number[] } | null = null;
 function pips() {
-  const a = G.local, r = a?.weaponRunner, st = r?.shaker;
-  const show = !!(a && a.alive && r.aimingSub && st && G.time - st.t1 < 0.15 && a.sub?.kind === 'shaker');
+  const a = G.local, r = a?.weaponRunner, st = stOf(a);
+  const show = !!(a && a.alive && r!.aimingSub && st && G.time - st.t1 < 0.15 && a.sub?.kind === 'shaker');
   const xh = G.hud?.xh;
   if (!xh || (!show && !pipEl)) return;
   if (!pipEl || pipEl.parentNode !== xh) {
@@ -560,19 +582,20 @@ function pips() {
     pipEl = document.createElement('div'); pipEl.className = 'iw-shk'; pipEl.innerHTML = '<i></i><i></i><i></i>';
     xh.appendChild(pipEl); pipL = { on: null, lv: 0, p: [-1, -1, -1] };
   }
-  if (show !== pipL.on) { pipL.on = show; pipEl.classList.toggle('is-on', show); }
+  const L = pipL!;   // (pipEl을 만들 때 함께 만든다)
+  if (show !== L.on) { L.on = show; pipEl.classList.toggle('is-on', show); }
   if (!show) return;
-  const f = st.meter;
+  const f = st!.meter;
   for (let i = 0; i < 3; i++) {
     const p = i === 0 ? 1 : clamp(f * 2 - (i - 1), 0, 1);
-    if (Math.abs(p - pipL.p[i]) > 0.02 || (p === 1) !== (pipL.p[i] === 1)) {
-      pipL.p[i] = p;
-      const el = pipEl.children[i];
+    if (Math.abs(p - L.p[i]) > 0.02 || (p === 1) !== (L.p[i] === 1)) {
+      L.p[i] = p;
+      const el = pipEl.children[i] as HTMLElement;
       el.style.setProperty('--p', p.toFixed(2));
       el.classList.toggle('is-full', p >= 1);
     }
   }
-  if (st.level !== pipL.lv) { pipL.lv = st.level; if (st.level >= 3) { pipEl.classList.remove('is-max'); void pipEl.offsetWidth; pipEl.classList.add('is-max'); } else pipEl.classList.remove('is-max'); }
+  if (st!.level !== L.lv) { L.lv = st!.level; if (st!.level >= 3) { pipEl.classList.remove('is-max'); void pipEl.offsetWidth; pipEl.classList.add('is-max'); } else pipEl.classList.remove('is-max'); }
 }
 
 // ================================================================================================= registration
@@ -580,7 +603,7 @@ SUB_KITS.shaker = {
   use,
   hold,
   ghost,
-  tick(dt) {
+  tick(dt: number) {
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
       ghostMute(it, () => update(it, dt));
@@ -590,25 +613,25 @@ SUB_KITS.shaker = {
       }
     }
     // a charge whose hold stopped without a throw (dived into ink, loadout swap, …): drop it quietly
-    for (const a of G.actors) { const st = a.weaponRunner?.shaker; if (st && G.time - st.t1 > 0.15) drop(a, false); }
+    for (const a of G.actors) { const st = stOf(a); if (st && G.time - st.t1 > 0.15) drop(a, false); }
     pips();
   },
   clear() {
     for (const it of items) dispose(it);
     items.length = 0;
-    for (const a of G.actors) if (a.weaponRunner?.shaker) drop(a, false);
+    for (const a of G.actors) if (stOf(a)) drop(a, false);
     if (pipEl && pipL?.on) { pipL.on = false; pipEl.classList.remove('is-on'); }
   },
   items,
   bot: {
     // a mid-range lob at the fight (the hold then charges it to the range: see botHold)
-    fight(brain, dist) {
+    fight(brain: BotBrain, dist: number) {
       const go = dist > 4 && dist < 14 && Math.random() < 0.03 * (1 + brain.diff.fireDiscipline);
       if (go) brain.bombCd = 5 + Math.random() * 5;
       return go;
     },
     // now and then while painting: three hops leave a long stripe of ink
-    paint(brain) {
+    paint(brain: BotBrain) {
       const go = Math.random() < 0.0012;
       if (go) brain.bombCd = 9 + Math.random() * 8;
       return go;

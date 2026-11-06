@@ -12,14 +12,21 @@
 // a charge held. World objects (waves, arc trails) are module-owned (tick / clear).
 import * as THREE from 'three';
 import { G, emit, clamp, lerp, angleDiff } from '../../core/ctx.js';
-import { PLAYER, WEAPONS, weaponRange } from '../../config.js';
+import { PLAYER, WEAPON_CFG, weaponRange } from '../../config.js';
+import type { WeaponCfg } from '../../config.js';
 import { MAIN_KITS, netRec } from './registry.js';
 import { MELEE } from '../bots.js';
+import type { BotBrain } from '../bots.js';
+import type { Actor } from '../actor.js';
+import type { WeaponRunner, WeaponInput } from '../weapons.js';
+import type { BotFightCtx, BotPaintCtx } from './registry.js';
+import type { LoopHandle } from '../../audio/audio.js';
 import { registerWeaponModel } from '../character-weapons.js';
 import { Hit } from '../physics.js';
 import { WEAPON_ICONS } from '../../ui/ui-icons.js';
 import { buildBlade, animateBlade } from './blade-model.js';
 import { BladeFX, installBladeSounds, BLADE_ICON } from './blade-fx.js';
+import type { Wave } from './blade-fx.js';
 
 const _bossTip = new THREE.Vector3();
 const DEG = Math.PI / 180;
@@ -35,41 +42,51 @@ installBladeSounds();
 MELEE.blade = true;
 
 // ------------------------------------------------------------------------------------------ runner state
-function st(R) {
-  return R.kit || (R.kit = {
+/** 칼 러너 상태(runner.kit): 누름·누른 시간, 충전(값·중·완료·잠수 보관), 다음 베기까지·예약, 베는 쪽, 진행 중 베기,
+ *  돌진(남은 시간·방향·속도), 마지막 갱신, 섬광·마지막 베기 뒤 시간, 횟수, 잉크 부족 경고 */
+interface BladeKit {
+  held: boolean; holdT: number; charge: number; charging: boolean; full: boolean; store: number; cd: number; queued: number; side: number;
+  swing: Swing | null; lunge: number; lx: number; lz: number; lv: number; lastT: number; flashT: number; since: number; taps: number; heavies: number;
+  lowWarned?: boolean;
+}
+/** 베기 한 번: 강베기, 경과, 쪽, 방향, 맞힌 대상, 물방울/물결 발사·장치 타격·바닥 획, 스페셜 중 */
+interface Swing { heavy: boolean; t: number; side: number; yaw: number; pitch: number; hits: Set<object>; fired: boolean; dev: boolean; stroke?: boolean; sp: boolean }
+const kitIn = (R: WeaponRunner) => R.kit as BladeKit | null;
+function st(R: WeaponRunner): BladeKit {
+  return kitIn(R) || (R.kit = {
     held: false, holdT: 0, charge: 0, charging: false, full: false, store: 0,
     cd: 0, queued: 0, side: -1, swing: null, lunge: 0, lx: 0, lz: 0, lv: 0,
     lastT: G.time, flashT: 99, since: 99, taps: 0, heavies: 0,
-  });
+  } as BladeKit);
 }
 // charge hums are keyed by runner (runner.kit is nulled before reset hooks run, and a loadout swap resets through the
 // NEW kind's kit — tick() sweeps any hum whose runner stopped charging a blade)
-const HUMS = new Map();
-function stopHum(R) { const h = HUMS.get(R); if (h) { h.stop(0.06); HUMS.delete(R); } }
-function cancelCharge(R, K) {
+const HUMS = new Map<WeaponRunner, LoopHandle | null | undefined>();
+function stopHum(R: WeaponRunner) { const h = HUMS.get(R); if (h) { h.stop(0.06); HUMS.delete(R); } }
+function cancelCharge(R: WeaponRunner, K: BladeKit) {
   K.charging = false; K.charge = 0; K.full = false; K.store = 0;
   R.charge = 0;
   stopHum(R);
 }
-const heard = (a) => a.isLocal || a._nearCamera?.();
-const sndPos = (a) => (a.isLocal ? undefined : a.pos);
-function rumble(a, strong, weak, ms) { if (a && a.isLocal && !a.isBot) G.input?.rumble?.(strong, weak, ms); }
+const heard = (a: Actor) => a.isLocal || a._nearCamera?.();
+const sndPos = (a: Actor) => (a.isLocal ? undefined : a.pos);
+function rumble(a: Actor, strong: number, weak: number, ms: number) { if (a && a.isLocal && !a.isBot) G.input?.rumble?.(strong, weak, ms); }
 // core bot logic holding the trigger for its own ends (inking a wall to climb, a puddle to refill in): quick cuts
-const coreDriven = (a) => !!(a.bot && !a.isLocal && (a.bot._climbAim || a.bot.mode === 'refill'));
+const coreDriven = (a: Actor) => !!(a.bot && !a.isLocal && ((a.bot as BladeBrain)._climbAim || (a.bot as BladeBrain).mode === 'refill'));
 // a bot brain that wants to keep holding a charge even though the core cleared its trigger this frame (aim drifted)
-const botHolds = (a) => !!(a.bot && a.bot._blHold > G.time - 0.3);
+const botHolds = (a: Actor) => !!(a.bot && ((a.bot as BladeBrain)._blHold ?? NaN) > G.time - 0.3);   // (NaN: 없던 값은 원래도 비교가 거짓)
 
 // ------------------------------------------------------------------------------------------ the cuts
 // Heading of a cut: toward the crosshair's world point (the camera sits over the shoulder, so its ray and the kid's
 // facing differ by a few degrees at mid range), else the aim yaw.
-function cutYaw(a) {
+function cutYaw(a: Actor) {
   const p = a.aimPoint, dx = p.x - a.pos.x, dz = p.z - a.pos.z;
   if (dx * dx + dz * dz < 4) return a.aimYaw;
   const y = Math.atan2(dx, dz);
   let d = y - a.aimYaw; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
   return Math.abs(d) < 0.35 ? y : a.aimYaw;
 }
-function tap(R, K, w) {
+function tap(R: WeaponRunner, K: BladeKit, w: WeaponCfg) {
   const a = R.a;
   if (a.ink < w.tapInk) { R._empty(); K.cd = 0.18; return false; }
   a.ink -= w.tapInk; a.lastFire = 0;
@@ -84,7 +101,7 @@ function tap(R, K, w) {
   rumble(a, 0.05, 0.12, 45);
   return true;
 }
-function heavy(R, K, w) {
+function heavy(R: WeaponRunner, K: BladeKit, w: WeaponCfg) {
   const a = R.a;
   a.ink = Math.max(0, a.ink - w.heavyInk); a.lastFire = 0;
   K.cd = w.heavyInterval; K.since = 0; K.flashT = 0; K.heavies++;
@@ -100,7 +117,7 @@ function heavy(R, K, w) {
   if (a.isLocal) { emit('recoil', { amount: 0.012 }); emit('shake', { amount: 0.1 }); }
   rumble(a, 0.25, 0.3, 120);
 }
-function lungeSafe(a, fx, fz, d) {
+function lungeSafe(a: Actor, fx: number, fz: number, d: number) {
   const L = G.level; if (!L) return false;
   for (const k of [0.5, 1, 1.4]) {
     const gy = L.groundHeight(a.pos.x + fx * d * k, a.pos.z + fz * d * k, a.pos.y + 0.6);
@@ -111,8 +128,8 @@ function lungeSafe(a, fx, fz, d) {
 }
 
 // the swing in progress: ink leaves the blade, the blade itself hits, the lunge carries the kid forward
-function runSwing(R, K, dt, w) {
-  const S = K.swing, a = R.a;
+function runSwing(R: WeaponRunner, K: BladeKit, dt: number, w: WeaponCfg) {
+  const S = K.swing!, a = R.a;   // (베기 중에만 부른다)
   S.t += dt;
   if (!S.fired && S.t >= (S.heavy ? 0.05 : 0.028)) { S.fired = true; if (S.heavy) spawnWave(a, w, S); else fireDrops(a, w, S); }
   if (S.heavy && !S.stroke && S.t >= 0.075) { S.stroke = true; groundStroke(a, w, S); }
@@ -128,7 +145,7 @@ function runSwing(R, K, dt, w) {
 
 // Quick cut: a crescent of droplets flung across the front along the sweep (the centre ones fastest, so the sheet
 // bows forward), leaving from the blade's path in sweep order. Aiming steeply down throws them at your feet.
-function fireDrops(a, w, S) {
+function fireDrops(a: Actor, w: WeaponCfg, S: Swing) {
   const P = G.projectiles; if (!P) return;
   const yaw = S.yaw, side = S.side;
   const pitch = a.aimPitch;
@@ -136,7 +153,7 @@ function fireDrops(a, w, S) {
   const up = steep ? pitch * 0.85 : clamp(pitch, -0.4, 0.45) * 0.75 + 0.06;
   const vol = { hit: new Set() };
   const N = w.tapDrops, A = w.tapSpreadDeg * DEG;
-  const col = G.teamColors[a.team] || a.color;
+  const col = G.teamColors[a.team]! || a.color;
   for (let i = 0; i < N; i++) {
     const t = N > 1 ? i / (N - 1) : 0.5;
     const off = side * (t - 0.5) * A;                         // side +1 sweeps the kid's right → left
@@ -156,7 +173,7 @@ function fireDrops(a, w, S) {
     const r = steep ? 0.55 : 0.8;
     p.pos.set(a.pos.x + ox * r, a.pos.y + (steep ? 0.7 : 0.98) + (0.5 - t) * 0.12, a.pos.z + oz * r);
     _v3.set(a.pos.x, p.pos.y, a.pos.z);
-    if (!G.physics.los(_v3, p.pos)) p.pos.copy(_v3).addScaledVector(_v.set(ox, 0, oz), 0.12);
+    if (!G.physics!.los(_v3, p.pos)) p.pos.copy(_v3).addScaledVector(_v.set(ox, 0, oz), 0.12);
     p.prev.copy(p.pos); p.start.copy(p.pos);
     const cu = Math.cos(up + (Math.random() - 0.5) * 0.05);
     // outward, with a little of the sweep's own motion
@@ -178,25 +195,25 @@ function fireDrops(a, w, S) {
 }
 
 // the blade meets the ground in front at the bottom of the overhead cut: a stroke of ink (cuts through enemy ink)
-function groundStroke(a, w, S) {
+function groundStroke(a: Actor, w: WeaponCfg, S: Swing) {
   const fx = Math.sin(S.yaw), fz = Math.cos(S.yaw);
   _n.set(fx, 0, fz);
   let area = 0;
   for (const d of [0.75, 1.35]) {
     _v.set(a.pos.x + fx * d, a.pos.y + 0.8, a.pos.z + fz * d);
-    const g = G.physics.raycast(_v, DOWN, 2.2, _hit2, true);
+    const g = G.physics!.raycast(_v, DOWN, 2.2, _hit2, true);
     if (!g.hit) continue;
     _v2.copy(g.point).addScaledVector(g.normal, 0.08);
-    area += G.paint.splat(_v2, w.strokeRadius, a.team, { seed: Math.random(), stretch: _n, stretchAmt: 0.9 });
-    if (d > 1 && heard(a)) G.fx?.burst(g.point, g.normal, G.teamColors[a.team] || a.color, { count: 10, speed: 3.5, size: 0.08 });
+    area += G.paint!.splat(_v2, w.strokeRadius, a.team, { seed: Math.random(), stretch: _n, stretchAmt: 0.9 });
+    if (d > 1 && heard(a)) G.fx?.burst(g.point, g.normal, G.teamColors[a.team]! || a.color, { count: 10, speed: 3.5, size: 0.08 });
   }
   credit(a, area, S.sp);
 }
-function credit(a, area, sp) { if (area > 0) { if (sp) a.addTurfNoSpecial(area); else a.addTurf(area); } }
+function credit(a: Actor, area: number, sp: boolean) { if (area > 0) { if (sp) a.addTurfNoSpecial(area); else a.addTurf(area); } }
 
 // The blade as a hitbox: every enemy inside the arc in front (reach + their body radius, the swing's vertical window,
 // nothing through walls) takes the cut's melee damage once per swing. Shields / curtains in between take it instead.
-function melee(a, w, S) {
+function melee(a: Actor, w: WeaponCfg, S: Swing) {
   const reach = w.reach, half = (S.heavy ? w.heavyArcDeg : w.meleeArcDeg) * DEG * 0.5;
   const fx = Math.sin(S.yaw), fz = Math.cos(S.yaw);
   const dmg = S.heavy ? w.heavyMelee : w.tapMelee;
@@ -212,15 +229,15 @@ function melee(a, w, S) {
     const ang = Math.atan2(lat, fwd);
     if (ang > half && !(d < hr + 0.4 && fwd > -0.15)) continue;
     _v.set(e.pos.x, e.pos.y + (e.smoothY || 0) + Math.min(h * 0.6, 0.85), e.pos.z);
-    if (!G.physics.los(_v3, _v)) continue;
+    if (!G.physics!.los(_v3, _v)) continue;
     S.hits.add(e);
     if (G.subs?.blockShot(_v3, _v, a.team, dmg)) { if (heard(a)) G.audio?.play('blade_hit', { pos: _v, volume: 0.4, pitch: 1.4 }); continue; }
-    G.projectiles.applyHit(a, e, dmg, 'blade');
+    G.projectiles!.applyHit(a, e, dmg, 'blade');
     // contact: where the edge meets the body
     _v2.copy(_v).sub(_v3); const l = _v2.length() || 1; _v2.multiplyScalar(1 / l);
     _v.copy(_v3).addScaledVector(_v2, Math.max(0.2, l - hr));
     if (heard(a) || e.isLocal) {
-      const col = G.teamColors[a.team] || a.color;
+      const col = G.teamColors[a.team]! || a.color;
       G.fx?.burst(_v, _v2.negate(), col, { count: S.heavy ? 18 : 10, speed: S.heavy ? 6 : 4, size: 0.09, mist: true });
       G.audio?.play('blade_hit', { pos: a.isLocal ? undefined : _v, volume: a.isLocal ? 0.6 : 0.5, pitch: S.heavy ? 0.78 : 1 });
     }
@@ -242,38 +259,43 @@ function melee(a, w, S) {
 }
 
 // ------------------------------------------------------------------------------------------ the ink wave
-const WAVES = [];
-const r2 = (x) => Math.round(x * 100) / 100, r3 = (x) => Math.round(x * 1000) / 1000;
-function spawnWave(a, w, S) {
+/** 강베기 물결: 주인·팀, 위치·이전·방향·거리·시간, 맞힌 대상, 칠하기 누적, 사라짐, 스페셜 중, 색·모양, 무기, 원격 유령 */
+interface WaveRec {
+  owner: Actor; team: number; pos: THREE.Vector3; prev: THREE.Vector3; dir: THREE.Vector3; dist: number; t: number; hits: Set<object>;
+  paintAcc: number; dying: number; sp: boolean; col: THREE.Color; fx: Wave | null; w: WeaponCfg; ghost: boolean;
+}
+const WAVES: WaveRec[] = [];
+const r2 = (x: number) => Math.round(x * 100) / 100, r3 = (x: number) => Math.round(x * 1000) / 1000;
+function spawnWave(a: Actor, w: WeaponCfg, S: Swing) {
   const pitch = Math.abs(S.pitch) < 0.3 ? S.pitch * 0.4 : clamp(S.pitch, -0.45, 0.35);
   const cp = Math.cos(pitch);
   const dir = new THREE.Vector3(Math.sin(S.yaw) * cp, Math.sin(pitch), Math.cos(S.yaw) * cp);
   const pos = new THREE.Vector3(a.pos.x + Math.sin(S.yaw) * 0.55, a.pos.y + w.waveHeight * 0.52, a.pos.z + Math.cos(S.yaw) * 0.55);
   // starting inside a wall (hugging cover): the wave is born where the wall is and bursts there
   _v.set(a.pos.x, pos.y, a.pos.z);
-  if (!G.physics.los(_v, pos)) pos.copy(_v);
+  if (!G.physics!.los(_v, pos)) pos.copy(_v);
   addWave(a, w, pos, dir, S.sp, false);
   netRec(a, 'blade', [r2(pos.x), r2(pos.y), r2(pos.z), r3(dir.x), r3(dir.y), r3(dir.z)]);
   emit('weapon:fire', { actor: a, weapon: w.id, cut: 'charged', muzzle: pos.clone(), dir: dir.clone() });
 }
 // ghost: a remote player's wave (online) — it rolls, cuts and bursts for the eye only (the owner's hits + splats arrive
 // apart)
-function addWave(a, w, pos, dir, sp, ghost) {
-  const col = (G.teamColors[a.team] || a.color).clone();
-  const W = { owner: a, team: a.team, pos: pos.clone(), prev: pos.clone(), dir: dir.clone(), dist: 0, t: 0, hits: new Set(), paintAcc: 0.3, dying: -1, sp, col, fx: BladeFX.waveMesh(col), w, ghost };
+function addWave(a: Actor, w: WeaponCfg, pos: THREE.Vector3, dir: THREE.Vector3, sp: boolean, ghost: boolean) {
+  const col = (G.teamColors[a.team]! || a.color).clone();
+  const W: WaveRec = { owner: a, team: a.team, pos: pos.clone(), prev: pos.clone(), dir: dir.clone(), dist: 0, t: 0, hits: new Set(), paintAcc: 0.3, dying: -1, sp, col, fx: BladeFX.waveMesh(col), w, ghost };
   WAVES.push(W);
   if (ghost && a._nearCamera?.()) G.audio?.play('blade_heavy', { pos, volume: 0.5 });   // (the remote cut's sound)
 }
-function ghost(a, d) {
+function ghost(a: Actor, d: number[]) {
   if (!Array.isArray(d)) return;
-  addWave(a, WEAPONS.blade, _gp.set(d[0], d[1], d[2]), _gd.set(d[3], d[4], d[5]).normalize(), false, true);
+  addWave(a, WEAPON_CFG.blade!, _gp.set(d[0], d[1], d[2]), _gd.set(d[3], d[4], d[5]).normalize(), false, true);
 }
 const _gp = new THREE.Vector3(), _gd = new THREE.Vector3();
-function endWave(W, at, normal) {
+function endWave(W: WaveRec, at: THREE.Vector3 | null, normal: THREE.Vector3 | null) {   // (at가 있으면 normal도 있다)
   W.dying = 0.14;
   const col = W.col;
-  if (at) {
-    const area = G.paint.splat(_v.copy(at).addScaledVector(normal, 0.1), W.w.waveEndRadius, W.team, { seed: Math.random() });
+  if (at && normal) {
+    const area = G.paint!.splat(_v.copy(at).addScaledVector(normal, 0.1), W.w.waveEndRadius, W.team, { seed: Math.random() });
     credit(W.owner, area, W.sp);
     emit('weapon:impact', { pos: at.clone(), normal: normal.clone(), team: W.team, kind: 'drop', radius: W.w.waveEndRadius });
     if (G.camera && G.camera.position.distanceToSquared(at) < 30 * 30) {
@@ -282,8 +304,8 @@ function endWave(W, at, normal) {
     }
   } else {
     // spent: the wave slumps into a spatter of drops that paint where they land
-    const g = G.physics.raycast(W.pos, DOWN, 3, _hit2, true);
-    if (g.hit) credit(W.owner, G.paint.splat(_v.copy(g.point).addScaledVector(g.normal, 0.1), W.w.waveEndRadius * 0.85, W.team, { seed: Math.random(), stretch: _n.set(W.dir.x, 0, W.dir.z).normalize(), stretchAmt: 0.6 }), W.sp);
+    const g = G.physics!.raycast(W.pos, DOWN, 3, _hit2, true);
+    if (g.hit) credit(W.owner, G.paint!.splat(_v.copy(g.point).addScaledVector(g.normal, 0.1), W.w.waveEndRadius * 0.85, W.team, { seed: Math.random(), stretch: _n.set(W.dir.x, 0, W.dir.z).normalize(), stretchAmt: 0.6 }), W.sp);
     if (G.fx && G.camera && G.camera.position.distanceToSquared(W.pos) < 30 * 30) {
       for (let i = 0; i < 8; i++) {
         _v.copy(W.pos); _v.y += (Math.random() - 0.5) * 1.2;
@@ -293,7 +315,7 @@ function endWave(W, at, normal) {
     }
   }
 }
-function updateWaves(dt) {
+function updateWaves(dt: number) {
   const nm = G.netm;
   for (let i = WAVES.length - 1; i >= 0; i--) {
     const W = WAVES[i], g = W.ghost && nm;   // (a ghost wave's splats are its owner's to send)
@@ -301,7 +323,7 @@ function updateWaves(dt) {
     try { stepWave(W, i, dt); } finally { if (g) nm.mute--; }
   }
 }
-function stepWave(W, i, dt) {
+function stepWave(W: WaveRec, i: number, dt: number) {
   {
     const w = W.w;
     W.t += dt;
@@ -330,7 +352,7 @@ function stepWave(W, i, dt) {
       const y0 = e.pos.y + (e.smoothY || 0);
       if (y0 + h < cy - w.waveHeight * 0.55 || y0 > cy + w.waveHeight * 0.45) continue;
       W.hits.add(e);
-      if (!W.ghost) G.projectiles.applyHit(W.owner, e, dmg, 'blade');
+      if (!W.ghost) G.projectiles!.applyHit(W.owner, e, dmg, 'blade');
       if (G.camera && G.camera.position.distanceToSquared(e.pos) < 30 * 30) {
         _v.set(e.pos.x, y0 + Math.min(h * 0.6, 0.9), e.pos.z);
         G.fx?.burst(_v, _v2.copy(W.dir).negate(), W.col, { count: 12, speed: 4.5, size: 0.09 });
@@ -346,17 +368,17 @@ function stepWave(W, i, dt) {
     const bd = W.ghost ? 0 : dmg;
     if (G.subs?.blockShot(W.prev, W.pos, W.team, bd) || G.specials?.shotHit(W.prev, W.pos, W.team, bd, W.owner)) { endWave(W, W.pos.clone(), _n.copy(W.dir).negate()); stop = true; }
     if (!stop) {
-      const hit = G.physics.segment(W.prev, W.pos, _hit, true);
+      const hit = G.physics!.segment(W.prev, W.pos, _hit, true);
       if (hit.hit) { W.pos.copy(hit.point); endWave(W, hit.point, hit.normal); stop = true; }
     }
     // a straight stripe of ink along its path
     W.paintAcc += step;
     if (!stop && W.paintAcc >= w.wavePaintEvery) {
       W.paintAcc = 0;
-      const g = G.physics.raycast(W.pos, DOWN, w.waveHeight * 0.52 + 1.4, _hit2, true);
+      const g = G.physics!.raycast(W.pos, DOWN, w.waveHeight * 0.52 + 1.4, _hit2, true);
       if (g.hit) {
         _n.set(ux, 0, uz);
-        const area = G.paint.splat(_v.copy(g.point).addScaledVector(g.normal, 0.08), w.wavePaintRadius * (0.9 + Math.random() * 0.2), W.team, { seed: Math.random(), stretch: _n, stretchAmt: 0.85 });
+        const area = G.paint!.splat(_v.copy(g.point).addScaledVector(g.normal, 0.08), w.wavePaintRadius * (0.9 + Math.random() * 0.2), W.team, { seed: Math.random(), stretch: _n, stretchAmt: 0.85 });
         credit(W.owner, area, W.sp);
       }
     }
@@ -370,7 +392,7 @@ function stepWave(W, i, dt) {
     placeWave(W);
   }
 }
-function placeWave(W) {
+function placeWave(W: WaveRec) {
   if (!W.fx) return;
   const m = W.fx.mesh, w = W.w;
   _z.copy(W.dir).normalize();
@@ -400,10 +422,19 @@ function placeWave(W) {
 //   · no dodge-hop on every hit; hurt: slip out of a shooter's line in our ink; at blade range, finish the fight
 //     (stayIn) instead of turning away; falling back: swim where the way back is ours, run where it isn't
 // SKILL (per difficulty) scales the flank / cover / lurk / dive use, the strafe and the timing.
-const SKILL = { easy: 0.35, normal: 0.7, hard: 1 };
-const DIVE = { easy: 0, normal: 0.6, hard: 0.9 };          // chance a full charge is carried in a swim (lane permitting)
+const SKILL: Record<string, number | undefined> = { easy: 0.35, normal: 0.7, hard: 1 };
+const DIVE: Record<string, number | undefined> = { easy: 0, normal: 0.6, hard: 0.9 };          // chance a full charge is carried in a swim (lane permitting)
 const _rs = { own: 0, enemy: 0, empty: 0, n: 0 };
-function botState(brain) {
+/** 봇 칼잡이 상태(두뇌에 붙는다): 누름 토글, 충전 유지·완료 시간, 잠수, 돌진, 물결 간격, 옆걸음, 측면·엄폐·헤엄 길·걷기 판정,
+ *  기다림, 목표, 직전 거리·접근 속도, 정면 시간, 숨어 기다림 */
+interface BladeBot {
+  press: boolean; hold: number; full: number; dive: number; dove: number; diveOK: boolean; rush: number; waveT: number; side: number;
+  sideT: number; flankT: number; flank: number[] | null; coverT: number; cover: { x: number; z: number } | null; laneT: number; lane: boolean;
+  walkT: number; walk: boolean; patience: number; target: Actor | null; lastD: number; closeV: number; square: number; lurk: number;
+}
+/** 칼 키트가 봇 두뇌에 다는 필드(_bl: 상태, _blHold: 충전 유지 요청 시각) */
+type BladeBrain = BotBrain & { _bl?: BladeBot; _blHold?: number };
+function botState(brain: BladeBrain): BladeBot {
   return brain._bl || (brain._bl = {
     press: false, hold: 0, full: 0, dive: 0, dove: 0, diveOK: false, rush: 0, waveT: 3, side: Math.random() < 0.5 ? -1 : 1,
     sideT: 0, flankT: 0, flank: null, coverT: 0, cover: null, laneT: 0, lane: false, walkT: 0, walk: false, patience: 1,
@@ -411,40 +442,40 @@ function botState(brain) {
   });
 }
 // own ink along the line (nx, nz) from the kid, as far as d m ahead: a swim lane
-function ownLane(a, nx, nz, d) {
+function ownLane(a: Actor, nx: number, nz: number, d: number) {
   for (const k of [1.2, 2.6, 4.2]) {
     if (k > 1.2 && k > d - 0.6) break;
-    const s = G.paint.regionStats(a.pos.x + nx * k, a.pos.y, a.pos.z + nz * k, 0.8, a.team, _rs);
+    const s = G.paint!.regionStats(a.pos.x + nx * k, a.pos.y, a.pos.z + nz * k, 0.8, a.team, _rs);
     if (!s.n || s.own < 0.5) return false;
   }
   return true;
 }
 // can the kid walk len m along (ux, uz): no wall at knee height, no water, no drop off a ledge
-function walkable(brain, a, ux, uz, len) {
+function walkable(brain: BotBrain, a: Actor, ux: number, uz: number, len: number) {
   const x1 = a.pos.x + ux * len, z1 = a.pos.z + uz * len;
   if (!brain._fatLos(a.pos.x, a.pos.y, a.pos.z, x1, a.pos.y, z1)) return false;
   if (!brain._dryLine(a.pos.x, a.pos.y, a.pos.z, x1, z1)) return false;
-  return G.level.groundHeight(x1, z1, a.pos.y + 0.6) > a.pos.y - 1.4;
+  return G.level!.groundHeight(x1, z1, a.pos.y + 0.6) > a.pos.y - 1.4;
 }
 // heading along the bot's nav path (its look-ahead waypoint); null without one
-function pathDir(brain, a) {
+function pathDir(brain: BotBrain, a: Actor) {
   const p = brain.path; if (!p || brain.pi >= p.length) return null;
-  const i = brain._laPath === p && brain._laTi >= brain.pi && brain._laTi < p.length ? brain._laTi : brain.pi;
-  const n = G.nav.nodes[p[i]], dx = n.x - a.pos.x, dz = n.z - a.pos.z, l = Math.hypot(dx, dz);
+  const i = brain._laPath === p && brain._laTi! >= brain.pi && brain._laTi! < p.length ? brain._laTi! : brain.pi;
+  const n = G.nav!.nodes[p[i]], dx = n.x - a.pos.x, dz = n.z - a.pos.z, l = Math.hypot(dx, dz);
   return l > 0.05 ? [dx / l, dz / l] : null;
 }
 // a spot 1.6–3.2 m away, level with us and reachable on foot, that the target can't see: charge behind it
-function coverSpot(brain, a, t, dist) {
+function coverSpot(brain: BotBrain, a: Actor, t: Actor, dist: number) {
   _v3.set(t.pos.x, t.pos.y + 1.3, t.pos.z);
-  let best = null, bs = -Infinity;
+  let best: { x: number; z: number } | null = null, bs = -Infinity;
   const base = Math.random() * Math.PI * 2;
   for (let i = 0; i < 10; i++) {
     const ang = base + (i / 10) * Math.PI * 2, r = i % 2 ? 1.6 : 3.2, ux = Math.sin(ang), uz = Math.cos(ang);
-    const x = a.pos.x + ux * r, z = a.pos.z + uz * r, gy = G.level.groundHeight(x, z, a.pos.y + 0.6);
+    const x = a.pos.x + ux * r, z = a.pos.z + uz * r, gy = G.level!.groundHeight(x, z, a.pos.y + 0.6);
     if (!(Math.abs(gy - a.pos.y) < 0.5)) continue;
     const dT = Math.hypot(t.pos.x - x, t.pos.z - z);
     if (dT > dist + 1.5 || dT < 3) continue;                                    // not a retreat, not into their face
-    if (G.physics.los(_v3, _v2.set(x, gy + 1.0, z))) continue;                  // they'd still see us there
+    if (G.physics!.los(_v3, _v2.set(x, gy + 1.0, z))) continue;                  // they'd still see us there
     if (!walkable(brain, a, ux, uz, r)) continue;
     const sc = -(dT - dist) * 0.6 - r * 0.3;
     if (sc > bs) { bs = sc; best = { x, z }; }
@@ -452,9 +483,9 @@ function coverSpot(brain, a, t, dist) {
   return best;
 }
 
-function botTactics(brain, ctx) {
+function botTactics(brain: BladeBrain, ctx: BotFightCtx) {
   const { a, w, dist, dt, it, move, target: t } = ctx;
-  const K = a.weaponRunner.kit;
+  const K = kitIn(a.weaponRunner);
   const B = botState(brain), sk = SKILL[brain.diff?.id] ?? 0.7;
   if (B.target !== t) { B.target = t; B.rush = 0; B.cover = null; B.coverT = 0; B.flank = null; B.flankT = 0; B.patience = lerp(1.3, 0.5, sk) + Math.random() * 0.5; B.lastD = dist; B.closeV = 0; }
   const charging = !!(K && K.charging), full = !!(K && K.full);
@@ -472,9 +503,10 @@ function botTactics(brain, ctx) {
   const level = dy < 1.5 && dy > -1.1;                                            // inside the blade's vertical window
   const aimOff = Math.abs(angleDiff(a.aimYaw, Math.atan2(dx, dz)));
   // does the target (a bot) have us spotted? A swimmer it hasn't spotted stays unseen if it keeps under ~7 m/s
-  const spotted = !t.bot || (t.bot.target === a && t.bot.seeTimer > 0);
+  const tb = t.bot as BotBrain | null | undefined;   // (캠페인 적 두뇌: target 없음 → 원래도 거짓)
+  const spotted = !tb || (tb.target === a && tb.seeTimer > 0);
   // their sights: looking our way (a bot that has us spotted: a wider cone), and do they outrange us?
-  const tw = t.weapon, ranged = !!tw && !MELEE[tw.kind] && weaponRange(tw) > w.range + 1;
+  const tw = t.weapon, ranged = !!tw && !MELEE[tw.kind] && weaponRange(tw)! > w.range + 1;
   const facing = -(Math.sin(t.aimYaw) * nx + Math.cos(t.aimYaw) * nz);
   const sighted = ctx.visible && facing > (t.bot && spotted ? 0.6 : 0.85);
   const exposed = sighted && ranged;
@@ -525,7 +557,7 @@ function botTactics(brain, ctx) {
     }
     return [ux, uz];
   };
-  let fire = false, hold = false, squid = false, mv = null;
+  let fire: boolean | null | undefined = false, hold = false, squid = false, mv = null;
 
   if ((brain.blockT || 0) > 0.15) {
     // an enemy canopy in the way: bots.js flanks round it (_shieldFight); keep a charge for the opening, no cuts into it
@@ -621,7 +653,7 @@ function botTactics(brain, ctx) {
 // ------------------------------------------------------------------------------------------ the kit
 MAIN_KITS.blade = {
   ghost,
-  update(R, dt, inp, w) {
+  update(R: WeaponRunner, dt: number, inp: WeaponInput, w: WeaponCfg) {
     const a = R.a, K = st(R);
     if (G.time - K.lastT > 0.3) { cancelCharge(R, K); K.held = false; K.swing = null; K.lunge = 0; K.queued = 0; }   // resumed after a special took the trigger
     K.lastT = G.time;
@@ -676,21 +708,21 @@ MAIN_KITS.blade = {
     }
     R.charge = K.charge;
   },
-  reset(R) { stopHum(R); },
+  reset(R: WeaponRunner) { stopHum(R); },
   // (a charge doesn't make the runner busy: you can dive with it held — see chargeStore — and swim on)
-  busy(R) { const K = R.kit; return !!K && !!K.swing; },
-  firingPose(R) { const K = R.kit; return !!K && (K.charging || (!!K.swing && K.swing.t < 0.3)); },
-  moveSpeed(R, w) {
-    const K = R.kit; if (!K) return 0;
+  busy(R: WeaponRunner) { const K = kitIn(R); return !!K && !!K.swing; },
+  firingPose(R: WeaponRunner) { const K = kitIn(R); return !!K && (K.charging || (!!K.swing && K.swing.t < 0.3)); },
+  moveSpeed(R: WeaponRunner, w: WeaponCfg) {
+    const K = kitIn(R); if (!K) return 0;
     if (K.swing && K.swing.heavy && K.swing.t < 0.3) return w.moveSpeedFiring * 0.55;   // planted after the lunge
     if (K.charging) return w.moveSpeedCharging;
     if (R.firingT > 0) return w.moveSpeedFiring;
     return 0;
   },
-  tick(dt) {
+  tick(dt: number) {
     BladeFX.tick(dt);
     updateWaves(dt);
-    for (const [R] of HUMS) { const K = R.kit; if (!K || !K.charging || R.a.weapon?.kind !== 'blade' || !R.a.alive) stopHum(R); }
+    for (const [R] of HUMS) { const K = kitIn(R); if (!K || !K.charging || R.a.weapon?.kind !== 'blade' || !R.a.alive) stopHum(R); }
   },
   clear() {
     for (const W of WAVES) BladeFX.freeWave(W.fx);
@@ -707,25 +739,25 @@ MAIN_KITS.blade = {
     paintPitch: -0.2,
     tactics: botTactics,
     // low on health in a fight at blade range (or charged and nearly there): finish it rather than turn and run
-    stayIn(brain) {
+    stayIn(brain: BotBrain) {
       const a = brain.a, t = brain.target; if (!t || !t.pos) return false;
-      const d = Math.hypot(t.pos.x - a.pos.x, t.pos.z - a.pos.z), K = a.weaponRunner.kit;
+      const d = Math.hypot(t.pos.x - a.pos.x, t.pos.z - a.pos.z), K = kitIn(a.weaponRunner);
       return Math.abs(t.pos.y - a.pos.y) < 1.4 && (d < 4.5 || (!!K && K.full && d < 5.5));
     },
     // target choice (bots.js _perceive adds this to the distance score; lower is preferred): an enemy busy with one of
     // our team is the kill a sword gets; a ranged one that has us spotted from beyond the droplets' reach is the duel
     // it loses — another enemy within ~4 m of it is taken first
-    targetBias(brain, e, d) {
-      const eb = e.bot, a = brain.a;
+    targetBias(brain: BotBrain, e: Actor, d: number) {
+      const eb = e.bot as BotBrain | null | undefined, a = brain.a;   // (캠페인 적 두뇌에는 target·seeTimer가 없다: 원래도 거짓 분기)
       let b = e.hp <= 50 && d < 12 ? -2 : 0;                                          // a hurt one: finish it
       if (!eb) return b;
       if (eb.target && eb.target !== a && eb.target.team === a.team && eb.seeTimer > 0 && d < 14) b -= 4;
       else if (eb.target === a && eb.seeTimer > 0 && d > a.weapon.range && !MELEE[e.weapon.kind]) b += 4;
       return b;
     },
-    paint(brain, ctx) {
+    paint(brain: BladeBrain, ctx: BotPaintCtx) {
       const { a, w, needPaint, inkFrac, wantMove, dt } = ctx;
-      const K = a.weaponRunner.kit || {};
+      const K: Partial<BladeKit> = kitIn(a.weaponRunner) || {};
       const B = botState(brain);
       B.waveT -= dt;
       if (K.charging) {

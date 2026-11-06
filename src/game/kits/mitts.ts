@@ -20,7 +20,14 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { G, emit, clamp, lerp } from '../../core/ctx.js';
-import { WEAPONS, PLAYER } from '../../config.js';
+import { WEAPON_CFG, PLAYER } from '../../config.js';
+import type { WeaponCfg } from '../../config.js';
+import type { Actor, ActorIntent } from '../actor.js';
+import type { WeaponRunner, WeaponInput } from '../weapons.js';
+import type { BotBrain } from '../bots.js';
+import type { BotFightCtx, BotPaintCtx } from './registry.js';
+import type { LoopHandle } from '../../audio/audio.js';
+import type { MittsKitView } from './mitts-model.js';
 import { Physics, Hit } from '../physics.js';
 import { superEllipsoid } from '../character-geo.js';
 import { MAIN_KITS, netRec } from './registry.js';
@@ -35,19 +42,37 @@ const _dir = new THREE.Vector3(), _hb = new THREE.Vector3(), _m4 = new THREE.Mat
 const _c = new THREE.Color(), _xa = new THREE.Vector3(), _ya = new THREE.Vector3();
 const _hit = new Hit(), _hitP = new Hit(), _hitC = new Hit();
 const _res = { t: 0, dist: 0 };
-const W = () => WEAPONS.mitts;
+const W = () => WEAPON_CFG.mitts!;
 const TAU = Math.PI * 2;
-const r2 = (x) => Math.round(x * 100) / 100, r3 = (x) => Math.round(x * 1000) / 1000;
+const r2 = (x: number) => Math.round(x * 100) / 100, r3 = (x: number) => Math.round(x * 1000) / 1000;
 const HAND_R = Object.freeze({ hand: 0, valueOf() { return 1; } }), HAND_L = Object.freeze({ hand: 1, valueOf() { return 1; } });
-const near = (p, r = 30) => { const c = G.rig?.gameCam || G.camera; return !!c && c.position.distanceToSquared(p) < r * r; };
-function rumble(a, strong, weak, ms) { if (a && a.isLocal && !a.isBot) G.input?.rumble?.(strong, weak, ms); }
-function credit(a, area, sp) { if (!(area > 0)) return; if (sp || a.specialActive) a.addTurfNoSpecial(area); else a.addTurf(area); }
+const near = (p: THREE.Vector3, r = 30) => { const c = G.rig?.gameCam || G.camera; return !!c && c.position.distanceToSquared(p) < r * r; };
+function rumble(a: Actor, strong: number, weak: number, ms: number) { if (a && a.isLocal && !a.isBot) G.input?.rumble?.(strong, weak, ms); }
+function credit(a: Actor, area: number, sp?: boolean) { if (!(area > 0)) return; if (sp || a.specialActive) a.addTurfNoSpecial(area); else a.addTurf(area); }
 
 // ================================================================================================ per-runner state
-const STATES = new Map();   // runner → its state (so tick can sweep a state the runner dropped)
-function K(r) {
-  let k = r.kit;
-  if (!k || !k.mitts) {
+/** 장갑 러너 상태(runner.kit): 모델이 읽는 MittsKitView + 주먹 간격·손, 도약 충전·비행·착지 예측, 벽 붙기, 봇 요청 도약 */
+interface MittsKit extends MittsKitView {
+  seen: number; cd: number; side: number; chargeT: number; chargeAir: number; full: boolean; loop: LoopHandle | null;
+  leapT: number; leapV: THREE.Vector3; leapH: number; slid: boolean; trail: number; trailP: THREE.Vector3; predT: number; land: LandPred;
+  hang: boolean; clingT: number; clingN: THREE.Vector3; clingPt: THREE.Vector3; drain: LoopHandle | null; dryWarn: number;
+  botWant: number; botYaw: number; botPitch: number; botKind?: string; botHold: number; squishT?: number;   // (botHold: startCling이 둔다)
+}
+/** 도약 착지 예측: 종류(ground·wall·bump·sea·none), 발 위치·면 법선·맞은 점, 블록, 시간, 경로 점 수 */
+interface LandPred { kind: string; pos: THREE.Vector3; normal: THREE.Vector3; hitPt: THREE.Vector3; block: number; t: number; n: number }
+/** 날아가는 주먹(풀에서 재사용): 위치·이전·출발·속도·방향, 주인·팀, 나이·수명, 손, 무늬, 스페셜 중, 꼬리, 회전, 유령 */
+interface Fist {
+  pos: THREE.Vector3; prev: THREE.Vector3; start: THREE.Vector3; vel: THREE.Vector3; dir: THREE.Vector3; owner: Actor | null; team: number;
+  age: number; life: number; hand: number; seed: number; sp: boolean; trail: number; spin: number; ghost: boolean;
+}
+/** 봇 장갑 상태(두뇌에 붙는다): 도약·벽·이동·탈출 쿨다운 */
+interface MittsBot { leapCd: number; wallCd: number; travelCd: number; escapeCd: number; weaveT?: number; weaveP?: number }
+type MittsBrain = BotBrain & { _mitts?: MittsBot };
+const kitIn = (r: WeaponRunner) => { const k = r.kit as MittsKit | null; return k && k.mitts ? k : null; };
+const STATES = new Map<WeaponRunner, MittsKit>();   // runner → its state (so tick can sweep a state the runner dropped)
+function K(r: WeaponRunner): MittsKit {
+  let k = kitIn(r);
+  if (!k) {
     k = r.kit = {
       mitts: true, seen: 0, cd: 0, side: 1,
       // leap charge
@@ -60,12 +85,12 @@ function K(r) {
       cling: false, hang: false, clingT: 0, clingN: new THREE.Vector3(), clingPt: new THREE.Vector3(), drain: null, dryWarn: 0,
       // bots: a leap they asked for (charge to reach, direction), set by bot.fight / bot.paint
       botWant: -1, botYaw: 0, botPitch: 0,
-    };
+    } as MittsKit;
     STATES.set(r, k);
   }
   return k;
 }
-function stopLoops(k) {
+function stopLoops(k: MittsKit) {
   k.loop?.stop(0.08); k.loop = null;
   k.drain?.stop(0.12); k.drain = null;
 }
@@ -74,10 +99,10 @@ function stopLoops(k) {
 // A glove-shaped ink blob flying knuckles-first: a fat fist, a row of four knuckle bumps across the face, the thumb
 // folded under them and a tapering ink tail. Instanced (team colour per instance) with a rim glow so it reads fast.
 const MAX_FISTS = 96;
-const fists = [], fistPool = [];
-let fistMesh = null;
+const fists: Fist[] = [], fistPool: Fist[] = [];
+let fistMesh: THREE.InstancedMesh | null = null;
 function fistGeometry() {
-  const parts = [];
+  const parts: THREE.BufferGeometry[] = [];
   parts.push(superEllipsoid(0.105, 0.092, 0.09, 0.72, 0.68, 22, 16, (q) => { if (q.z > 0.03) q.z = 0.03 + (q.z - 0.03) * 0.72; }));
   for (let i = 0; i < 4; i++) {
     const x = -0.069 + i * 0.046;
@@ -103,7 +128,7 @@ function ensureFistMesh() {
     fistMesh = new THREE.InstancedMesh(fistGeometry(), mat, MAX_FISTS);
     fistMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     fistMesh.setColorAt(0, _c.set(0xffffff));
-    fistMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+    fistMesh.instanceColor!.setUsage(THREE.DynamicDrawUsage);
     fistMesh.frustumCulled = false; fistMesh.castShadow = true; fistMesh.count = 0; fistMesh.name = 'mitts:fists';
   }
   if (fistMesh.parent !== G.scene) G.scene.add(fistMesh);
@@ -111,22 +136,22 @@ function ensureFistMesh() {
 }
 
 // the glove's face (where a fist leaves), falling back to a point in front of the chest on the punching side
-function gloveMuzzle(a, hand, out) {
+function gloveMuzzle(a: Actor, hand: number, out: THREE.Vector3) {
   const ch = a.character;
   if (ch.getMuzzleHand) ch.getMuzzleHand(out, hand); else ch.getMuzzle(out);
   _v3.copy(a.pos); _v3.y += 1.05;
-  if (!isFinite(out.x) || out.distanceToSquared(_v3) > 1.5 * 1.5 || !G.physics.los(_v3, out)) {
+  if (!isFinite(out.x) || out.distanceToSquared(_v3) > 1.5 * 1.5 || !G.physics!.los(_v3, out)) {
     const sx = hand ? 1 : -1, cy = Math.cos(a.yaw), sy = Math.sin(a.yaw);
     out.copy(_v3).addScaledVector(a.aimDir, 0.35);
     out.x += cy * 0.16 * sx; out.z -= sy * 0.16 * sx;
-    if (!G.physics.los(_v3, out)) out.copy(_v3);
+    if (!G.physics!.los(_v3, out)) out.copy(_v3);
   }
   return out;
 }
 
 // a fist leaves the glove at m along dir. ghost: a remote player's (online) — flies and bursts for the eye only
-function spawnFist(a, w, hand, m, dir, ghost = false) {
-  const f = fistPool.pop() || { pos: new THREE.Vector3(), prev: new THREE.Vector3(), start: new THREE.Vector3(), vel: new THREE.Vector3(), dir: new THREE.Vector3() };
+function spawnFist(a: Actor, w: WeaponCfg, hand: number, m: THREE.Vector3, dir: THREE.Vector3, ghost = false) {
+  const f = fistPool.pop() || { pos: new THREE.Vector3(), prev: new THREE.Vector3(), start: new THREE.Vector3(), vel: new THREE.Vector3(), dir: new THREE.Vector3() } as Fist;   // (나머지 필드는 바로 아래에서 채운다)
   f.owner = a; f.team = a.team; f.age = 0; f.life = w.fistRange / w.fistSpeed; f.hand = hand; f.seed = Math.random();
   f.sp = !!a.specialActive; f.trail = -0.8; f.spin = (Math.random() - 0.5) * 0.6; f.ghost = ghost;
   f.pos.copy(m); f.prev.copy(m); f.start.copy(m); f.dir.copy(dir); f.vel.copy(dir).multiplyScalar(w.fistSpeed);
@@ -134,10 +159,10 @@ function spawnFist(a, w, hand, m, dir, ghost = false) {
   if (a.isLocal || near(m)) G.audio?.play('mitts_punch', { pos: a.isLocal ? undefined : m, volume: a.isLocal ? 0.6 : 0.45, pitch: hand ? 1.06 : 0.97 });
   return f;
 }
-function fireFist(a, w, hand) {
+function fireFist(a: Actor, w: WeaponCfg, hand: number) {
   const m = gloveMuzzle(a, hand, _v);
-  const dir = G.projectiles._aimFrom(a, m, _dir);
-  G.projectiles._spread(dir, w.punchSpread);
+  const dir = G.projectiles!._aimFrom(a, m, _dir);
+  G.projectiles!._spread(dir, w.punchSpread);
   spawnFist(a, w, hand, m, dir);
   netRec(a, 'mitts', [0, r2(m.x), r2(m.y), r2(m.z), r3(dir.x), r3(dir.y), r3(dir.z), hand]);
   emit('weapon:fire', { actor: a, weapon: w.id, muzzle: m.clone(), dir: dir.clone(), hand });
@@ -145,34 +170,34 @@ function fireFist(a, w, hand) {
   if (r.rumbleT <= 0) { r.rumbleT = 0.08; rumble(a, 0.05, 0.12, 45); }
 }
 
-function hitBase(e) { return _hb.set(e.pos.x, e.pos.y + (e.smoothY || 0), e.pos.z); }
+function hitBase(e: Actor) { return _hb.set(e.pos.x, e.pos.y + (e.smoothY || 0), e.pos.z); }
 
 // A fist bursts: splash damage to everyone near but the one it hit, paint where it burst (on the surface it hit, else
 // the ground under it), FX + pop.
-function burstFist(f, at, direct, normal) {
+function burstFist(f: Fist, at: THREE.Vector3, direct: 'boss' | Actor | null, normal: THREE.Vector3 | null) {
   const w = W(), o = f.owner;
   if (!o) return;
   const c = _a.copy(at);
   if (f.ghost) { burstFx(f, o, c, direct, normal, w); return; }
   let area = 0;
-  if (normal) area = G.paint.splat(_b.copy(at).addScaledVector(normal, 0.12), w.fistPaint * (0.85 + Math.random() * 0.3), f.team, { seed: f.seed, stretch: f.dir, stretchAmt: 0.45 });
+  if (normal) area = G.paint!.splat(_b.copy(at).addScaledVector(normal, 0.12), w.fistPaint * (0.85 + Math.random() * 0.3), f.team, { seed: f.seed, stretch: f.dir, stretchAmt: 0.45 });
   else {
-    const g = G.physics.raycast(_b.set(at.x, at.y + 0.2, at.z), DOWN, 3.4, _hit, true);
-    if (g.hit) area = G.paint.splat(_b.copy(g.point).addScaledVector(g.normal, 0.1), w.fistPaint * 0.85, f.team, { seed: f.seed });
+    const g = G.physics!.raycast(_b.set(at.x, at.y + 0.2, at.z), DOWN, 3.4, _hit, true);
+    if (g.hit) area = G.paint!.splat(_b.copy(g.point).addScaledVector(g.normal, 0.1), w.fistPaint * 0.85, f.team, { seed: f.seed });
   }
   credit(o, area, f.sp);
   for (const e of G.actors) {
     if (e.team === f.team || !e.alive || e === direct) continue;
     _v2.copy(e.pos); _v2.y += (e.smoothY || 0) + (e.form === 'squid' ? 0.3 : 0.7);
     const d = _v2.distanceTo(c);
-    if (d > w.splashRadius || !G.physics.los(c, _v2)) continue;
-    G.projectiles.applyHit(o, e, lerp(w.splashMax, w.splashMin, clamp(d / w.splashRadius, 0, 1)), 'mitts');
+    if (d > w.splashRadius || !G.physics!.los(c, _v2)) continue;
+    G.projectiles!.applyHit(o, e, lerp(w.splashMax, w.splashMin, clamp(d / w.splashRadius, 0, 1)), 'mitts');
   }
   G.specials?.areaHit?.(c, w.splashRadius, w.splashMin, f.team, o);
   if (direct !== 'boss') G.boss?.splash(o, c, w.splashRadius, w.splashMax, w.splashMin, 'mitts');   // Boss Battle
   burstFx(f, o, c, direct, normal, w);
 }
-function burstFx(f, o, c, direct, normal, w) {
+function burstFx(f: Fist, o: Actor, c: THREE.Vector3, direct: 'boss' | Actor | null, normal: THREE.Vector3 | null, w: WeaponCfg) {
   const col = o.color, show = o.isLocal || near(c, 26);
   if (show) {
     const n = normal || _v2.copy(f.dir).negate();
@@ -185,7 +210,7 @@ function burstFx(f, o, c, direct, normal, w) {
   emit('weapon:impact', { pos: c.clone(), normal: (normal || UP).clone(), team: f.team, kind: 'shot', radius: w.splashRadius, victim: direct && direct !== 'boss' ? direct : undefined });
 }
 
-function updateFists(dt) {
+function updateFists(dt: number) {
   const w = W(), nm = G.netm;
   for (let i = fists.length - 1; i >= 0; i--) {
     const f = fists[i];
@@ -194,9 +219,9 @@ function updateFists(dt) {
   }
   drawFists();
 }
-function stepFist(f, i, w, dt) {
+function stepFist(f: Fist, i: number, w: WeaponCfg, dt: number) {
   {
-    let dead = !f.owner;
+    let dead = !f.owner;   // (살아 있는 주먹에는 주인이 있다: 아래 f.owner!)
     f.age += dt;
     f.prev.copy(f.pos);
     f.pos.addScaledVector(f.vel, dt);
@@ -209,8 +234,8 @@ function stepFist(f, i, w, dt) {
       Physics.segmentCapsuleDist(f.prev, f.pos, hitBase(e), hr, h, _res);
       if (_res.dist < hr * 0.95 + hr0) {
         _v.copy(f.prev).lerp(f.pos, _res.t);
-        if (!f.ghost) G.projectiles.applyHit(f.owner, e, w.punchDamage, 'mitts');
-        G.fx?.burst(_v, _v2.copy(f.dir).negate(), f.owner.color, { count: 7, speed: 3.2, size: 0.08 });
+        if (!f.ghost) G.projectiles!.applyHit(f.owner!, e, w.punchDamage, 'mitts');
+        G.fx?.burst(_v, _v2.copy(f.dir).negate(), f.owner!.color, { count: 7, speed: 3.2, size: 0.08 });
         burstFist(f, _v, e, null);
         dead = true; break;
       }
@@ -223,10 +248,10 @@ function stepFist(f, i, w, dt) {
     // enemy curtains / devices / special objects catch it (and it bursts there) — a ghost's blow costs them nothing
     const fd = f.ghost ? 0 : w.punchDamage;
     if (!dead && G.subs && G.subs.blockShot(f.prev, f.pos, f.team, fd)) { burstFist(f, f.pos, null, null); dead = true; }
-    if (!dead && G.specials && G.specials.shotHit(f.prev, f.pos, f.team, fd, f.owner)) { burstFist(f, f.pos, null, null); dead = true; }
+    if (!dead && G.specials && G.specials.shotHit(f.prev, f.pos, f.team, fd, f.owner!)) { burstFist(f, f.pos, null, null); dead = true; }
     // the level
     if (!dead) {
-      const h = G.physics.segment(f.prev, f.pos, _hit, true);
+      const h = G.physics!.segment(f.prev, f.pos, _hit, true);
       if (h.hit) { _v.copy(h.point); _v3.copy(h.normal); burstFist(f, _v, null, _v3); dead = true; }
     }
     // end of its reach: bursts in the air
@@ -237,8 +262,8 @@ function stepFist(f, i, w, dt) {
       f.trail += w.fistSpeed * dt;
       if (f.trail > 1.5) {
         f.trail = 0;
-        const g = G.physics.raycast(f.pos, DOWN, 3, _hit, true);
-        if (g.hit) credit(f.owner, G.paint.splat(_v.copy(g.point).addScaledVector(g.normal, 0.08), 0.28 + Math.random() * 0.1, f.team, { seed: Math.random() }), f.sp);
+        const g = G.physics!.raycast(f.pos, DOWN, 3, _hit, true);
+        if (g.hit) credit(f.owner!, G.paint!.splat(_v.copy(g.point).addScaledVector(g.normal, 0.08), 0.28 + Math.random() * 0.1, f.team, { seed: Math.random() }), f.sp);
       }
     }
     if (dead) { f.owner = null; fists[i] = fists[fists.length - 1]; fists.pop(); fistPool.push(f); }
@@ -272,7 +297,7 @@ function drawFists() {
 // ================================================================================================ leap
 // Launch velocity for a charge: speed² eases linearly with the charge (distance ∝ v² on flat ground), heading = the aim
 // yaw, elevation = leapAngle + aim pitch × leapPitchK (clamped), the vertical speed capped. Off a wall: never into it.
-function leapVelocity(a, k, c, out) {
+function leapVelocity(a: Actor, k: MittsKit, c: number, out: THREE.Vector3) {
   const w = W();
   const yaw = k.botWant >= 0 ? k.botYaw : a.aimYaw, pitch = k.botWant >= 0 ? k.botPitch : a.aimPitch;
   const ang = clamp(w.leapAngle * DEG + pitch * w.leapPitchK, w.leapAngleMin * DEG, w.leapAngleMax * DEG);
@@ -291,7 +316,7 @@ function leapVelocity(a, k, c, out) {
 // the head for ceilings. out.kind: 'ground' | 'wall' (clingable) | 'bump' (a wall it can't stick to) | 'sea' | 'none'.
 // pts (optional Float32Array) gets the path for the arc preview (out.n points).
 const PRED_DT = 1 / 60, PRED_PTS = 64;
-function predictLeap(from, v0, out, pts) {
+function predictLeap(from: THREE.Vector3, v0: THREE.Vector3, out: LandPred, pts: Float32Array | null) {
   const P = PLAYER;
   let x = from.x, y = from.y, z = from.z, vy = v0.y;
   const vx = v0.x, vz = v0.z, hs = Math.hypot(vx, vz), dx = hs > 1e-4 ? vx / hs : 0, dz = hs > 1e-4 ? vz / hs : 0;
@@ -306,12 +331,12 @@ function predictLeap(from, v0, out, pts) {
     // head against a ceiling: stop rising
     if (vy > 0) {
       _a.set(x, y + P.height, z); _b.set(nx, ny + P.height, nz);
-      const h = G.physics.segment(_a, _b, _hitP, false);
+      const h = G.physics!.segment(_a, _b, _hitP, false);
       if (h.hit && h.normal.y < -0.5) { vy = 0; ny = y; }
     }
     // chest against a wall
     _a.set(x, y + 0.8, z); _b.set(nx + dx * P.radius, ny + 0.8, nz + dz * P.radius);
-    let h = G.physics.segment(_a, _b, _hitP, false);
+    let h = G.physics!.segment(_a, _b, _hitP, false);
     if (h.hit && Math.abs(h.normal.y) < 0.55) {
       out.t = i * PRED_DT; out.normal.copy(h.normal); out.normal.y = 0; out.normal.normalize(); out.block = h.block;
       out.hitPt.set(h.point.x, ny + 0.8, h.point.z);
@@ -323,7 +348,7 @@ function predictLeap(from, v0, out, pts) {
     // feet onto the ground (falling)
     if (vy <= 0.5) {
       _a.set(x, y + 0.3, z); _b.set(nx, ny - 0.02, nz);
-      h = G.physics.segment(_a, _b, _hitP, false);
+      h = G.physics!.segment(_a, _b, _hitP, false);
       if (h.hit && h.normal.y > 0.55) {
         out.kind = 'ground'; out.pos.copy(h.point); out.normal.copy(h.normal); out.hitPt.copy(h.point); out.block = h.block; out.t = i * PRED_DT;
         x = h.point.x; y = h.point.y; z = h.point.z; push();
@@ -332,7 +357,7 @@ function predictLeap(from, v0, out, pts) {
     }
     x = nx; y = ny; z = nz;
     if ((i & 1) === 0) push();
-    if (y < P.fallDeathY && G.level.groundHeight(x, z, y + 0.6) === -Infinity) {
+    if (y < P.fallDeathY && G.level!.groundHeight(x, z, y + 0.6) === -Infinity) {
       out.kind = 'sea'; out.pos.set(x, P.waterY, z); out.normal.set(0, 1, 0); out.hitPt.copy(out.pos); out.t = i * PRED_DT;
       return out;
     }
@@ -342,17 +367,17 @@ function predictLeap(from, v0, out, pts) {
 }
 
 // a wall a sponge can stick to: solid (not a railing / grate), rising past the head, with no floor right under the feet
-function clingableAt(pos, n, blockId) {
-  const b = blockId >= 0 ? G.level.blocks[blockId] : null;
+function clingableAt(pos: THREE.Vector3, n: THREE.Vector3, blockId: number) {
+  const b = blockId >= 0 ? G.level!.blocks[blockId] : null;
   if (b && (b.rail || b.grate)) return false;
   _v2.set(pos.x, pos.y + 1.35, pos.z); _v3.set(-n.x, 0, -n.z);
-  const h = G.physics.raycast(_v2, _v3, PLAYER.radius + 0.45, _hitC, false);
+  const h = G.physics!.raycast(_v2, _v3, PLAYER.radius + 0.45, _hitC, false);
   if (!h.hit || Math.abs(h.normal.y) > 0.5) return false;
   _v2.set(pos.x, pos.y + 0.2, pos.z);
-  return !G.physics.raycast(_v2, DOWN, 0.5, _hitC, false).hit;
+  return !G.physics!.raycast(_v2, DOWN, 0.5, _hitC, false).hit;
 }
 
-function startCharge(r, k) {
+function startCharge(r: WeaponRunner, k: MittsKit) {
   const a = r.a, w = W();
   if (k.charging || k.leaping) return true;
   if (a.ink < w.leapInkMin) { r._empty(); return false; }
@@ -360,12 +385,12 @@ function startCharge(r, k) {
   if (a.isLocal || near(a.pos)) k.loop = G.audio?.loop('mitts_charge', { pos: a.isLocal ? undefined : a.pos, volume: a.isLocal ? 0.5 : 0.35, pitch: 1 }) || null;
   return true;
 }
-function cancelCharge(r, k) {
+function cancelCharge(r: WeaponRunner, k: MittsKit) {
   k.charging = false; k.charge = 0; k.chargeT = 0; k.botWant = -1; r.charge = 0;
   k.loop?.stop(0.08); k.loop = null;
 }
 
-function releaseLeap(r, k) {
+function releaseLeap(r: WeaponRunner, k: MittsKit) {
   const a = r.a, w = W();
   const c = k.charge;
   k.charging = false; r.charge = 0;
@@ -384,13 +409,13 @@ function releaseLeap(r, k) {
   leapFx(a, a.pos, c, fromWall ? k.clingN : null);
   netRec(a, 'mitts', [2, r2(a.pos.x), r2(a.pos.y), r2(a.pos.z), r2(c), fromWall ? r2(k.clingN.x) : 0, fromWall ? r2(k.clingN.z) : 0, fromWall ? 1 : 0]);
   // push-off splat
-  if (!fromWall) credit(a, G.paint.splat(_v2.copy(a.pos).setY(a.pos.y + 0.25), 0.9, a.team, { seed: Math.random() }));
+  if (!fromWall) credit(a, G.paint!.splat(_v2.copy(a.pos).setY(a.pos.y + 0.25), 0.9, a.team, { seed: Math.random() }));
   emit('mitts:leap', { actor: a, from: a.pos.clone(), to: k.land.pos.clone(), kind: k.land.kind, charge: c });
   rumble(a, 0.25, 0.35, 110);
 }
 
 // the launch: whoosh + a ring of ink off the deck (or a burst off the wall it pushed away from: wallN)
-function leapFx(a, pos, c, wallN) {
+function leapFx(a: Actor, pos: THREE.Vector3, c: number, wallN: THREE.Vector3 | null | undefined) {
   if (!(a.isLocal || near(pos))) return;
   const col = a.color;
   G.audio?.play('mitts_leap', { pos: a.isLocal ? undefined : pos, volume: a.isLocal ? 0.75 : 0.55, pitch: 1.05 - 0.15 * c });
@@ -400,7 +425,7 @@ function leapFx(a, pos, c, wallN) {
   } else G.fx?.burst(_v2.copy(pos).setY(pos.y + 1), wallN, col, { count: 12, speed: 4, size: 0.08 });
 }
 // the landing's look and sound (the ghost of a remote leap plays just this: its paint + hits are the owner's)
-function landFx(a, at, n, c) {
+function landFx(a: Actor, at: THREE.Vector3, n: THREE.Vector3, c: THREE.Vector3) {
   const w = W(), col = a.color;
   if (a.isLocal || near(c, 40)) {
     G.fx?.explosion(c, col, 1.9);
@@ -412,7 +437,7 @@ function landFx(a, at, n, c) {
 }
 // in flight: the landing zone marked on the ground in the leaper's ink, for everyone (re-aimed now and then in case
 // something nudged the flight; a remote leaper's is predicted from its replicated velocity)
-function telegraph(a, k, w, dt) {
+function telegraph(a: Actor, k: MittsKit, w: WeaponCfg, dt: number) {
   k.predT -= dt;
   if (k.predT <= 0) { k.predT = 0.1; predictLeap(a.pos, a.vel, k.land, null); }
   const L = k.land;
@@ -423,7 +448,7 @@ function telegraph(a, k, w, dt) {
   }
 }
 // the leap's splash where it comes down (ground or wall): damage ring + big splat + FX
-function landSplash(a, at, n) {
+function landSplash(a: Actor, at: THREE.Vector3, n: THREE.Vector3) {
   const w = W(), col = a.color;
   if (w.landInvuln) a.invuln = Math.max(a.invuln, w.landInvuln);   // a moment untouchable on landing (it flickers)
   // the gloves themselves: whoever it comes down on takes a glove smash on top of the splash
@@ -431,26 +456,26 @@ function landSplash(a, at, n) {
     if (e.team === a.team || !e.alive) continue;
     const reach = w.gloveRadius + (e.hitR || PLAYER.radius);
     if (Math.hypot(e.pos.x - at.x, e.pos.z - at.z) > reach || Math.abs(e.pos.y + (e.smoothY || 0) + 0.7 - at.y) > 1.6) continue;
-    G.projectiles.applyHit(a, e, w.gloveDamage, 'mitts');
+    G.projectiles!.applyHit(a, e, w.gloveDamage, 'mitts');
     if (a.isLocal || e.isLocal || near(e.pos, 30)) G.fx?.burst(_b.copy(e.pos).setY(e.pos.y + 0.8), UP, col, { count: 10, speed: 3.6, size: 0.09 });
   }
   const c = _a.copy(at).addScaledVector(n, 0.35);
-  let area = G.paint.splat(c, w.landPaint, a.team, { seed: Math.random() });
+  let area = G.paint!.splat(c, w.landPaint, a.team, { seed: Math.random() });
   for (let i = 0; i < 6; i++) {
     const ang = (i / 6) * Math.PI * 2 + Math.random() * 0.5, rr = w.landPaint * (0.75 + Math.random() * 0.35);
     // round the contact, in the surface plane
     _xa.set(n.y > 0.7 ? 1 : -n.z, 0, n.y > 0.7 ? 0 : n.x).normalize(); _ya.crossVectors(n, _xa);
     _b.copy(c).addScaledVector(_xa, Math.cos(ang) * rr).addScaledVector(_ya, Math.sin(ang) * rr);
-    area += G.paint.splat(_b, 0.55 + Math.random() * 0.35, a.team, { seed: Math.random() });
+    area += G.paint!.splat(_b, 0.55 + Math.random() * 0.35, a.team, { seed: Math.random() });
   }
   credit(a, area);
   for (const e of G.actors) {
     if (e.team === a.team || !e.alive) continue;
     _v2.copy(e.pos); _v2.y += (e.smoothY || 0) + (e.form === 'squid' ? 0.3 : 0.7);
     const d = _v2.distanceTo(c);
-    if (d > w.landRadius || !G.physics.los(c, _v2)) continue;
+    if (d > w.landRadius || !G.physics!.los(c, _v2)) continue;
     const dmg = lerp(w.landDamageMax, w.landDamageMin, clamp((d - 0.6) / (w.landRadius - 0.6), 0, 1));
-    G.projectiles.applyHit(a, e, dmg, 'mitts');
+    G.projectiles!.applyHit(a, e, dmg, 'mitts');
   }
   G.specials?.areaHit?.(c, w.landRadius, w.landDamageMin, a.team, a);
   G.boss?.splash(a, c, w.landRadius, w.landDamageMax, w.landDamageMin, 'mitts');   // Boss Battle
@@ -460,7 +485,7 @@ function landSplash(a, at, n) {
   rumble(a, 0.45, 0.5, 160);
 }
 
-function startCling(r, k, n) {
+function startCling(r: WeaponRunner, k: MittsKit, n: THREE.Vector3) {
   const a = r.a;
   k.cling = true; k.hang = true; k.leaping = false; k.clingT = 0; k.dryWarn = 0;
   k.botHold = 1.3 + Math.random() * 1.7;   // bots: how long to hang on before leaping / dropping
@@ -476,7 +501,7 @@ function startCling(r, k, n) {
   emit('mitts:cling', { actor: a, on: true, pos: k.clingPt.clone(), normal: k.clingN.clone() });
 }
 // let go of the wall: 'jump' hops off it, 'empty' / 'squid' / anything else just drops
-function dropCling(r, k, why) {
+function dropCling(r: WeaponRunner, k: MittsKit, why: string) {
   const a = r.a;
   if (!k.cling) return;
   k.cling = false; k.hang = false;
@@ -492,8 +517,8 @@ function dropCling(r, k, why) {
 // ================================================================================================ local preview
 // While the local player charges: a dashed arc along the leap path and a ring where it comes down (white; red-ish X
 // over the sea). Scene objects owned here, hidden whenever nobody local is charging.
-let prevLine = null, prevRing = null, prevX = null, prevShown = 0;
-const prevPts = new Float32Array(PRED_PTS * 3), prevOut = { kind: 'none', pos: new THREE.Vector3(), normal: new THREE.Vector3(), hitPt: new THREE.Vector3(), block: -1, t: 0, n: 0 };
+let prevLine: THREE.Line<THREE.BufferGeometry, THREE.LineDashedMaterial> | null = null, prevRing: THREE.Group | null = null, prevX: THREE.Mesh | null = null, prevShown = 0;
+const prevPts = new Float32Array(PRED_PTS * 3), prevOut: LandPred = { kind: 'none', pos: new THREE.Vector3(), normal: new THREE.Vector3(), hitPt: new THREE.Vector3(), block: -1, t: 0, n: 0 };
 function ensurePreview() {
   if (!G.scene) return false;
   if (!prevLine) {
@@ -512,38 +537,39 @@ function ensurePreview() {
     prevX.renderOrder = 10;
     prevLine.visible = prevRing.visible = prevX.visible = false;
   }
-  for (const o of [prevLine, prevRing, prevX]) if (o.parent !== G.scene) G.scene.add(o);
+  for (const o of [prevLine!, prevRing!, prevX!]) if (o.parent !== G.scene) G.scene.add(o);
   return true;
 }
-function showPreview(a, k) {
+function showPreview(a: Actor, k: MittsKit) {
   if (!ensurePreview()) return;
+  const PL = prevLine!, PR = prevRing!, PX = prevX!;   // (ensurePreview가 만들었다)
   const v = leapVelocity(a, k, k.charge, _v);
   predictLeap(a.pos, v, prevOut, prevPts);
-  const pos = prevLine.geometry.attributes.position;
+  const pos = PL.geometry.attributes.position;
   pos.array.set(prevPts.subarray(0, prevOut.n * 3));
   for (let i = prevOut.n; i < PRED_PTS; i++) pos.array.set(prevPts.subarray((prevOut.n - 1) * 3, prevOut.n * 3), i * 3);
-  pos.needsUpdate = true; prevLine.geometry.setDrawRange(0, prevOut.n);
-  prevLine.computeLineDistances();
-  prevLine.visible = prevOut.n > 1;
+  pos.needsUpdate = true; PL.geometry.setDrawRange(0, prevOut.n);
+  PL.computeLineDistances();
+  PL.visible = prevOut.n > 1;
   const good = prevOut.kind === 'ground' || prevOut.kind === 'wall';
   const R = W().landRadius / 1.12;
-  prevRing.visible = good; prevX.visible = prevOut.kind === 'sea';
+  PR.visible = good; PX.visible = prevOut.kind === 'sea';
   if (good) {
     const n = prevOut.kind === 'wall' ? prevOut.normal : prevOut.normal;
-    prevRing.position.copy(prevOut.kind === 'wall' ? prevOut.hitPt : prevOut.pos).addScaledVector(n, 0.04);
-    prevRing.quaternion.setFromUnitVectors(_v2.set(0, 0, 1), n);
-    prevRing.scale.setScalar(R * (0.96 + 0.04 * Math.sin(G.time * 12)));
-    const [rm, fm] = prevRing.userData.mats;
+    PR.position.copy(prevOut.kind === 'wall' ? prevOut.hitPt : prevOut.pos).addScaledVector(n, 0.04);
+    PR.quaternion.setFromUnitVectors(_v2.set(0, 0, 1), n);
+    PR.scale.setScalar(R * (0.96 + 0.04 * Math.sin(G.time * 12)));
+    const [rm, fm] = PR.userData.mats;
     rm.color.set(0xffffff).lerp(a.color, k.charge >= 0.999 ? 0.55 : 0.2);
     fm.color.copy(a.color);
   }
-  if (prevX.visible) { prevX.position.copy(prevOut.pos).setY(PLAYER.waterY + 0.05); prevX.quaternion.setFromUnitVectors(_v2.set(0, 0, 1), UP); }
+  if (PX.visible) { PX.position.copy(prevOut.pos).setY(PLAYER.waterY + 0.05); PX.quaternion.setFromUnitVectors(_v2.set(0, 0, 1), UP); }
   prevShown = G.time;
 }
-function hidePreview() { if (prevLine) prevLine.visible = prevRing.visible = prevX.visible = false; }
+function hidePreview() { if (prevLine) prevLine.visible = prevRing!.visible = prevX!.visible = false; }
 
 // ================================================================================================ the runner
-function update(r, dt, inp, w) {
+function update(r: WeaponRunner, dt: number, inp: WeaponInput, w: WeaponCfg) {
   const a = r.a, k = K(r);
   // the body was owned by something else (a body special, a super jump …): nothing carries over
   if (k.seen && G.time - k.seen > 0.25) { if (k.charging) cancelCharge(r, k); k.leaping = false; if (k.cling) dropCling(r, k, 'reset'); }
@@ -602,8 +628,8 @@ function update(r, dt, inp, w) {
         k.trail += a.pos.distanceTo(k.trailP); k.trailP.copy(a.pos);
         if (k.trail > 1.6) {
           k.trail = 0;
-          const g = G.physics.raycast(_v2.copy(a.pos).setY(a.pos.y + 0.3), DOWN, 5, _hit, true);
-          if (g.hit) credit(a, G.paint.splat(_v2.copy(g.point).addScaledVector(g.normal, 0.08), 0.42 + Math.random() * 0.15, a.team, { seed: Math.random() }));
+          const g = G.physics!.raycast(_v2.copy(a.pos).setY(a.pos.y + 0.3), DOWN, 5, _hit, true);
+          if (g.hit) credit(a, G.paint!.splat(_v2.copy(g.point).addScaledVector(g.normal, 0.08), 0.42 + Math.random() * 0.15, a.team, { seed: Math.random() }));
         }
         if (near(a.pos, 34)) G.fx?.superJumpTrail?.(_v2.copy(a.pos).setY(a.pos.y + 0.8), a.vel, a.color);
         telegraph(a, k, w, dt);
@@ -622,7 +648,7 @@ function update(r, dt, inp, w) {
     if (near(a.pos, 20) && Math.random() < dt * 5) G.fx?.climbDrip?.(_v2.copy(k.clingPt), k.clingN, a.color);
     // let go: out of ink, landed on something, or the wall's gone
     _v2.set(a.pos.x, a.pos.y + 1.0, a.pos.z); _v3.set(-k.clingN.x, 0, -k.clingN.z);
-    const wallThere = G.physics.raycast(_v2, _v3, PLAYER.radius + 0.5, _hitC, false).hit;
+    const wallThere = G.physics!.raycast(_v2, _v3, PLAYER.radius + 0.5, _hitC, false).hit;
     if (a.ink <= 0) dropCling(r, k, 'empty');
     else if (a.grounded || !wallThere || !a.alive) dropCling(r, k, 'lost');
     else if (a.isBot && (k.botHold -= dt) < -0.6) dropCling(r, k, 'jump');   // (bot code leaps / lets go at 0; this is the backstop)
@@ -647,8 +673,8 @@ function update(r, dt, inp, w) {
 
 // fire + jump → charge a leap (grounded, or stuck to a wall); jump alone on a wall → let go. A press mid-charge /
 // mid-leap is swallowed (it must never turn into a jump that overrides the leap). Bots start leaps via bot code only.
-function jump(r, intent) {
-  const a = r.a, k = r.kit && r.kit.mitts ? r.kit : null;
+function jump(r: WeaponRunner, intent: ActorIntent) {
+  const a = r.a, k = kitIn(r);
   if (k && (k.charging || k.leaping)) return true;
   if (k && k.cling) {
     if (intent.fire && !a.isBot && a.ink >= W().leapInkMin) startCharge(r, k);
@@ -662,11 +688,11 @@ function jump(r, intent) {
 // ================================================================================================ bots
 // Close in and punch (MELEE: bots.js walks them straight at the target); pounce in from mid range; leap away when
 // hurt and cornered; now and then leap onto a wall near the fight and punch down from it.
-const _bp = { kind: 'none', pos: new THREE.Vector3(), normal: new THREE.Vector3(), hitPt: new THREE.Vector3(), block: -1, t: 0, n: 0 };
+const _bp: LandPred = { kind: 'none', pos: new THREE.Vector3(), normal: new THREE.Vector3(), hitPt: new THREE.Vector3(), block: -1, t: 0, n: 0 };
 const _bv = new THREE.Vector3();
-function botState(brain) { return brain._mitts || (brain._mitts = { leapCd: 1.5 + Math.random() * 2, wallCd: 4 + Math.random() * 4, travelCd: 4 + Math.random() * 4, escapeCd: 0 }); }
+function botState(brain: MittsBrain): MittsBot { return brain._mitts || (brain._mitts = { leapCd: 1.5 + Math.random() * 2, wallCd: 4 + Math.random() * 4, travelCd: 4 + Math.random() * 4, escapeCd: 0 }); }
 // pick a charge that lands at (tx, ty, tz) with the given yaw/pitch (two secant passes over the real prediction)
-function botPlan(a, k, yaw, pitch, dist) {
+function botPlan(a: Actor, k: MittsKit, yaw: number, pitch: number, dist: number) {
   k.botYaw = yaw; k.botPitch = pitch;
   let c = clamp((dist - 4.5) / 8.5, 0, 1);
   for (let it = 0; it < 3; it++) {
@@ -682,9 +708,9 @@ function botPlan(a, k, yaw, pitch, dist) {
 }
 // a landing a bot may aim for: ground that is walkable nav (not a roof / perch / prop top it can't path off), not far
 // above or below
-function landingOk(a, P) {
+function landingOk(a: Actor, P: LandPred) {
   if (P.kind !== 'ground') return false;
-  const b = P.block >= 0 ? G.level.blocks[P.block] : null;
+  const b = P.block >= 0 ? G.level!.blocks[P.block] : null;
   if (b && (b.roof || b.perch || b.rail)) return false;
   if (Math.abs(P.pos.y - a.pos.y) > 4) return false;
   if (!G.nav) return true;
@@ -693,27 +719,27 @@ function landingOk(a, P) {
   const n = G.nav.nodes[id];
   return Math.hypot(n.x - P.pos.x, n.z - P.pos.z) < 1.3 && Math.abs(n.y - P.pos.y) < 0.6;
 }
-function botLeap(r, k, c, yaw, pitch, kind = 'ground') {
+function botLeap(r: WeaponRunner, k: MittsKit, c: number, yaw: number, pitch: number, kind = 'ground') {
   k.botYaw = yaw; k.botPitch = pitch;
   if (!startCharge(r, k)) { k.botWant = -1; return false; }
   k.botWant = c; k.botKind = kind;
   return true;
 }
 // at release: does the leap still come down where the bot planned (it may have been nudged while crouching)?
-function botReleaseOk(a, k) {
+function botReleaseOk(a: Actor, k: MittsKit) {
   predictLeap(a.pos, leapVelocity(a, k, k.charge, _bv), _bp, null);
   return k.botKind === 'wall' ? _bp.kind === 'wall' : landingOk(a, _bp);
 }
 // a wall near the fight worth sticking to: probe round the bot at chest and head height
-function botFindWall(a, target) {
+function botFindWall(a: Actor, target: Actor) {
   let best = null, bestS = Infinity;
   for (let i = 0; i < 10; i++) {
     const yaw = (i / 10) * Math.PI * 2 + Math.random() * 0.3;
     _v2.set(a.pos.x, a.pos.y + 1.2, a.pos.z); _v3.set(Math.sin(yaw), 0, Math.cos(yaw));
-    const h = G.physics.raycast(_v2, _v3, 9, _hitC, false);
+    const h = G.physics!.raycast(_v2, _v3, 9, _hitC, false);
     if (!h.hit || h.dist < 3.5 || Math.abs(h.normal.y) > 0.3) continue;
     _v2.y += 1.6;
-    const h2 = G.physics.raycast(_v2, _v3, 9.5, _hitP, false);
+    const h2 = G.physics!.raycast(_v2, _v3, 9.5, _hitP, false);
     if (!h2.hit || Math.abs(h2.dist - h.dist) > 0.6) continue;           // needs height above the cling point
     const s = Math.hypot(h.point.x - target.pos.x, h.point.z - target.pos.z);
     if (s < 7 && s < bestS) { bestS = s; best = { yaw, dist: h.dist }; }
@@ -722,10 +748,10 @@ function botFindWall(a, target) {
 }
 // own ink along (nx, nz) from the kid, as far as d m ahead: a lane to swim in on
 const _rs = { own: 0, enemy: 0, empty: 0, n: 0 };
-function ownLane(a, nx, nz, d) {
+function ownLane(a: Actor, nx: number, nz: number, d: number) {
   for (const k of [1.2, 2.6, 4.2]) {
     if (k > 1.2 && k > d - 0.6) break;
-    const st = G.paint.regionStats(a.pos.x + nx * k, a.pos.y, a.pos.z + nz * k, 0.8, a.team, _rs);
+    const st = G.paint!.regionStats(a.pos.x + nx * k, a.pos.y, a.pos.z + nz * k, 0.8, a.team, _rs);
     if (!st.n || st.own < 0.5) return false;
   }
   return true;
@@ -736,7 +762,7 @@ function ownLane(a, nx, nz, d) {
 //   · no lane → punch while closing: the fists paint the way (a lane for the next few metres) and the sponge guard is up
 //   · both weave across the line to them instead of walking a straight, easy-to-track line
 // Leaps / wall clings / out of sight / in reach: the kit's fight() and the core keep the frame.
-function botTactics(brain, ctx) {
+function botTactics(brain: MittsBrain, ctx: BotFightCtx) {
   const { a, w, dist, dt, it, move, target: t } = ctx;
   if (!w.botApproach || ctx.retreat || !t || !t.pos || !ctx.visible) return;
   const k = K(a.weaponRunner);
@@ -759,7 +785,7 @@ function botTactics(brain, ctx) {
 const bot = {
   paintPitch: -0.32,
   tactics: botTactics,
-  fight(brain, ctx) {
+  fight(brain: MittsBrain, ctx: BotFightCtx) {
     const { a, w, dist, dt, move, target: t } = ctx;
     const r = a.weaponRunner, k = K(r), B = botState(brain);
     B.leapCd -= dt; B.wallCd -= dt; B.escapeCd -= dt;
@@ -778,7 +804,7 @@ const bot = {
       return inReach;
     }
     const hp = a.hp / PLAYER.hp;
-    const clear = G.physics.los(_v2.set(a.pos.x, a.pos.y + 1.1, a.pos.z), _v3.set(t.pos.x, t.pos.y + 1.0, t.pos.z));
+    const clear = G.physics!.los(_v2.set(a.pos.x, a.pos.y + 1.1, a.pos.z), _v3.set(t.pos.x, t.pos.y + 1.0, t.pos.z));
     // escape: hurt and in their face → leap away (never into the sea / onto a roof)
     if (a.grounded && hp < 0.35 && dist < 5 && a.ink > w.leapInkMax && B.escapeCd <= 0 && Math.random() < dt * 3) {
       B.escapeCd = 3;
@@ -814,7 +840,7 @@ const bot = {
     void move;
     return inReach;
   },
-  paint(brain, ctx) {
+  paint(brain: MittsBrain, ctx: BotPaintCtx) {
     const { a, dt, move, needPaint, inkFrac, wantMove } = ctx;
     const r = a.weaponRunner, k = K(r), B = botState(brain);
     B.travelCd -= dt;
@@ -837,14 +863,14 @@ MELEE.mitts = true;
 // charge · bits 4–9 the cling wall's facing, 64 steps) → netApply rebuilds its runner.kit (the gloves' / body's pose, the
 // landing telegraph, cling sounds); and kit records → ghost: 0 a fist (flies + bursts for the eye), 1 a landing splash's
 // look, 2 a leap's launch.
-function netState(r) {
-  const k = r.kit && r.kit.mitts ? r.kit : null;
+function netState(r: WeaponRunner) {
+  const k = kitIn(r);
   if (!k) return 0;
   let b = (k.charging ? 1 : 0) | (k.leaping ? 2 : 0) | (k.cling ? 4 : 0) | (k.full ? 8 : 0);
   if (k.cling) b |= (Math.round((Math.atan2(k.clingN.x, k.clingN.z) / TAU) * 64) & 63) << 4;
   return b;
 }
-function netApply(r, b, dt) {
+function netApply(r: WeaponRunner, b: number, dt: number) {
   const k = K(r), a = r.a, w = W();
   const wasLeap = k.leaping, wasCling = k.cling;
   k.seen = G.time;
@@ -860,7 +886,7 @@ function netApply(r, b, dt) {
   if (k.leaping) telegraph(a, k, w, dt);
   if (k.cling !== wasCling && near(a.pos, 30)) G.audio?.play(k.cling ? 'mitts_cling' : 'mitts_unstick', { pos: a.pos, volume: 0.5 });
 }
-function ghost(a, d) {
+function ghost(a: Actor, d: number[]) {
   const w = W();
   switch (d[0]) {
     case 0: spawnFist(a, w, d[7] | 0, _v.set(d[1], d[2], d[3]), _dir.set(d[4], d[5], d[6]), true); break;
@@ -876,12 +902,12 @@ MAIN_KITS.mitts = {
   ghost,
   update,
   jump,
-  busy: (r) => !!(r.kit && r.kit.mitts && r.kit.leaping),
+  busy: (r: WeaponRunner) => !!kitIn(r)?.leaping,
   // leap armour: an incoming leap is otherwise picked off before it lands — mid-air (and on the landing beat) the kid
   // takes W().leapArmor of any damage. Sponge guard: punching with the gloves up (and a beat after), a hit from the
   // front (within guardArc° of the facing) takes W().guardArmor — the sponge soaks part of it (a squish off the gloves).
-  damageTaken: (r, amount, attacker) => {
-    const k = r.kit && r.kit.mitts ? r.kit : null, w = W();
+  damageTaken: (r: WeaponRunner, amount: number, attacker: Actor | null | undefined) => {
+    const k = kitIn(r), w = W();
     if (k && (k.leaping || k.landT < (w.leapArmorGrace ?? 0.15))) return amount * (w.leapArmor ?? 0.35);
     const a = r.a;
     if (k && !k.cling && a.form === 'kid' && attacker && attacker !== a && attacker.pos && r.firingT > 0.35 - (w.guardAfter ?? 0.25)) {
@@ -889,7 +915,7 @@ MAIN_KITS.mitts = {
       if (l > 0.01 && (Math.sin(a.aimYaw) * dx + Math.cos(a.aimYaw) * dz) / l > Math.cos((w.guardArc ?? 70) * DEG)) {
         if (a.isLocal || near(a.pos, 22)) {
           const t = G.time;
-          if (!(k.squishT > t - 0.12)) {   // (a spray of hits squishes once)
+          if (!(k.squishT! > t - 0.12)) {   // (a spray of hits squishes once)
             k.squishT = t;
             gloveMuzzle(a, k.side, _v2);
             G.fx?.burst(_v2, _v3.set(dx / l, 0.35, dz / l), a.color, { count: 6, speed: 2.4, size: 0.07 });
@@ -901,17 +927,17 @@ MAIN_KITS.mitts = {
     }
     return amount;
   },
-  firingPose: (r) => { const k = r.kit && r.kit.mitts ? r.kit : null; return !!k && (k.charging || k.leaping || k.cling || k.landT < 0.35); },
-  moveSpeed: (r, w) => {
-    const k = r.kit && r.kit.mitts ? r.kit : null;
+  firingPose: (r: WeaponRunner) => { const k = kitIn(r); return !!k && (k.charging || k.leaping || k.cling || k.landT < 0.35); },
+  moveSpeed: (r: WeaponRunner, w: WeaponCfg) => {
+    const k = kitIn(r);
     if (!k) return 0;
     if (k.leaping) return Math.max(k.leapH, PLAYER.airMinSpeed);
     if (k.charging) return r.a.isBot ? 0.05 : w.moveSpeedCharging;   // bots crouch still (their plan assumes the spot)
     if (k.landT < 0.25) return w.moveSpeedCharging * 2;
     return r.firingT > 0 ? w.moveSpeedFiring : 0;
   },
-  spreadDeg: (r, w) => w.punchSpread,
-  tick(dt) {
+  spreadDeg: (r: WeaponRunner, w: WeaponCfg) => w.punchSpread,
+  tick(dt: number) {
     // states their runner dropped (death, respawn, loadout swap): stop their sounds
     for (const [r, k] of STATES) {
       if (r.kit !== k || !r.a.alive || r.a.weapon?.kind !== 'mitts') { stopLoops(k); k.hang = false; STATES.delete(r); }

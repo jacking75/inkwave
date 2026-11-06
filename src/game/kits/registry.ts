@@ -61,24 +61,29 @@ import { G } from '../../core/ctx.js';
 //   MAIN_KITS only: netState?(runner) → int   the pose / state bits other screens need (packed each tick)
 //                   netApply?(runner, bits, dt)   a remote runner: rebuild runner.kit from those bits
 // KIT_GHOSTS[kind] = { ghost } — ghost-only entries for things that aren't a main or sub kit (e.g. a special's objects)
-/** 봇 판단 문맥(bots.ts가 넘긴다): 목표·거리·조준 등 — 필드는 bots.ts 소유 */
-export type BotCtx = Record<string, unknown>;
+/** 봇 싸움 문맥(bots.ts가 fight·tactics에 넘긴다): 무기·거리·사거리·의도·이동·목표, tactics는 보임·조준·발사 가능·후퇴 */
+export interface BotFightCtx {
+  a: Actor; w: WeaponCfg; dist: number; range: number; dt: number; it: ActorIntent; move: THREE.Vector3; target: Actor;
+  visible?: boolean | null; aimed?: boolean; canFire?: boolean | null; retreat?: boolean;
+}
+/** 봇 칠하기 문맥(bots.ts가 paint에 넘긴다) */
+export interface BotPaintCtx { a: Actor; w: WeaponCfg; dt: number; it: ActorIntent; move: THREE.Vector3; needPaint: boolean; inkFrac: number; wantMove: boolean }
 /** 위 주석의 봇 훅(bots.ts가 부른다). */
 export interface KitBotHooks {
-  fight?(brain: BotBrain, ctx: BotCtx): boolean; paint?(brain: BotBrain, ctx?: BotCtx): boolean; tactics?(brain: BotBrain, ctx: BotCtx): void;
-  stayIn?(brain: BotBrain, ctx: BotCtx): boolean; targetBias?(brain: BotBrain, enemy: Actor, dist: number): number;
+  fight?(brain: BotBrain, ctx: BotFightCtx): boolean; paint?(brain: BotBrain, ctx: BotPaintCtx): boolean; tactics?(brain: BotBrain, ctx: BotFightCtx): void;
+  stayIn?(brain: BotBrain, ctx: object): boolean; targetBias?(brain: BotBrain, enemy: Actor, dist: number): number;
   paintPitch?: number; melee?: boolean; charges?: boolean; long?: boolean; painter?: boolean;
 }
 /** 적을 노리는 장치(SUB_KITS.threats, 위 주석): 살아 있는 값을 읽는다 */
 export interface Threat {
   kind: string; obj?: unknown; team: number; owner?: Actor | null; pos: THREE.Vector3; aimY: number; vel: THREE.Vector3; speed: number;
   radius: number; trigger: number; ground: boolean; live: boolean; state: string; hp: number; shootable: boolean; locked?: boolean;
-  target?: Actor | null; senseRadius?: number; left?: number; lockRange?: number; hover?: boolean;
+  target?: Actor | null; senseRadius?: number; left?: number; lockRange?: number; hover?: number;   // (hover: 발사까지 남은 초)
 }
 /** 방패(MAIN_KITS.shields, 위 주석) */
 export interface Shield {
   kind: string; held: boolean; team: number; owner?: Actor | null; C: THREE.Vector3; N: THREE.Vector3; R: number; hp: number; hpMax: number;
-  live: boolean; blocksActors: boolean; left: number; pos: THREE.Vector3; halfW: number; planeOff: number; speed?: number;
+  live: boolean; blocksActors: boolean; left: number; pos: THREE.Vector3 | null; halfW: number; planeOff: number; speed?: number;   // (pos: 던진 방패만)
 }
 /** 주무기 키트(위 주석 참조) */
 export interface MainKit {
@@ -88,6 +93,7 @@ export interface MainKit {
   moveSpeed?(runner: WeaponRunner, w: WeaponCfg): number | undefined; spreadDeg?(runner: WeaponRunner, w: WeaponCfg): number;
   tick?(dt: number): void; clear?(): void;
   blockShot?(prev: THREE.Vector3, pos: THREE.Vector3, team: number, dmg: number): boolean;
+  blockRay?(from: THREE.Vector3, dir: THREE.Vector3, len: number, team: number, dmg: number): number;
   damageTaken?(runner: WeaponRunner, amount: number, attacker: Actor | null | undefined, source: string): number;
   jump?(runner: WeaponRunner, intent: ActorIntent): boolean;
   bot?: KitBotHooks;
@@ -106,6 +112,7 @@ export interface SubKit {
   blockRay?(from: THREE.Vector3, dir: THREE.Vector3, len: number, team: number, dmg: number): number;
   damageArea?(c: THREE.Vector3, radius: number, dmg: number, team: number): void;
   noArc?: boolean;
+  items?: readonly object[];   // 시험·도구가 읽는 살아 있는 물체(shaker)
   bot?: { fight?(brain: BotBrain, dist: number): boolean; paint?(brain: BotBrain): boolean };
   threats?(out: Threat[]): Threat[];
   ghost?(actor: Actor, data: number[]): void; netHurt?(id: number, dmg: number): void;
@@ -113,7 +120,7 @@ export interface SubKit {
 }
 export const MAIN_KITS: Record<string, MainKit | undefined> = {};
 export const SUB_KITS: Record<string, SubKit | undefined> = {};
-export const KIT_GHOSTS: Record<string, { ghost(actor: Actor, data: Array<number | string>): void; netHurt?(id: number, dmg: number): void } | undefined> = {};
+export const KIT_GHOSTS: Record<string, { ghost?(actor: Actor, data: Array<number | string>): void; netHurt?(id: number, dmg: number): void } | undefined> = {};
 // the local owner records a spawn for the other players (no-op offline / for remote actors)
 export function netRec(actor: Actor, kind: string, data: object) { G.netm?.recKit?.(actor, kind, data); }
 // a network id for an owner's world object (its ghosts carry the same id): owner nid × 1e5 + a per-session sequence

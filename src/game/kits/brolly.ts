@@ -18,11 +18,18 @@
 //   regrowK straight off it.
 import * as THREE from 'three';
 import { G, emit, on, clamp, lerp, angleDiff } from '../../core/ctx.js';
-import { WEAPONS, PLAYER, weaponRange } from '../../config.js';
+import { WEAPON_CFG, PLAYER, weaponRange } from '../../config.js';
+import type { WeaponCfg } from '../../config.js';
+import type { WeaponRunner, WeaponInput, Shot } from '../weapons.js';
+import type { BotBrain } from '../bots.js';
+import type { BotFightCtx, BotPaintCtx, Shield } from './registry.js';
+import type { ColorIn } from '../../fx/fx.js';
+import type { HitTarget } from '../../boss/boss.js';
 import { Physics, Hit } from '../physics.js';
 import { MAIN_KITS, netRec } from './registry.js';
 import { CHARGES, LONG } from '../bots.js';
 import { rumble } from '../actor.js';
+import type { Actor } from '../actor.js';
 import { registerWeaponModel } from '../character-weapons.js';
 import { getPlasticMaterial } from '../character-mats.js';
 import { WEAPON_ICONS } from '../../ui/ui-icons.js';
@@ -35,18 +42,37 @@ const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0);
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _n = new THREE.Vector3(), _d = new THREE.Vector3(), _r = new THREE.Vector3(), _u = new THREE.Vector3();
 const _m = new THREE.Vector3(), _x = new THREE.Vector3(), _hb = new THREE.Vector3();
 const _hit = new Hit(), _res = { t: 0, dist: 0 };
-const W = () => WEAPONS.brolly;
+const W = () => WEAPON_CFG.brolly!;
 
 // held canopy (logical shield): a disc facing the aim, centred ahead of the chest (matches the model in the aim pose)
 const HELD = { up: 0.9, fwd: 0.62, r: 0.8, pitchMin: -0.5, pitchMax: 0.45 };
 // launched canopy: crown this high over the ground; the blocking plane sits half the dome's depth behind the crown
 const LAUNCH_H = 0.76, LAUNCH_R = 0.8;
 // share of a projectile's damage the canopy takes, by type (flick / swipe / sprinkler drops are sprays; bucket blobs volleys)
-const CANOPY_MUL = { drop: 0.25, slosh: 0.5 };
+const CANOPY_MUL: Record<string, number | undefined> = { drop: 0.25, slosh: 0.5 };
 
 // ---------------------------------------------------------------------------------------------- runner state
-function kitOf(r) {
-  let k = r.kit;
+/** 우산 러너 상태(runner.kit): 덮개 체력·상태(ready·broken·launched)·재생, 펼침·당김, 사격 여부, 효과, 마지막 피격·갱신·소리, 들고 있는 방패 */
+interface BrollyKit extends HpRec {
+  brolly: true; hpMax: number; state: string; regrowT: number; regrowK: number; grow: number; open: number; opening: boolean; want: boolean;
+  pressT: number; openT: number; launchK: number; shot: boolean; prevFire: boolean; lockRelease: boolean; lastHit: number; lastUpd: number; sh: Sh;
+}
+/** 체력·효과 기록(들고 있는 덮개는 러너 상태, 던진 덮개는 그 기록) */
+interface HpRec { hp: number; flash: number; shake: number; sndT: number; lastHit?: number; alive?: boolean }
+/** 막는 원판: 들고 있음, 주인 상태/던진 덮개, 팀, 중심·법선·반지름, 프레임 시작 자세, 직전 활성, 봇 질의 기록 */
+interface Sh {
+  held: boolean; kit: BrollyKit | null; ref?: Canopy; owner: Actor; team: number; C: THREE.Vector3; N: THREE.Vector3; R: number;
+  Cp: THREE.Vector3; Np: THREE.Vector3; prev: boolean; info?: Shield;
+}
+/** 던진 덮개: 살아 있음, 주인·팀, 발 위치·진행, 시간·수명, 체력, 낙하·칠하기·밀기, 처음 높이, 효과, 유령, 방패·모양 */
+interface Canopy extends HpRec {
+  held: false; alive: boolean; owner: Actor; team: number; pos: THREE.Vector3; dir: THREE.Vector3; t: number; life: number; hpMax: number;
+  vy: number; paintAcc: number; shoving: boolean; h0: number; fxT: number; ghost: boolean; sh: Sh; mesh: THREE.Group | null;
+  inner: THREE.Group; mats: THREE.MeshPhysicalMaterial[]; fade?: number;   // (inner·mats: buildLaunchedMesh가 둔다)
+}
+const kitIn = (r: WeaponRunner) => { const k = r.kit as BrollyKit | null; return k && k.brolly ? k : null; };
+function kitOf(r: WeaponRunner): BrollyKit {
+  let k = r.kit as BrollyKit | null;
   if (!k || !k.brolly) {
     const w = W();
     k = r.kit = {
@@ -54,30 +80,30 @@ function kitOf(r) {
       open: 0, opening: false, want: false, pressT: 0, openT: 0, launchK: 0, shot: false, prevFire: false, lockRelease: false,
       flash: 0, shake: 0, lastHit: -9, lastUpd: G.time || 0, sndT: -9,
       sh: { held: true, kit: null, owner: r.a, team: r.a.team, C: new THREE.Vector3(), N: new THREE.Vector3(), R: HELD.r, Cp: new THREE.Vector3(), Np: new THREE.Vector3(), prev: false },
-    };
+    } as BrollyKit;   // (sh.kit은 바로 아래에서 잇는다)
     k.sh.kit = k;
   }
   return k;
 }
 
 // pellet damage by distance travelled
-function pelletDamage(d) {
+function pelletDamage(d: number) {
   const w = W();
   if (d <= w.falloffStart) return w.pelletDamage;
   return lerp(w.pelletDamage, w.pelletDamageFar, clamp((d - w.falloffStart) / (w.falloffEnd - w.falloffStart), 0, 1));
 }
 
 // ---------------------------------------------------------------------------------------------- firing
-const PELLETS = [];   // { p, id, owner } — live pellets this kit scores
+const PELLETS: Array<{ p: Shot; id: number; owner: Actor; blast: number }> = [];   // { p, id, owner } — live pellets this kit scores
 let SEQ = 0, BLAST = 0;
 const LOOK = Object.freeze({ vis: 0.068, tail0: 0.55, tailK: 1.1, wob: 0.06, wobF: 24, nose: 0.2, sats: 1 });
 // pellet pattern (unit cone): centre, an inner ring of 4, an outer ring of 6 — turned randomly per blast, jittered
-const PATTERN = [[0, 0]];
+const PATTERN: Array<[number, number]> = [[0, 0]];
 for (let i = 0; i < 4; i++) PATTERN.push([0.42, (i / 4) * Math.PI * 2 + 0.4]);
 for (let i = 0; i < 6; i++) PATTERN.push([0.9, (i / 6) * Math.PI * 2]);
 
-function fireBlast(r, w) {
-  const a = r.a, PJ = G.projectiles;
+function fireBlast(r: WeaponRunner, w: WeaponCfg) {
+  const a = r.a, PJ = G.projectiles!;
   if (a.ink < w.inkPerShot) { r._empty(); r.cooldown = Math.max(r.cooldown, 0.2); return false; }
   a.ink -= w.inkPerShot; a.lastFire = 0;
   r.firingT = 0.35; a.fireFacing = 0.5;
@@ -119,13 +145,13 @@ function fireBlast(r, w) {
 }
 
 // ---------------------------------------------------------------------------------------------- per-frame trigger
-function update(r, dt, inp, w) {
+function update(r: WeaponRunner, dt: number, inp: WeaponInput, w: WeaponCfg) {
   const a = r.a, k = kitOf(r);
   k.lastUpd = G.time;
-  const bb = a.bot && a.bot._brolly;
+  const bb = a.bot && (a.bot as BrollyBrain)._brolly;
   // bots: the canopy only opens when their fight logic asks (bb.holdUntil) — a trigger held to paint, refill or climb
   // repeats blasts instead. A bot holding the canopy keeps it up while its aim settles.
-  const botHold = !!bb && bb.holdUntil > G.time && a.form === 'kid' && a.bot.mode === 'fight';
+  const botHold = !!bb && bb.holdUntil > G.time && a.form === 'kid' && (a.bot as BotBrain).mode === 'fight';
   const fire = inp.fire || botHold;
   const press = fire && !k.prevFire;
   k.prevFire = fire;
@@ -158,18 +184,18 @@ function update(r, dt, inp, w) {
   k.launchK = k.state === 'ready' ? clamp(k.openT / w.launchHold, 0, 1) : 0;
 }
 
-function sound(a, name, vol, pitch) {
+function sound(a: Actor, name: string, vol: number, pitch?: number) {
   if (!G.audio || !(a.isLocal || a._nearCamera())) return;
   G.audio.play(name, { pos: a.isLocal ? undefined : a.pos, volume: a.isLocal ? vol : vol * 0.7, pitch });
 }
 
 // ---------------------------------------------------------------------------------------------- shields
-const LAUNCHED = [];   // world canopies
+const LAUNCHED: Canopy[] = [];   // world canopies
 const STATS = { blasts: 0, opens: 0, blocked: 0, blockedDmg: 0, launches: 0, breaks: 0, guarded: 0 };   // (tests / tuning)
-const SH = [];         // active shields this frame (held + launched)
+const SH: Sh[] = [];         // active shields this frame (held + launched)
 let SH_T = -1;         // G.time of the last refresh (blockShot / blockRay reuse it within a frame)
 
-function heldPose(a, s) {
+function heldPose(a: Actor, s: Sh) {
   const yaw = a.aimYaw, p = clamp(a.aimPitch, HELD.pitchMin, HELD.pitchMax), cp = Math.cos(p);
   s.N.set(Math.sin(yaw) * cp, Math.sin(p), Math.cos(yaw) * cp);
   s.C.set(a.pos.x, a.pos.y + (a.smoothY || 0) + HELD.up, a.pos.z).addScaledVector(s.N, HELD.fwd);
@@ -179,8 +205,8 @@ function refreshShields() {
   SH.length = 0; SH_T = G.time;
   for (const a of G.actors || []) {
     if (a.weapon?.kind !== 'brolly') continue;
-    const k = a.weaponRunner?.kit;
-    if (!k || !k.brolly) continue;
+    const k = a.weaponRunner && kitIn(a.weaponRunner);
+    if (!k) continue;
     if (!a.alive || a.form !== 'kid' || k.state !== 'ready' || k.open < 0.55 || k.grow < 0.9) { k.sh.prev = false; continue; }
     heldPose(a, k.sh); SH.push(k.sh);
   }
@@ -192,15 +218,15 @@ function refreshShields() {
 function snapShields() { for (const s of SH) { s.Cp.copy(s.C); s.Np.copy(s.N); } }
 // segment prev→pos through shield s, either direction. Swept: prev is measured against the shield's pose at the
 // start of the frame and pos against its pose now, so a canopy moving / turning onto a shot can't skip past it.
-function segShield(prev, pos, s, out) {
+function segShield(prev: THREE.Vector3, pos: THREE.Vector3, s: Sh, out: THREE.Vector3) {
   const a = _v3.copy(prev).sub(s.Cp).dot(s.Np), b = _v3.copy(pos).sub(s.C).dot(s.N);
   if ((a > 0) === (b > 0) || a === b) return false;
   out.lerpVectors(prev, pos, a / (a - b));
   return out.distanceToSquared(s.C) < s.R * s.R;
 }
 // hp / flash / sound state: the runner's kit for a held canopy, the canopy record for a launched one
-function hpOf(s) { return s.held ? s.kit : s.ref; }
-function hitShield(s, at, dmg, color, from) {
+function hpOf(s: Sh): HpRec { return s.held ? s.kit! : s.ref!; }
+function hitShield(s: Sh, at: THREE.Vector3, dmg: number, color: ColorIn, from: THREE.Vector3) {
   const o = hpOf(s);
   if (o.hp <= 0 || !(dmg > 0)) return;
   o.hp -= dmg; o.lastHit = G.time; STATS.blocked++; STATS.blockedDmg += dmg;
@@ -220,7 +246,7 @@ function hitShield(s, at, dmg, color, from) {
   if (s.held && s.owner?.isLocal) rumble(s.owner, 0.05 + Math.min(0.3, dmg / 300), 0.12, 50);
   if (o.hp <= 0) breakShield(s);
 }
-function breakShield(s) {
+function breakShield(s: Sh) {
   const o = hpOf(s), w = W();
   o.hp = 0; STATS.breaks++;
   const col = G.teamColors?.[s.team] || s.owner?.color;
@@ -231,7 +257,7 @@ function breakShield(s) {
     G.audio?.play('brolly_break', { pos: s.held && s.owner?.isLocal ? undefined : s.C, volume: 0.85 });
   }
   if (s.held) {
-    const k = s.kit;
+    const k = s.kit!;
     k.state = 'broken'; k.regrowT = w.regrowTime; k.regrowK = 0; k.open = 0; k.grow = 0; k.openT = 0; k.lockRelease = true;
     if (s.owner?.isLocal) { rumble(s.owner, 0.45, 0.4, 160); emit('shake', { amount: 0.25 }); }
   } else o.alive = false;
@@ -239,14 +265,14 @@ function breakShield(s) {
 }
 
 // damage a projectile deals to a canopy
-function projDamage(p) {
+function projDamage(p: Shot) {
   if (p._bid && p.weaponId === 'brolly') return pelletDamage(p.start.distanceTo(p.pos));
   let d = p.damage || 10;
   if (p.type === 'drop') d = lerp(p.damage || 10, p.dmgFar ?? p.damage ?? 10, clamp(p.start.distanceTo(p.pos) / 7, 0, 1));
   return d * (CANOPY_MUL[p.type] ?? 1);
 }
 // where a core projectile will be after this frame's step (the exact integrator Projectiles.update runs next)
-function predict(p, dt, out) {
+function predict(p: Shot, dt: number, out: THREE.Vector3) {
   const age = p.age + dt, g = age > p.straight;
   let vx = p.vel.x, vy = p.vel.y, vz = p.vel.z;
   if (g) vy -= p.grav * dt;
@@ -255,11 +281,11 @@ function predict(p, dt, out) {
 }
 
 // ---------------------------------------------------------------------------------------------- launched canopy
-function launch(r, k, w) {
+function launch(r: WeaponRunner, k: BrollyKit, w: WeaponCfg) {
   const a = r.a;
   const yaw = a.aimYaw, dir = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
   // start where the held canopy was, settle onto the ground just ahead
-  const g = G.physics.raycast(_v.set(a.pos.x + dir.x * 0.9, a.pos.y + 1.2, a.pos.z + dir.z * 0.9), DOWN, 3.5, _hit, true);
+  const g = G.physics!.raycast(_v.set(a.pos.x + dir.x * 0.9, a.pos.y + 1.2, a.pos.z + dir.z * 0.9), DOWN, 3.5, _hit, true);
   const pos = g.hit ? g.point.clone() : new THREE.Vector3(a.pos.x + dir.x * 0.9, a.pos.y, a.pos.z + dir.z * 0.9);
   const hp = Math.max(k.hp, w.canopyHp * 0.5), h0 = a.pos.y + (a.smoothY || 0) + HELD.up - pos.y;
   addLaunched(a, pos, dir, hp, h0, false);
@@ -273,37 +299,37 @@ function launch(r, k, w) {
 }
 // a launched canopy in the world. ghost: a remote player's (online) — it slides, blocks shots and holds players back
 // like the owner's (solid on every screen), but never paints (its stripe is the owner's to send)
-function addLaunched(a, pos, dir, hp, h0, ghost) {
+function addLaunched(a: Actor, pos: THREE.Vector3, dir: THREE.Vector3, hp: number, h0: number, ghost: boolean) {
   const w = W();
   const c = {
     held: false, alive: true, owner: a, team: a.team, pos: pos.clone(), dir: dir.clone(), t: 0, life: w.launchLife, hp, hpMax: w.canopyHp,
     vy: 0, paintAcc: 0, shoving: false, h0, flash: 0, shake: 0, sndT: -9, fxT: 0, ghost,
     sh: null, mesh: null, mats: null,
-  };
+  } as unknown as Canopy;   // (sh는 바로 아래에서 만든다)
   c.sh = { held: false, kit: null, ref: c, owner: a, team: a.team, C: new THREE.Vector3(), N: c.dir.clone(), R: LAUNCH_R, Cp: new THREE.Vector3(), Np: c.dir.clone(), prev: false };
   buildLaunchedMesh(c);
   LAUNCHED.push(c);
   if (ghost) sound(a, 'brolly_launch', 0.8);
   return c;
 }
-function buildLaunchedMesh(c) {
+function buildLaunchedMesh(c: Canopy) {
   const geo = canopyOpenGeo();
   const col = G.teamColors?.[c.team] || c.owner.color;
   const ink = makeFabric(col, true), cream = makeFabric(new THREE.Color(1, 1, 1), false);
   ink.transparent = cream.transparent = true;
   const root = new THREE.Group(), inner = new THREE.Group();
-  const mi = new THREE.Mesh(geo.ink, ink), mc = new THREE.Mesh(geo.cream, cream), mh = new THREE.Mesh(geo.hub, getPlasticMaterial());
+  const mi = new THREE.Mesh(geo.ink, ink), mc = new THREE.Mesh(geo.cream, cream), mh = new THREE.Mesh(geo.hub!, getPlasticMaterial());
   for (const m of [mi, mc, mh]) { m.castShadow = true; inner.add(m); }
   root.add(inner);
   root.rotation.y = Math.atan2(c.dir.x, c.dir.z);
   G.scene?.add(root);
   c.mesh = root; c.inner = inner; c.mats = [ink, cream];
 }
-function disposeLaunched(c) {
+function disposeLaunched(c: Canopy) {
   if (c.mesh) { c.mesh.parent?.remove(c.mesh); for (const m of c.mats) m.dispose(); }
   c.mesh = null;
 }
-function updateLaunched(c, dt) {
+function updateLaunched(c: Canopy, dt: number) {
   c.t += dt;
   const w = W();
   if (c.alive && c.t >= c.life) c.alive = false;
@@ -319,12 +345,12 @@ function updateLaunched(c, dt) {
     let blocked = false;
     for (const hgt of [0.3, 1.0]) {
       _v.copy(c.pos); _v.y += hgt;
-      if (G.physics.raycast(_v, c.dir, 0.12 + step, _hit, true).hit) { blocked = true; break; }
+      if (G.physics!.raycast(_v, c.dir, 0.12 + step, _hit, true).hit) { blocked = true; break; }
     }
     if (!blocked) {
       c.pos.addScaledVector(c.dir, step);
       // ground: step up small lips, follow slopes down, fall off edges (and into the sea)
-      const g = G.physics.raycast(_v.set(c.pos.x, c.pos.y + 0.6, c.pos.z), DOWN, 1.5, _hit, true);
+      const g = G.physics!.raycast(_v.set(c.pos.x, c.pos.y + 0.6, c.pos.z), DOWN, 1.5, _hit, true);
       if (g.hit && g.point.y > c.pos.y - 0.12 - Math.max(0, -c.vy) * dt - 0.02 && c.vy <= 0.01) { c.pos.y = g.point.y; c.vy = 0; }
       else { c.vy -= 24 * dt; c.pos.y += c.vy * dt; if (g.hit && c.pos.y < g.point.y) { c.pos.y = g.point.y; c.vy = 0; } }
       if (c.pos.y < PLAYER.waterY - 0.4) { c.alive = false; c.hp = 0; }
@@ -333,7 +359,7 @@ function updateLaunched(c, dt) {
       if (c.paintAcc >= 0.32 && c.vy === 0) {
         c.paintAcc = 0;
         _v.set(c.pos.x, c.pos.y + 0.3, c.pos.z);
-        const area = G.paint.splat(_v, w.launchPaint, c.team, { seed: Math.random(), kind: 'roll', stretch: c.dir });
+        const area = G.paint!.splat(_v, w.launchPaint, c.team, { seed: Math.random(), kind: 'roll', stretch: c.dir });
         const o = c.owner; if (o) { if (o.specialActive) o.addTurfNoSpecial(area); else o.addTurf(area); }
       }
     }
@@ -366,7 +392,7 @@ function updateLaunched(c, dt) {
   return true;
 }
 // enemy players can't pass a launched canopy: push them back out to the side they're on (allies walk through)
-function blockActors(c) {
+function blockActors(c: Canopy) {
   if (!c.alive) return;
   const N = c.dir, tx = -N.z, tz = N.x, rr = PLAYER.radius + 0.18;
   for (const e of G.actors || []) {
@@ -386,14 +412,16 @@ function blockActors(c) {
 }
 
 // ---------------------------------------------------------------------------------------------- per-frame (world)
-const PEND = new Map(), LIVE = new Set(), MERGE = 1 / 30;
-function tick(dt) {
+/** 한 사격의 알갱이가 같은 대상에 MERGE초 안에 닿으면 한 번에 친다 */
+interface PendHit { owner: Actor; victim?: Actor; boss?: HitTarget; point?: THREE.Vector3; dmg: number; n: number; at: number }
+const PEND = new Map<number, PendHit>(), LIVE = new Set<Shot>(), MERGE = 1 / 30;
+function tick(dt: number) {
   const w = W();
   // runner-side timers (run even while a special owns the body / the runner is idle)
   for (const a of G.actors || []) {
     if (a.weapon?.kind !== 'brolly') continue;
-    const r = a.weaponRunner, k = r?.kit;
-    if (!k || !k.brolly) continue;
+    const r = a.weaponRunner, k = r && kitIn(r);
+    if (!k) continue;
     if (G.time - k.lastUpd > 0.1 || !a.alive || a.form !== 'kid') { k.want = false; k.open = Math.max(0, k.open - dt / w.closeTime); k.openT = 0; }
     if (k.state !== 'ready') {
       k.regrowT -= dt; k.regrowK = clamp(1 - k.regrowT / w.regrowTime, 0, 1);
@@ -421,7 +449,7 @@ function tick(dt) {
   }
   refreshShields();
   // 1) every projectile's next step vs every enemy canopy: blocked shots end on the canopy (before the body behind it)
-  const PJ = G.projectiles, list = PJ.list;
+  const PJ = G.projectiles!, list = PJ.list;
   if (SH.length) {
     for (let i = list.length - 1; i >= 0; i--) {
       const p = list[i];
@@ -431,7 +459,7 @@ function tick(dt) {
         if (s.team === p.team) continue;
         if (!segShield(p.pos, _v, s, _x)) continue;
         hitShield(s, _x, projDamage(p), p.owner.color, p.pos);
-        if (p._bid > 0) p._bid = -p._bid;
+        if (p._bid! > 0) p._bid = -p._bid!;
         PJ.removeShot(p);
         break;
       }
@@ -439,7 +467,7 @@ function tick(dt) {
   }
   // 2) this kit's pellets vs enemy bodies: one summed hit per victim per frame. A pellet that is no longer in the
   // live list died last frame (wall, canopy, curtain …); one that scores here dies in the core pass right after.
-  if (PELLETS.length) { LIVE.clear(); for (const p of list) if (p._bid > 0) LIVE.add(p); }
+  if (PELLETS.length) { LIVE.clear(); for (const p of list) if (p._bid! > 0) LIVE.add(p); }
   for (let i = PELLETS.length - 1; i >= 0; i--) {
     const e = PELLETS[i], p = e.p;
     if (p._bid !== e.id || !LIVE.has(p)) { PELLETS[i] = PELLETS[PELLETS.length - 1]; PELLETS.pop(); continue; }
@@ -453,7 +481,7 @@ function tick(dt) {
         let rec = PEND.get(key);
         if (!rec) PEND.set(key, (rec = { owner: e.owner, boss: bh.target, point: bh.point.clone(), dmg: 0, n: 0, at: G.time + MERGE }));
         rec.dmg += pelletDamage(p.start.distanceTo(bh.point)); rec.n++;
-        p._bid = -p._bid;
+        p._bid = -p._bid!;
         continue;
       }
     }
@@ -469,7 +497,7 @@ function tick(dt) {
         let rec = PEND.get(key);
         if (!rec) PEND.set(key, (rec = { owner: e.owner, victim: v, dmg: 0, n: 0, at: G.time + MERGE }));
         rec.dmg += pelletDamage(p.start.distanceTo(_x)); rec.n++;
-        p._bid = -p._bid;   // scored: never counted again (the core pass ends it on the same body this frame)
+        p._bid = -p._bid!;   // scored: never counted again (the core pass ends it on the same body this frame)
         break;
       }
     }
@@ -477,7 +505,7 @@ function tick(dt) {
   for (const [key, rec] of PEND) {
     if (G.time < rec.at - 1e-6) continue;
     PEND.delete(key);
-    if (rec.boss) G.boss?.hit(rec.owner, rec.dmg, rec.boss, 'brolly', rec.point); else PJ.applyHit(rec.owner, rec.victim, rec.dmg, 'brolly');
+    if (rec.boss) G.boss?.hit(rec.owner, rec.dmg, rec.boss, 'brolly', rec.point!); else PJ.applyHit(rec.owner, rec.victim!, rec.dmg, 'brolly');
   }
   snapShields();
   // 3) launched canopies hold enemy players back
@@ -490,7 +518,7 @@ function clearAll() {
 }
 
 // ---------------------------------------------------------------------------------------------- blocking hooks
-function blockShot(prev, pos, team, dmg) {
+function blockShot(prev: THREE.Vector3, pos: THREE.Vector3, team: number, dmg: number) {
   if (SH_T !== G.time) refreshShields();
   if (!SH.length) return false;
   for (const s of SH) {
@@ -501,10 +529,10 @@ function blockShot(prev, pos, team, dmg) {
   }
   return false;
 }
-function blockRay(from, dir, len, team, dmg) {
+function blockRay(from: THREE.Vector3, dir: THREE.Vector3, len: number, team: number, dmg: number) {
   if (SH_T !== G.time) refreshShields();
   if (!SH.length) return len;
-  let best = len, hit = null;
+  let best = len, hit: Sh | null = null;
   for (const s of SH) {
     if (s.team === team) continue;
     const dn = dir.dot(s.N);
@@ -542,22 +570,25 @@ on('bomb:explode', (e) => {
 
 // ---------------------------------------------------------------------------------------------- bots
 // an enemy charger / long-range weapon lining up on this bot
-function lineThreat(a) {
+function lineThreat(a: Actor) {
   for (const e of G.actors || []) {
     if (e.team === a.team || !e.alive) continue;
-    const kind = e.weapon?.kind, KB = MAIN_KITS[kind]?.bot;
+    const kind = e.weapon?.kind ?? '', KB = MAIN_KITS[kind]?.bot;
     if (!(CHARGES[kind] || LONG[kind] || KB?.long || KB?.charges)) continue;
     const r = e.weaponRunner; if (!r || !(r.charging || r.firingT > 0 || r.streaming || r.burstT > 0)) continue;
     const dx = a.pos.x - e.pos.x, dy = a.pos.y + 0.8 - (e.pos.y + 1.1), dz = a.pos.z - e.pos.z, d = Math.hypot(dx, dy, dz);
-    if (d > weaponRange(e.weapon) + 3 || d < 1) continue;
+    if (d > weaponRange(e.weapon)! + 3 || d < 1) continue;
     if ((e.aimDir.x * dx + e.aimDir.y * dy + e.aimDir.z * dz) / d < Math.cos(0.14)) continue;
     return e;
   }
   return null;
 }
+/** 봇 우산 상태(두뇌에 붙는다): 펼침 유지 시각, 다음 방패, 던질지, 따라 전진할 시각 */
+interface BrollyBot { holdUntil: number; nextShield: number; launch: boolean; advanceUntil: number }
+type BrollyBrain = BotBrain & { _brolly?: BrollyBot };
 const bot = {
   paintPitch: -0.36,
-  fight(brain, ctx) {
+  fight(brain: BrollyBrain, ctx: BotFightCtx) {
     const { a, w, dist, range, dt, move, target } = ctx;
     const k = kitOf(a.weaponRunner);
     const bb = brain._brolly || (brain._brolly = { holdUntil: 0, nextShield: 0, launch: false, advanceUntil: 0 });
@@ -572,7 +603,7 @@ const bot = {
         for (const o of G.actors) if (o !== a && o.alive && o.team === a.team && o.pos.distanceToSquared(a.pos) < 49) allies++;
         const launchIt = dist > 4 && dist < 14 && (allies > 0 || ahead) && Math.random() < (allies > 0 ? 0.45 : 0.2);
         const hold = launchIt ? w.openDelay + w.openTime + w.launchHold + 0.12 : 0.5 + Math.random() * 0.3;
-        bb.holdUntil = G.time + hold; bb.launch = launchIt;
+        bb.holdUntil = G.time + hold; bb.launch = !!launchIt;
         bb.nextShield = G.time + hold + 0.9 + Math.random() * 1.4;
         if (launchIt) bb.advanceUntil = G.time + hold + 2.2;
       }
@@ -592,7 +623,7 @@ const bot = {
     }
     return dist < range * 1.1;
   },
-  paint(brain, ctx) {
+  paint(brain: BrollyBrain, ctx: BotPaintCtx) {
     brain._brolly || (brain._brolly = { holdUntil: 0, nextShield: 0, launch: false, advanceUntil: 0 });
     return ctx.needPaint && ctx.inkFrac > 0.2;
   },
@@ -601,9 +632,9 @@ const bot = {
 // ---------------------------------------------------------------------------------------------- query hook
 // Bots (bots.js) route round enemy launched canopies and flank held ones: one stable descriptor per shield, getters read
 // its live state (see kits/registry.js `shields`). Read-only: nothing here changes how a canopy behaves.
-function shieldOf(s) {
+function shieldOf(s: Sh): Shield {
   if (s.info) return s.info;
-  const w = W(), c = s.ref;
+  const w = W(), c = s.ref!;
   s.info = {
     kind: 'brolly', held: s.held, owner: s.owner, C: s.C, N: s.N, R: s.R, hpMax: w.canopyHp, blocksActors: !s.held,
     // launched: foot position (N = its travel direction), half-width it blocks players over, and the blocking plane's
@@ -613,14 +644,14 @@ function shieldOf(s) {
     get hp() { return Math.max(0, hpOf(s).hp); },
     get live() {
       if (!s.held) return c.alive;
-      const a = s.owner, k = s.kit;
+      const a = s.owner, k = s.kit!;
       return !!a && a.alive && a.form === 'kid' && a.weaponRunner?.kit === k && k.state === 'ready' && k.open >= 0.55 && k.grow >= 0.9;
     },
     get left() { return s.held ? 0 : Math.max(0, c.life - c.t); },   // launched: seconds until it fades
   };
   return s.info;
 }
-function shields(out) {
+function shields(out: Shield[]) {
   if (SH_T !== G.time) refreshShields();
   for (const s of SH) out.push(shieldOf(s));
   return out;
@@ -632,14 +663,14 @@ function shields(out) {
 // grow 0–7 bits 6–8, hp 0–31 bits 9–13, regrow 0–7 bits 14–16) → netApply rebuilds runner.kit, so its held canopy is
 // drawn AND blocks the local player's shots here (refreshShields reads every actor's kit). A launch → ghost: a solid
 // sliding canopy (see addLaunched).
-const STATE_N = { ready: 0, broken: 1, launched: 2 }, STATE_OF = ['ready', 'broken', 'launched'];
-function netState(r) {
-  const k = r.kit && r.kit.brolly ? r.kit : null;
+const STATE_N: Record<string, number | undefined> = { ready: 0, broken: 1, launched: 2 }, STATE_OF = ['ready', 'broken', 'launched'];
+function netState(r: WeaponRunner) {
+  const k = kitIn(r);
   if (!k) return 0;
-  const q = (v, n) => Math.max(0, Math.min(n, Math.round(clamp(v, 0, 1) * n)));
+  const q = (v: number, n: number) => Math.max(0, Math.min(n, Math.round(clamp(v, 0, 1) * n)));
   return (STATE_N[k.state] ?? 0) | (q(k.open, 15) << 2) | (q(k.grow, 7) << 6) | (q(k.hp / k.hpMax, 31) << 9) | (q(k.regrowK || 0, 7) << 14);
 }
-function netApply(r, b) {
+function netApply(r: WeaponRunner, b: number) {
   const k = kitOf(r);
   const st = STATE_OF[b & 3] || 'ready';
   const hp = (((b >> 9) & 31) / 31) * k.hpMax;
@@ -647,12 +678,12 @@ function netApply(r, b) {
   k.state = st; k.hp = hp;
   k.open = ((b >> 2) & 15) / 15; k.grow = ((b >> 6) & 7) / 7; k.regrowK = ((b >> 14) & 7) / 7;
 }
-function ghost(a, d) {
+function ghost(a: Actor, d: number[]) {
   if (!Array.isArray(d)) return;
   addLaunched(a, _gp.set(d[0], d[1], d[2]), _gd.set(d[3], 0, d[4]).normalize(), d[5], d[6], true);
 }
 const _gp = new THREE.Vector3(), _gd = new THREE.Vector3();
-const r2 = (x) => Math.round(x * 100) / 100, r3 = (x) => Math.round(x * 1000) / 1000;
+const r2 = (x: number) => Math.round(x * 100) / 100, r3 = (x: number) => Math.round(x * 1000) / 1000;
 
 MAIN_KITS.brolly = {
   netState,
@@ -660,9 +691,9 @@ MAIN_KITS.brolly = {
   ghost,
   update,
   busy: () => false,
-  firingPose: (r) => !!(r.kit && r.kit.brolly && r.kit.open > 0),
-  moveSpeed: (r, w) => (r.kit && r.kit.brolly && r.kit.open > 0.2 ? w.moveSpeedShield : 0),
-  spreadDeg: (r, w) => (r.a.grounded ? w.spreadDeg : w.spreadAir),
+  firingPose: (r: WeaponRunner) => !!(r.kit && kitIn(r) && kitIn(r)!.open > 0),
+  moveSpeed: (r: WeaponRunner, w: WeaponCfg) => (r.kit && kitIn(r) && kitIn(r)!.open > 0.2 ? w.moveSpeedShield : 0),
+  spreadDeg: (r: WeaponRunner, w: WeaponCfg) => (r.a.grounded ? w.spreadDeg : w.spreadAir),
   tick, clear: clearAll, blockShot, blockRay, shields,
   bot,
   // test / tooling access

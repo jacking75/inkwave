@@ -16,7 +16,13 @@
 import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { G, emit, clamp, lerp } from '../../core/ctx.js';
-import { PLAYER, SUBS } from '../../config.js';
+import { PLAYER, SUB_CFG } from '../../config.js';
+import type { SubCfg } from '../../config.js';
+import type { Actor } from '../actor.js';
+import type { SubSystem } from '../subs.js';
+import type { BotBrain } from '../bots.js';
+import type { Threat } from './registry.js';
+import type { LoopHandle } from '../../audio/audio.js';
 import { Physics, Hit } from '../physics.js';
 import { SUB_KITS, KIT_GHOSTS, netRec, netId, netHurt, netMuted, ghostMute } from './registry.js';
 import { registerSubModel, getSubDef, GEO_KIT } from '../character-weapons.js';
@@ -29,18 +35,18 @@ import { THROWN } from '../bots.js';
 
 const V3 = THREE.Vector3;
 const UP = new V3(0, 1, 0), DOWN = new V3(0, -1, 0), ZAX = new V3(0, 0, 1);
-const r2 = (x) => Math.round(x * 100) / 100;
+const r2 = (x: number) => Math.round(x * 100) / 100;
 const GRAV = 24;                 // same as every thrown sub (and the throw-arc preview)
 const SCALE = 1.9;               // prop models are built at hand scale (SubSystem's SUB_SCALE)
 const HIT_R = 0.3;               // shot-down / contact radius of the torpedo in the world (m)
 const _v = new V3(), _v2 = new V3(), _v3 = new V3(), _q = new THREE.Quaternion(), _m = new THREE.Matrix4();
 const _hit = new Hit(), _res = { t: 0, dist: 0 };
-const nearCam = (p, r = 34) => !!G.camera && G.camera.position.distanceToSquared(p) < r * r;
-const backOut = (t, s = 2.2) => { t = clamp(t, 0, 1) - 1; return 1 + t * t * ((s + 1) * t + s); };
-const chest = (e, out) => out.set(e.pos.x, e.pos.y + (e.smoothY || 0) + (e.form === 'squid' ? 0.3 : 0.8), e.pos.z);
-const hitBase = (e, out) => out.set(e.pos.x, e.pos.y + (e.smoothY || 0), e.pos.z);
-const hitH = (e) => e.hitH || (e.form === 'squid' ? PLAYER.squidHeight : PLAYER.height);
-const hitR = (e) => e.hitR || PLAYER.radius;
+const nearCam = (p: THREE.Vector3, r = 34) => !!G.camera && G.camera.position.distanceToSquared(p) < r * r;
+const backOut = (t: number, s = 2.2) => { t = clamp(t, 0, 1) - 1; return 1 + t * t * ((s + 1) * t + s); };
+const chest = (e: Actor, out: THREE.Vector3) => out.set(e.pos.x, e.pos.y + (e.smoothY || 0) + (e.form === 'squid' ? 0.3 : 0.8), e.pos.z);
+const hitBase = (e: Actor, out: THREE.Vector3) => out.set(e.pos.x, e.pos.y + (e.smoothY || 0), e.pos.z);
+const hitH = (e: Actor) => e.hitH || (e.form === 'squid' ? PLAYER.squidHeight : PLAYER.height);
+const hitR = (e: Actor) => e.hitR || PLAYER.radius;
 
 // =============================================================================================== model
 // Hand scale, prop space (+Z = nose). A stubby torpedo lying along Z, axis at height YC: dark tail cone, cream rear body
@@ -56,14 +62,14 @@ const PROP_AT = new V3(0, YC, -0.0895);
 function buildTorpedo() {
   const { Parts, C, M, latheZ, torus, at, decal, squidShape, chevrons, wrapZ, profR, led, gripSleeve } = GEO_KIT;
   const P = new Parts(), I = new Parts(), L = new Parts();
-  const r = (z) => profR(HP, z);
-  const section = (z0, z1, dr = 0, n = 12) => {
+  const r = (z: number) => profR(HP, z);
+  const section = (z0: number, z1: number, dr = 0, n = 12) => {
     const pr = [[0, z0]];
     for (let i = 0; i <= n; i++) { const z = z0 + (z1 - z0) * i / n; pr.push([r(z) + dr, z]); }
     pr.push([0, z1]);
     return at(latheZ(pr, 30), 0, YC, 0);
   };
-  const ring = (z, tube, col, mat, dr = 0.0004) => { const g = torus(r(z) + dr, tube, 6, 34); P.add(at(g, 0, YC, z), col, mat); };
+  const ring = (z: number, tube: number, col: THREE.ColorRepresentation | undefined, mat: number, dr = 0.0004) => { const g = torus(r(z) + dr, tube, 6, 34); P.add(at(g, 0, YC, z), col, mat); };
   // hull
   P.add(section(-0.086, -0.056), C.gunmetal, M.gloss);
   P.add(section(-0.056, -0.012), C.cream, M.gloss);
@@ -96,7 +102,7 @@ function buildTorpedo() {
   // tail: knurled rubber stub (the handle) + metal end cap
   const stub = gripSleeve(0, 0.024, 0.0108); stub.rotateX(-Math.PI / 2); P.add(at(stub, 0, YC, -0.0925), C.rubber, M.rubber);
   P.add(at(latheZ([[0, -0.1195], [0.0078, -0.1195], [0.0098, -0.1182], [0.0101, -0.1158], [0, -0.1158]], 14), 0, YC, 0), C.metal, M.metal);
-  const hullBody = P.build(), hullInk = I.build(), glow = L.build();
+  const hullBody = P.build()!, hullInk = I.build()!, glow = L.build()!;
   // fin (ink), authored in place at azimuth finAz(0), re-centred on its hinge point
   const fin = finGeometry();
   const piv = finPivot(0);
@@ -109,9 +115,9 @@ function buildTorpedo() {
     b.rotateY(0.5); b.translate(0, 0.0128, 0); b.rotateZ(k * Math.PI * 2 / 3);
     PP.add(at(b, 0, YC, -0.0895), C.cream, M.gloss);
   }
-  const prop = PP.build().translate(-PROP_AT.x, -PROP_AT.y, -PROP_AT.z);
+  const prop = PP.build()!.translate(-PROP_AT.x, -PROP_AT.y, -PROP_AT.z);
   // the held prop: hull + folded fins + folded propeller, all in one
-  const foldedFins = []; for (let k = 0; k < FIN.n; k++) foldedFins.push(finAt(fin, k));
+  const foldedFins: THREE.BufferGeometry[] = []; for (let k = 0; k < FIN.n; k++) foldedFins.push(finAt(fin, k));
   const propFolded = prop.clone().scale(0.38, 0.38, 1).translate(PROP_AT.x, PROP_AT.y, PROP_AT.z);
   return {
     kind: 'torpedo', body: mergeGeometries([hullBody, propFolded], false), ink: mergeGeometries([hullInk, ...foldedFins], false), glow,
@@ -119,8 +125,8 @@ function buildTorpedo() {
     hullBody, hullInk, finLocal, prop, yc: YC,
   };
 }
-function finAz(k) { return Math.PI / 4 + k * Math.PI / 2 - 0.47; }
-function finPivot(k) { const a = finAz(k); return new V3(Math.cos(a) * FIN.R, YC + Math.sin(a) * FIN.R, FIN.z0); }
+function finAz(k: number) { return Math.PI / 4 + k * Math.PI / 2 - 0.47; }
+function finPivot(k: number) { const a = finAz(k); return new V3(Math.cos(a) * FIN.R, YC + Math.sin(a) * FIN.R, FIN.z0); }
 // a curved fin: an arc of the hull's cylinder (radius FIN.R), root along +Z at azimuth finAz(0), running round the hull
 // (counter-clockwise seen from the nose) — folded it lies flush; turning it clockwise about its root swings it out
 function finGeometry() {
@@ -138,7 +144,7 @@ function finGeometry() {
   return wrapZ(mergeVertices(g, 1e-6), FIN.R, finAz(0), FIN.z0, YC);
 }
 // fin k folded, in prop space (for the held prop)
-function finAt(fin, k) {
+function finAt(fin: THREE.BufferGeometry, k: number) {
   const g = fin.clone();
   g.translate(0, -YC, 0).rotateZ(finAz(k) - finAz(0)).translate(0, YC, 0);
   // Parts geometry carries color + aMat: give the fin the same attribute set as the ink Parts output
@@ -150,10 +156,12 @@ function finAt(fin, k) {
 
 // =============================================================================================== world rig
 // per torpedo (its lens brightens as it locks and launches)
-function glowMat(team) { return new THREE.MeshStandardMaterial({ color: 0x111111, emissive: G.teamColors[team].clone(), emissiveIntensity: 1.2, roughness: 0.3 }); }
-function buildRig(team) {
-  const d = getSubDef('torpedo');
-  const col = G.teamColors[team];
+function glowMat(team: number) { return new THREE.MeshStandardMaterial({ color: 0x111111, emissive: G.teamColors[team]!.clone(), emissiveIntensity: 1.2, roughness: 0.3 }); }
+/** 어뢰 소품 정의(buildTorpedo): 손 소품 + 세상 모형 부품(선체·핀·프로펠러·축 높이) */
+type TorpedoDef = ReturnType<typeof buildTorpedo>;
+function buildRig(team: number) {
+  const d = getSubDef('torpedo') as unknown as TorpedoDef;   // (registerSubModel로 등록한 그 정의)
+  const col = G.teamColors[team]!;
   const outer = new THREE.Group(), model = new THREE.Group();
   model.scale.setScalar(SCALE); model.position.y = -d.yc * SCALE;          // the hull axis runs through the outer origin
   const body = new THREE.Mesh(d.hullBody, getPlasticMaterial()); body.castShadow = true;
@@ -161,7 +169,7 @@ function buildRig(team) {
   const gm = glowMat(team);
   const glow = new THREE.Mesh(d.glow, gm);
   model.add(body, ink, glow);
-  const fins = [];
+  const fins: THREE.Group[] = [];
   const piv0 = finPivot(0);
   for (let k = 0; k < FIN.n; k++) {
     const arm = new THREE.Group(); arm.position.set(0, YC, 0); arm.rotation.z = finAz(k) - finAz(0);
@@ -177,8 +185,8 @@ function buildRig(team) {
   outer.userData = { model, fins, prop, glow: gm };
   return outer;
 }
-function poseRig(t) {
-  const U = t.mesh.userData, k = t.fin;
+function poseRig(t: Torp) {
+  const U = t.mesh!.userData, k = t.fin;
   for (const f of U.fins) f.rotation.z = -FIN.span * k;
   const pk = t.propOpen;
   U.prop.scale.set(lerp(0.38, 1, pk), lerp(0.38, 1, pk), 1);
@@ -204,9 +212,9 @@ const RING_FS = `
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }`;
-function makeRing(team) {
+function makeRing(team: number) {
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uColor: { value: G.teamColors[team].clone() }, uTime: { value: 0 }, uAlpha: { value: 0 } },
+    uniforms: { uColor: { value: G.teamColors[team]!.clone() }, uTime: { value: 0 }, uAlpha: { value: 0 } },
     vertexShader: RING_VS, fragmentShader: RING_FS, transparent: true, depthWrite: false, side: THREE.DoubleSide,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
@@ -218,7 +226,7 @@ function makeRing(team) {
 
 // droplets: glossy team-ink blobs, one instanced draw
 const MAX_DROPS = 96;
-let dropMesh = null;
+let dropMesh: THREE.InstancedMesh | null = null;
 function dropsMesh() {
   if (dropMesh && dropMesh.parent) return dropMesh;
   if (!dropMesh) {
@@ -233,22 +241,37 @@ function dropsMesh() {
 }
 
 // =============================================================================================== state
-const list = [];     // live torpedoes
-const drops = [];    // live droplets
+/** 어뢰: 설정·주인·팀, 위치·이전·속도·방향·속력, 상태(fly·unfold·launch·swim·dead)·시간·나이, 체력, 목표, 모형·장면·고리, 스페셜 중,
+ *  핀·프로펠러·회전·빛, 정지 위치, 소리, 깜박임, 유령·번호, 원격 진행·보낸 시각, 터짐, 맞힌 적·법선·사격, 봇 질의 기록 */
+interface Torp {
+  kind: 'torpedo'; sub: SubCfg; owner: Actor; team: number; pos: THREE.Vector3; prev: THREE.Vector3; vel: THREE.Vector3; dir: THREE.Vector3; speed: number;
+  state: string; t: number; age: number; hp: number; target: Actor | null; mesh: THREE.Group | null; scene: THREE.Scene | THREE.Object3D;
+  ring: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial> | null; ringT: number; sp: boolean;   // (ringT: 고리를 만들 때 둔다)
+  fin: number; propOpen: number; propA: number; roll: number; glowI: number; hover: THREE.Vector3; whirr: LoopHandle | null; flash: number;
+  ghost: boolean; gid: number; net: { p: THREE.Vector3; d: THREE.Vector3; s: number; age: number } | null; sendT: number; burst: boolean;
+  hitFoe?: Actor | null; hitN?: THREE.Vector3 | null; shot?: boolean; thr?: Threat;
+}
+/** 터진 어뢰의 물방울: 위치·이전·속도·나이, 주인·팀, 대상별 맞힌 수(한 폭발 공유), 스페셜 중, 유령, 크기·피해·상한·칠하기 */
+interface Drop {
+  pos: THREE.Vector3; prev: THREE.Vector3; vel: THREE.Vector3; age: number; owner: Actor; team: number; rec: { hits: Map<Actor, number> };
+  sp: boolean; ghost: boolean; size: number; dmg: number; cap: number; paint: number;
+}
+const list: Torp[] = [];     // live torpedoes
+const drops: Drop[] = [];    // live droplets
 
-function sceneOf(subs) { return subs?.scene || G.scene; }
-function credit(t, area) { if (!area) return; if (t.sp) t.owner.addTurfNoSpecial(area); else t.owner.addTurf(area); }
-function locked(t) { return t.state === 'unfold' || t.state === 'launch'; }
-function live(t) { return t.state !== 'dead'; }
+function sceneOf(subs: SubSystem | null | undefined) { return (subs?.scene || G.scene)!; }
+function credit(t: Torp, area: number) { if (!area) return; if (t.sp) t.owner.addTurfNoSpecial(area); else t.owner.addTurf(area); }
+function locked(t: Torp) { return t.state === 'unfold' || t.state === 'launch'; }
+function live(t: Torp) { return t.state !== 'dead'; }
 
-function use(subs, a, sub) {
+function use(subs: SubSystem, a: Actor, sub: SubCfg) {
   const pos = a.pos.clone(); pos.y += 1.35;
-  const vel = G.projectiles.throwVelocity(a, sub.throwSpeed, new V3());
+  const vel = G.projectiles!.throwVelocity(a, sub.throwSpeed, new V3());
   const t = spawn(subs, a, sub, pos, vel, false, netId(a));
   netRec(a, 'torpedo', [0, t.gid, r2(pos.x), r2(pos.y), r2(pos.z), r2(vel.x), r2(vel.y), r2(vel.z)]);
   // the throw inks a patch under the thrower's feet
-  const g = G.physics.raycast(_v.copy(a.pos).setY(a.pos.y + 0.4), DOWN, 2.5, _hit);
-  if (g.hit) { const b = G.level.blocks[g.block]; if (!(b && (b.roof || b.rail || b.perch))) credit(t, G.paint.splat(_v2.copy(g.point).addScaledVector(g.normal, 0.1), sub.feetPaint, a.team, { seed: Math.random() })); }
+  const g = G.physics!.raycast(_v.copy(a.pos).setY(a.pos.y + 0.4), DOWN, 2.5, _hit);
+  if (g.hit) { const b = G.level!.blocks[g.block]; if (!(b && (b.roof || b.rail || b.perch))) credit(t, G.paint!.splat(_v2.copy(g.point).addScaledVector(g.normal, 0.1), sub.feetPaint, a.team, { seed: Math.random() })); }
   if (a.isLocal || a._nearCamera?.()) {
     G.audio?.play('bomb_throw', { pos: a.isLocal ? undefined : a.pos, volume: 0.6, pitch: 0.92 });
     G.audio?.play('torpedo_throw', { pos: a.isLocal ? undefined : a.pos, volume: 0.7 });
@@ -258,7 +281,7 @@ function use(subs, a, sub) {
 // Online, a remote player's torpedo is a ghost: it flies the same arc, but its owner decides the rest — records
 // [3, gid, foe nid, x, y, z] the lock, [4, gid, x, y, z, dx, dy, dz, speed] its swim (10 a second, dead-reckoned in
 // between), [1, gid, x, y, z, full] the burst, [2, gid, shot] an end without one. Hits on a ghost go to its owner.
-function spawn(subs, a, sub, pos, vel, ghost, gid) {
+function spawn(subs: SubSystem | null | undefined, a: Actor, sub: SubCfg, pos: THREE.Vector3, vel: THREE.Vector3, ghost: boolean, gid: number) {
   const mesh = buildRig(a.team);
   const scene = sceneOf(subs);
   scene.add(mesh);
@@ -267,21 +290,21 @@ function spawn(subs, a, sub, pos, vel, ghost, gid) {
     state: 'fly', t: 0, age: 0, hp: sub.hp, target: null, mesh, scene, ring: null, sp: !!a.specialActive,
     fin: 0, propOpen: 0, propA: 0, roll: Math.random() * 6, glowI: 0.5, hover: new V3(), whirr: null, flash: 0,
     ghost, gid, net: null, sendT: 0, burst: false,
-  };
+  } as Torp;
   list.push(t);
   if (nearCam(pos, 40)) t.whirr = G.audio?.loop?.('torpedo_whirr', { pos, volume: 0.35, pitch: 0.8 }) || null;
   orient(t, t.dir);
   mesh.position.copy(pos);
   return t;
 }
-const byNid = (n) => (n >= 0 ? G.actors.find((e) => e.nid === n) || null : null);
-const own = (gid) => list.find((t) => !t.ghost && t.gid === gid && live(t));
-function ghost(a, d) {
+const byNid = (n: number) => (n >= 0 ? G.actors.find((e) => e.nid === n) || null : null);
+const own = (gid: number) => list.find((t) => !t.ghost && t.gid === gid && live(t));
+function ghost(a: Actor, d: number[]) {
   if (!Array.isArray(d)) return;
   const [op, gid] = d;
   if (op === 0) {
     if (list.some((x) => x.gid === gid)) return;
-    spawn(G.subs, a, SUBS.torpedo, new V3(d[2], d[3], d[4]), new V3(d[5], d[6], d[7]), true, gid);
+    spawn(G.subs, a, SUB_CFG.torpedo!, new V3(d[2], d[3], d[4]), new V3(d[5], d[6], d[7]), true, gid);
     if (a._nearCamera?.()) { G.audio?.play('bomb_throw', { pos: a.pos, volume: 0.6, pitch: 0.92 }); G.audio?.play('torpedo_throw', { pos: a.pos, volume: 0.7 }); }
     return;
   }
@@ -297,13 +320,13 @@ function ghost(a, d) {
   else if (op === 2) { if (d[2]) destroy(t); else fizzle(t); }
 }
 
-function orient(t, dir) {
+function orient(t: Torp, dir: THREE.Vector3) {
   _q.setFromUnitVectors(ZAX, _v3.copy(dir).normalize());
-  t.mesh.quaternion.copy(_q);
-  t.mesh.rotateZ(t.roll);
+  t.mesh!.quaternion.copy(_q);
+  t.mesh!.rotateZ(t.roll);
 }
 
-function tick(dt) {
+function tick(dt: number) {
   if (!list.length && !drops.length) return;
   for (let i = list.length - 1; i >= 0; i--) {
     const t = list[i];
@@ -334,14 +357,14 @@ function tick(dt) {
 }
 
 // ---- in flight: gravity arc; locks onto a foe in range, bursts small on touching anything first
-function fly(t, h) {
+function fly(t: Torp, h: number) {
   const s = t.sub;
   t.prev.copy(t.pos);
   t.vel.y -= GRAV * h;
   t.pos.addScaledVector(t.vel, h);
   if (t.vel.lengthSq() > 1e-4) t.dir.copy(t.vel).normalize();
   if (t.ghost) {   // flies the arc; stops where it touches something and waits for its owner's word
-    const w = G.physics.segment(t.prev, t.pos, _hit);
+    const w = G.physics!.segment(t.prev, t.pos, _hit);
     if (w.hit) { t.pos.copy(w.point).addScaledVector(w.normal, 0.14); t.vel.set(0, 0, 0); }
     if (t.pos.y < PLAYER.waterY - 1.8) fizzle(t);
     return;
@@ -349,7 +372,7 @@ function fly(t, h) {
   const e = touchFoe(t);
   if (e) return burst(t, false);
   if (touchDevice(t)) return burst(t, false);
-  const w = G.physics.segment(t.prev, t.pos, _hit);          // grates count: any surface
+  const w = G.physics!.segment(t.prev, t.pos, _hit);          // grates count: any surface
   if (w.hit) { t.pos.copy(w.point).addScaledVector(w.normal, 0.14); t.hitN = w.normal.clone(); return burst(t, false); }
   if (t.pos.y < PLAYER.waterY - 1.8) { fizzle(t); return; }
   if (t.age >= s.armTime) {
@@ -358,7 +381,7 @@ function fly(t, h) {
   }
   if (t.age > s.flyLife) burst(t, false);
 }
-function findTarget(t, range) {
+function findTarget(t: Torp, range: number) {
   let best = null, bd = range;
   for (const e of G.actors) {
     if (e.team === t.team || !e.alive || e.superJumpState) continue;
@@ -366,12 +389,12 @@ function findTarget(t, range) {
     if (e.form === 'squid' && e.submerged && !(e.status?.track > 0 && e.status.trackTeam === t.team)) continue;
     chest(e, _v);
     const d = _v.distanceTo(t.pos);
-    if (d >= bd || !G.physics.los(t.pos, _v)) continue;
+    if (d >= bd || !G.physics!.los(t.pos, _v)) continue;
     bd = d; best = e;
   }
   return best;
 }
-function startLock(t, e) {
+function startLock(t: Torp, e: Actor | null) {
   if (!t.ghost) netRec(t.owner, 'torpedo', [3, t.gid, e?.nid ?? -1, r2(t.pos.x), r2(t.pos.y), r2(t.pos.z)]);
   t.state = 'unfold'; t.t = 0; t.target = e;
   t.vel.set(0, 0, 0); t.hover.copy(t.pos);
@@ -382,7 +405,7 @@ function startLock(t, e) {
   if (e) emit('sub:arm', { kind: 'torpedo', pos: t.pos.clone(), team: t.team, radius: t.sub.radius, target: e, actor: t.owner });
 }
 // ---- locked: hovers, fins swing out, turns to face the foe
-function unfold(t, h) {
+function unfold(t: Torp, h: number) {
   const s = t.sub;
   if (!t.ghost && (!t.target || !t.target.alive)) t.target = findTarget(t, s.lockRange * 1.4) || t.target;
   const k = clamp(t.t / s.unfoldTime, 0, 1);
@@ -395,11 +418,11 @@ function unfold(t, h) {
   if (t.t >= s.unfoldTime) {
     t.state = 'launch'; t.t = 0; t.speed = s.launchSpeed0;
     if (nearCam(t.pos, 40)) G.audio?.play('torpedo_launch', { pos: t.pos, volume: 0.8 });
-    if (nearCam(t.pos, 30)) G.fx?.burst(_v.copy(t.pos).addScaledVector(t.dir, -0.4), _v2.copy(t.dir).negate(), G.teamColors[t.team], { count: 4, speed: 1.8, size: 0.04, sheet: false });
+    if (nearCam(t.pos, 30)) G.fx?.burst(_v.copy(t.pos).addScaledVector(t.dir, -0.4), _v2.copy(t.dir).negate(), G.teamColors[t.team]!, { count: 4, speed: 1.8, size: 0.04, sheet: false });
   }
 }
 // ---- launched: swims at the foe, speeding up, homing gently; bursts on a foe, a wall or the floor
-function launch(t, h) {
+function launch(t: Torp, h: number) {
   const s = t.sub;
   if (t.ghost) return swim(t, h);
   t.speed = Math.min(s.launchSpeed, t.speed + s.launchAccel * h);
@@ -418,13 +441,13 @@ function launch(t, h) {
   t.pos.addScaledVector(t.dir, t.speed * h);
   if (touchFoe(t)) return burst(t, true);
   if (touchDevice(t)) return burst(t, true);
-  const w = G.physics.segment(t.prev, t.pos, _hit);
+  const w = G.physics!.segment(t.prev, t.pos, _hit);
   if (w.hit) { t.pos.copy(w.point).addScaledVector(w.normal, 0.16); t.hitN = w.normal.clone(); return burst(t, true); }
   if (t.pos.y < PLAYER.waterY - 0.2) { fizzle(t); return; }
   if (t.t > s.launchLife) burst(t, true);
 }
 // a ghost's swim: dead-reckoned from its owner's last report, eased onto it
-function swim(t, h) {
+function swim(t: Torp, h: number) {
   const N = t.net;
   t.prev.copy(t.pos);
   if (!N) { t.speed = Math.min(t.sub.launchSpeed, t.speed + t.sub.launchAccel * h); t.pos.addScaledVector(t.dir, t.speed * h); return; }
@@ -436,7 +459,7 @@ function swim(t, h) {
   t.speed = N.s;
 }
 // any foe's body along this step
-function touchFoe(t) {
+function touchFoe(t: Torp) {
   for (const e of G.actors) {
     if (e.team === t.team || !e.alive) continue;
     const hr = hitR(e);
@@ -447,14 +470,14 @@ function touchFoe(t) {
   return null;
 }
 // enemy curtains, shields, sprinklers, beacons, bubbles … count as surfaces (the probe does no damage)
-function touchDevice(t) {
+function touchDevice(t: Torp) {
   if (G.subs?.blockShot(t.prev, t.pos, t.team, 0)) return true;
   if (G.specials?.shotHit?.(t.prev, t.pos, t.team, 0, t.owner)) return true;
   return false;
 }
 // Locked form vs lethal bombs (the Drip Curtain rule): an enemy bomb that touches it goes off right there (and its
 // blast then sets the torpedo off too, through damageArea)
-function lethalContact(t) {
+function lethalContact(t: Torp) {
   const P = G.projectiles;
   // (only this client's own bombs and subs: a remote player's are set off on its owner's screen)
   if (P?.bombs) for (const b of P.bombs.slice()) {
@@ -474,24 +497,24 @@ function lethalContact(t) {
 }
 
 // ---- the burst. full = the locked torpedo's (wide paint + droplets); else the plain bomb-like one
-function burst(t, full) {
+function burst(t: Torp, full: boolean) {
   if (!live(t)) return;
   if (!t.ghost) netRec(t.owner, 'torpedo', [1, t.gid, r2(t.pos.x), r2(t.pos.y), r2(t.pos.z), full ? 1 : 0]);
   t.state = 'dead'; t.burst = true;
-  const s = t.sub, col = G.teamColors[t.team];
+  const s = t.sub, col = G.teamColors[t.team]!;
   const c = t.pos.clone();
   // paint on the ground under a mid-air burst (a foe's body), else where it touched
   let pc = c;
-  const g = G.physics.raycast(_v.copy(c).setY(c.y + 0.2), DOWN, 2.6, _hit, true);
+  const g = G.physics!.raycast(_v.copy(c).setY(c.y + 0.2), DOWN, 2.6, _hit, true);
   if (g.hit) pc = _v2.copy(g.point).addScaledVector(g.normal, 0.2).clone();
   if (full) {
-    let area = G.paint.splat(pc, s.paintRadius, t.team, { seed: Math.random() });
+    let area = G.paint!.splat(pc, s.paintRadius, t.team, { seed: Math.random() });
     for (let k = 0; k < 5; k++) {
       const a = Math.random() * Math.PI * 2, rr = s.paintRadius * (0.55 + Math.random() * 0.45);
-      area += G.paint.splat(_v3.set(pc.x + Math.cos(a) * rr, pc.y + 0.3, pc.z + Math.sin(a) * rr), 0.55 + Math.random() * 0.45, t.team, { seed: Math.random() });
+      area += G.paint!.splat(_v3.set(pc.x + Math.cos(a) * rr, pc.y + 0.3, pc.z + Math.sin(a) * rr), 0.55 + Math.random() * 0.45, t.team, { seed: Math.random() });
     }
     credit(t, area);
-  } else credit(t, G.paint.splat(pc, s.fallbackPaint, t.team, { seed: Math.random() }));
+  } else credit(t, G.paint!.splat(pc, s.fallbackPaint, t.team, { seed: Math.random() }));
   G.fx?.explosion(c, col, full ? s.radius : s.radius * 0.8);
   G.audio?.play('bomb_explode', { pos: c, volume: full ? 0.75 : 0.6, pitch: full ? 1.08 : 1.15 });
   G.audio?.play('torpedo_pop', { pos: c, volume: full ? 0.9 : 0.6, pitch: full ? 1 : 1.12 });
@@ -502,31 +525,31 @@ function burst(t, full) {
     chest(e, _v3);
     const d = e === t.hitFoe ? 0 : _v3.distanceTo(c);
     if (d > s.radius) continue;
-    if (d > 0 && !G.physics.los(_v.copy(c).addScaledVector(t.hitN || UP, 0.25), _v3)) continue;
+    if (d > 0 && !G.physics!.los(_v.copy(c).addScaledVector(t.hitN || UP, 0.25), _v3)) continue;
     const dmg = d <= s.coreRadius ? s.damageMax : lerp(s.damageMax, s.damageMin, (d - s.coreRadius) / (s.radius - s.coreRadius));
-    G.projectiles.applyHit(t.owner, e, dmg, 'torpedo');
+    G.projectiles!.applyHit(t.owner, e, dmg, 'torpedo');
   }
   G.subs?.damageArea(c, s.radius, 60, t.team);   // enemy curtains / devices / bubbles; sets off enemy locked torpedoes
   G.boss?.splash(t.owner, c, s.radius, s.damageMax, s.damageMin, 'torpedo');   // Boss Battle
   if (full) spawnDrops(t, c);
 }
 // shot down (or out of the world): gone without a blast
-function destroy(t) {
+function destroy(t: Torp) {
   if (!live(t)) return;
   t.state = 'dead'; t.shot = true;
   if (nearCam(t.pos, 40)) {
-    G.fx?.burst(t.pos, UP, G.teamColors[t.team], { count: 12, speed: 4, size: 0.08, mist: true });
+    G.fx?.burst(t.pos, UP, G.teamColors[t.team]!, { count: 12, speed: 4, size: 0.08, mist: true });
     G.audio?.play('splat_small', { pos: t.pos, volume: 0.8, pitch: 0.75 });
     G.audio?.play('torpedo_pop', { pos: t.pos, volume: 0.45, pitch: 1.6 });
   }
   emit('sub:destroyed', { kind: 'torpedo', pos: t.pos.clone(), team: t.team });
 }
-function fizzle(t) {
+function fizzle(t: Torp) {
   if (!live(t)) return;
   t.state = 'dead';
   if (nearCam(t.pos, 40)) { G.fx?.waterPlop?.(t.pos, 0.4); }
 }
-function hurt(t, dmg) {
+function hurt(t: Torp, dmg: number) {
   if (!live(t) || !(dmg > 0) || netMuted()) return;   // (a ghost's hit: its owner's copy decides)
   t.flash = 1;
   if (t.ghost) { netHurt(t.owner, 'torpedo', t.gid, dmg); return; }   // a remote player's: its owner's copy takes it
@@ -535,8 +558,8 @@ function hurt(t, dmg) {
 }
 
 // ---- droplets: fly out of a locked burst, ink where they land, 12 a hit, three hits per foe at most
-function spawnDrops(t, c) {
-  const s = t.sub, rec = { hits: new Map() };
+function spawnDrops(t: Torp, c: THREE.Vector3) {
+  const s = t.sub, rec = { hits: new Map<Actor, number>() };
   const base = Math.random() * Math.PI * 2;
   for (let k = 0; k < s.drops; k++) {
     if (drops.length >= MAX_DROPS) break;
@@ -547,7 +570,7 @@ function spawnDrops(t, c) {
       size: 0.075 + Math.random() * 0.035, dmg: s.dropDamage, cap: s.dropHits, paint: s.dropPaint });
   }
 }
-function tickDrops(dt) {
+function tickDrops(dt: number) {
   if (!drops.length) { if (dropMesh) dropMesh.count = 0; return; }
   const M = dropsMesh();
   let n = 0;
@@ -559,7 +582,7 @@ function tickDrops(dt) {
       const sp = d.vel.length(), st = 1 + Math.min(1.2, sp * 0.06);
       _q.setFromUnitVectors(ZAX, _v.copy(d.vel).multiplyScalar(1 / Math.max(sp, 1e-3)));
       _m.compose(d.pos, _q, _v2.set(d.size, d.size, d.size * st));
-      M.setMatrixAt(n, _m); M.setColorAt(n, G.teamColors[d.team]);
+      M.setMatrixAt(n, _m); M.setColorAt(n, G.teamColors[d.team]!);
       n++;
     }
   }
@@ -568,7 +591,7 @@ function tickDrops(dt) {
   if (M.instanceColor) M.instanceColor.needsUpdate = true;
 }
 // one droplet's step → true when it's done
-function dropStep(d, dt) {
+function dropStep(d: Drop, dt: number) {
   {
     d.age += dt;
     d.prev.copy(d.pos);
@@ -582,19 +605,19 @@ function dropStep(d, dt) {
       Physics.segmentCapsuleDist(d.prev, d.pos, hitBase(e, _v3), hr, hitH(e), _res);
       if (_res.dist < hr + d.size) {
         const k = d.rec.hits.get(e) || 0;
-        if (k < d.cap) { d.rec.hits.set(e, k + 1); G.projectiles.applyHit(d.owner, e, d.dmg, 'torpedo'); }
+        if (k < d.cap) { d.rec.hits.set(e, k + 1); G.projectiles!.applyHit(d.owner, e, d.dmg, 'torpedo'); }
         _v.lerpVectors(d.prev, d.pos, _res.t);
-        G.fx?.burst(_v, _v2.copy(d.vel).normalize().negate(), G.teamColors[d.team], { count: 5, speed: 2.5, size: 0.06 });
+        G.fx?.burst(_v, _v2.copy(d.vel).normalize().negate(), G.teamColors[d.team]!, { count: 5, speed: 2.5, size: 0.06 });
         dead = true; break;
       }
     }
     if (!dead && G.subs?.blockShot(d.prev, d.pos, d.team, d.dmg)) dead = true;
     if (!dead) {
-      const w = G.physics.segment(d.prev, d.pos, _hit, true);
+      const w = G.physics!.segment(d.prev, d.pos, _hit, true);
       if (w.hit) {
-        const area = G.paint.splat(_v.copy(w.point).addScaledVector(w.normal, 0.1), d.paint * (0.8 + Math.random() * 0.4), d.team, { seed: Math.random(), stretch: _v2.copy(d.vel).normalize(), stretchAmt: 0.5 });
+        const area = G.paint!.splat(_v.copy(w.point).addScaledVector(w.normal, 0.1), d.paint * (0.8 + Math.random() * 0.4), d.team, { seed: Math.random(), stretch: _v2.copy(d.vel).normalize(), stretchAmt: 0.5 });
         if (area) { if (d.sp) d.owner.addTurfNoSpecial(area); else d.owner.addTurf(area); }
-        if (nearCam(w.point, 26)) G.fx?.bounceSplash?.(w.point, w.normal, G.teamColors[d.team]);
+        if (nearCam(w.point, 26)) G.fx?.bounceSplash?.(w.point, w.normal, G.teamColors[d.team]!);
         if (Math.random() < 0.35 && nearCam(w.point, 22)) G.audio?.play('splat_small', { pos: w.point, volume: 0.3, pitch: 1.2 });
         dead = true;
       }
@@ -604,7 +627,7 @@ function dropStep(d, dt) {
 }
 
 // ---- per-frame look: fold/unfold, spin, glow, lock ring, trail, whirr
-function visuals(t, dt) {
+function visuals(t: Torp, dt: number) {
   const s = t.sub;
   if (t.state === 'fly') {
     t.roll += dt * 7; t.fin = 0; t.glowI = 0.45 + 0.25 * Math.sin(t.age * 20);
@@ -622,11 +645,11 @@ function visuals(t, dt) {
     t.glowI = 3.2 + 0.8 * Math.sin(t.t * 30);
     if (nearCam(t.pos, 26)) {
       _v.copy(t.pos).addScaledVector(t.dir, -0.45);
-      G.fx?.bombTrail?.(_v, _v2.copy(t.dir).multiplyScalar(-t.speed), G.teamColors[t.team]);
+      G.fx?.bombTrail?.(_v, _v2.copy(t.dir).multiplyScalar(-t.speed), G.teamColors[t.team]!);
     }
   }
   if (t.flash > 0) { t.flash = Math.max(0, t.flash - dt * 6); t.glowI += 5 * t.flash; }
-  t.mesh.position.copy(t.pos);
+  t.mesh!.position.copy(t.pos);
   orient(t, t.dir);
   poseRig(t);
   // lock ring on the target's feet
@@ -646,7 +669,7 @@ function visuals(t, dt) {
   }
   if (t.whirr) t.whirr.set({ pos: t.pos, pitch: t.state === 'launch' ? 1 + t.speed / 10 : t.state === 'unfold' ? 0.8 + 0.6 * clamp(t.t / s.unfoldTime, 0, 1) : 0.8, volume: t.state === 'fly' ? 0.3 : 0.55 });
 }
-function dispose(t) {
+function dispose(t: Torp) {
   if (t.mesh) { t.scene.remove(t.mesh); t.mesh.userData.glow?.dispose(); t.mesh = null; }
   if (t.ring) { t.scene.remove(t.ring); t.ring.geometry.dispose(); t.ring.material.dispose(); t.ring = null; }
   if (t.whirr) { t.whirr.stop(0.12); t.whirr = null; }
@@ -658,12 +681,12 @@ function clearAll() {
 }
 
 // ---- shoot-down: enemy shots / beams / blasts
-function closestOnSeg(a, b, p, out) {
+function closestOnSeg(a: THREE.Vector3, b: THREE.Vector3, p: THREE.Vector3, out: THREE.Vector3) {
   _v3.subVectors(b, a); const L2 = _v3.lengthSq();
   const k = L2 > 1e-9 ? clamp(_v.subVectors(p, a).dot(_v3) / L2, 0, 1) : 0;
   return out.copy(a).addScaledVector(_v3, k);
 }
-function blockShot(prev, pos, team, dmg) {
+function blockShot(prev: THREE.Vector3, pos: THREE.Vector3, team: number, dmg: number) {
   for (const t of list) {
     if (!live(t) || t.team === team) continue;
     if (Math.abs(t.pos.x - pos.x) > 4 || Math.abs(t.pos.z - pos.z) > 4) continue;
@@ -673,7 +696,7 @@ function blockShot(prev, pos, team, dmg) {
   }
   return false;
 }
-function blockRay(from, dir, len, team, dmg) {
+function blockRay(from: THREE.Vector3, dir: THREE.Vector3, len: number, team: number, dmg: number) {
   let best = len, hitT = null;
   for (const t of list) {
     if (!live(t) || t.team === team) continue;
@@ -690,7 +713,7 @@ function blockRay(from, dir, len, team, dmg) {
 }
 // a blast went off: enemy torpedoes caught in it — locked ones treat a lethal blast like a Drip Curtain (they go off
 // at once), anything else takes the damage (20 shoots one down)
-function damageArea(c, radius, dmg, team) {
+function damageArea(c: THREE.Vector3, radius: number, dmg: number, team: number) {
   for (const t of list.slice()) {
     if (!live(t) || t.team === team) continue;
     if (t.pos.distanceTo(c) > radius + 0.3) continue;
@@ -698,18 +721,18 @@ function damageArea(c, radius, dmg, team) {
     areaHit(t, dmg);
   }
 }
-function areaHit(t, dmg) {
+function areaHit(t: Torp, dmg: number) {
   if (locked(t) && dmg >= 50) burst(t, true);
   else hurt(t, dmg);
 }
-KIT_GHOSTS.torpedoArea = { netHurt(gid, dmg) { const t = own(gid); if (t) areaHit(t, dmg); } };
+KIT_GHOSTS.torpedoArea = { netHurt(gid: number, dmg: number) { const t = own(gid); if (t) areaHit(t, dmg); } };
 
 // ---- query hook for bots (bots.js shoots down / sidesteps enemy Torpedoes): one stable descriptor per torpedo, getters
 // read its live state (see kits/registry.js `threats`). Read-only: nothing here changes how the torpedo behaves.
-function threatOf(t) {
+function threatOf(t: Torp): Threat {
   if (t.thr) return t.thr;
   const s = t.sub, v = new V3();
-  t.thr = {
+  return t.thr = {
     kind: 'torpedo', obj: t, team: t.team, owner: t.owner, pos: t.pos, aimY: 0, radius: s.radius, trigger: HIT_R + PLAYER.radius,
     speed: s.launchSpeed, lockRange: s.lockRange, ground: false,
     get live() { return live(t); },
@@ -722,20 +745,19 @@ function threatOf(t) {
     // hovering (fins unfolding): seconds until it launches
     get hover() { return t.state === 'unfold' ? Math.max(0, s.unfoldTime - t.t) : 0; },
   };
-  return t.thr;
 }
 
 // =============================================================================================== register
 SUB_KITS.torpedo = {
   use,
   ghost,
-  netHurt(gid, dmg) { const t = own(gid); if (t) hurt(t, dmg); },
-  blocked: (a) => list.some((t) => t.owner === a && live(t)),
+  netHurt(gid: number, dmg: number) { const t = own(gid); if (t) hurt(t, dmg); },
+  blocked: (a: Actor) => list.some((t) => t.owner === a && live(t)),
   tick, clear: clearAll, blockShot, blockRay, damageArea,
-  threats(out) { for (const t of list) if (live(t)) out.push(threatOf(t)); return out; },
+  threats(out: Threat[]) { for (const t of list) if (live(t)) out.push(threatOf(t)); return out; },
   bot: {
     // throw it at a foe it can reach and lock onto; one out at a time
-    fight(brain, dist) {
+    fight(brain: BotBrain, dist: number) {
       const a = brain.a;
       if (list.some((t) => t.owner === a && live(t))) return false;
       const go = dist > 4 && dist < 13.5 && Math.random() < 0.035;

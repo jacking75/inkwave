@@ -7,11 +7,18 @@
 // Numbers: SUBS.boomerang in config.js. Registers the model, icon, sounds and bot use; see kits/registry.js.
 import * as THREE from 'three';
 import { G, emit, on, clamp, lerp, angleDiff } from '../../core/ctx.js';
-import { SUBS, PLAYER } from '../../config.js';
+import { PLAYER, SUB_CFG } from '../../config.js';
+import type { SubCfg } from '../../config.js';
+import type { Actor } from '../actor.js';
+import type { SubSystem } from '../subs.js';
+import type { WeaponRunner, WeaponInput } from '../weapons.js';
+import type { BotBrain } from '../bots.js';
+import type { LoopHandle } from '../../audio/audio.js';
 import { Physics, Hit } from '../physics.js';
 import { SUB_KITS, netRec, netId, ghostMute } from './registry.js';
-const r3 = (x) => Math.round(x * 1000) / 1000;
+const r3 = (x: number) => Math.round(x * 1000) / 1000;
 import { registerSubModel, getSubDef, GEO_KIT } from '../character-weapons.js';
+import type { SubDef, Grip } from '../character-weapons.js';
 import { lathe, smoothProfile, sweep } from '../character-geo.js';
 import { getPlasticMaterial, getInkMaterial } from '../character-mats.js';
 import { SUB_ICONS } from '../../ui/ui-icons.js';
@@ -26,7 +33,7 @@ const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vecto
 const _hit = new Hit(), _hit2 = new Hit();
 const _res = { t: 0, dist: 0 };
 const _stats = { own: 0, enemy: 0, empty: 0, n: 0 };
-const nearCam = (p, r = 34) => !!G.camera && G.camera.position.distanceToSquared(p) < r * r;
+const nearCam = (p: THREE.Vector3, r = 34) => !!G.camera && G.camera.position.distanceToSquared(p) < r * r;
 
 // ================================================================================================= model
 // Prop space: the blade lies flat in XZ (spin axis +Y), the elbow hub toward +Z, the two arms sweeping back to ±X.
@@ -35,20 +42,20 @@ const nearCam = (p, r = 34) => !!G.camera && G.camera.position.distanceToSquared
 // on one tip and a knurled rubber grip sleeve with a metal ferrule on the other (the left fist holds that tip).
 const ARM = [[0, 0.058], [0.05, 0.036], [0.098, -0.002], [0.132, -0.042], [0.148, -0.074]];
 const HUB = new THREE.Vector3(0, 0, 0.058);
-const armR = (t) => 0.0235 - 0.0085 * t;              // half-width along the arm
+const armR = (t: number) => 0.0235 - 0.0085 * t;              // half-width along the arm
 const FLAT = 0.3;                                      // thickness : width
-const lens = (c, s) => [Math.sign(c) * Math.abs(c) ** 0.85 * (c < 0 ? 0.62 : 1), s];
+const lens = (c: number, s: number): [number, number] => [Math.sign(c) * Math.abs(c) ** 0.85 * (c < 0 ? 0.62 : 1), s];
 function buildBoomerang() {
   const { Parts, C, M, at, screw, decal, placeXY, squidShape, hring, led, swirlShapes } = GEO_KIT;
   const P = new Parts(), I = new Parts();
-  const up = (Pp, o) => o.set(0, 1, 0);
-  let grip = null;
+  const up = (Pp: THREE.Vector3, o: THREE.Vector3) => o.set(0, 1, 0);
+  let grip: Grip | null = null;
   for (const side of [-1, 1]) {
     const pts3 = ARM.map(([x, z]) => new THREE.Vector3(side * x, 0, z));
     const arm = sweep(pts3, { seg: 22, radial: 18, capSteps: 3, radius: armR, flat: FLAT, outward: up, section: lens });
     P.add(arm.geo, C.cream, M.gloss);
     const cv = arm.curve;
-    const sub = (t0, t1, n = 7) => { const o = []; for (let k = 0; k <= n; k++) o.push(t0 + (t1 - t0) * k / n); return o; };
+    const sub = (t0: number, t1: number, n = 7) => { const o = []; for (let k = 0; k <= n; k++) o.push(t0 + (t1 - t0) * k / n); return o; };
     // ink inlays: a slim raised lens riding each face of the arm
     for (const face of [1, -1]) {
       const ts = sub(0.2, 0.84);
@@ -75,7 +82,7 @@ function buildBoomerang() {
       WANT_N.addScaledVector(WANT_A, -WANT_N.dot(WANT_A)).normalize();
       const gp = cv.getPointAt(0.84), aP = cv.getTangentAt(0.84).negate().setY(0).normalize(), nP = new THREE.Vector3(0, 1, 0);
       const e3 = new THREE.Vector3().crossVectors(aP, nP), c3 = new THREE.Vector3().crossVectors(WANT_A, WANT_N);
-      const toProp = (v) => new THREE.Vector3().addScaledVector(aP, v.dot(WANT_A)).addScaledVector(nP, v.dot(WANT_N)).addScaledVector(e3, v.dot(c3));
+      const toProp = (v: THREE.Vector3) => new THREE.Vector3().addScaledVector(aP, v.dot(WANT_A)).addScaledVector(nP, v.dot(WANT_N)).addScaledVector(e3, v.dot(c3));
       grip = { pos: gp.clone(), handZ: toProp(POSE_Z), handY: toProp(POSE_Y) };
     }
   }
@@ -88,19 +95,19 @@ function buildBoomerang() {
   screw(P, new THREE.Vector3(hx, 0.0142, hz), UP, 0.0032);
   led(P, new THREE.Vector3(hx, 0.0006, hz + 0.0322), new THREE.Vector3(0, 0, 1), C.amber, 0.0034);
   { const sq = decal(squidShape(0.026)); placeXY(sq, new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, 1), new THREE.Vector3(hx, -0.0089, hz - 0.002)); P.add(sq, C.decal, M.print); }
-  return { kind: KIND, body: P.build(), ink: I.build(), grip };
+  return { kind: KIND, body: P.build(), ink: I.build(), grip: grip! };   // (grip: 오른쪽 팔(side 1)에서 늘 정한다)
 }
 registerSubModel(KIND, buildBoomerang);
 
 // world prop: outer (position) → tilt (bank) → spin (about +Y) → model (centred on the blade's middle, world scale),
 // plus a spin-blur disc on the tilt node that fades in with the spin rate
-let _proto = null;
+let _proto: { d: SubDef; center: THREE.Vector3; radius: number; disc: THREE.CircleGeometry } | null = null;
 function proto() {
   if (_proto) return _proto;
-  const d = getSubDef(KIND);
-  d.body.computeBoundingBox();
-  const bb = d.body.boundingBox, c = new THREE.Vector3((bb.min.x + bb.max.x) / 2, 0, (bb.min.z + bb.max.z) / 2);
-  let r = 0; const p = d.body.attributes.position;
+  const d = getSubDef(KIND), body = d.body!;
+  body.computeBoundingBox();
+  const bb = body.boundingBox!, c = new THREE.Vector3((bb.min.x + bb.max.x) / 2, 0, (bb.min.z + bb.max.z) / 2);
+  let r = 0; const p = body.attributes.position;
   for (let i = 0; i < p.count; i++) r = Math.max(r, Math.hypot(p.getX(i) - c.x, p.getZ(i) - c.z));
   _proto = { d, center: c, radius: r * WORLD_SCALE, disc: new THREE.CircleGeometry(r * WORLD_SCALE * 1.04, 48).rotateX(-Math.PI / 2) };
   return _proto;
@@ -120,13 +127,13 @@ const BLUR_FS = `
     al += uAlpha * 0.5 * smoothstep(0.86, 0.95, r) * smoothstep(1.0, 0.95, r);   // the tips' bright rim
     gl_FragColor = vec4(c, al);
   }`;
-function makeMesh(team) {
-  const P = proto(), col = G.teamColors[team];
+function makeMesh(team: number) {
+  const P = proto(), col = G.teamColors[team]!;
   const outer = new THREE.Group(), tilt = new THREE.Group(), spin = new THREE.Group(), model = new THREE.Group();
   model.scale.setScalar(WORLD_SCALE);
   model.position.set(-P.center.x * WORLD_SCALE, 0, -P.center.z * WORLD_SCALE);
-  const body = new THREE.Mesh(P.d.body, getPlasticMaterial()); body.castShadow = true;
-  const ink = new THREE.Mesh(P.d.ink, getInkMaterial(col)); ink.castShadow = true;
+  const body = new THREE.Mesh(P.d.body!, getPlasticMaterial()); body.castShadow = true;
+  const ink = new THREE.Mesh(P.d.ink!, getInkMaterial(col)); ink.castShadow = true;
   model.add(body, ink);
   spin.add(model); tilt.add(spin); outer.add(tilt);
   const blur = new THREE.Mesh(P.disc, new THREE.ShaderMaterial({
@@ -142,7 +149,7 @@ function makeMesh(team) {
 // ================================================================================================= the throw plan
 // Start at the throwing hand, flat along the aim (pitch clamped), stop ~range out or short of a wall, never skimming
 // the floor. Shared by the throw and the local player's aim guide.
-function plan(a, s, out) {
+function plan(a: Actor, s: SubCfg, out: Plan) {
   const pitch = clamp(a.aimPitch, -0.5, 0.25), cp = Math.cos(pitch);
   out.dir.set(Math.sin(a.aimYaw) * cp, Math.sin(pitch), Math.cos(a.aimYaw) * cp);
   out.start.copy(a.pos); out.start.y += 1.35;
@@ -150,29 +157,38 @@ function plan(a, s, out) {
   return planFrom(s, out);
 }
 // the rest of the plan from its start + direction (a ghost's comes from its owner's record)
-function planFrom(s, out) {
-  const h = G.physics.raycast(out.start, out.dir, s.range + 0.4, _hit);
+function planFrom(s: SubCfg, out: Plan) {
+  const h = G.physics!.raycast(out.start, out.dir, s.range + 0.4, _hit);
   out.wall = h.hit;
   out.len = h.hit ? Math.max(0.3, h.dist - 0.4) : s.range;
   if (h.hit) { out.wallPoint.copy(h.point); out.wallNormal.copy(h.normal); }
   out.end.copy(out.start).addScaledVector(out.dir, out.len);
-  const gy = G.level.groundHeight(out.end.x, out.end.z, out.end.y + 0.3);
+  const gy = G.level!.groundHeight(out.end.x, out.end.z, out.end.y + 0.3);
   if (gy > -Infinity && out.end.y - gy < 0.55) out.end.y = gy + 0.55;
   out.ground = gy;
   return out;
 }
 const newPlan = () => ({ dir: new THREE.Vector3(), start: new THREE.Vector3(), end: new THREE.Vector3(), wallPoint: new THREE.Vector3(), wallNormal: new THREE.Vector3(), len: 0, wall: false, ground: -Infinity });
+type Plan = ReturnType<typeof newPlan>;
 const _plan = newPlan();
 
 // ================================================================================================= state
-const items = [];
-const active = (a) => items.some((it) => it.owner === a && it.state !== 'dead');
-const chest = (e, out) => out.set(e.pos.x, e.pos.y + (e.form === 'squid' ? 0.3 : 0.75), e.pos.z);
-const credit = (it, area) => { if (area > 0) { if (it.sp) it.owner.addTurfNoSpecial(area); else it.owner.addTurf(area); } };
-const color = (it) => G.teamColors[it.team];
-const bodyH = (e) => (e.form === 'squid' ? PLAYER.squidHeight : PLAYER.height);
+/** 던진 부메랑: 주인·팀·설정, 스페셜 중 던짐, 모양, 상태(out·hover·back·orbit·armed·fizzle·dead)와 시간, 위치·속도·계획,
+ *  회전, 효과 간격, 맞힌 시각(궤도), 소리 고리, 벽 맞음, 원격 유령·번호, 터짐, 궤도 각·출발점, 무장 삑 간격·희생자 */
+interface Boom {
+  owner: Actor; team: number; sub: SubCfg; sp: boolean; mesh: THREE.Group; state: string; t: number; age: number;
+  pos: THREE.Vector3; prev: THREE.Vector3; vel: THREE.Vector3; plan: Plan; outT: number; spinA: number; spinW: number;
+  trail: number; tickT: number; paintT: number; fxT: number; hitCd: Map<Actor, number>; loop: LoopHandle | null; loopName: string | null;
+  fromWall: boolean; ghost: boolean; gid: number; blasted: boolean; orbitA: number; from: THREE.Vector3; beepT: number; victim?: Actor | null;
+}
+const items: Boom[] = [];
+const active = (a: Actor) => items.some((it) => it.owner === a && it.state !== 'dead');
+const chest = (e: Actor, out: THREE.Vector3) => out.set(e.pos.x, e.pos.y + (e.form === 'squid' ? 0.3 : 0.75), e.pos.z);
+const credit = (it: Boom, area: number) => { if (area > 0) { if (it.sp) it.owner.addTurfNoSpecial(area); else it.owner.addTurf(area); } };
+const color = (it: Boom) => G.teamColors[it.team]!;
+const bodyH = (e: Actor) => (e.form === 'squid' ? PLAYER.squidHeight : PLAYER.height);
 
-function use(subs, a, sub) {
+function use(subs: SubSystem, a: Actor, sub: SubCfg) {
   const P = plan(a, sub, newPlan());
   const it = spawn(subs, a, sub, P, false, netId(a));
   netRec(a, KIND, [0, it.gid, r3(P.start.x), r3(P.start.y), r3(P.start.z), r3(P.dir.x), r3(P.dir.y), r3(P.dir.z)]);
@@ -182,28 +198,28 @@ function use(subs, a, sub) {
 // Online, a remote player's boomerang is a ghost: out, hover, home and orbit play the same (its ink is its owner's to
 // send, its hits are dropped), but its owner decides how it ends: [3, gid, x, y, z] it caught a foe (armed there),
 // [1, gid, x, y, z, big] the burst, [2, gid] it fizzled
-function spawn(subs, a, s, P, ghost, gid) {
+function spawn(subs: SubSystem | null | undefined, a: Actor, s: SubCfg, P: Plan, ghost: boolean, gid: number) {
   const mesh = makeMesh(a.team);
   mesh.position.copy(P.start);
-  (G.scene || subs.scene).add(mesh);
+  (G.scene || subs!.scene).add(mesh);
   const it = {
     owner: a, team: a.team, sub: s, sp: !!a.specialActive, mesh, state: 'out', t: 0, age: 0,
     pos: P.start.clone(), prev: P.start.clone(), vel: new THREE.Vector3(), plan: P,
     outT: Math.max(0.18, s.outTime * Math.sqrt(P.len / s.range)),
     spinA: Math.random() * 6, spinW: 30, trail: 0, tickT: 0, paintT: 0, fxT: 0,
     hitCd: new Map(), loop: null, loopName: null, fromWall: P.wall, ghost, gid, blasted: false,
-  };
+  } as Boom;   // (orbitA·from·beepT는 그 상태로 들어갈 때 둔다)
   items.push(it);
   setLoop(it, 'boomerang_whirr', 0.55, 1.15);
   return it;
 }
-function ghost(a, d) {
+function ghost(a: Actor, d: number[]) {
   if (!Array.isArray(d)) return;
   const [op, gid] = d;
   if (op === 0) {
     if (items.some((x) => x.gid === gid)) return;
     const P = newPlan(); P.start.set(d[2], d[3], d[4]); P.dir.set(d[5], d[6], d[7]).normalize();
-    spawn(G.subs, a, SUBS[KIND], planFrom(SUBS[KIND], P), true, gid);
+    spawn(G.subs, a, SUB_CFG[KIND]!, planFrom(SUB_CFG[KIND]!, P), true, gid);
     if (a._nearCamera?.()) G.audio?.play('boomerang_throw', { pos: a.pos, volume: 0.8 });
     return;
   }
@@ -214,13 +230,13 @@ function ghost(a, d) {
   else if (op === 2 && it.state !== 'fizzle') { it.state = 'fizzle'; it.t = 0; it.vel.multiplyScalar(0.25); setLoop(it, null); }
 }
 
-function setLoop(it, name, vol, pitch) {
+function setLoop(it: Boom, name: string | null, vol?: number, pitch?: number) {
   if (it.loopName === name) { it.loop?.set({ volume: vol, pitch, pos: it.pos }); return; }
   it.loop?.stop(0.12); it.loop = null; it.loopName = name;
   if (name && G.audio && nearCam(it.pos, 45)) it.loop = G.audio.loop(name, { pos: it.pos, volume: vol, pitch });
 }
 
-function tick(dt) {
+function tick(dt: number) {
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
     it.t += dt; it.age += dt;
@@ -246,7 +262,7 @@ function tick(dt) {
 }
 
 // ---- outbound: eases from throw speed to a stop at the plan's end point; a foe in the way → armed
-function out(it, dt) {
+function out(it: Boom, dt: number) {
   const P = it.plan, u = clamp(it.t / it.outT, 0, 1), s = P.len * (1 - (1 - u) * (1 - u));
   it.pos.copy(P.start).addScaledVector(P.dir, s);
   it.vel.copy(P.dir).multiplyScalar((2 * P.len / it.outT) * (1 - u));
@@ -256,7 +272,7 @@ function out(it, dt) {
   if (u >= 1) {
     if (it.fromWall) {
       // stopped at a wall: a splat of ink on it where it struck
-      credit(it, G.paint.splat(_v.copy(P.wallPoint).addScaledVector(P.wallNormal, 0.1), 0.65, it.team, { seed: Math.random() }));
+      credit(it, G.paint!.splat(_v.copy(P.wallPoint).addScaledVector(P.wallNormal, 0.1), 0.65, it.team, { seed: Math.random() }));
       if (nearCam(it.pos)) { G.fx?.burst(P.wallPoint, P.wallNormal, color(it), { count: 8, speed: 3, size: 0.07 }); G.audio?.play('ink_hit_wall', { pos: P.wallPoint, volume: 0.6 }); }
     }
     it.state = 'hover'; it.t = 0; it.tickT = 0; it.paintT = 0;
@@ -265,12 +281,12 @@ function out(it, dt) {
 }
 
 // ---- hover: spin fast in place, shred what's close (ticks + device damage), ink the floor under it
-function hover(it, dt) {
+function hover(it: Boom, dt: number) {
   const s = it.sub;
   it.spinW = lerp(it.spinW, 34, 1 - Math.exp(-8 * dt));
   it.vel.set(0, 0, 0);
   // settle to a useful height over the floor (thrown off a ledge / aimed low)
-  const gy = G.level.groundHeight(it.pos.x, it.pos.z, it.pos.y + 0.2);
+  const gy = G.level!.groundHeight(it.pos.x, it.pos.z, it.pos.y + 0.2);
   if (gy > -Infinity && it.pos.y - gy < 4.5) {
     const h = it.pos.y - gy, want = h > 1.6 ? gy + 1.1 : h < 0.6 ? gy + 0.8 : it.pos.y;
     it.pos.y = lerp(it.pos.y, want, 1 - Math.exp(-2.5 * dt));
@@ -280,7 +296,7 @@ function hover(it, dt) {
 }
 
 // the rapid shredding ticks (hover / armed): foes whose body is within hoverRadius, with a clear line to it
-function shred(it, dt, paintK) {
+function shred(it: Boom, dt: number, paintK: number) {
   const s = it.sub;
   it.tickT -= dt;
   if (it.tickT <= 0) {
@@ -289,8 +305,8 @@ function shred(it, dt, paintK) {
     for (const e of G.actors) {
       if (e.team === it.team || !e.alive) continue;
       if (Physics.pointCapsuleDist(it.pos, e.pos, PLAYER.radius, bodyH(e)) > s.hoverRadius) continue;
-      if (!G.physics.los(it.pos, chest(e, _v))) continue;
-      G.projectiles.applyHit(it.owner, e, s.tickDamage, KIND);
+      if (!G.physics!.los(it.pos, chest(e, _v))) continue;
+      G.projectiles!.applyHit(it.owner, e, s.tickDamage, KIND);
       any = true;
     }
     G.subs?.damageArea(it.pos, s.hoverRadius, s.tickDamage, it.team);
@@ -299,17 +315,17 @@ function shred(it, dt, paintK) {
   it.paintT -= dt;
   if (it.paintT <= 0 && paintK > 0) {
     it.paintT = 0.2;
-    const g = G.physics.raycast(it.pos, DOWN, 3.4, _hit2);
+    const g = G.physics!.raycast(it.pos, DOWN, 3.4, _hit2);
     if (g.hit) {
       const a = Math.random() * Math.PI * 2, r = Math.random() * 0.45;
       _v.copy(g.point).add(_v2.set(Math.cos(a) * r, 0.12, Math.sin(a) * r));
-      credit(it, G.paint.splat(_v, s.hoverPaint * paintK * (0.8 + Math.random() * 0.4), it.team, { seed: Math.random() }));
+      credit(it, G.paint!.splat(_v, s.hoverPaint * paintK * (0.8 + Math.random() * 0.4), it.team, { seed: Math.random() }));
     }
   }
 }
 
 // ---- return: a curving homing flight back to the thrower (through anything); a foe in the way → armed
-function startBack(it) {
+function startBack(it: Boom) {
   it.state = 'back'; it.t = 0;
   const o = it.owner;
   chest(o, _v).sub(it.pos); _v.y = 0;
@@ -319,7 +335,7 @@ function startBack(it) {
   if (nearCam(it.pos, 40)) G.audio?.play('boomerang_return', { pos: it.pos, volume: 0.8 });
   setLoop(it, 'boomerang_whirr', 0.6, 1.2);
 }
-function back(it, dt) {
+function back(it: Boom, dt: number) {
   const s = it.sub, o = it.owner;
   const tgt = chest(o, _v3); tgt.y += 0.2;
   const sp = Math.min(s.returnSpeed, 4 + it.t * 34);
@@ -341,7 +357,7 @@ function back(it, dt) {
 }
 
 // ---- orbit: circles the thrower, grazing foes it touches, lightly inking a ring; then the small burst
-function orbit(it, dt) {
+function orbit(it: Boom, dt: number) {
   const s = it.sub, o = it.owner;
   it.orbitA += s.orbitSpin * dt;
   const h = o.form === 'squid' ? 0.55 : 0.95;
@@ -355,27 +371,27 @@ function orbit(it, dt) {
     if (Physics.pointCapsuleDist(it.pos, e.pos, PLAYER.radius, bodyH(e)) > PLAYER.radius + 0.4) continue;
     if (G.time - (it.hitCd.get(e) ?? -9) < s.orbitHitCd) continue;
     it.hitCd.set(e, G.time);
-    G.projectiles.applyHit(it.owner, e, s.orbitDamage, KIND);
+    G.projectiles!.applyHit(it.owner, e, s.orbitDamage, KIND);
     if (nearCam(it.pos)) G.audio?.play('boomerang_shred', { pos: it.pos, volume: 0.55, pitch: 0.85 });
   }
   it.paintT -= dt;
   if (it.paintT <= 0) {
     it.paintT = 0.1;
-    const g = G.physics.raycast(it.pos, DOWN, 2.5, _hit2);
-    if (g.hit) credit(it, G.paint.splat(_v.copy(g.point).setY(g.point.y + 0.1), 0.55, it.team, { seed: Math.random() }));
+    const g = G.physics!.raycast(it.pos, DOWN, 2.5, _hit2);
+    if (g.hit) credit(it, G.paint!.splat(_v.copy(g.point).setY(g.point.y + 0.1), 0.55, it.team, { seed: Math.random() }));
   }
   if (it.t >= s.orbit && !it.ghost) burst(it);   // (a ghost circles on until its owner's burst record)
 }
 
 // ---- a foe in its path: stop dead, whirr and blink in place, then a full Splat Bomb
-function contact(it) {
+function contact(it: Boom) {
   const s = it.sub;
   for (const e of G.actors) {
     if (e.team === it.team || !e.alive || e.invuln > 0) continue;
     Physics.segmentCapsuleDist(it.prev, it.pos, e.pos, PLAYER.radius, bodyH(e), _res);
     if (_res.dist > PLAYER.radius + s.contact) continue;
     it.pos.lerpVectors(it.prev, it.pos, _res.t);
-    G.projectiles.applyHit(it.owner, e, s.tickDamage, KIND);
+    G.projectiles!.applyHit(it.owner, e, s.tickDamage, KIND);
     netRec(it.owner, KIND, [3, it.gid, r3(it.pos.x), r3(it.pos.y), r3(it.pos.z)]);
     arm(it, e);
     return true;
@@ -383,7 +399,7 @@ function contact(it) {
   return false;
 }
 // caught a foe: stops dead, whirrs and blinks in place, then the full blast
-function arm(it, e) {
+function arm(it: Boom, e: Actor | null) {
   const s = it.sub;
   {
     it.state = 'armed'; it.t = 0; it.tickT = 1 / s.tickRate; it.paintT = 0; it.beepT = 0; it.victim = e;
@@ -393,7 +409,7 @@ function arm(it, e) {
     emit('sub:arm', { kind: KIND, pos: it.pos.clone(), team: it.team, radius: s.hitRadius });
   }
 }
-function armed(it, dt) {
+function armed(it: Boom, dt: number) {
   const s = it.sub, k = clamp(it.t / s.hitFuse, 0, 1);
   it.spinW = lerp(it.spinW, 44, 1 - Math.exp(-6 * dt));
   shred(it, dt, 0);
@@ -403,14 +419,14 @@ function armed(it, dt) {
 }
 
 // ---- the thrower was splatted: drop out of the air and pop (ink, no damage)
-function fizzle(it, dt) {
+function fizzle(it: Boom, dt: number) {
   it.vel.y -= 20 * dt; it.vel.x *= 1 - 2 * dt; it.vel.z *= 1 - 2 * dt;
   it.pos.addScaledVector(it.vel, dt);
   it.spinW = Math.max(0, it.spinW - 50 * dt);
-  const g = G.physics.segment(it.prev, it.pos, _hit2);
+  const g = G.physics!.segment(it.prev, it.pos, _hit2);
   if (g.hit || it.t > 0.7 || it.pos.y < PLAYER.waterY - 1) {
     const c = g.hit ? g.point : it.pos;
-    if (it.pos.y > PLAYER.waterY) credit(it, G.paint.splat(_v.copy(c).setY(c.y + 0.15), 0.8, it.team, { seed: Math.random() }));
+    if (it.pos.y > PLAYER.waterY) credit(it, G.paint!.splat(_v.copy(c).setY(c.y + 0.15), 0.8, it.team, { seed: Math.random() }));
     if (nearCam(c, 40)) { G.fx?.burst(c, g.hit ? g.normal : UP, color(it), { count: 12, speed: 3, size: 0.08 }); G.audio?.play('splat_small', { pos: c, volume: 0.8, pitch: 0.9 }); }
     it.state = 'dead';
   }
@@ -425,20 +441,20 @@ on('splatted', ({ victim }) => {
 });
 
 // ---- bursts
-function burst(it) { const s = it.sub; blast(it, s.radius, s.damageMax, s.damageMin, s.paintRadius, false); }
-function blast(it, radius, dmgMax, dmgMin, paintR, big) {
+function burst(it: Boom) { const s = it.sub; blast(it, s.radius, s.damageMax, s.damageMin, s.paintRadius, false); }
+function blast(it: Boom, radius: number, dmgMax: number, dmgMin: number, paintR: number, big: boolean) {
   const c = it.pos.clone();
   if (!it.ghost) netRec(it.owner, KIND, [1, it.gid, r3(c.x), r3(c.y), r3(c.z), big ? 1 : 0]);
   it.blasted = true;
   // ink: on the floor under it (the burst is in the air) plus around the burst itself
-  const g = G.physics.raycast(c, DOWN, 3.2, _hit2);
+  const g = G.physics!.raycast(c, DOWN, 3.2, _hit2);
   const pc = g.hit ? _v.copy(g.point).setY(g.point.y + 0.2) : _v.copy(c);
-  let area = G.paint.splat(pc, paintR, it.team, { seed: Math.random() });
+  let area = G.paint!.splat(pc, paintR, it.team, { seed: Math.random() });
   for (let k = 0; k < (big ? 5 : 4); k++) {
     const a = Math.random() * Math.PI * 2, rr = paintR * (0.55 + Math.random() * 0.45);
-    area += G.paint.splat(_v2.set(pc.x + Math.cos(a) * rr, pc.y + 0.4, pc.z + Math.sin(a) * rr), 0.5 + Math.random() * 0.4, it.team, { seed: Math.random() });
+    area += G.paint!.splat(_v2.set(pc.x + Math.cos(a) * rr, pc.y + 0.4, pc.z + Math.sin(a) * rr), 0.5 + Math.random() * 0.4, it.team, { seed: Math.random() });
   }
-  if (!g.hit || c.y - g.point.y > 1.2) area += G.paint.splat(c, paintR * 0.6, it.team, { seed: Math.random() });
+  if (!g.hit || c.y - g.point.y > 1.2) area += G.paint!.splat(c, paintR * 0.6, it.team, { seed: Math.random() });
   credit(it, area);
   G.fx?.explosion(c, color(it), big ? radius : radius * 0.85);
   G.audio?.play(big ? 'bomb_explode' : 'boomerang_burst', { pos: c });
@@ -447,25 +463,25 @@ function blast(it, radius, dmgMax, dmgMin, paintR, big) {
   for (const e of G.actors) {
     if (e.team === it.team || !e.alive) continue;
     const d = chest(e, _v3).distanceTo(c);
-    if (d > radius || !G.physics.los(c, _v3)) continue;
+    if (d > radius || !G.physics!.los(c, _v3)) continue;
     const k = 1 - clamp((d - 0.8) / (radius - 0.8), 0, 1);
-    G.projectiles.applyHit(it.owner, e, lerp(dmgMin, dmgMax, k * k), KIND);
+    G.projectiles!.applyHit(it.owner, e, lerp(dmgMin, dmgMax, k * k), KIND);
   }
   G.subs?.damageArea(c, radius, big ? 60 : 35, it.team);
   it.state = 'dead';
 }
 
 // ---- a light ink streak on the floor under its flight (thinner on the way back)
-function streak(it, r) {
+function streak(it: Boom, r: number) {
   it.trail += it.pos.distanceTo(it.prev);
   if (it.trail < 0.8) return;
   it.trail = 0;
-  const g = G.physics.raycast(it.pos, DOWN, 2.6, _hit2);
-  if (g.hit) credit(it, G.paint.splat(_v.copy(g.point).setY(g.point.y + 0.1), r * (0.85 + Math.random() * 0.3), it.team, { seed: Math.random() }));
+  const g = G.physics!.raycast(it.pos, DOWN, 2.6, _hit2);
+  if (g.hit) credit(it, G.paint!.splat(_v.copy(g.point).setY(g.point.y + 0.1), r * (0.85 + Math.random() * 0.3), it.team, { seed: Math.random() }));
 }
 
 // ================================================================================================= visuals
-function draw(it, dt) {
+function draw(it: Boom, dt: number) {
   const m = it.mesh, U = m.userData, col = color(it);
   m.position.copy(it.pos);
   it.spinA = (it.spinA + it.spinW * dt) % (Math.PI * 2);
@@ -502,7 +518,7 @@ function draw(it, dt) {
     }
   }
   if (it.state === 'hover' || it.state === 'armed') {
-    const g = G.physics.raycast(it.pos, DOWN, 3.4, _hit2);
+    const g = G.physics!.raycast(it.pos, DOWN, 3.4, _hit2);
     if (g.hit) {
       const R = it.state === 'armed' ? it.sub.hitRadius : it.sub.hoverRadius;
       const k = it.state === 'armed' ? clamp(it.t / it.sub.hitFuse, 0, 1) : 0.3 + 0.2 * Math.sin(it.age * 10);
@@ -511,7 +527,7 @@ function draw(it, dt) {
   }
 }
 
-function dispose(it) {
+function dispose(it: Boom) {
   it.loop?.stop(0.1); it.loop = null;
   it.mesh.parent?.remove(it.mesh);
   it.mesh.userData.blur.material.dispose();
@@ -525,24 +541,25 @@ function clear() {
 // ================================================================================================= aim guide
 // While the local player holds the sub: a dashed line along the flat throw to where it will hover, a drop line to the
 // floor and a ring there the size of its shredding reach (grey when it can't be thrown).
-let guide = null;
+let guide: { group: THREE.Group; line: THREE.LineSegments<THREE.BufferGeometry, THREE.LineDashedMaterial>; ring: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
+  dot: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>; stamp: number } | null = null;
 function guideMesh() {
   if (guide) return guide;
   const group = new THREE.Group();
   const lineGeo = new THREE.BufferGeometry(); lineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6 * 3), 3));
   const lineMat = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 0.25, gapSize: 0.18, transparent: true, opacity: 0.95, depthTest: false });
   const line = new THREE.LineSegments(lineGeo, lineMat); line.frustumCulled = false; line.renderOrder = 10;
-  const s = SUBS[KIND];
+  const s = SUB_CFG[KIND]!;
   const ring = new THREE.Mesh(new THREE.RingGeometry(s.hoverRadius - 0.1, s.hoverRadius, 48).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.75, depthWrite: false }));
   const dot = new THREE.Mesh(new THREE.RingGeometry(0.16, 0.24, 24), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false, depthTest: false, side: THREE.DoubleSide }));
   dot.renderOrder = 10;
   group.add(line, ring, dot);
   group.visible = false;
   guide = { group, line, ring, dot, stamp: -1 };
-  (G.scene).add(group);
+  G.scene!.add(group);
   return guide;
 }
-function hold(runner, dt, inp, sub) {
+function hold(runner: WeaponRunner, dt: number, inp: WeaponInput, sub: SubCfg) {
   const a = runner.a;
   if (!a.isLocal || !a.alive || !G.scene) return;
   const g = guideMesh();
@@ -569,7 +586,7 @@ function guideTick() { if (guide && guide.group.visible && guide.stamp < G.time 
 // ================================================================================================= bots
 const bot = {
   // mid range: the hover catches them where they stand; point blank while under fire: a direct hit bursts on them
-  fight(brain, dist) {
+  fight(brain: BotBrain, dist: number) {
     const a = brain.a, tg = brain.target;
     if (active(a) || !tg || !tg.pos || !(brain.seeTimer > 0)) return false;
     // only with the aim on them: the flat throw goes where the bot looks (a direct hit bursts on them)
@@ -582,10 +599,10 @@ const bot = {
     return true;
   },
   // painting: now and then onto a patch ahead that isn't ours yet (the hover inks a disc, the orbit a ring round you)
-  paint(brain) {
+  paint(brain: BotBrain) {
     const a = brain.a;
     if (active(a) || Math.random() > 0.006) return false;
-    const st = G.paint.regionStats(a.pos.x + Math.sin(a.aimYaw) * 8, a.pos.y, a.pos.z + Math.cos(a.aimYaw) * 8, 2.5, a.team, _stats);
+    const st = G.paint!.regionStats(a.pos.x + Math.sin(a.aimYaw) * 8, a.pos.y, a.pos.z + Math.cos(a.aimYaw) * 8, 2.5, a.team, _stats);
     if (!st.n || st.own > 0.45) return false;
     brain.bombCd = 9 + Math.random() * 7;
     return true;
@@ -597,7 +614,7 @@ SUB_KITS[KIND] = {
   use, tick, clear, hold, bot, ghost, noArc: true,
   blocked: (a) => active(a),
   // test / debug access
-  _items: items, _plan: (a) => plan(a, SUBS[KIND], newPlan()),
+  _items: items, _plan: (a: Actor) => plan(a, SUB_CFG[KIND]!, newPlan()),
 };
 
 // ================================================================================================= icon

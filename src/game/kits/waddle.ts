@@ -14,7 +14,13 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { G, emit, clamp, lerp, angleDiff } from '../../core/ctx.js';
-import { PLAYER, SUBS } from '../../config.js';
+import { PLAYER, SUB_CFG } from '../../config.js';
+import type { SubCfg } from '../../config.js';
+import type { Actor } from '../actor.js';
+import type { SubSystem } from '../subs.js';
+import type { BotBrain } from '../bots.js';
+import type { Threat } from './registry.js';
+import type { NavNode } from '../nav.js';
 import { SUB_KITS, netRec, netId, netHurt, netMuted, ghostMute } from './registry.js';
 import { registerSubModel, GEO_KIT } from '../character-weapons.js';
 import { superEllipsoid, lathe, smoothProfile, sweep } from '../character-geo.js';
@@ -23,6 +29,7 @@ import { Physics, Hit } from '../physics.js';
 import { THROWN } from '../bots.js';
 import { SUB_ICONS } from '../../ui/ui-icons.js';
 import { SFX } from '../../audio/audio.js';
+import type { LoopHandle } from '../../audio/audio.js';
 
 const { Parts, C, M, at, screw, decal, squidShape, wrapLathe, profR, orient } = GEO_KIT;
 const V3 = THREE.Vector3;
@@ -33,7 +40,7 @@ const _res = { t: 0, dist: 0 };
 const GRAV = 24;
 const WSCALE = 1.8;               // hand-scale model → world (≈0.4 m tall with its antenna)
 const MID = 0.11 * WSCALE;        // world height of the body's middle (it tumbles about it in flight)
-const r2 = (x) => Math.round(x * 100) / 100;
+const r2 = (x: number) => Math.round(x * 100) / 100;
 const STRIDE = 5.5;               // stride cycles per second at full walking speed (two steps each)
 
 // ================================================================================================= model
@@ -44,8 +51,8 @@ const STRIDE = 5.5;               // stride cycles per second at full walking sp
 const L = 0.012;                                   // the body sits this much higher so the legs show
 const HIP = [new V3(0.03, 0.058, 0.004), new V3(-0.03, 0.058, 0.004)];
 const LAMP = new V3(0, 0.2195, 0);
-const lift = (pts) => pts.map(([r, y]) => [r, y + L]);
-function waddleBody(withLamp) {
+const lift = (pts: number[][]) => pts.map(([r, y]) => [r, y + L]);
+function waddleBody(withLamp: boolean) {
   const P = new Parts(), I = new Parts();
   const bowlP = smoothProfile(lift([[0.022, 0.0365], [0.045, 0.044], [0.058, 0.058], [0.0635, 0.077], [0.0645, 0.094]]), 8);
   P.add(lathe([[0, 0.036 + L]].concat(bowlP, [[0, 0.094 + L]]), 32), C.cream, M.satin);
@@ -81,36 +88,36 @@ function waddleBody(withLamp) {
 }
 function lampGeo() { return superEllipsoid(0.0074, 0.0074, 0.0074, 1, 1, 12, 8); }
 // one leg at rest (s = +1 right / −1 left): hip ball, shin, a big cream foot with a rubber sole
-function waddleLeg(s) {
+function waddleLeg(s: number) {
   const P = new Parts(), h = HIP[s > 0 ? 0 : 1];
   P.add(at(superEllipsoid(0.0115, 0.0115, 0.0115, 1, 1, 12, 8), h.x, h.y, h.z), C.dark, M.gloss);
   P.add(at(lathe([[0, 0], [0.0079, 0], [0.0083, 0.004], [0.0076, 0.043], [0, 0.044]], 10), h.x, 0.012, h.z + 0.001), C.dark, M.satin);
   P.add(at(superEllipsoid(0.0175, 0.0072, 0.027, 0.5, 0.6, 12, 6), h.x + s * 0.002, 0.0086, 0.013), C.cream, M.gloss);
   P.add(at(superEllipsoid(0.017, 0.0028, 0.0265, 0.4, 0.55, 12, 4), h.x + s * 0.002, 0.0028, 0.013), C.rubber, M.rubber);
   for (const dx of [-0.007, 0.007]) P.add(at(superEllipsoid(0.0022, 0.0012, 0.009, 0.6, 0.6, 5, 4), h.x + s * 0.002 + dx, 0.0156, 0.028), C.bone, M.satin);   // toe creases
-  return P.build();
+  return P.build()!;
 }
 registerSubModel('waddle', () => {
   const b = waddleBody(true);
-  return { kind: 'waddle', body: mergeGeometries([b.P.build(), waddleLeg(1), waddleLeg(-1)], false), ink: b.I.build(),
+  return { kind: 'waddle', body: mergeGeometries([b.P.build()!, waddleLeg(1), waddleLeg(-1)], false), ink: b.I.build(),
     grip: { pos: new V3(0, 0.1 + L, -0.089), handZ: new V3(0, -1, 0), handY: new V3(-0.3, -0.1, -1) } };
 });
-let WG = null;   // world geometry (legs re-centred on their hips, lamp separate), built once
+let WG: { body: THREE.BufferGeometry; ink: THREE.BufferGeometry; legs: THREE.BufferGeometry[]; lamp: THREE.BufferGeometry } | null = null;   // world geometry (legs re-centred on their hips, lamp separate), built once
 function worldGeo() {
   if (!WG) {
     const b = waddleBody(false);
-    WG = { body: b.P.build(), ink: b.I.build(), legs: [1, -1].map((s, i) => waddleLeg(s).translate(-HIP[i].x, -HIP[i].y, -HIP[i].z)), lamp: lampGeo() };
+    WG = { body: b.P.build()!, ink: b.I.build()!, legs: [1, -1].map((s, i) => waddleLeg(s).translate(-HIP[i].x, -HIP[i].y, -HIP[i].z)), lamp: lampGeo() };
   }
   return WG;
 }
 // outer (at the feet, yaw = heading) → rock (waddle roll about the feet) → tilt (tumble about the middle) → model
-function makeMesh(team) {
-  const g = worldGeo(), col = G.teamColors[team];
+function makeMesh(team: number) {
+  const g = worldGeo(), col = G.teamColors[team]!;
   const outer = new THREE.Group(), rock = new THREE.Group(), tilt = new THREE.Group(), model = new THREE.Group();
   tilt.position.y = MID; model.position.y = -MID; model.scale.setScalar(WSCALE);
   const body = new THREE.Mesh(g.body, getPlasticMaterial()); body.castShadow = true;
   const ink = new THREE.Mesh(g.ink, getInkMaterial(col)); ink.castShadow = true;
-  const legs = g.legs.map((geo, i) => { const pv = new THREE.Group(); pv.position.copy(HIP[i]); const m = new THREE.Mesh(geo, getPlasticMaterial()); m.castShadow = true; pv.add(m); model.add(pv); return pv; });
+  const legs = g.legs.map((geo, i: number) => { const pv = new THREE.Group(); pv.position.copy(HIP[i]); const m = new THREE.Mesh(geo, getPlasticMaterial()); m.castShadow = true; pv.add(m); model.add(pv); return pv; });
   const lampMat = new THREE.MeshStandardMaterial({ color: 0x3a0806, emissive: 0xff2a1a, emissiveIntensity: 0.3, roughness: 0.3 });
   const lamp = new THREE.Mesh(g.lamp, lampMat); lamp.position.copy(LAMP);
   model.add(body, ink, lamp);
@@ -143,7 +150,7 @@ const RING_FS = `
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }`;
-function makeRing(col, alpha = 1) {
+function makeRing(col: THREE.Color, alpha = 1) {
   const mat = new THREE.ShaderMaterial({
     uniforms: { uColor: { value: col.clone() }, uTime: { value: 0 }, uAlpha: { value: alpha }, uGrow: { value: 0 }, uLock: { value: 0 }, uSweep: { value: 1 } },
     vertexShader: RING_VS, fragmentShader: RING_FS, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
@@ -202,13 +209,13 @@ SFX.waddle_hop = {
 };
 // Walking (the whole time it tracks): tip-tap feet and a servo whirr on each step, and a "bip" beacon. pitch 1 is the
 // base rate; walk() raises it (faster steps, quicker beeps) as it closes in. Gates are rectified sine LFOs.
-function gateCurve(th) { const n = 256, c = new Float32Array(n); for (let i = 0; i < n; i++) { const x = (i / (n - 1)) * 2 - 1, y = Math.max(0, (x - th) / (1 - th)); c[i] = y * y; } return c; }
+function gateCurve(th: number) { const n = 256, c = new Float32Array(n); for (let i = 0; i < n; i++) { const x = (i / (n - 1)) * 2 - 1, y = Math.max(0, (x - th) / (1 - th)); c[i] = y * y; } return c; }
 const GATE_STEP = gateCurve(0.45), GATE_BEEP = gateCurve(0.86);
 SFX.waddle_walk = {
   gain: 0.36, max: 8, jitter: 0, reverb: 0.05, oneShot: 1.5,
   loop(v, p) {
     const T = v.t, ctx = v.ctx;
-    const gate = (rate, curve, depth, param) => {
+    const gate = (rate: number, curve: Float32Array<ArrayBuffer> | null, depth: number, param: AudioParam) => {
       const ws = ctx.createWaveShaper(); ws.curve = curve; v.nodes.push(ws);
       const d = v.gain(depth); ws.connect(d); d.connect(param);
       return v.osc('sine', rate, T, null, ws);
@@ -242,8 +249,8 @@ SFX.waddle_walk = {
 // ================================================================================================= the bomb
 // Bots lob it at their foe: the aim pitch that lands a throw (throwVelocity: pitch + 0.28 rad, +1.5 m/s up, released
 // 1.35 m up, gravity 24) d m out and dy above the thrower's feet; null if it can't reach (as bots.js lobPitch).
-function lobPitch(d, dy, speed) {
-  let best = null, be = Infinity;
+function lobPitch(d: number, dy: number, speed: number) {
+  let best: number | null = null, be = Infinity;
   for (let p = -0.5; p <= 0.75; p += 0.025) {
     const tp = clamp(p + 0.28, -0.3, 1.1), vx = Math.cos(tp) * speed, vy = Math.sin(tp) * speed + 1.5, disc = vy * vy + 48 * (1.35 - dy);
     if (disc < 0) continue;
@@ -252,19 +259,29 @@ function lobPitch(d, dy, speed) {
   }
   return be < 1.2 ? best : null;
 }
-function botLob(a, sub, short) {
-  const b = a.bot, t = b?.target;
-  if (!t || !t.alive || b.mode !== 'fight') return;
+function botLob(a: Actor, sub: SubCfg, short: number) {
+  const b = a.bot as BotBrain | null, t = b?.target;
+  if (!t || !t.alive || b!.mode !== 'fight') return;
   const tx = t.pos.x + t.vel.x * 0.5, tz = t.pos.z + t.vel.z * 0.5;          // lead it by about the flight time
   const p = lobPitch(Math.max(1.5, Math.hypot(tx - a.pos.x, tz - a.pos.z) - short), t.pos.y - a.pos.y, sub.throwSpeed);
   if (p == null) return;
   a.aimYaw = Math.atan2(tx - a.pos.x, tz - a.pos.z); a.aimPitch = p;
 }
-const items = [];
-function use(subs, a, sub) {
+/** 뒤뚱 폭탄: 주인·팀·설정, 모양, 위치·속도, 상태(fly·sense·wake·walk·dead)·시간·나이, 체력, 스페셜 중, 방향, 목표·경로·진행,
+ *  재탐색·이동 거리·걷기·놓친 시간, 공중, 턱 점프, 걸음 위상, 진행 확인, 감지 고리, 소리, 깜박임, 회전, 유령·원격 진행, 터짐·이유, 봇 질의 */
+interface Waddle {
+  owner: Actor; team: number; sub: SubCfg; m: ReturnType<typeof makeMesh>; pos: THREE.Vector3; vel: THREE.Vector3; state: string; t: number; age: number;
+  hp: number; sp: boolean; heading: number; target: Actor | null; path: number[] | null; pi: number; repath: number; travel: number; walkT: number;
+  lostT: number; air: boolean; hop: { t: number; dur: number; x0: number; y0: number; z0: number; x1: number; y1: number; z1: number } | null; phase: number;
+  prog: { t: number; x: number; z: number }; ring: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial> | null; ringT: number; loop: LoopHandle | null;
+  noisy: boolean; blink: number; blinked?: boolean; spin: THREE.Vector3; ghost: boolean; gid: number; net: { x: number; y: number; z: number; h: number } | null;
+  sendT: number; blasted?: boolean; why?: string; thr?: Threat;
+}
+const items: Waddle[] = [];
+function use(subs: SubSystem, a: Actor, sub: SubCfg) {
   if (a.bot) botLob(a, sub, 2);         // land it just short of the foe: it walks the rest
   const pos = a.pos.clone(); pos.y += 1.35;
-  const vel = G.projectiles.throwVelocity(a, sub.throwSpeed, new V3());
+  const vel = G.projectiles!.throwVelocity(a, sub.throwSpeed, new V3());
   const it = spawn(a, sub, pos, vel, false, netId(a));
   netRec(a, 'waddle', [0, it.gid, r2(pos.x), r2(pos.y), r2(pos.z), r2(vel.x), r2(vel.y), r2(vel.z)]);
   if (a.isLocal || a._nearCamera()) G.audio?.play('bomb_throw', { pos: a.isLocal ? undefined : a.pos, volume: 0.6, pitch: 1.08 });
@@ -274,25 +291,25 @@ function use(subs, a, sub) {
 // off by itself — its owner's records drive it: [3, gid, foe nid, x, y, z] a lock, [4, gid, x, y, z, heading, foe nid]
 // its walk (10 a second), [1, gid, x, y, z] the blast, [2, gid, popped] an end without one. Hits on a ghost go to the
 // owner (netHurt).
-function spawn(a, sub, pos, vel, ghost, gid) {
+function spawn(a: Actor, sub: SubCfg, pos: THREE.Vector3, vel: THREE.Vector3, ghost: boolean, gid: number) {
   const m = makeMesh(a.team);
   m.outer.position.copy(pos).setY(pos.y - MID);
   m.outer.rotation.y = a.aimYaw;
-  G.scene.add(m.outer);
-  const it = { owner: a, team: a.team, sub, m, pos, vel, state: 'fly', t: 0, age: 0, hp: sub.hp, sp: !!a.specialActive,
+  G.scene!.add(m.outer);
+  const it: Waddle = { owner: a, team: a.team, sub, m, pos, vel, state: 'fly', t: 0, age: 0, hp: sub.hp, sp: !!a.specialActive,
     heading: a.aimYaw, target: null, path: null, pi: 0, repath: 0, travel: 0, walkT: 0, lostT: 0, air: false, hop: null, phase: 0,
     prog: { t: 0, x: 0, z: 0 }, ring: null, ringT: 0, loop: null, noisy: false, blink: 0, spin: new V3(2 + Math.random() * 3, 0, 2 + Math.random() * 3),
     ghost, gid, net: null, sendT: 0 };
   items.push(it);
   return it;
 }
-const byNid = (n) => (n >= 0 ? G.actors.find((e) => e.nid === n) || null : null);
-function ghost(a, d) {
+const byNid = (n: number) => (n >= 0 ? G.actors.find((e) => e.nid === n) || null : null);
+function ghost(a: Actor, d: number[]) {
   if (!Array.isArray(d)) return;
   const [op, gid] = d;
   if (op === 0) {
     if (items.some((x) => x.gid === gid)) return;
-    spawn(a, SUBS.waddle, new V3(d[2], d[3], d[4]), new V3(d[5], d[6], d[7]), true, gid);
+    spawn(a, SUB_CFG.waddle!, new V3(d[2], d[3], d[4]), new V3(d[5], d[6], d[7]), true, gid);
     if (a._nearCamera()) G.audio?.play('bomb_throw', { pos: a.pos, volume: 0.6, pitch: 1.08 });
     return;
   }
@@ -309,11 +326,11 @@ function ghost(a, d) {
   else if (op === 2) { if (d[2]) pop(it); else it.state = 'dead'; }
 }
 
-function near(p, r) { const c = G.rig?.gameCam || G.camera; return !!c && c.position.distanceToSquared(p) < r * r; }
-function credit(it, area) { if (it.sp) it.owner.addTurfNoSpecial(area); else it.owner.addTurf(area); }
-const alive = (e) => e && e.alive && !e.superJumpState;
+function near(p: THREE.Vector3, r: number) { const c = G.rig?.gameCam || G.camera; return !!c && c.position.distanceToSquared(p) < r * r; }
+function credit(it: Waddle, area: number) { if (it.sp) it.owner.addTurfNoSpecial(area); else it.owner.addTurf(area); }
+const alive = (e: Actor | null | undefined): e is Actor => !!(e && e.alive && !e.superJumpState);
 // the nearest foe inside the circle (horizontal senseRadius, within senseUp above / below)
-function scan(it, R) {
+function scan(it: Waddle, R: number) {
   let best = null, bd = Infinity;
   for (const e of G.actors) {
     if (e.team === it.team || !alive(e)) continue;
@@ -325,11 +342,11 @@ function scan(it, R) {
 }
 
 // ---- flight: arcs like the other thrown subs; floors stop it, walls and ceilings bounce it
-function fly(it, dt) {
+function fly(it: Waddle, dt: number) {
   it.vel.y -= GRAV * dt;
   _v.copy(it.pos);
   it.pos.addScaledVector(it.vel, dt);
-  const h = G.physics.segment(_v, it.pos, _hit);
+  const h = G.physics!.segment(_v, it.pos, _hit);
   if (h.hit) {
     const n = h.normal;
     if (n.y > 0.6) return land(it, h);
@@ -341,22 +358,22 @@ function fly(it, dt) {
   it.m.outer.position.copy(it.pos).setY(it.pos.y - MID);
   it.m.tilt.rotation.x += it.spin.x * dt; it.m.tilt.rotation.z += it.spin.z * dt;
 }
-function plop(it) {
+function plop(it: Waddle) {
   if (near(it.pos, 40)) G.audio?.play('splat_small', { pos: it.pos, volume: 0.5, pitch: 0.7 });
   it.state = 'dead';
 }
-function land(it, h) {
+function land(it: Waddle, h: { point: THREE.Vector3; normal: THREE.Vector3 }) {
   const s = it.sub;
   it.pos.copy(h.point);
   it.vel.set(0, 0, 0);
   it.state = 'sense'; it.t = 0;
   it.m.tilt.rotation.set(0, 0, 0);
   it.m.outer.position.copy(it.pos);
-  const col = G.teamColors[it.team];
+  const col = G.teamColors[it.team]!;
   it.ring = makeRing(col);
   it.ring.position.copy(it.pos).addScaledVector(h.normal, 0.03);
   it.ring.scale.setScalar(s.senseRadius);
-  G.scene.add(it.ring);
+  G.scene!.add(it.ring);
   if (near(it.pos, 40)) {
     G.audio?.play('waddle_land', { pos: it.pos, volume: 0.8 });
     G.fx?.ring?.(it.pos, h.normal, col, { radius: 0.55, life: 0.3 });
@@ -365,7 +382,7 @@ function land(it, h) {
 }
 
 // ---- sensing: the circle opens; a foe inside (now or before the fuse runs out) wakes it, else it blows where it sits
-function sense(it, dt) {
+function sense(it: Waddle, dt: number) {
   const s = it.sub, M_ = it.m;
   const tgt = it.ghost ? null : scan(it, s.senseRadius * Math.min(1, it.t / 0.3 + 0.35));
   if (tgt) return lock(it, tgt);
@@ -377,18 +394,18 @@ function sense(it, dt) {
   if (it.blinked && near(it.pos, 30)) G.audio?.play('bomb_beep', { pos: it.pos, volume: 0.3 + 0.35 * k, pitch: 1.05 + 0.3 * k });
   if (it.t >= s.fuse && !it.ghost) { it.why = 'fuse'; blast(it); }
 }
-function lock(it, tgt) {
+function lock(it: Waddle, tgt: Actor | null) {
   if (!it.ghost) netRec(it.owner, 'waddle', [3, it.gid, tgt?.nid ?? -1, r2(it.pos.x), r2(it.pos.y), r2(it.pos.z)]);
   it.target = tgt; it.state = 'wake'; it.t = 0; it.ringT = 0; it.repath = 0;
   it.heading = it.m.outer.rotation.y;
   if (near(it.pos, 40)) {
     G.audio?.play('waddle_lock', { pos: it.pos });
-    G.fx?.glint?.(_v.copy(it.pos).setY(it.pos.y + 0.55), G.teamColors[it.team], 0.3);
+    G.fx?.glint?.(_v.copy(it.pos).setY(it.pos.y + 0.55), G.teamColors[it.team]!, 0.3);
   }
   emit('sub:lock', { kind: 'waddle', pos: it.pos.clone(), team: it.team, actor: it.owner, target: tgt });
 }
 // ---- waking: a little hop on the spot to face its foe ("!"), then off it goes
-function wake(it, dt) {
+function wake(it: Waddle, dt: number) {
   const T = it.target, M_ = it.m;
   if (alive(T)) it.heading += clamp(angleDiff(it.heading, Math.atan2(T.pos.x - it.pos.x, T.pos.z - it.pos.z)), -14 * dt, 14 * dt);
   else if (it.net) it.heading += clamp(angleDiff(it.heading, it.net.h), -14 * dt, 14 * dt);
@@ -401,7 +418,7 @@ function wake(it, dt) {
 }
 
 // ---- walking after its foe
-function repath(it) {
+function repath(it: Waddle) {
   const nav = G.nav, T = it.target;
   it.path = null; it.pi = 0;
   if (!nav || !T) return;
@@ -411,8 +428,8 @@ function repath(it) {
   if (p && p.length > 1) { it.path = p; it.pi = 1; }
 }
 // where to head: the foe itself when close on the same level (or with no route), else the next node on the route
-function goal(it) {
-  const T = it.target, nav = G.nav;
+function goal(it: Waddle) {
+  const T = it.target!, nav = G.nav!;   // (목표가 있을 때만 부른다)
   const dh = Math.hypot(T.pos.x - it.pos.x, T.pos.z - it.pos.z), dy = T.pos.y - it.pos.y;
   if ((dh < 2.2 && Math.abs(dy) < 0.8) || !it.path) { _goal.copy(T.pos); return null; }
   while (it.pi < it.path.length) {
@@ -424,7 +441,7 @@ function goal(it) {
   _goal.set(n.x, n.y, n.z);
   return n;
 }
-function walk(it, dt) {
+function walk(it: Waddle, dt: number) {
   if (it.ghost) return follow(it, dt);
   const s = it.sub;
   it.walkT += dt;
@@ -471,7 +488,7 @@ function walk(it, dt) {
   look(it, dt, moved, T);
 }
 // a ghost's walk: eased onto its owner's reported spot and heading
-function follow(it, dt) {
+function follow(it: Waddle, dt: number) {
   const N = it.net;
   let moved = 0;
   it.walkT += dt;
@@ -483,7 +500,7 @@ function follow(it, dt) {
   }
   look(it, dt, moved, alive(it.target) ? it.target : null);
 }
-function look(it, dt, moved, T) {
+function look(it: Waddle, dt: number, moved: number, T: Actor | null) {
   const s = it.sub, M_ = it.m;
   // ---- look: the waddle (alternating feet, a side-to-side roll, a forward lean), beacon blinking, noise
   const k = s.speed > 0 ? clamp(moved / (s.speed * dt + 1e-6), 0, 1.2) : 0;
@@ -500,20 +517,20 @@ function look(it, dt, moved, T) {
   noise(it, 1 + 0.45 * close);
 }
 // one step on the flat: slide along walls, snap onto the ground (steps ≤ 0.45 m), never onto open water
-function stepWalk(it, dt, spd) {
+function stepWalk(it: Waddle, dt: number, spd: number) {
   const hx = Math.sin(it.heading), hz = Math.cos(it.heading), step = spd * dt;
   let mx = hx * step, mz = hz * step;
   _v.copy(it.pos); _v.y += 0.42;
-  const w = G.physics.raycast(_v, _v2.set(hx, 0, hz), step + 0.2, _hit);
+  const w = G.physics!.raycast(_v, _v2.set(hx, 0, hz), step + 0.2, _hit);
   if (w.hit && Math.abs(w.normal.y) < 0.5) {
     const n = w.normal, dn = mx * n.x + mz * n.z;
     mx -= dn * n.x; mz -= dn * n.z;
     const l = Math.hypot(mx, mz);
-    if (l > 1e-5) { const w2 = G.physics.raycast(_v, _v2.set(mx / l, 0, mz / l), l + 0.2, _hit2); if (w2.hit && Math.abs(w2.normal.y) < 0.5) { mx = 0; mz = 0; } }
+    if (l > 1e-5) { const w2 = G.physics!.raycast(_v, _v2.set(mx / l, 0, mz / l), l + 0.2, _hit2); if (w2.hit && Math.abs(w2.normal.y) < 0.5) { mx = 0; mz = 0; } }
   }
   const nx = it.pos.x + mx, nz = it.pos.z + mz, moved = Math.hypot(mx, mz);
   if (moved < 1e-6) return 0;
-  const gy = G.level.groundHeight(nx, nz, it.pos.y + 0.45);
+  const gy = G.level!.groundHeight(nx, nz, it.pos.y + 0.45);
   if (gy === -Infinity) return 0;                                   // the sea / nothing ahead: stay on the deck
   if (gy < it.pos.y - 0.4) {                                        // off a ledge: drop down
     it.air = true; it.vel.set(mx / dt, 0.6, mz / dt);
@@ -523,14 +540,14 @@ function stepWalk(it, dt, spd) {
   it.pos.set(nx, gy, nz);
   return moved;
 }
-function fallStep(it, dt) {
+function fallStep(it: Waddle, dt: number) {
   const x0 = it.pos.x, z0 = it.pos.z, y0 = it.pos.y;
   it.vel.y -= GRAV * dt;
   _v.copy(it.pos); _v.y += 0.3;
   const hl = Math.hypot(it.vel.x, it.vel.z);
-  if (hl > 1e-4) { const w = G.physics.raycast(_v, _v2.set(it.vel.x / hl, 0, it.vel.z / hl), hl * dt + 0.15, _hit); if (w.hit && Math.abs(w.normal.y) < 0.5) { it.vel.x = 0; it.vel.z = 0; } }
+  if (hl > 1e-4) { const w = G.physics!.raycast(_v, _v2.set(it.vel.x / hl, 0, it.vel.z / hl), hl * dt + 0.15, _hit); if (w.hit && Math.abs(w.normal.y) < 0.5) { it.vel.x = 0; it.vel.z = 0; } }
   it.pos.addScaledVector(it.vel, dt);
-  const gy = G.level.groundHeight(it.pos.x, it.pos.z, y0 + 0.05);
+  const gy = G.level!.groundHeight(it.pos.x, it.pos.z, y0 + 0.05);
   if (gy > -Infinity && it.pos.y <= gy) {
     it.pos.y = gy; it.air = false; it.vel.set(0, 0, 0); it.repath = 0;
     if (near(it.pos, 30)) G.audio?.play('waddle_land', { pos: it.pos, volume: 0.45, pitch: 1.2 });
@@ -539,15 +556,15 @@ function fallStep(it, dt) {
   it.m.outer.position.copy(it.pos);
   return Math.hypot(it.pos.x - x0, it.pos.z - z0);
 }
-function startHop(it, node) {
+function startHop(it: Waddle, node: NavNode) {
   it.hop = { t: 0, dur: 0.5, x0: it.pos.x, y0: it.pos.y, z0: it.pos.z, x1: node.x, y1: node.y, z1: node.z };
   it.heading = Math.atan2(node.x - it.pos.x, node.z - it.pos.z);
   it.pi++;
   if (near(it.pos, 30)) G.audio?.play('waddle_hop', { pos: it.pos, volume: 0.6 });
 }
 // a hop up a step: rises first, then over (horizontal eased in), landing on the node
-function hopStep(it, dt) {
-  const H = it.hop, x0 = it.pos.x, z0 = it.pos.z;
+function hopStep(it: Waddle, dt: number) {
+  const H = it.hop!, x0 = it.pos.x, z0 = it.pos.z;   // (점프 중에만 부른다)
   H.t += dt;
   const u = clamp(H.t / H.dur, 0, 1), p = u * u;
   it.pos.set(lerp(H.x0, H.x1, p), lerp(H.y0, H.y1, u) + 4 * 0.5 * u * (1 - u), lerp(H.z0, H.z1, p));
@@ -556,30 +573,30 @@ function hopStep(it, dt) {
   return Math.hypot(it.pos.x - x0, it.pos.z - z0);
 }
 
-function blinkLamp(it, dt, period, bright) {
+function blinkLamp(it: Waddle, dt: number, period: number, bright: number) {
   it.blink -= dt; it.blinked = false;
   if (it.blink <= 0) { it.blink = period; it.blinked = true; }
   it.m.lampMat.emissiveIntensity = it.blink > period - 0.08 ? bright : 0.25;
 }
-function noise(it, pitch) {
+function noise(it: Waddle, pitch: number) {
   it.noisy = true;
   if (near(it.pos, 42) && G.audio) {
     if (!it.loop) it.loop = G.audio.loop('waddle_walk', { pos: it.pos, volume: 0.9, pitch });
     it.loop.set({ pos: it.pos, pitch });
   } else if (it.loop) { it.loop.stop(0.15); it.loop = null; }
 }
-function hush(it) { it.noisy = false; if (it.loop) { it.loop.stop(0.1); it.loop = null; } }
+function hush(it: Waddle) { it.noisy = false; if (it.loop) { it.loop.stop(0.1); it.loop = null; } }
 
-function blast(it) {
+function blast(it: Waddle) {
   if (it.state === 'dead') return;
-  const s = it.sub, a = it.owner, team = it.team, col = G.teamColors[team];
+  const s = it.sub, a = it.owner, team = it.team, col = G.teamColors[team]!;
   if (!it.ghost) netRec(a, 'waddle', [1, it.gid, r2(it.pos.x), r2(it.pos.y), r2(it.pos.z)]);
   it.blasted = true;
   const c = it.pos.clone(); c.y += 0.25;
-  let area = G.paint.splat(_v.copy(it.pos).setY(it.pos.y + 0.2), s.paintRadius, team, { seed: Math.random() });
+  let area = G.paint!.splat(_v.copy(it.pos).setY(it.pos.y + 0.2), s.paintRadius, team, { seed: Math.random() });
   for (let k = 0; k < 4; k++) {
     const ang = Math.random() * Math.PI * 2, r = s.paintRadius * (0.55 + Math.random() * 0.45);
-    area += G.paint.splat(_v.set(c.x + Math.cos(ang) * r, c.y + 0.3, c.z + Math.sin(ang) * r), 0.5 + Math.random() * 0.4, team, { seed: Math.random() });
+    area += G.paint!.splat(_v.set(c.x + Math.cos(ang) * r, c.y + 0.3, c.z + Math.sin(ang) * r), 0.5 + Math.random() * 0.4, team, { seed: Math.random() });
   }
   credit(it, area);
   G.fx?.explosion(c, col, s.radius);
@@ -593,35 +610,35 @@ function blast(it) {
     if (e.team === team || !e.alive) continue;
     _v.copy(e.pos); _v.y += e.form === 'squid' ? 0.3 : 0.7;
     const d = _v.distanceTo(c);
-    if (d > s.radius || !G.physics.los(_v2, _v)) continue;
+    if (d > s.radius || !G.physics!.los(_v2, _v)) continue;
     const k = 1 - clamp((d - 0.8) / (s.radius - 0.8), 0, 1);
-    G.projectiles.applyHit(a, e, lerp(s.damageMin, s.damageMax, k * k), 'waddle');
+    G.projectiles!.applyHit(a, e, lerp(s.damageMin, s.damageMax, k * k), 'waddle');
   }
   G.subs?.damageArea(c, s.radius, 60, team);
   G.boss?.splash(a, c, s.radius, s.damageMax, s.damageMin, 'waddle');   // Boss Battle
   it.state = 'dead';
 }
 // popped by enemy fire / an enemy blast: harmless
-function hurt(it, dmg) {
+function hurt(it: Waddle, dmg: number) {
   if (it.state === 'dead' || it.state === 'fly' || netMuted()) return;   // (a ghost's hit: its owner's copy decides)
   if (!it.ghost) it.hp -= dmg;
   else netHurt(it.owner, 'waddle', it.gid, dmg);   // a remote player's: its owner's copy takes it (and says if it popped)
   _c.copy(it.pos); _c.y += 0.22;
-  if (near(_c, 30)) G.fx?.burst?.(_c, UP, G.teamColors[it.team], { count: 3, speed: 2, size: 0.05, sheet: false });
+  if (near(_c, 30)) G.fx?.burst?.(_c, UP, G.teamColors[it.team]!, { count: 3, speed: 2, size: 0.05, sheet: false });
   if (it.hp > 0 || it.ghost) return;
   pop(it);
 }
-function pop(it) {
+function pop(it: Waddle) {
   _c.copy(it.pos); _c.y += 0.22;
   if (near(_c, 40)) {
-    G.fx?.burst?.(_c, UP, G.teamColors[it.team], { count: 12, speed: 3.5, size: 0.07 });
+    G.fx?.burst?.(_c, UP, G.teamColors[it.team]!, { count: 12, speed: 3.5, size: 0.07 });
     G.audio?.play('splat_small', { pos: _c, volume: 0.8, pitch: 1.3 });
   }
   emit('sub:destroyed', { kind: 'waddle', pos: _c.clone(), team: it.team });
   it.why = 'popped'; it.state = 'dead';
 }
 
-function dispose(it) {
+function dispose(it: Waddle) {
   emit('sub:end', { kind: 'waddle', why: it.why || 'cleared', team: it.team, pos: it.pos.clone() });
   hush(it);
   G.scene?.remove(it.m.outer);
@@ -630,7 +647,7 @@ function dispose(it) {
 }
 
 // the ring: open while sensing; on a lock it flashes and closes in on the bomb; gone once it's walking
-function ringFx(it, dt) {
+function ringFx(it: Waddle, dt: number) {
   const R = it.ring;
   if (!R) return;
   const u = R.material.uniforms;
@@ -645,13 +662,13 @@ function ringFx(it, dt) {
 }
 
 // aiming preview: the sensing circle around the throw arc's landing ring
-let preview = null;
+let preview: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial> | null = null;
 function previewFx() {
   const a = G.local, P = G.projectiles;
   const show = !!(a && a.alive && a.weaponRunner?.aimingSub && a.sub?.kind === 'waddle' && P?.arcRing?.visible);
   if (!show) { if (preview) preview.visible = false; return; }
-  if (!preview) { preview = makeRing(a.color, 0.4); preview.material.uniforms.uGrow.value = 1; preview.material.uniforms.uSweep.value = 0; G.scene.add(preview); }
-  if (preview.parent !== G.scene) G.scene.add(preview);
+  if (!preview) { preview = makeRing(a.color, 0.4); preview.material.uniforms.uGrow.value = 1; preview.material.uniforms.uSweep.value = 0; G.scene!.add(preview); }
+  if (preview.parent !== G.scene) G.scene!.add(preview);
   preview.material.uniforms.uColor.value.copy(a.color);
   preview.material.uniforms.uTime.value = G.time;
   preview.position.copy(P.arcRing.position);
@@ -661,10 +678,10 @@ function previewFx() {
 
 // ---- query hook for bots (bots.js dodges / shoots enemy Waddles): one stable descriptor per bomb, getters read its
 // live state (see kits/registry.js `threats`). Read-only: nothing here changes how the bomb behaves.
-function threatOf(it) {
+function threatOf(it: Waddle): Threat {
   if (it.thr) return it.thr;
   const s = it.sub, v = new V3();
-  it.thr = {
+  return it.thr = {
     kind: 'waddle', obj: it, team: it.team, owner: it.owner, pos: it.pos, aimY: MID, radius: s.radius, trigger: s.triggerDist,
     speed: s.speed, senseRadius: s.senseRadius, ground: true,
     get live() { return it.state !== 'dead'; },
@@ -681,16 +698,15 @@ function threatOf(it) {
     // seconds of chase it has left before it gives up and goes off where it is (life / max travel)
     get left() { return it.state === 'walk' ? Math.max(0, Math.min(s.life - it.walkT, (s.maxTravel - it.travel) / s.speed)) : s.life; },
   };
-  return it.thr;
 }
 
 // ================================================================================================= registration
 SUB_KITS.waddle = {
   use,
   ghost,
-  netHurt(gid, dmg) { const it = items.find((x) => !x.ghost && x.gid === gid && x.state !== 'dead'); if (it) hurt(it, dmg); },
-  threats(out) { for (const it of items) if (it.state !== 'dead') out.push(threatOf(it)); return out; },
-  tick(dt) {
+  netHurt(gid: number, dmg: number) { const it = items.find((x) => !x.ghost && x.gid === gid && x.state !== 'dead'); if (it) hurt(it, dmg); },
+  threats(out: Threat[]) { for (const it of items) if (it.state !== 'dead') out.push(threatOf(it)); return out; },
+  tick(dt: number) {
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
       it.age += dt; it.t += dt;
@@ -717,7 +733,7 @@ SUB_KITS.waddle = {
     if (preview) { preview.parent?.remove(preview); preview.material.dispose(); preview = null; }
   },
   // enemy shots and beams pop it (it absorbs the shot)
-  blockShot(prev, pos, team, dmg) {
+  blockShot(prev: THREE.Vector3, pos: THREE.Vector3, team: number, dmg: number) {
     for (const it of items) {
       if (it.team === team || it.state === 'fly' || it.state === 'dead') continue;
       Physics.segmentCapsuleDist(prev, pos, it.pos, 0.17, 0.4, _res);
@@ -725,8 +741,8 @@ SUB_KITS.waddle = {
     }
     return false;
   },
-  blockRay(from, dir, len, team, dmg) {
-    let best = len, hitIt = null;
+  blockRay(from: THREE.Vector3, dir: THREE.Vector3, len: number, team: number, dmg: number) {
+    let best = len, hitIt: Waddle | null = null;
     for (const it of items) {
       if (it.team === team || it.state === 'fly' || it.state === 'dead') continue;
       _v.copy(it.pos); _v.y += 0.2;
@@ -739,7 +755,7 @@ SUB_KITS.waddle = {
     if (hitIt) hurt(hitIt, dmg);
     return best;
   },
-  damageArea(c, radius, dmg, team) {
+  damageArea(c: THREE.Vector3, radius: number, dmg: number, team: number) {
     for (const it of items) {
       if (it.team === team || it.state === 'fly' || it.state === 'dead') continue;
       if (it.pos.distanceTo(c) < radius + 0.3) hurt(it, dmg);
@@ -748,13 +764,13 @@ SUB_KITS.waddle = {
   items,
   bot: {
     // lob it into the fight: it walks the rest of the way
-    fight(brain, dist) {
+    fight(brain: BotBrain, dist: number) {
       const go = dist > 4.5 && dist < 15 && Math.random() < 0.02 * (1 + brain.diff.fireDiscipline);
       if (go) brain.bombCd = 6 + Math.random() * 5;
       return go;
     },
     // scouting: a foe we can't see is lurking near where the throw would land — send it to flush them out
-    paint(brain) {
+    paint(brain: BotBrain) {
       if (Math.random() > 0.03) return false;
       const a = brain.a, lx = a.pos.x + Math.sin(a.aimYaw) * 7.5, lz = a.pos.z + Math.cos(a.aimYaw) * 7.5;
       for (const e of G.actors) {

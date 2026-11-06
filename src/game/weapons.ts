@@ -53,6 +53,7 @@ export interface Shot extends ShotLook {
   size: number; trail: number; trailEvery: number; trailRadius: number; grav: number; drag: number; seed: number;
   head: boolean; volley: { hit: Set<Actor> } | null; vol: Volley | null; burst: ShotBurst | null; sp?: boolean; ghost: boolean;
   _fxAge?: number; _fxD?: number; _fxY?: number;   // fxHooks의 꼬리 효과 추적
+  _bid?: number;   // kits/brolly 알갱이 번호(맞히면 음수)
 }
 /** fireCustom 선택: 종류('blast'면 폭발탄), 속도·사거리·수명, 직진·중력·저항, 충돌·피해, 꼬리, 터짐, 외형 */
 export interface CustomShot {

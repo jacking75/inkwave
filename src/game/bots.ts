@@ -1713,8 +1713,8 @@ export class BotBrain {
     let ml = Math.hypot(move.x, move.z);
     let hit = null, hAlong = 0, hSide = 1, hW = 1;
     for (const s of S) {
-      if (!s.blocksActors || !s.live) continue;
-      const N = s.N, tx = -N.z, tz = N.x, px = a.pos.x - s.pos.x, pz = a.pos.z - s.pos.z, dy = a.pos.y - s.pos.y;
+      if (!s.blocksActors || !s.live) continue;   // (사람을 막는 방패는 던진 것뿐: pos가 있다)
+      const N = s.N, tx = -N.z, tz = N.x, px = a.pos.x - s.pos!.x, pz = a.pos.z - s.pos!.z, dy = a.pos.y - s.pos!.y;
       if (dy < -1.2 || dy > 1.6) continue;
       const along = px * tx + pz * tz, across = px * N.x + pz * N.z - s.planeOff, W = s.halfW + PLAYER.radius * 0.6 + 0.3;
       if (Math.abs(across) > 3 || Math.abs(along) > W + 2.5) continue;
@@ -1736,8 +1736,8 @@ export class BotBrain {
     this.canT += dt;
     const N = hit.N, tx = -N.z, tz = N.x;
     // a spot beside its edge: `off` m out from its plane on our side (negative: past it)
-    const edgeX = (sg: number, off: number) => hit.pos.x + N.x * (hit.planeOff + hSide * off) + tx * sg * (hW + 0.55);
-    const edgeZ = (sg: number, off: number) => hit.pos.z + N.z * (hit.planeOff + hSide * off) + tz * sg * (hW + 0.55);
+    const edgeX = (sg: number, off: number) => hit.pos!.x + N.x * (hit.planeOff + hSide * off) + tx * sg * (hW + 0.55);
+    const edgeZ = (sg: number, off: number) => hit.pos!.z + N.z * (hit.planeOff + hSide * off) + tz * sg * (hW + 0.55);
     if (!this.canSide) {
       const ok = (sg: number) => {
         const x1 = edgeX(sg, 0.9), z1 = edgeZ(sg, 0.9), x2 = edgeX(sg, -1.4), z2 = edgeZ(sg, -1.4), y = a.pos.y;
