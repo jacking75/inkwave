@@ -14,12 +14,15 @@
 // Props come from getSubDef(kind) (origin at the bottom centre, +Y away from the surface, +Z forward).
 import * as THREE from 'three';
 import { G, emit, on, clamp, lerp } from '../core/ctx.js';
-import { SUBS, PLAYER } from '../config.js';
+import { SUBS, PLAYER, SUB_CFG } from '../config.js';
+import type { SubCfg } from '../config.js';
+import type { Actor } from './actor.js';
+import type { LoopHandle } from '../audio/audio.js';
 import { Physics, Hit } from './physics.js';
 import { getSubDef } from './character-weapons.js';
 import { getPlasticMaterial, getInkMaterial } from './character-mats.js';
 import { MAIN_KITS, SUB_KITS, KIT_GHOSTS, netRec, netId, netHurt, netMuted } from './kits/registry.js';
-const r2 = (x) => Math.round(x * 100) / 100;
+const r2 = (x: number) => Math.round(x * 100) / 100;
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0);
@@ -28,7 +31,7 @@ const _res = { t: 0, dist: 0 };
 const GRAV = 24;
 const SUB_SCALE = 1.9;         // prop models are built at hand scale; in the world they read at the splat bomb's size
 
-function nearCam(p, r = 30) { return G.camera && G.camera.position.distanceToSquared(p) < r * r; }
+function nearCam(p: THREE.Vector3Like, r = 30) { return G.camera && G.camera.position.distanceToSquared(p) < r * r; }
 
 // ------------------------------------------------------------------------------------------------ curtain shader
 // A sheet of falling ink: scrolling vertical streaks, thicker at the top where it pours from, ragged bottom edge.
@@ -51,8 +54,25 @@ const CURTAIN_FS = `
 
 KIT_GHOSTS.subs = { ghost: (a, d) => G.subs?.netGhost(a, d) };
 
+/** 던지거나 설치한 보조무기 하나(상태 기계: fly → stick·run·cloud·mist·curtain·spray·mine·beacon … → dead).
+ *  종류·상태별 필드는 그 종류로 만들거나 그 상태로 들어갈 때 정하고, 그 상태의 처리에서만 읽는다. */
+export interface SubItem {
+  kind: string; sub: SubCfg; owner: Actor; team: number; mesh: THREE.Group; pos: THREE.Vector3; state: string;
+  age: number; t: number; sp: boolean; ghost: boolean; gid: number;
+  vel: THREE.Vector3; spinV: THREE.Vector3; dir: THREE.Vector3; born: number; normal: THREE.Vector3;
+  face: number; u: number; v: number; hp: number; uses: number; fuse: number; spin: number;
+  heading: number; trail: number; stuckT: number; target: Actor | null; dash: boolean;
+  direct: Actor | null; tagged: Set<Actor>; n: THREE.Vector3; tan: THREE.Vector3;
+  cloud: THREE.Object3D & { material?: THREE.Material }; sheet: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
+  pulseT: number; beepT: number; loop: LoopHandle | null;
+}
+
 export class SubSystem {
-  constructor(scene) {
+  declare _glow: THREE.MeshStandardMaterial[] | undefined;   // 팀별 빛 재질
+  declare cloudGeo: THREE.IcosahedronGeometry;
+  declare items: SubItem[];
+  declare scene: THREE.Scene;
+  constructor(scene: THREE.Scene) {
     this.scene = scene;
     this.items = [];
     this.cloudGeo = new THREE.IcosahedronGeometry(1, 3);
@@ -64,21 +84,21 @@ export class SubSystem {
   clear() {
     for (const it of this.items) this._dispose(it);
     this.items.length = 0;
-    for (const k in SUB_KITS) SUB_KITS[k].clear?.();
+    for (const k in SUB_KITS) SUB_KITS[k]!.clear?.();
   }
 
   // ---------------------------------------------------------------------------------------------- deploy
-  use(a, sub) {
-    if (SUB_KITS[sub.kind]) return SUB_KITS[sub.kind].use(this, a, sub);   // kit subs (kits/*.js)
+  use(a: Actor, sub: SubCfg) {
+    { const K = SUB_KITS[sub.kind]; if (K) return K.use(this, a, sub); }   // kit subs (kits/*.js)
     if (sub.placed) return this._place(a, sub);
     const pos = a.pos.clone(); pos.y += 1.35;
-    const vel = G.projectiles.throwVelocity(a, sub.throwSpeed, new THREE.Vector3());
+    const vel = G.projectiles!.throwVelocity(a, sub.throwSpeed, new THREE.Vector3());
     const it = this._throw(a, sub, pos, vel, false);
     netRec(a, 'subs', [0, it.gid, sub.kind, r2(pos.x), r2(pos.y), r2(pos.z), r2(vel.x), r2(vel.y), r2(vel.z)]);
     emit('sub:use', { actor: a, kind: sub.kind });
   }
   // a thrown sub in flight (ghost: a remote player's, online — see netGhost)
-  _throw(a, sub, pos, vel, ghost, gid = 0) {
+  _throw(a: Actor, sub: SubCfg, pos: THREE.Vector3, vel: THREE.Vector3, ghost: boolean, gid = 0) {
     const mesh = this._prop(sub.kind, a.team);
     mesh.position.copy(pos);
     mesh.userData.inner.position.y = -mesh.userData.lift;   // tumble about the middle while flying
@@ -87,31 +107,31 @@ export class SubSystem {
       kind: sub.kind, sub, owner: a, team: a.team, mesh, pos: pos.clone(), vel: vel.clone(), state: 'fly', age: 0, t: 0,
       spinV: new THREE.Vector3(3 + Math.random() * 6, 3 + Math.random() * 6, 0),
       dir: new THREE.Vector3(vel.x, 0, vel.z).normalize(), ghost, gid: gid || netId(a),
-    };
+    } as SubItem;   // (상태별 필드는 그 상태로 들어갈 때 정한다)
     this.items.push(it);
     if (a.isLocal || a._nearCamera()) G.audio?.play('bomb_throw', { pos: a.isLocal ? undefined : a.pos, volume: 0.65, pitch: sub.kind === 'burst' ? 1.2 : 1 });
     return it;
   }
 
-  _place(a, sub) {
-    const g = G.physics.raycast(_v.copy(a.pos).setY(a.pos.y + 0.4), DOWN, 3, _hit);
-    if (!g.hit) return; { const gb = G.level.blocks[g.block]; if (gb && (gb.roof || gb.rail || gb.perch)) return; }   // nothing gets planted on an off-limits roof, a railing or a crane perch
+  _place(a: Actor, sub: SubCfg) {
+    const g = G.physics!.raycast(_v.copy(a.pos).setY(a.pos.y + 0.4), DOWN, 3, _hit);
+    if (!g.hit) return; { const gb = G.level!.blocks[g.block]; if (gb && (gb.roof || gb.rail || gb.perch)) return; }   // nothing gets planted on an off-limits roof, a railing or a crane perch
     // per-player limits: mines — the oldest beyond the limit goes off; beacons — the oldest is removed
     const mine = this.items.filter((it) => it.owner === a && it.kind === sub.kind && it.state !== 'dead').sort((x, y) => x.born - y.born);
-    while (mine.length >= sub.max) { const old = mine.shift(); if (sub.kind === 'mine') this._mineBlast(old); else this._destroy(old); }
+    while (mine.length >= sub.max) { const old = mine.shift()!; if (sub.kind === 'mine') this._mineBlast(old); else this._destroy(old); }
     const it = this._plant(a, sub, g.point, g.normal, a.yaw, g, false);
     netRec(a, 'subs', [1, it.gid, sub.kind, r2(it.pos.x), r2(it.pos.y), r2(it.pos.z), r2(g.normal.x), r2(g.normal.y), r2(g.normal.z), r2(a.yaw)]);
     emit('sub:use', { actor: a, kind: sub.kind, pos: it.pos.clone() });
   }
   // a placed device (mine / beacon) on the floor at pos (g: the floor hit, for the ink under it; ghost: see netGhost)
-  _plant(a, sub, pos, normal, yaw, g, ghost, gid = 0) {
+  _plant(a: Actor, sub: SubCfg, pos: THREE.Vector3, normal: THREE.Vector3, yaw: number, g: Hit | null, ghost: boolean, gid = 0) {
     const mesh = this._prop(sub.kind, a.team);
     mesh.position.copy(pos);
     mesh.quaternion.setFromUnitVectors(UP, normal);
     mesh.rotateY(yaw);
     this.scene.add(mesh);
     const it = { kind: sub.kind, sub, owner: a, team: a.team, mesh, pos: pos.clone(), state: sub.kind, age: 0, t: 0, born: G.time, normal: normal.clone(), sp: !!a.specialActive,
-      face: g ? g.face : -1, u: g ? g.u : 0, v: g ? g.v : 0, hp: sub.hp || 1, uses: sub.uses || 0, ghost, gid: gid || netId(a) };
+      face: g ? g.face : -1, u: g ? g.u : 0, v: g ? g.v : 0, hp: sub.hp || 1, uses: sub.uses || 0, ghost, gid: gid || netId(a) } as SubItem;   // (상태별 필드는 그 상태로 들어갈 때 정한다)
     this.items.push(it);
     if (sub.kind === 'mine') this._paintUnder(it, 1.1);
     if (a.isLocal || a._nearCamera()) G.audio?.play('bomb_beep', { pos: a.isLocal ? undefined : a.pos, volume: 0.5, pitch: sub.kind === 'beacon' ? 1.3 : 0.8 });
@@ -119,18 +139,18 @@ export class SubSystem {
   }
 
   // prop meshes: an outer node (world transform) → inner (offset while flying so it tumbles about its middle) → model
-  _prop(kind, team) {
+  _prop(kind: string, team: number) {
     const d = getSubDef(kind);
-    if (d._top == null) { d.body.computeBoundingBox(); d._top = d.body.boundingBox.max.y; }
+    if (d._top == null) { d.body!.computeBoundingBox(); d._top = d.body!.boundingBox!.max.y; }   // (소품 빌더는 늘 몸체가 있다)
     const outer = new THREE.Group(), inner = new THREE.Group(), model = new THREE.Group();
     model.scale.setScalar(SUB_SCALE);
-    const col = G.teamColors[team];
-    const body = new THREE.Mesh(d.body, getPlasticMaterial()); body.castShadow = true;
-    const ink = new THREE.Mesh(d.ink, getInkMaterial(col)); ink.castShadow = true;
+    const col = G.teamColors[team]!;
+    const body = new THREE.Mesh(d.body!, getPlasticMaterial()); body.castShadow = true;
+    const ink = new THREE.Mesh(d.ink!, getInkMaterial(col)); ink.castShadow = true;
     model.add(body, ink);
     if (d.glow) model.add(new THREE.Mesh(d.glow, this._glowMat(team)));
     let spin = null;
-    if (d.spin) {
+    if (d.spin && d.spinAt) {
       spin = new THREE.Group(); spin.position.copy(d.spinAt);
       const sm = new THREE.Mesh(d.spin, getPlasticMaterial()); sm.position.copy(d.spinAt).negate(); sm.castShadow = true; spin.add(sm);
       if (d.spinInk) { const si = new THREE.Mesh(d.spinInk, getInkMaterial(col)); si.position.copy(d.spinAt).negate(); spin.add(si); }
@@ -142,18 +162,18 @@ export class SubSystem {
     return outer;
   }
   // lit parts (scan orb band, beacon lamp): team colour that glows a little
-  _glowMat(team) {
+  _glowMat(team: number) {
     this._glow = this._glow || [];
     if (!this._glow[team]) {
-      const c = G.teamColors[team];
+      const c = G.teamColors[team]!;
       this._glow[team] = new THREE.MeshStandardMaterial({ color: c.clone().multiplyScalar(0.35), emissive: c.clone(), emissiveIntensity: 1.1, roughness: 0.35 });
     }
     return this._glow[team];
   }
 
   // ---------------------------------------------------------------------------------------------- per frame
-  update(dt) {
-    for (const k in SUB_KITS) SUB_KITS[k].tick?.(dt);   // kit subs' own objects
+  update(dt: number) {
+    for (const k in SUB_KITS) SUB_KITS[k]!.tick?.(dt);   // kit subs' own objects
     const items = this.items, nm = G.netm;
     for (let i = items.length - 1; i >= 0; i--) {
       const it = items[i];
@@ -167,7 +187,7 @@ export class SubSystem {
       }
     }
   }
-  _step(it, dt) {
+  _step(it: SubItem, dt: number) {
     {
       switch (it.state) {
         case 'fly': this._fly(it, dt); break;
@@ -189,9 +209,10 @@ export class SubSystem {
   // kid back), sprinklers, beacons (a teammate can jump to one) — with paint muted and hits dropped (the owner's arrive
   // apart). A ghost mine never goes off by itself: its owner decides (the end record). Damage the local player does to
   // a ghost device goes to its owner (netHurt); the owner's end record ends a ghost still standing.
-  netGhost(a, d) {
+  netGhost(a: Actor, d: unknown) {
     if (!Array.isArray(d)) return;
-    const [op, gid] = d;
+    const r = d as [number, number, string, number, number, number, number, number, number, number];   // [op, gid, kind, x, y, z, vx|nx, vy|ny, vz|nz, yaw]
+    const [op, gid] = r;
     if (op === 2) {
       const it = this.items.find((x) => x.ghost && x.gid === gid && x.state !== 'dead');
       if (!it) return;
@@ -201,22 +222,22 @@ export class SubSystem {
       it.state = 'dead';
       return;
     }
-    const sub = SUBS[d[2]];
+    const sub = SUB_CFG[r[2]];
     if (!sub || this.items.some((x) => x.gid === gid)) return;
-    if (op === 0) this._throw(a, sub, _v.set(d[3], d[4], d[5]), _v2.set(d[6], d[7], d[8]), true, gid);
+    if (op === 0) this._throw(a, sub, _v.set(r[3], r[4], r[5]), _v2.set(r[6], r[7], r[8]), true, gid);
     else if (op === 1) {
-      const n = _v2.set(d[6], d[7], d[8]);
-      const g = G.physics.raycast(_v3.set(d[3], d[4] + 0.4, d[5]), DOWN, 1.2, _hit);
-      this._plant(a, sub, _v.set(d[3], d[4], d[5]), n, d[9], g.hit ? g : null, true, gid);
+      const n = _v2.set(r[6], r[7], r[8]);
+      const g = G.physics!.raycast(_v3.set(r[3], r[4] + 0.4, r[5]), DOWN, 1.2, _hit);
+      this._plant(a, sub, _v.set(r[3], r[4], r[5]), n, r[9], g.hit ? g : null, true, gid);
     }
   }
   // the owner's side of a hit on one of its devices, made on another screen
-  netHurt(gid, dmg) {
+  netHurt(gid: number, dmg: number) {
     const it = this.items.find((x) => !x.ghost && x.gid === gid && x.state !== 'dead');
     if (it) this._hurt(it, dmg);
   }
 
-  _fly(it, dt) {
+  _fly(it: SubItem, dt: number) {
     const s = it.sub;
     it.vel.y -= GRAV * dt;
     _v.copy(it.pos);
@@ -235,7 +256,7 @@ export class SubSystem {
     }
     // clouds burst in mid-air when their fuse runs out
     if ((it.kind === 'scan' || it.kind === 'mist') && it.age > s.fuse) { it.kind === 'scan' ? this._startCloud(it) : this._startMist(it); return; }
-    const hit = G.physics.segment(_v, it.pos, _hit);
+    const hit = G.physics!.segment(_v, it.pos, _hit);
     if (hit.hit) {
       const n = hit.normal, floor = n.y > 0.6;
       switch (it.kind) {
@@ -257,7 +278,7 @@ export class SubSystem {
     it.mesh.rotation.x += it.spinV.x * dt; it.mesh.rotation.z += it.spinV.y * dt;
   }
 
-  _stick(it, hit, state, fuse) {
+  _stick(it: SubItem, hit: Hit, state: string, fuse: number) {
     it.state = state; it.t = 0; it.fuse = fuse; it.beepT = 0;
     it.normal = hit.normal.clone();
     it.pos.copy(hit.point).addScaledVector(hit.normal, 0.005);
@@ -276,7 +297,7 @@ export class SubSystem {
   }
 
   // ---- cling charge: stuck, blinking faster, then a wide blast
-  _stuck(it, dt) {
+  _stuck(it: SubItem, dt: number) {
     it.beepT -= dt;
     const k = clamp(it.t / it.fuse, 0, 1);
     it.mesh.scale.setScalar(1 + k * 0.3 + Math.sin(it.t * 40) * 0.025 * k);
@@ -289,7 +310,7 @@ export class SubSystem {
   }
 
   // ---- skitter bomb: lands, scuttles after the nearest enemy laying a swimmable trail, bursts on reaching them
-  _startRun(it, hit) {
+  _startRun(it: SubItem, hit: Hit) {
     it.state = 'run'; it.t = 0;
     it.pos.copy(hit.point);
     it.heading = Math.atan2(it.dir.x, it.dir.z);
@@ -297,7 +318,7 @@ export class SubSystem {
     it.mesh.userData.inner.position.y = 0;
     it.mesh.rotation.set(0, it.heading, 0);
   }
-  _run(it, dt) {
+  _run(it: SubItem, dt: number) {
     const s = it.sub;
     if (!it.target || !it.target.alive) {
       let best = null, bd = s.seekRange;
@@ -326,7 +347,7 @@ export class SubSystem {
     const hx = Math.sin(it.heading), hz = Math.cos(it.heading), step = speed * dt;
     // walls: turn away along them
     _v.copy(it.pos); _v.y += 0.2;
-    const w = G.physics.raycast(_v, _v2.set(hx, 0, hz), step + 0.3, _hit2, true);
+    const w = G.physics!.raycast(_v, _v2.set(hx, 0, hz), step + 0.3, _hit2, true);
     if (w.hit && Math.abs(w.normal.y) < 0.5) {
       it.stuckT += dt;
       const side = hx * w.normal.z - hz * w.normal.x >= 0 ? 1 : -1;
@@ -334,11 +355,11 @@ export class SubSystem {
     } else {
       it.stuckT = Math.max(0, it.stuckT - dt);
       const nx = it.pos.x + hx * step, nz = it.pos.z + hz * step;
-      const gy = G.level.groundHeight(nx, nz, it.pos.y + 0.6);
-      if (gy === -Infinity) { it.state = 'dead'; if (nearCam(it.pos)) G.fx?.burst(it.pos, UP, G.teamColors[it.team], { count: 10, speed: 3, size: 0.08 }); return; }
+      const gy = G.level!.groundHeight(nx, nz, it.pos.y + 0.6);
+      if (gy === -Infinity) { it.state = 'dead'; if (nearCam(it.pos)) G.fx?.burst(it.pos, UP, G.teamColors[it.team]!, { count: 10, speed: 3, size: 0.08 }); return; }
       it.pos.set(nx, gy, nz);
       it.trail += step;
-      if (it.trail > 0.35) { it.trail = 0; this._credit(it, G.paint.splat(_v.copy(it.pos).setY(it.pos.y + 0.12), s.trailRadius, it.team, { seed: Math.random() })); }
+      if (it.trail > 0.35) { it.trail = 0; this._credit(it, G.paint!.splat(_v.copy(it.pos).setY(it.pos.y + 0.12), s.trailRadius, it.team, { seed: Math.random() })); }
     }
     it.mesh.position.copy(it.pos);
     it.mesh.rotation.set(0, it.heading, 0);
@@ -351,10 +372,10 @@ export class SubSystem {
   }
 
   // ---- echo orb: a sensing cloud that tags enemies it touches (tracked for the thrower's team)
-  _startCloud(it) {
+  _startCloud(it: SubItem) {
     it.state = 'cloud'; it.t = 0;
     it.mesh.visible = false;
-    const col = G.teamColors[it.team];
+    const col = G.teamColors[it.team]!;
     it.cloud = new THREE.Mesh(this.cloudGeo, new THREE.MeshBasicMaterial({ color: col.clone().lerp(new THREE.Color(1, 1, 1), 0.35), transparent: true, opacity: 0.4, depthWrite: false }));
     it.cloud.position.copy(it.pos); it.cloud.scale.setScalar(0.2);
     this.scene.add(it.cloud);
@@ -362,11 +383,11 @@ export class SubSystem {
     if (nearCam(it.pos, 40)) G.audio?.play('special_activate', { pos: it.pos, volume: 0.45, pitch: 1.6 });
     emit('sub:cloud', { kind: 'scan', pos: it.pos.clone(), team: it.team, radius: it.sub.radius });
   }
-  _cloud(it, dt) {
+  _cloud(it: SubItem, dt: number) {
     const s = it.sub;
     const grow = clamp(it.t / 0.25, 0, 1), fade = clamp((it.t - s.cloudTime * 0.5) / (s.cloudTime * 0.5), 0, 1);
     it.cloud.scale.setScalar(lerp(0.2, s.radius, 1 - (1 - grow) ** 3));
-    it.cloud.material.opacity = 0.4 * (1 - fade);
+    (it.cloud.material as THREE.MeshBasicMaterial).opacity = 0.4 * (1 - fade);
     for (const e of G.actors) {
       if (e.team === it.team || !e.alive || it.tagged.has(e)) continue;
       if (_v.copy(e.pos).setY(e.pos.y + 0.7).distanceTo(it.pos) < s.radius * grow) {
@@ -378,10 +399,10 @@ export class SubSystem {
   }
 
   // ---- murk bomb: a poison mist (no damage) — slows and drains ink while inside; a direct hit lasts the whole mist
-  _startMist(it) {
+  _startMist(it: SubItem) {
     it.state = 'mist'; it.t = 0;
     it.mesh.visible = false;
-    const col = G.teamColors[it.team].clone().lerp(new THREE.Color(0.25, 0.2, 0.3), 0.55);
+    const col = G.teamColors[it.team]!.clone().lerp(new THREE.Color(0.25, 0.2, 0.3), 0.55);
     it.cloud = new THREE.Group();
     for (let k = 0; k < 7; k++) {
       const p = new THREE.Mesh(this.cloudGeo, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.3, depthWrite: false }));
@@ -397,12 +418,12 @@ export class SubSystem {
     if (nearCam(it.pos, 40)) G.audio?.play('enemy_ink_sizzle', { pos: it.pos, volume: 0.7, pitch: 0.7 });
     emit('sub:cloud', { kind: 'mist', pos: it.pos.clone(), team: it.team, radius: it.sub.radius });
   }
-  _mist(it, dt) {
+  _mist(it: SubItem, dt: number) {
     const s = it.sub;
     const grow = clamp(it.t / 0.4, 0, 1), fade = clamp((it.t - (s.mistTime - 0.8)) / 0.8, 0, 1);
     it.cloud.scale.setScalar(lerp(0.3, s.radius * 0.72, 1 - (1 - grow) ** 3));
     for (const p of it.cloud.children) {
-      p.material.opacity = 0.3 * (1 - fade);
+      ((p as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = 0.3 * (1 - fade);
       p.scale.setScalar(1 + 0.12 * Math.sin(it.t * 1.7 + p.userData.ph));
       p.rotation.y += dt * 0.3;
     }
@@ -414,7 +435,7 @@ export class SubSystem {
   }
 
   // ---- drip curtain: a sheet of falling ink across the throw line; blocks enemy players and shots
-  _startCurtain(it, hit) {
+  _startCurtain(it: SubItem, hit: Hit) {
     const s = it.sub;
     it.state = 'curtain'; it.t = 0; it.hp = s.hp;
     it.pos.copy(hit.point);
@@ -424,7 +445,7 @@ export class SubSystem {
     it.mesh.position.copy(it.pos);
     it.mesh.rotation.set(0, Math.atan2(it.n.x, it.n.z), 0);
     const mat = new THREE.ShaderMaterial({
-      uniforms: { uColor: { value: G.teamColors[it.team].clone() }, uTime: { value: 0 }, uLife: { value: 1 } },
+      uniforms: { uColor: { value: G.teamColors[it.team]!.clone() }, uTime: { value: 0 }, uLife: { value: 1 } },
       vertexShader: CURTAIN_VS, fragmentShader: CURTAIN_FS, transparent: true, depthWrite: false, side: THREE.DoubleSide,
     });
     it.sheet = new THREE.Mesh(new THREE.PlaneGeometry(s.width, s.height), mat);
@@ -434,7 +455,7 @@ export class SubSystem {
     if (nearCam(it.pos, 40)) G.audio?.play('swim_splash', { pos: it.pos, volume: 0.8, pitch: 0.8 });
     emit('sub:land', { kind: 'curtain', pos: it.pos.clone(), team: it.team, radius: s.width / 2 });
   }
-  _curtain(it, dt) {
+  _curtain(it: SubItem, dt: number) {
     const s = it.sub;
     it.hp -= s.decay * dt;
     it.sheet.material.uniforms.uTime.value = it.t;
@@ -445,7 +466,7 @@ export class SubSystem {
   }
 
   // ---- twirl sprinkler: stuck to a surface, spraying pulses of droplets around itself (weaker after a while)
-  _spray(it, dt) {
+  _spray(it: SubItem, dt: number) {
     const s = it.sub;
     it.pulseT -= dt;
     it.spin += dt * (it.t < s.sprayFade ? 9 : 4.5);
@@ -465,16 +486,16 @@ export class SubSystem {
       const vx = (Math.cos(a) * t1.x + Math.sin(a) * t2.x) * out + n.x * 0.75;
       const vy = (Math.cos(a) * t1.y + Math.sin(a) * t2.y) * out + n.y * 0.75;
       const vz = (Math.cos(a) * t1.z + Math.sin(a) * t2.z) * out + n.z * 0.75;
-      G.projectiles.spawnDrop(it.owner, base, vx * sp, vy * sp, vz * sp, { damage: s.dropDamage, radius: 0.5 + Math.random() * 0.25, size: 0.08, weaponId: 'sprinkler' });
+      G.projectiles!.spawnDrop(it.owner, base, vx * sp, vy * sp, vz * sp, { damage: s.dropDamage, radius: 0.5 + Math.random() * 0.25, size: 0.08, weaponId: 'sprinkler' });
     }
   }
 
   // ---- lurk mine: hidden in its owner's ink; an enemy coming close sets it off (damage + tracking)
-  _mine(it, dt) {
+  _mine(it: SubItem, dt: number) {
     if (it.ghost) return;   // (a remote player's mine goes off when its owner says: netGhost)
     const s = it.sub;
     const loc = G.local;
-    const inOwnInk = it.face >= 0 && G.paint.sample(it.face, it.u, it.v) - 1 === it.team;
+    const inOwnInk = it.face >= 0 && G.paint!.sample(it.face, it.u, it.v) - 1 === it.team;
     it.mesh.visible = !loc || loc.team === it.team || !inOwnInk;
     if (it.fuse != null) {
       it.fuse -= dt;
@@ -494,17 +515,17 @@ export class SubSystem {
       }
     }
   }
-  _mineBlast(it) {
+  _mineBlast(it: SubItem) {
     if (it.state === 'dead') return;
     const s = it.sub, c = _v.copy(it.pos).setY(it.pos.y + 0.3).clone();
     this._paint(it, c, s.paintRadius);
-    G.fx?.explosion(c, G.teamColors[it.team], s.radius * 0.8);
+    G.fx?.explosion(c, G.teamColors[it.team]!, s.radius * 0.8);
     G.audio?.play('bomb_explode', { pos: c, volume: 0.7, pitch: 1.2 });
     emit('bomb:explode', { actor: it.owner, pos: c.clone(), team: it.team, radius: s.radius });
     for (const e of G.actors) {
       if (e.team === it.team || !e.alive) continue;
-      if (_v2.copy(e.pos).setY(e.pos.y + 0.7).distanceTo(c) > s.radius || !G.physics.los(c, _v2)) continue;
-      G.projectiles.applyHit(it.owner, e, s.damage, 'mine');
+      if (_v2.copy(e.pos).setY(e.pos.y + 0.7).distanceTo(c) > s.radius || !G.physics!.los(c, _v2)) continue;
+      G.projectiles!.applyHit(it.owner, e, s.damage, 'mine');
       this.track(e, it.team, s.trackTime);
     }
     this.damageArea(c, s.radius, 30, it.team);
@@ -512,18 +533,18 @@ export class SubSystem {
   }
 
   // ---- hop beacon: a super-jump point for the team (two uses)
-  _beacon(it, dt) {
+  _beacon(it: SubItem, dt: number) {
     const spin = it.mesh.userData.spin;
     if (spin) spin.rotation.y += dt * 1.5;
   }
-  beaconsFor(team) { return this.items.filter((it) => it.kind === 'beacon' && it.state === 'beacon' && it.team === team); }
-  jumpToBeacon(actor, b) {
+  beaconsFor(team: number) { return this.items.filter((it) => it.kind === 'beacon' && it.state === 'beacon' && it.team === team); }
+  jumpToBeacon(actor: Actor, b: SubItem | null | undefined) {
     if (!b || b.state !== 'beacon' || b.team !== actor.team) return false;
     const ok = actor.superJump(b.pos.clone());
     if (ok) actor._jumpBeacon = b;
     return ok;
   }
-  _landedOnBeacon(actor) {
+  _landedOnBeacon(actor: Actor) {
     const b = actor._jumpBeacon;
     if (!b) return;
     actor._jumpBeacon = null;
@@ -534,23 +555,23 @@ export class SubSystem {
   }
 
   // ---------------------------------------------------------------------------------------------- effects
-  track(e, team, time) {
+  track(e: Actor, team: number, time: number) {
     const st = e.status;
     const fresh = !(st.track > 0 && st.trackTeam === team);
     st.track = Math.max(st.trackTeam === team ? st.track : 0, time); st.trackTeam = team;
     if (fresh) emit('actor:tracked', { actor: e, team });
   }
-  poison(e, time) {
+  poison(e: Actor, time: number) {
     const fresh = !(e.status.poison > 0);
     e.status.poison = Math.max(e.status.poison, time);
     if (fresh) emit('actor:poisoned', { actor: e });
   }
 
   // paint + damage enemies (with line of sight) around a blast, like the splat bomb
-  _blast(it, c, radius, dmgMax, dmgMin, paintRadius, n) {
+  _blast(it: SubItem, c: THREE.Vector3, radius: number, dmgMax: number, dmgMin: number, paintRadius: number, n: THREE.Vector3) {
     const center = c.clone();
     this._paint(it, _v2.copy(center).addScaledVector(n || UP, 0.2), paintRadius);
-    G.fx?.explosion(center, G.teamColors[it.team], radius);
+    G.fx?.explosion(center, G.teamColors[it.team]!, radius);
     G.audio?.play('bomb_explode', { pos: center });
     emit('shake', { pos: center.clone(), amount: 0.6 });
     emit('bomb:explode', { actor: it.owner, pos: center.clone(), team: it.team, radius });
@@ -558,43 +579,43 @@ export class SubSystem {
       if (e.team === it.team || !e.alive) continue;
       _v3.copy(e.pos); _v3.y += 0.7;
       const d = _v3.distanceTo(center);
-      if (d > radius || !G.physics.los(_v2.copy(center).addScaledVector(n || UP, 0.3), _v3)) continue;
+      if (d > radius || !G.physics!.los(_v2.copy(center).addScaledVector(n || UP, 0.3), _v3)) continue;
       const k = 1 - clamp((d - 0.8) / (radius - 0.8), 0, 1);
-      G.projectiles.applyHit(it.owner, e, lerp(dmgMin, dmgMax, k * k), it.kind);
+      G.projectiles!.applyHit(it.owner, e, lerp(dmgMin, dmgMax, k * k), it.kind);
     }
     this.damageArea(center, radius, 60, it.team);
     G.boss?.splash(it.owner, center, radius, dmgMax, dmgMin, it.kind);   // Boss Battle
   }
-  _pelletBlast(it, direct, at) {
+  _pelletBlast(it: SubItem, direct: Actor | null, at?: THREE.Vector3) {
     const s = it.sub, c = (at || it.pos).clone();
     this._paint(it, _v2.copy(c).setY(c.y + 0.2), s.paintRadius);
-    G.fx?.explosion(c, G.teamColors[it.team], s.radius * 0.8);
+    G.fx?.explosion(c, G.teamColors[it.team]!, s.radius * 0.8);
     G.audio?.play('blaster_boom', { pos: c, volume: 0.6, pitch: 1.2 });
     emit('bomb:explode', { actor: it.owner, pos: c.clone(), team: it.team, radius: s.radius });
-    if (direct) G.projectiles.applyHit(it.owner, direct, s.directDamage, 'burst');
+    if (direct) G.projectiles!.applyHit(it.owner, direct, s.directDamage, 'burst');
     for (const e of G.actors) {
       if (e.team === it.team || !e.alive || e === direct) continue;
       _v3.copy(e.pos); _v3.y += 0.7;
-      if (_v3.distanceTo(c) > s.radius || !G.physics.los(_v2.copy(c).setY(c.y + 0.3), _v3)) continue;
-      G.projectiles.applyHit(it.owner, e, s.splashDamage, 'burst');
+      if (_v3.distanceTo(c) > s.radius || !G.physics!.los(_v2.copy(c).setY(c.y + 0.3), _v3)) continue;
+      G.projectiles!.applyHit(it.owner, e, s.splashDamage, 'burst');
     }
     this.damageArea(c, s.radius, 25, it.team);
     G.boss?.splash(it.owner, c, s.radius, s.directDamage, s.splashDamage, 'burst');   // Boss Battle
   }
-  _paint(it, c, r) {
-    let area = G.paint.splat(c, r, it.team, { seed: Math.random() });
+  _paint(it: SubItem, c: THREE.Vector3, r: number) {
+    let area = G.paint!.splat(c, r, it.team, { seed: Math.random() });
     for (let k = 0; k < 4; k++) {
       const a = Math.random() * Math.PI * 2, rr = r * (0.55 + Math.random() * 0.45);
-      area += G.paint.splat(_v3.set(c.x + Math.cos(a) * rr, c.y + 0.3, c.z + Math.sin(a) * rr), 0.5 + Math.random() * 0.4, it.team, { seed: Math.random() });
+      area += G.paint!.splat(_v3.set(c.x + Math.cos(a) * rr, c.y + 0.3, c.z + Math.sin(a) * rr), 0.5 + Math.random() * 0.4, it.team, { seed: Math.random() });
     }
     this._credit(it, area);
   }
-  _paintUnder(it, r) { this._credit(it, G.paint.splat(_v3.copy(it.pos).setY(it.pos.y + 0.2), r, it.team, { seed: Math.random() })); }
+  _paintUnder(it: SubItem, r: number) { this._credit(it, G.paint!.splat(_v3.copy(it.pos).setY(it.pos.y + 0.2), r, it.team, { seed: Math.random() })); }
   // turf for the thrower; ink from a special (Bomb Barrage throws) never charges the special meter
-  _credit(it, area) { if (it.sp) it.owner.addTurfNoSpecial(area); else it.owner.addTurf(area); }
+  _credit(it: SubItem, area: number) { if (it.sp) it.owner.addTurfNoSpecial(area); else it.owner.addTurf(area); }
 
   // ---------------------------------------------------------------------------------------------- blocking + damage
-  _hurt(it, dmg) {
+  _hurt(it: SubItem, dmg: number) {
     if (it.state === 'dead' || netMuted()) return;   // (a ghost's hit: its owner's copy decides)
     if (it.ghost) {   // a remote player's device: its owner's copy takes the hit (and says when it's gone)
       netHurt(it.owner, 'subs', it.gid, dmg);
@@ -606,8 +627,8 @@ export class SubSystem {
     if (it.hp <= 0) this._destroy(it);
   }
   // an enemy shot segment: curtains absorb it (and lose hp); devices it touches are damaged
-  blockShot(prev, pos, team, dmg) {
-    for (const R of [MAIN_KITS, SUB_KITS]) for (const k in R) if (R[k].blockShot?.(prev, pos, team, dmg)) return true;   // kit shields / shoot-able bombs
+  blockShot(prev: THREE.Vector3, pos: THREE.Vector3, team: number, dmg: number) {
+    for (const R of [MAIN_KITS, SUB_KITS]) for (const k in R) if (R[k]!.blockShot?.(prev, pos, team, dmg)) return true;   // kit shields / shoot-able bombs
     for (const it of this.items) {
       if (it.team === team) continue;
       if (it.state === 'curtain') {
@@ -618,7 +639,7 @@ export class SubSystem {
         _v3.lerpVectors(prev, pos, f).sub(it.pos);
         if (Math.abs(_v3.dot(it.tan)) > s.width / 2 || _v3.y < -0.2 || _v3.y > s.height) continue;
         this._hurt(it, dmg * s.shotMul);
-        if (nearCam(it.pos)) G.fx?.burst(_v3.add(it.pos), it.n, G.teamColors[it.team], { count: 3, speed: 2, size: 0.06 });
+        if (nearCam(it.pos)) G.fx?.burst(_v3.add(it.pos), it.n, G.teamColors[it.team]!, { count: 3, speed: 2, size: 0.06 });
         return true;
       }
       if (it.state === 'spray' || it.state === 'beacon') {
@@ -630,8 +651,8 @@ export class SubSystem {
     }
     return false;
   }
-  blockRay(from, dir, len, team, dmg) {
-    for (const R of [MAIN_KITS, SUB_KITS]) for (const k in R) if (R[k].blockRay) len = Math.min(len, R[k].blockRay(from, dir, len, team, dmg));   // kit shields
+  blockRay(from: THREE.Vector3, dir: THREE.Vector3, len: number, team: number, dmg: number) {
+    for (const k in SUB_KITS) { const K = SUB_KITS[k]!; if (K.blockRay) len = Math.min(len, K.blockRay(from, dir, len, team, dmg)); }   // (주무기 키트에는 blockRay가 없다)   // kit shields
     let best = len, hitIt = null;
     for (const it of this.items) {
       if (it.team === team || it.state !== 'curtain') continue;
@@ -647,17 +668,17 @@ export class SubSystem {
     if (hitIt) this._hurt(hitIt, dmg * hitIt.sub.shotMul);
     return best;
   }
-  damageArea(c, radius, dmg, team) {
+  damageArea(c: THREE.Vector3, radius: number, dmg: number, team: number) {
     if (netMuted()) return;   // a ghost's blast: the owner's own blast hurts devices (netHurt carries it to theirs)
     G.specials?.areaHit(c, radius, dmg, team);
-    for (const k in SUB_KITS) SUB_KITS[k].damageArea?.(c, radius, dmg, team);   // kit subs caught in a blast (torpedo)
+    for (const k in SUB_KITS) SUB_KITS[k]!.damageArea?.(c, radius, dmg, team);   // kit subs caught in a blast (torpedo)
     for (const it of this.items) {
       if (it.team === team || !(it.state === 'curtain' || it.state === 'spray' || it.state === 'beacon')) continue;
       if (it.pos.distanceTo(c) < radius + 0.4) this._hurt(it, dmg);
     }
   }
   // enemy players can't walk (or swim) through a curtain: push them back out to the side they're on
-  blockActor(a) {
+  blockActor(a: Actor) {
     for (const it of this.items) {
       if (it.state !== 'curtain' || it.team === a.team) continue;
       const s = it.sub;
@@ -671,21 +692,21 @@ export class SubSystem {
     }
   }
 
-  _destroy(it) {
+  _destroy(it: SubItem) {
     if (it.state === 'dead') return;
     const c = _v.copy(it.pos).addScaledVector(it.normal || UP, 0.2);
     if (nearCam(c, 40)) {
-      G.fx?.burst(c, it.normal || UP, G.teamColors[it.team], { count: 12, speed: 4, size: 0.08 });
+      G.fx?.burst(c, it.normal || UP, G.teamColors[it.team]!, { count: 12, speed: 4, size: 0.08 });
       G.audio?.play('splat_small', { pos: c, volume: 0.7, pitch: 0.8 });
     }
     emit('sub:destroyed', { kind: it.kind, pos: c.clone(), team: it.team });
     it.state = 'dead';
   }
-  _dispose(it) {
+  _dispose(it: SubItem) {
     this.scene.remove(it.mesh);
     if (it.cloud) {
       this.scene.remove(it.cloud);
-      it.cloud.traverse?.((o) => o.material?.dispose());
+      it.cloud.traverse?.((o) => (o as THREE.Mesh).material && ((o as THREE.Mesh).material as THREE.Material).dispose());
       it.cloud.material?.dispose();
     }
     if (it.sheet) { it.sheet.geometry.dispose(); it.sheet.material.dispose(); }

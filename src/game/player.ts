@@ -15,6 +15,7 @@ import { G, clamp, lerp, angleDiff } from '../core/ctx.js';
 import { PLAYER, weaponRange } from '../config.js';
 import { Physics, Hit } from './physics.js';
 import { emptyActions, type InputFrame } from '../core/inputFrame.js';
+import type { SubItem } from './subs.js';
 import type { Actor, ActorIntent } from './actor.js';
 import type { CameraRig } from './cameraRig.js';
 import type { Input } from '../core/input.js';
@@ -25,7 +26,7 @@ const _res = { t: 0, dist: 0 };
 const DEG = Math.PI / 180;
 const STRIKE_CURSOR = { stick: 320, move: 280, pointer: 0.45 } as const;   // Vortex Strike 지도 커서 속도(px/s, px 배율)
 
-interface Beacon { state: string; team: number; owner?: Actor | null; born: number }
+type Beacon = SubItem;   // 점프 비콘(subs.ts의 설치 보조무기)
 interface JumpPlan { kind: 'ally' | 'beacon'; target: Actor | Beacon; name: string }
 interface Assist { target: Actor | null; yaw: number; pitch: number; has: boolean; strength: number; closeness: number; prevValid: boolean; prevYaw: number; prevPitch: number }
 type Intent = ActorIntent & { cheer?: boolean };
@@ -143,7 +144,7 @@ export class PlayerController {
       if (queue) { this.queueJump(kind, target ?? null); return; }
       if (kind === 'ally') { const t = target as Actor | undefined; if (t && t.alive && !t.superJumpState) a.superJump(t); }
       else if (kind === 'base') a.superJump(G.level!.spawnPads[a.team].clone());
-      else G.subs!.jumpToBeacon(a, target);
+      else G.subs!.jumpToBeacon(a, target as Beacon | null | undefined);
     };
     if (inp.wasPressed('Digit1') || A.dLeft.pressed) pick('ally', allies[0]);
     if (inp.wasPressed('Digit2') || A.dUp.pressed) pick('ally', allies[1]);
@@ -202,7 +203,7 @@ export class PlayerController {
     this.jumpQueue = null;
     const why = this._queueGone(q);
     let ok = false;
-    if (!why) ok = q.kind === 'beacon' ? !!G.subs?.jumpToBeacon(a, q.target) : a.superJump(q.target as Actor);
+    if (!why) ok = q.kind === 'beacon' ? !!G.subs?.jumpToBeacon(a, q.target as Beacon) : a.superJump(q.target as Actor);
     if (!ok) { (G.hud as { jumpNote?(t: string): void } | null)?.jumpNote?.(`${why || 'Can’t Super Jump right now'} — Super Jump cancelled`); G.audio?.play('ui_error', { volume: 0.45 }); }
     return ok;
   }

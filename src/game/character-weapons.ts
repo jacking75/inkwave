@@ -63,7 +63,7 @@ export interface WeaponDef {
 export interface SubDef {
   kind: string; body: THREE.BufferGeometry | null; ink: THREE.BufferGeometry | null; glow?: THREE.BufferGeometry | null; grip: Grip;
   spin?: THREE.BufferGeometry | null; spinInk?: THREE.BufferGeometry | null; spinAt?: THREE.Vector3; width?: number;
-  handL?: HandFrame; inHandL?: HandFrame;
+  handL?: HandFrame; inHandL?: HandFrame; _top?: number;   // (_top: subs.ts가 캐시하는 소품 높이)
   [k: string]: unknown;
 }
 /** 들고 있는 무기 인스턴스(character.ts _weaponInstance가 만들고 animateWeapon이 상태를 둔다). 키트 무기는 고유 상태를 더 둔다. */
@@ -1983,7 +1983,7 @@ export function getSubDef(kind = 'bomb') {
     inv.decompose(d.inHandL.pos, d.inHandL.quat, new V3());
     _subCache.set(kind, d);
   }
-  return _subCache.get(kind);
+  return _subCache.get(kind)!;
 }
 
 /** Split a builder's output: bodyStatic/inkStatic (never move), parts re-centred on their pivots, and body/ink = the

@@ -21,6 +21,7 @@ import { makeContacts, Hit, GroundHit, WALKABLE } from './physics.js';
 import { WeaponRunner } from './weapons.js';
 import { MAIN_KITS } from './kits/registry.js';
 import type { Character } from './character.js';
+import type { SubItem } from './subs.js';
 // 캠페인 전투 훅(35번 R016~R020): 캠페인 세션(개발 중에는 ?tune=campaign 미리보기)만 G.campaign을 가진다. 대전·온라인은 null이다.
 import { runScale, type PlayerTuning } from '../campaign/tuning.js';
 
@@ -104,7 +105,7 @@ export class Actor {
   declare jumpBuffer: number; declare fireBuffer: number; declare kidT: number; declare climbExit: number; declare climbV: number;
   declare inkWarnCd: number; declare superJumpState: SuperJumpState | null; declare yawVel: number; declare _faceTarget: number | null;
   declare smoothY: number; declare smoothYV: number; declare onEnemy: boolean;
-  declare _evSub: boolean; declare _evEnemy: boolean; declare _evClimb: boolean; declare _evForm: string; declare _jumpBeacon: unknown;
+  declare _evSub: boolean; declare _evEnemy: boolean; declare _evClimb: boolean; declare _evForm: string; declare _jumpBeacon: SubItem | null;
   declare roofDir: THREE.Vector3 | null; declare roofP: THREE.Vector3; declare roofStall: number; declare roofT: number;
   declare _railIds?: number[]; declare _wakeT?: number;
   // 다른 모듈이 붙이는 값(경기·온라인·봇)
