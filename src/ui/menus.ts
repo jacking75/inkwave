@@ -5,9 +5,11 @@
 // Additive extras (optional for the engine): menus.setAccent(a, b), menus.setInputMode('kbm'|'pad'),
 // nav('tab_prev'|'tab_next') for LB/RB tab switching, menus.timeScale (debug slow-motion for JS-driven motion).
 import {
-  h as untypedH, clamp, Spring, colorVars, toHex, splatSVG as untypedSplatSVG, fmtInt, fmtTime, pct, safeCall, restartAnim,
+  h, clamp, Spring, colorVars, toHex, splatSVG, fmtInt, fmtTime, pct, safeCall, restartAnim,
   prefersReducedMotion, easeOutCubic, easeInOutCubic, esc, blobPath,
 } from './ui-util.js';
+import type { HChild, ColorLike } from './ui-util.js';
+import type { Award, MatchTag } from './menu-art.js';
 import {
   WEAPON_ICONS, SUB_ICONS, SQUID, GLYPHS, SPLAT_ICON, DEATH_ICON, keycap, mouseGlyph, padGlyph,
   richText, logoMarkup, mapThumb, RULE_ART, weaponIcon, specialIcon,
@@ -37,18 +39,6 @@ import { rewardInfo, rewardInfoText } from '../campaign/rewardInfo.js';
 import { gearScreen, traitsScreen, manageScreen, pauseScreen, craftScreen, type CampaignUiApi, type MenuKit } from './campaignScreens.js';
 
 // ---------------------------------------------------------------- types
-// ui-util.js는 아직 JS라 h()의 props가 기본값 null에서 `null`로 추론된다. 같은 함수를 정확한 시그니처로 본다(실행은 그대로).
-/** h()의 속성: class·style·data·html·text는 특별 처리, on*는 리스너, 나머지는 속성(true → 빈 값)이다. */
-interface HProps {
-  class?: string; style?: string | Record<string, string | number>; data?: Record<string, string>; html?: string; text?: string;
-  [attr: string]: unknown;
-}
-type HChild = Node | string | number | null | undefined | false | readonly HChild[];
-type HFn = <K extends keyof HTMLElementTagNameMap>(tag: K, props?: HProps | null, ...kids: HChild[]) => HTMLElementTagNameMap[K];
-const h = untypedH as HFn;
-// splatSVG()도 같은 이유로 fill이 `null`로 추론된다.
-interface SplatOpts { seed?: number; cls?: string; fill?: string | null; viewBox?: number; r?: number; arms?: number; drops?: number; extra?: string }
-const splatSVG = untypedSplatSVG as (opts?: SplatOpts) => string;
 
 type GlyphName = keyof typeof GLYPHS;
 type InputMode = 'kbm' | 'pad';
@@ -296,7 +286,6 @@ interface ResultsData {
   boss?: { name?: string; defeated?: boolean; time?: number; hpLeft?: number; phase?: number };
   zones?: { reason: string; winner: number; counts: number[]; penalty: number[]; overtime?: boolean; overtimeT: number };
 }
-interface Award { id: string; icon: string; label: string; value: string }
 
 /** 일시정지 화면의 경기 요약이다(경기가 없으면 데모 값). */
 interface SnapPlayer {
@@ -306,8 +295,6 @@ interface SnapPlayer {
 interface SnapZones { count: number[]; penalty: number[]; owner: number; active: string; overtime: boolean; overtimeT: number }
 /** 숫자를 그대로 넘기는 CSS 변수 쓰기이다(DOM이 문자열로 바꾼다). */
 interface NumStyle extends CSSStyleDeclaration { setProperty(property: string, value: string | number | null, priority?: string): void }
-/** toHex()가 받는 색: '#rrggbb'·'#rgb'·0xRRGGBB·THREE.Color 비슷한 것. */
-type ColorLike = string | number | { getHexString(): string } | { r: number; g: number; b: number };
 interface ToastOpts {
   kind?: 'info' | 'good' | 'error' | 'join' | 'leave'; icon?: string | null; color?: string | null; ms?: number;
   tag?: { name: string; weapon: string } | null;
@@ -4707,12 +4694,12 @@ export class Menus {
   _scr_results(): Screen {
     const d = this._results || this._demoResults();
     const boss = d.mode === 'boss';   // Boss Battle: VICTORY / DEFEAT vs HULLBREAKER, one squad ranked by damage
-    const colors: string[] = (d.colors || [TEAM_PALETTES[0].a, TEAM_PALETTES[0].b]).map((c) => toHex(c));
+    const colors: string[] = (d.colors || [TEAM_PALETTES[0].a, TEAM_PALETTES[0].b]).map((c) => toHex(c as ColorLike));
     const [pa, pb]: number[] = pct(...(d.percents || [50, 50]));
     const names = d.teamNames || TEAM_NAMES;
     const win = !!d.win;
     const raw = d.players || [];
-    const awards: { byPlayer: Award[][]; match: Award[] } = boss ? computeBossAwards(raw) : computeAwards(raw, { win, percents: [pa, pb] });
+    const awards: { byPlayer: Award[][]; match: MatchTag[] } = boss ? computeBossAwards(raw) : computeAwards(raw, { win, percents: [pa, pb] });
     const all = raw.map((p, i) => ({ ...p, _aw: awards.byPlayer[i] || [] }));
     const players = boss ? all.slice().sort((x, y) => ((y.damage || 0) - (x.damage || 0)) || ((y.turf || 0) - (x.turf || 0)))
       : all.slice().sort((x, y) => (x.team - y.team) || (y.turf - x.turf));

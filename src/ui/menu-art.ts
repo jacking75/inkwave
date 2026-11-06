@@ -8,17 +8,19 @@
 import {
   h, clamp, lerp, easeInOutCubic, easeOutBack, easeOutCubic, rng, splatShape, splatSVG, shade, fmtInt, safeCall,
 } from './ui-util.js';
+import type { ColorLike } from './ui-util.js';
+import type { QualityPreset } from '../config.js';
 import { SQUID, SQUID_PATH, GLYPHS, WEAPON_ICONS, SPLAT_ICON, SPECIAL_ICONS, mouseGlyph, padGlyph, keycap } from './ui-icons.js';
 
 const K = '#15121c';
 const TAU = Math.PI * 2;
-const svg = (body, vb = '0 0 64 64', cls = '') => `<svg class="iw-ico ${cls}" viewBox="${vb}" aria-hidden="true">${body}</svg>`;
-const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+const svg = (body: string, vb = '0 0 64 64', cls = '') => `<svg class="iw-ico ${cls}" viewBox="${vb}" aria-hidden="true">${body}</svg>`;
+const smooth = (a: number, b: number, x: number) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
 
 // ================================================================================== award icons (silhouettes)
 // currentColor = the glyph; `.iw-ico-cut` strokes/fills take the medal's light metal colour (set in CSS).
 const splatCore = (() => { const s = splatShape(32, 32, 17, { seed: 11, arms: 8, drops: 4, armLen: 0.5 }); return `<path d="${s.core}"/>${s.drops.map((d) => `<circle cx="${d.x}" cy="${d.y}" r="${Math.max(2.4, d.r)}"/>`).join('')}`; })();
-export const AWARD_ICONS = {
+export const AWARD_ICONS: Record<string, string> = {
   star: svg(`<path d="M32 5 L39.6 22.9 L58.6 24.6 L44.2 37.3 L48.4 56.2 L32 46.4 L15.6 56.2 L19.8 37.3 L5.4 24.6 L24.4 22.9 Z" fill="currentColor" stroke="currentColor" stroke-width="4.5" stroke-linejoin="round"/>
     <path class="iw-ico-cut" d="M25.5 27.5 L29.8 26.9" fill="none" stroke-width="3.6" stroke-linecap="round"/>`),
   crown: svg(`<path d="M7.5 22 L20 33.5 L32 11.5 L44 33.5 L56.5 22 L51.5 47 L12.5 47 Z" fill="currentColor" stroke="currentColor" stroke-width="4.5" stroke-linejoin="round"/>
@@ -53,10 +55,18 @@ export const AWARD_ICONS = {
     <path d="M32 17 V56 M20 26 H44" stroke="currentColor" stroke-width="6.5" stroke-linecap="round"/>
     <path d="M8 36 Q10 54 32 57 Q54 54 56 36 L48 42 M8 36 L16 42" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>`),
 };
-export const awardIcon = (id) => AWARD_ICONS[id] || AWARD_ICONS.star;
+export const awardIcon = (id: string) => AWARD_ICONS[id] || AWARD_ICONS.star;
 
 // ================================================================================== awards
-export const AWARDS = {
+/** 상 정의: 이름·메달 금속·아이콘·설명 */
+export interface AwardDef { label: string; metal: string; icon: string; desc: string }
+/** 받은 상(정의 + 상 번호·값 문구) */
+export interface Award extends AwardDef { id: string; value: string }
+/** 경기 꼬리표(박빙·압승) */
+export interface MatchTag { id: string; label: string; icon: string; value?: string }
+/** 상 계산에 쓰는 마지막 기록(결과 화면 선수 행) */
+export interface AwardPlayer { team?: number; turf?: number; splats?: number; deaths?: number; isSelf?: boolean; damage?: number; weakHits?: number }
+export const AWARDS: Record<string, AwardDef> = {
   mvp: { label: 'MVP', metal: 'gold', icon: 'star', desc: 'Best all-round score on the winning team' },
   turf: { label: 'TURF KING', metal: 'gold', icon: 'crown', desc: 'Most turf inked in the match' },
   splats: { label: 'TOP SPLATTER', metal: 'silver', icon: 'splat', desc: 'Most splats in the match' },
@@ -67,7 +77,7 @@ export const AWARDS = {
 };
 const AWARD_ORDER = ['mvp', 'turf', 'splats', 'inker', 'untouchable', 'survivor', 'pure'];
 // boss mode (co-op: one squad, no team split — the MVP is given win or lose)
-export const BOSS_AWARDS = {
+export const BOSS_AWARDS: Record<string, AwardDef> = {
   mvp: { label: 'MVP', metal: 'gold', icon: 'star', desc: 'Best all-round score against HULLBREAKER' },
   heavy: { label: 'HEAVY HITTER', metal: 'gold', icon: 'pow', desc: 'Dealt the most damage to the boss' },
   crit: { label: 'SHELL CRACKER', metal: 'silver', icon: 'crit', desc: 'Most weak-point hits' },
@@ -78,11 +88,11 @@ export const BOSS_AWARDS = {
 };
 const BOSS_ORDER = ['mvp', 'heavy', 'crit', 'brood', 'unsinkable', 'survivor', 'cleaner'];
 /** Boss-mode awards from the final stats: players [{ damage, weakHits, splats, deaths, turf, isSelf }]. */
-export function computeBossAwards(players = []) {
-  const P = players.map((p, i) => ({ i, dmg: Math.max(0, +p.damage || 0), weak: Math.max(0, +p.weakHits || 0), splats: Math.max(0, +p.splats || 0), deaths: Math.max(0, +p.deaths || 0), turf: Math.max(0, +p.turf || 0) }));
-  const by = P.map(() => []);
-  const give = (p, id, value) => { if (!by[p.i].some((a) => a.id === id)) by[p.i].push({ id, ...BOSS_AWARDS[id], value }); };
-  const maxOf = (k) => (P.length ? Math.max(...P.map((p) => p[k])) : 0);
+export function computeBossAwards(players: AwardPlayer[] = []): { byPlayer: Award[][]; match: MatchTag[] } {
+  const P = players.map((p, i) => ({ i, dmg: Math.max(0, +p.damage! || 0), weak: Math.max(0, +p.weakHits! || 0), splats: Math.max(0, +p.splats! || 0), deaths: Math.max(0, +p.deaths! || 0), turf: Math.max(0, +p.turf! || 0) }));   // (없는 값은 NaN → 0)
+  const by: Award[][] = P.map(() => []);
+  const give = (p: { i: number }, id: string, value: string) => { if (!by[p.i].some((a) => a.id === id)) by[p.i].push({ id, ...BOSS_AWARDS[id], value }); };
+  const maxOf = (k: 'dmg' | 'weak' | 'splats' | 'deaths' | 'turf') => (P.length ? Math.max(...P.map((p) => p[k])) : 0);
   if (P.length) {
     const md = maxOf('dmg'), mw = maxOf('weak'), ms = maxOf('splats'), mt = maxOf('turf'), mD = Math.max(1, maxOf('deaths'));
     if (md > 0) P.filter((p) => p.dmg === md).forEach((p) => give(p, 'heavy', `${fmtInt(p.dmg)} damage`));
@@ -97,14 +107,14 @@ export function computeBossAwards(players = []) {
       const s = active.filter((p) => p.deaths === m);
       if (s.length === 1) give(s[0], 'survivor', `Splatted ${m}×`);
     }
-    const score = (p) => p.dmg / Math.max(1, md) + 0.35 * (p.weak / Math.max(1, mw)) + 0.2 * (p.splats / Math.max(1, ms)) + 0.15 * (p.turf / Math.max(1, mt)) - 0.25 * (p.deaths / mD);
+    const score = (p: (typeof P)[number]) => p.dmg / Math.max(1, md) + 0.35 * (p.weak / Math.max(1, mw)) + 0.2 * (p.splats / Math.max(1, ms)) + 0.15 * (p.turf / Math.max(1, mt)) - 0.25 * (p.deaths / mD);
     const cand = P.filter((p) => p.dmg > 0 || p.turf > 0);
     if (cand.length) give(cand.reduce((b, p) => (score(p) > score(b) + 1e-9 ? p : b)), 'mvp', 'Top all-round score');
     for (const list of by) list.sort((x, y) => BOSS_ORDER.indexOf(x.id) - BOSS_ORDER.indexOf(y.id));
   }
   return { byPlayer: by, match: [] };
 }
-export const MATCH_TAGS = {
+export const MATCH_TAGS: Record<string, MatchTag> = {
   close: { id: 'close', label: 'PHOTO FINISH', icon: 'stopwatch' },
   landslide: { id: 'landslide', label: 'LANDSLIDE', icon: 'wave' },
 };
@@ -113,11 +123,11 @@ export const MATCH_TAGS = {
  * Derives awards honestly from the final stats only (no timeline data exists, so no "comeback" style awards).
  * players: [{ name, team, weapon, turf, splats, deaths, isSelf }] (ResultsData order). percents: 0..100 or 0..1.
  */
-export function computeAwards(players = [], { win = true, percents = [50, 50] } = {}) {
-  const P = players.map((p, i) => ({ i, team: p.team | 0, turf: Math.max(0, +p.turf || 0), splats: Math.max(0, +p.splats || 0), deaths: Math.max(0, +p.deaths || 0), isSelf: !!p.isSelf }));
-  const by = P.map(() => []);
-  const give = (p, id, value) => { if (!by[p.i].some((a) => a.id === id)) by[p.i].push({ id, ...AWARDS[id], value }); };
-  const maxOf = (k, arr = P) => (arr.length ? Math.max(...arr.map((p) => p[k])) : 0);
+export function computeAwards(players: AwardPlayer[] = [], { win = true, percents = [50, 50] as Array<number | string> | null } = {}): { byPlayer: Award[][]; match: MatchTag[] } {
+  const P = players.map((p, i) => ({ i, team: p.team! | 0, turf: Math.max(0, +p.turf! || 0), splats: Math.max(0, +p.splats! || 0), deaths: Math.max(0, +p.deaths! || 0), isSelf: !!p.isSelf }));   // (없는 값은 NaN·0)
+  const by: Award[][] = P.map(() => []);
+  const give = (p: { i: number }, id: string, value: string) => { if (!by[p.i].some((a) => a.id === id)) by[p.i].push({ id, ...AWARDS[id], value }); };
+  const maxOf = (k: 'turf' | 'splats' | 'deaths', arr = P) => (arr.length ? Math.max(...arr.map((p) => p[k])) : 0);
   if (P.length) {
     // Turf King — most turf in the lobby (ties share the crown)
     const mt = maxOf('turf');
@@ -149,7 +159,7 @@ export function computeAwards(players = [], { win = true, percents = [50, 50] } 
     const selfTeam = self ? self.team : 0;
     const wt = win ? selfTeam : 1 - selfTeam;
     const mT = Math.max(1, mt), mS = Math.max(1, ms), mD = Math.max(1, maxOf('deaths'));
-    const score = (p) => p.turf / mT + 0.55 * (p.splats / mS) - 0.3 * (p.deaths / mD);
+    const score = (p: (typeof P)[number]) => p.turf / mT + 0.55 * (p.splats / mS) - 0.3 * (p.deaths / mD);
     const winners = P.filter((p) => p.team === wt && (p.turf > 0 || p.splats > 0));
     if (winners.length) {
       const best = winners.reduce((b, p) => (score(p) > score(b) + 1e-9 || (Math.abs(score(p) - score(b)) < 1e-9 && p.turf > b.turf) ? p : b));
@@ -161,14 +171,14 @@ export function computeAwards(players = [], { win = true, percents = [50, 50] } 
   let [pa, pb] = (percents || [50, 50]).map((v) => +v || 0);
   if (pa <= 1.0001 && pb <= 1.0001) { pa *= 100; pb *= 100; }
   const margin = Math.abs(pa - pb);
-  const match = [];
+  const match: MatchTag[] = [];
   if (margin < 3) match.push({ ...MATCH_TAGS.close, value: `${margin.toFixed(1)}% margin` });
   else if (margin >= 20) match.push({ ...MATCH_TAGS.landslide, value: `+${margin.toFixed(1)}%` });
   return { byPlayer: by, match };
 }
 
 /** Big stamped medal for the local player's awards. */
-export function medalMarkup(aw, seed = 1) {
+export function medalMarkup(aw: Award, seed = 1) {
   return `<div class="iw-medal is-${aw.metal}" data-aw="${aw.id}" title="${aw.label} — ${aw.desc}">
     <span class="iw-medal__burst">${splatSVG({ seed: 60 + seed * 7, cls: 'iw-fself', r: 54, arms: 9, drops: 5 })}</span>
     <span class="iw-medal__ribbon"><i></i><i></i></span>
@@ -178,7 +188,7 @@ export function medalMarkup(aw, seed = 1) {
   </div>`;
 }
 /** Small award chip for the team tables. */
-export function awardBadge(aw) {
+export function awardBadge(aw: Award) {
   return h('span', { class: `iw-aw is-${aw.metal}`, 'data-aw': aw.id, title: `${aw.label} — ${aw.desc}`, html: awardIcon(aw.icon) });
 }
 
@@ -190,7 +200,7 @@ export const RANK_TIERS = [
   { lv: 20, name: 'Splat Veteran', cls: 'is-t3' },
   { lv: 30, name: 'Tide Legend', cls: 'is-t4' },
 ];
-export const rankTier = (level) => RANK_TIERS.reduce((acc, r, i) => (level >= r.lv ? i : acc), 0);
+export const rankTier = (level: number) => RANK_TIERS.reduce((acc, r, i) => (level >= r.lv ? i : acc), 0);
 /** Shield emblem with one pip per tier (tier 0..4). Colour via CSS (--rk). */
 export function rankEmblem(tier = 0) {
   const n = clamp(tier | 0, 0, 4) + 1;
@@ -206,7 +216,7 @@ export function rankEmblem(tier = 0) {
 // ================================================================================== DOM ink burst
 let burstSeed = 7;
 /** Spawns a short-lived ink splash (splat + flying droplets) at client coords inside `parent` (absolute, top-left at 0,0). */
-export function inkBurst(parent, { x = 0, y = 0, color = 'var(--a)', count = 12, dist = 6, size = 1, splat = true, ring = false, life = 1100 } = {}) {
+export function inkBurst(parent: HTMLElement, { x = 0, y = 0, color = 'var(--a)', count = 12, dist = 6, size = 1, splat = true, ring = false, life = 1100 } = {}) {
   if (!parent || !parent.isConnected) return null;
   const R = rng((burstSeed += 7919));
   const w = h('div', { class: 'iw-burst', style: { left: `${x.toFixed(1)}px`, top: `${y.toFixed(1)}px`, '--c': color, '--s': size } });
@@ -227,7 +237,7 @@ export function inkBurst(parent, { x = 0, y = 0, color = 'var(--a)', count = 12,
 
 // ================================================================================== ink wipe (canvas)
 /** Tongue hanging DOWN from an edge point (x, y): half-width w at the base, length L, round bulb radius b. Clockwise. */
-function tongueDown(ctx, x, y, w, L, b) {
+function tongueDown(ctx: Path2D, x: number, y: number, w: number, L: number, b: number) {
   const tip = y + L;
   ctx.moveTo(x + w, y - 3);
   ctx.bezierCurveTo(x + w * 0.32, y + L * 0.14, x + b * 0.85, tip - L * 0.55, x + b * 0.7, tip - b * 0.45);
@@ -236,7 +246,7 @@ function tongueDown(ctx, x, y, w, L, b) {
   ctx.closePath();
 }
 /** Streak reaching UP from an edge point (x, y). Clockwise. */
-function tongueUp(ctx, x, y, w, L, c) {
+function tongueUp(ctx: Path2D, x: number, y: number, w: number, L: number, c: number) {
   const tip = y - L;
   ctx.moveTo(x - w, y + 3);
   ctx.bezierCurveTo(x - w * 0.3, y - L * 0.16, x - c, tip + L * 0.42, x - c, tip + c * 0.35);
@@ -245,7 +255,7 @@ function tongueUp(ctx, x, y, w, L, c) {
   ctx.closePath();
 }
 /** Tongue reaching sideways (dir = +1 right / -1 left) from an edge point, for the light sweep. */
-function tongueSide(ctx, x, y, w, L, c, dir) {
+function tongueSide(ctx: Path2D, x: number, y: number, w: number, L: number, c: number, dir: number) {
   const tip = x + L * dir;
   ctx.moveTo(x - 3 * dir, y - w);
   ctx.bezierCurveTo(x + L * 0.16 * dir, y - w * 0.3, tip - L * 0.42 * dir, y - c, tip - c * 0.35 * dir, y - c);
@@ -256,13 +266,36 @@ function tongueSide(ctx, x, y, w, L, c, dir) {
 
 export const WIPE = { mid: 380, total: 1000, revealAt: 500 };
 
+/** 잉크 막의 늘어진 방울(덮기·걷기): x·폭·길이·지연·흔들림·끝 방울 반지름 */
+interface Drip { x: number; w: number; L: number; d: number; wob: number; b: number }
+/** 옆으로 미는 혀(가벼운 쓸기): y·폭·길이·흔들림·끝 반지름 */
+interface Tongue { y: number; w: number; L: number; wob: number; c: number }
+/** 진행 중인 쓸기: 종류·방향·두 색(+어둡게·밝게), 중간·끝 콜백, 경과·중간 완료, 화면 크기·난수, 길이·중간 시각, 가장자리 위상, 종류별 부품 */
+interface WipeRun {
+  mode: string; dir: number; a: string; b: string; aDark: string; bDark: string; aLight: string; onMid: (() => void) | null; onDone: (() => void) | null;
+  t: number; midDone: boolean; W: number; H: number; R: () => number; dur: number; midAt: number; ph: number[][];
+  dripsA: Drip[]; dripsB: Drip[]; streaksA: Drip[]; streaksB: Drip[];
+  drops: Array<{ x0?: number; y0?: number; p0: number; vx: number; vy: number; r: number; c: string }>;   // (x0: 덮기, y0: 쓸기)
+  splats: Array<{ x: number; y: number; s: number; rot: number; p: Path2D; drops: Array<{ x: number; y: number; r: number }>; c: string; on: number }>;
+  residue: Array<{ x: number; y: number; r: number; on: number }>; leadA: Tongue[]; leadB: Tongue[]; tailA: Tongue[];
+}
 export class InkWipe {
-  constructor(host, { isFrozen } = {}) {
+  declare _last: number;
+  declare _pat: CanvasPattern | null;
+  declare r: WipeRun | null;
+  declare timeScale: number;
+  declare isFrozen: () => boolean;
+  declare ctx: CanvasRenderingContext2D;
+  declare mark: HTMLDivElement;
+  declare cv: HTMLCanvasElement;
+  declare host: HTMLElement;
+  declare _raf: number; declare _safety: ReturnType<typeof setTimeout> | undefined;
+  constructor(host: HTMLElement, { isFrozen }: { isFrozen?: () => boolean } = {}) {
     this.host = host;
     this.cv = h('canvas', { class: 'iw-wipe__cv' });
     this.mark = h('div', { class: 'iw-wipe__mark' }, h('i', { class: 'iw-wipe__ring' }), h('span', { class: 'iw-wipe__squid', html: SQUID }));
     host.append(this.cv, this.mark);
-    this.ctx = this.cv.getContext('2d');
+    this.ctx = this.cv.getContext('2d')!;
     this.isFrozen = isFrozen || (() => false);
     this.timeScale = 1;
     this.r = null;
@@ -272,16 +305,16 @@ export class InkWipe {
   get busy() { return !!(this.r && this.r.mode !== 'light'); }
   get running() { return !!this.r; }
 
-  _pattern() {
+  _pattern(): CanvasPattern {
     if (this._pat) return this._pat;
     const c = document.createElement('canvas'); c.width = c.height = 16;
-    const g = c.getContext('2d');
+    const g = c.getContext('2d')!;
     g.fillStyle = '#fff'; g.beginPath(); g.arc(8, 8, 1.9, 0, TAU); g.fill();
-    this._pat = this.ctx.createPattern(c, 'repeat');
+    this._pat = this.ctx.createPattern(c, 'repeat')!;
     return this._pat;
   }
 
-  run({ a = '#ff8a14', b = '#2f5bff', mode = 'full', dir = 1, onMid = null, onDone = null } = {}) {
+  run({ a = '#ff8a14', b = '#2f5bff', mode = 'full', dir = 1, onMid = null, onDone = null }: { a?: string; b?: string; mode?: string; dir?: number; onMid?: (() => void) | null; onDone?: (() => void) | null } = {}) {
     if (this.r) this._finish();                      // never lose a pending screen swap
     const W = Math.max(1, innerWidth), H = Math.max(1, innerHeight);
     const dpr = Math.min(1.5, devicePixelRatio || 1);
@@ -294,7 +327,7 @@ export class InkWipe {
       onMid, onDone, t: 0, midDone: !onMid, W, H, R,
       dur: mode === 'light' ? 520 : mode === 'fade' ? 900 : WIPE.total, midAt: mode === 'light' ? 0 : WIPE.mid,
       ph: [[R() * TAU, R() * TAU, R() * TAU], [R() * TAU, R() * TAU, R() * TAU]],
-    };
+    } as WipeRun;   // (종류별 부품은 _setupFull·_setupLight가 둔다)
     if (mode === 'full') this._setupFull(r); else if (mode === 'light') this._setupLight(r);
     this.host.classList.add('is-run');
     this.host.dataset.mode = mode;
@@ -308,9 +341,9 @@ export class InkWipe {
     if (!r.midDone && r.midAt <= 0) { r.midDone = true; safeCall(r.onMid); }
   }
 
-  _setupFull(r) {
+  _setupFull(r: WipeRun) {
     const { W, H, R } = r;
-    const drips = (n, lenK) => Array.from({ length: n }, (_, i) => ({
+    const drips = (n: number, lenK: number) => Array.from({ length: n }, (_, i) => ({
       x: ((i + 0.15 + R() * 0.7) / n) * W, w: W * (0.012 + R() * 0.013), L: H * (0.05 + R() * 0.15) * lenK,
       d: R() * 0.35, wob: R() * TAU,
     })).map((d) => ({ ...d, b: d.w * (0.5 + R() * 0.22) }));
@@ -326,14 +359,14 @@ export class InkWipe {
     r.residue = Array.from({ length: 12 }, () => ({ x: R() * W, y: H * (0.05 + R() * 0.85), r: H * (0.006 + R() * 0.014), on: -1 }));
   }
 
-  _setupLight(r) {
+  _setupLight(r: WipeRun) {
     const { W, H, R } = r;
-    const tongues = (n, lenK) => Array.from({ length: n }, (_, i) => ({ y: ((i + 0.2 + R() * 0.6) / n) * H, w: H * (0.014 + R() * 0.014), L: W * (0.03 + R() * 0.07) * lenK, wob: R() * TAU })).map((d) => ({ ...d, c: d.w * (0.5 + R() * 0.2) }));
+    const tongues = (n: number, lenK: number) => Array.from({ length: n }, (_, i) => ({ y: ((i + 0.2 + R() * 0.6) / n) * H, w: H * (0.014 + R() * 0.014), L: W * (0.03 + R() * 0.07) * lenK, wob: R() * TAU })).map((d) => ({ ...d, c: d.w * (0.5 + R() * 0.2) }));
     r.leadA = tongues(7, 1); r.leadB = tongues(6, 1.2); r.tailA = tongues(6, 1.3);
     r.drops = Array.from({ length: 16 }, () => ({ y0: R() * H, p0: 0.1 + R() * 0.6, vx: 1.6 + R() * 1.6, vy: (R() - 0.5) * 0.5, r: H * (0.004 + R() * 0.008), c: R() < 0.7 ? 'a' : 'b' }));
   }
 
-  _frame(now) {
+  _frame(now: number) {
     const r = this.r;
     if (!r) return;
     this._raf = requestAnimationFrame(this._frame);
@@ -365,13 +398,13 @@ export class InkWipe {
 
   cancel() { if (this.r) this._finish(); }
 
-  _edge(r, x, base, ph) {
+  _edge(r: WipeRun, x: number, base: number, ph: number[]) {
     const k = x / r.W, t = r.t, H = r.H;
     return base + H * (0.021 * Math.sin(k * 6.3 + ph[0] + t * 0.0058) + 0.013 * Math.sin(k * 14.1 + ph[1] - t * 0.0087) + 0.006 * Math.sin(k * 29.7 + ph[2] + t * 0.0125));
   }
 
   /** Sheet whose visible edge is its bottom (covering phase). */
-  _sheetDown(r, base, ph, drips, lenAt, fill, dark, pattern) {
+  _sheetDown(r: WipeRun, base: number, ph: number[], drips: Drip[], lenAt: (d: Drip) => number, fill: string, dark: string, pattern: boolean) {
     const ctx = this.ctx, W = r.W, step = Math.max(10, W / 120);
     const p = new Path2D();
     p.moveTo(-40, -60); p.lineTo(W + 40, -60);
@@ -389,7 +422,7 @@ export class InkWipe {
   }
 
   /** Sheet whose visible edge is its top (revealing phase). */
-  _sheetUp(r, base, ph, streaks, lenAt, fill, dark, pattern) {
+  _sheetUp(r: WipeRun, base: number, ph: number[], streaks: Drip[], lenAt: (d: Drip) => number, fill: string, dark: string, pattern: boolean) {
     const ctx = this.ctx, W = r.W, H = r.H, step = Math.max(10, W / 120);
     const p = new Path2D();
     p.moveTo(-40, H + 60);
@@ -406,7 +439,7 @@ export class InkWipe {
     if (pattern) { ctx.globalAlpha = 0.13; ctx.fillStyle = this._pattern(); ctx.fill(p); ctx.globalAlpha = 1; }
   }
 
-  _gloss(r, base, ph, up) {
+  _gloss(r: WipeRun, base: number, ph: number[], up: boolean) {
     // wet highlight running just inside the leading edge
     const ctx = this.ctx, W = r.W, H = r.H, step = Math.max(12, W / 100), off = (up ? 1 : -1) * H * 0.016;
     ctx.beginPath();
@@ -414,7 +447,7 @@ export class InkWipe {
     ctx.strokeStyle = 'rgba(255,255,255,.2)'; ctx.lineWidth = H * 0.007; ctx.lineCap = 'round'; ctx.stroke();
   }
 
-  _drawFull(r) {
+  _drawFull(r: WipeRun) {
     const ctx = this.ctx, { W, H, t } = r;
     ctx.clearRect(0, 0, W + 2, H + 2);
     const COVER = WIPE.mid, REVEAL = WIPE.revealAt, REND = r.dur - 40;
@@ -438,14 +471,14 @@ export class InkWipe {
         const t0 = d.p0 * COVER;
         if (t < t0) continue;
         const u = t - t0, sc = H / 900;
-        const y0 = this._edge(r, d.x0, lerp(-0.3 * H, 1.12 * H, easeInOutCubic(d.p0)), r.ph[0]) + d.r;
-        const x = d.x0 + d.vx * u * sc, y = y0 + d.vy * u * sc + 0.0016 * u * u * sc;
+        const y0 = this._edge(r, d.x0!, lerp(-0.3 * H, 1.12 * H, easeInOutCubic(d.p0)), r.ph[0]) + d.r;
+        const x = d.x0! + d.vx * u * sc, y = y0 + d.vy * u * sc + 0.0016 * u * u * sc;
         if (y > H + 40) continue;
         const vy = d.vy + 0.0032 * u, ang = Math.atan2(vy, d.vx), st = 1 + Math.min(2.4, vy * 0.55);
         ctx.fillStyle = d.c === 'a' ? r.a : r.b;
         ctx.beginPath(); ctx.ellipse(x, y, d.r * st, d.r, ang, 0, TAU); ctx.fill();
       }
-      const grow = (d) => smooth(d.d, d.d + 0.45, p) * (1 + 0.07 * Math.sin(t * 0.021 + d.wob));
+      const grow = (d: Drip) => smooth(d.d, d.d + 0.45, p) * (1 + 0.07 * Math.sin(t * 0.021 + d.wob));
       this._sheetDown(r, baseB, r.ph[1], r.dripsB, grow, r.b, r.bDark, false);
       this._sheetDown(r, baseA, r.ph[0], r.dripsA, grow, r.a, r.aDark, true);
       this._gloss(r, baseA, r.ph[0], false);
@@ -456,7 +489,7 @@ export class InkWipe {
       const q = clamp((t - REVEAL) / (REND - REVEAL)), e = easeInOutCubic(q);
       const topA = lerp(-0.16 * H, 1.2 * H, e);
       const topB = topA - H * (0.035 + 0.06 * Math.sin(q * Math.PI));
-      const len = (d) => smooth(0, 0.14, q) * (1 - smooth(0.5, 1, q)) * (1 + 0.1 * Math.sin(t * 0.02 + d.wob));
+      const len = (d: Drip) => smooth(0, 0.14, q) * (1 - smooth(0.5, 1, q)) * (1 + 0.1 * Math.sin(t * 0.02 + d.wob));
       this._sheetUp(r, topB, r.ph[1], r.streaksB, len, r.b, r.bDark, false);
       this._sheetUp(r, topA, r.ph[0], r.streaksA, len, r.a, r.aDark, true);
       this._gloss(r, topA, r.ph[0], true);
@@ -472,7 +505,7 @@ export class InkWipe {
     }
   }
 
-  _drawLight(r) {
+  _drawLight(r: WipeRun) {
     // a quick diagonal ink swipe for sub-screen pushes (decorative; the swap is immediate)
     const ctx = this.ctx, { W, H, t, dir } = r;
     ctx.clearRect(0, 0, W + 2, H + 2);
@@ -480,8 +513,8 @@ export class InkWipe {
     const bw = W * 0.12, skew = H * 0.28;
     const c = lerp(-0.25 * W - skew, 1.25 * W + skew, e);
     const cx = dir > 0 ? c : W - c;
-    const edge = (y, off, ph) => cx + off + (y / H - 0.5) * skew * dir + H * (0.018 * Math.sin(y / H * 7 + ph[0] + t * 0.009) + 0.01 * Math.sin(y / H * 17 + ph[1] - t * 0.014));
-    const band = (lead, trail, ph, fill, dark, tLead, tTail) => {
+    const edge = (y: number, off: number, ph: number[]) => cx + off + (y / H - 0.5) * skew * dir + H * (0.018 * Math.sin(y / H * 7 + ph[0] + t * 0.009) + 0.01 * Math.sin(y / H * 17 + ph[1] - t * 0.014));
+    const band = (lead: number, trail: number, ph: number[], fill: string, dark: string, tLead: Tongue[] | null, tTail: Tongue[] | null) => {
       const step = Math.max(10, H / 60);
       const pth = new Path2D();
       // leading side top→bottom, trailing side bottom→top (clockwise for dir>0; mirrored path keeps nonzero fill safe)
@@ -501,7 +534,7 @@ export class InkWipe {
       const t0 = d.p0 * r.dur;
       if (t < t0) continue;
       const u = t - t0, sc = W / 1600;
-      const x = edge(d.y0, (bw / 2 + W * 0.02) * dir, r.ph[0]) + d.vx * u * sc * dir, y = d.y0 + d.vy * u * sc + 0.0012 * u * u * sc;
+      const x = edge(d.y0!, (bw / 2 + W * 0.02) * dir, r.ph[0]) + d.vx * u * sc * dir, y = d.y0! + d.vy * u * sc + 0.0012 * u * u * sc;
       ctx.fillStyle = d.c === 'a' ? r.a : r.b;
       ctx.beginPath(); ctx.ellipse(x, y, d.r * 2.2, d.r, 0, 0, TAU); ctx.fill();
     }
@@ -509,7 +542,7 @@ export class InkWipe {
     band((bw / 2) * dir, (-bw / 2) * dir, r.ph[0], r.a, r.aDark, r.leadA, r.tailA);
   }
 
-  _drawFade(r) {
+  _drawFade(r: WipeRun) {
     const ctx = this.ctx, { W, H, t } = r;
     ctx.clearRect(0, 0, W + 2, H + 2);
     const a = t < 300 ? t / 300 : t < 500 ? 1 : 1 - (t - 500) / (r.dur - 520);
@@ -518,17 +551,26 @@ export class InkWipe {
 }
 
 // ================================================================================== settings previews
+/** 미리보기 문맥(menus.ts): 현재 값, 설정, 화질 표, 팀 색 묶음, 색약 색, 난이도와 설명, 경기 길이, 탭 정보 */
+export interface PreviewCtx {
+  value?: unknown; settings?: { master?: number }; qualityTable?: Record<string, QualityPreset>;
+  palettes?: ReadonlyArray<{ a: string; b: string }>; cbPalette?: { a: string; b: string; names?: string[] };
+  diffs?: Record<string, { id: string; name: string }>; diffInfo?: Record<string, { pips: number; text: string }>; durations?: number[];
+  tab?: { icon?: string; rows?: Array<{ label: string }> };
+}
+/** 미리보기: 무대 안 요소, 값 바꾸기(설정 포함), 프레임 진행 */
+export interface Preview { el: HTMLElement; set(value: unknown, settings?: PreviewCtx['settings']): void; tick?(dt: number): void }
 // Every preview returns { el, set(value, settings), tick(dt) } and lives inside .iw-prev__stage (16:9 box).
 const MOUSE_RAD_PER_PX = 0.0021;   // src/game/player.js look scale
 const PAD_YAW_RATE = 3.4;          // rad/s at full stick × padSensitivity
 
-function frameSVG(inner, cls = '') {
+function frameSVG(inner: string, cls = '') {
   return `<svg class="iw-pvsvg ${cls}" viewBox="0 0 320 180" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
     <defs><linearGradient id="pvsky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6cc6f2"/><stop offset=".55" stop-color="#bfe8ff"/><stop offset=".56" stop-color="#e9dcc3"/><stop offset="1" stop-color="#d6c6a6"/></linearGradient></defs>
     <rect x="1" y="1" width="318" height="178" rx="14" fill="url(#pvsky)"/>${inner}
     <rect x="1" y="1" width="318" height="178" rx="14" fill="none" stroke="${K}" stroke-width="3"/></svg>`;
 }
-const skyline = (w, seed) => {
+const skyline = (w: number, seed: number) => {
   const R = rng(seed); let x = 0, out = '';
   while (x < w) {
     const bw = 14 + R() * 26, bh = 18 + R() * 46;
@@ -539,7 +581,7 @@ const skyline = (w, seed) => {
   return out;
 };
 
-function previewLook(ctx, pad) {
+function previewLook(ctx: PreviewCtx, pad: boolean): Preview {
   const W = 960;
   const pano = `<svg class="iw-pv-pano" viewBox="0 0 ${W} 180" preserveAspectRatio="none" aria-hidden="true">
     <rect width="${W}" height="100" fill="#8fd3f5"/>${skyline(W, 17)}
@@ -552,17 +594,17 @@ function previewLook(ctx, pad) {
   const inputEl = h('div', { class: 'iw-pv-input', html: pad ? padGlyph('RS') : mouseGlyph('M') });
   const stat = h('div', { class: 'iw-pv-stat' });
   const el = h('div', { class: 'iw-pv iw-pv--look' }, screen, h('div', { class: 'iw-pv-row' }, inputEl, stat));
-  const panoEl = screen.firstElementChild;
-  let v = +ctx.value || 1, ph = 0, shown = v;
-  const set = (nv) => {
-    v = +nv || 1;
+  const panoEl = (screen.firstElementChild as HTMLElement);
+  let v = +(ctx.value as number) || 1, ph = 0, shown = v;
+  const set = (nv: unknown) => {
+    v = +(nv as number) || 1;
     if (pad) stat.innerHTML = `Full-stick 360° turn in <b>${(TAU / (PAD_YAW_RATE * v)).toFixed(2)} s</b>`;
     else stat.innerHTML = `<b>${fmtInt(TAU / (MOUSE_RAD_PER_PX * v))} px</b> of mouse travel per 360° turn`;
   };
   set(v);
   return {
     el, set,
-    tick: (dt) => {
+    tick: (dt: number) => {
       ph += dt;
       shown += (v - shown) * (1 - Math.exp(-dt * 10));
       const s = Math.sin(ph * TAU / 2.2);
@@ -573,7 +615,7 @@ function previewLook(ctx, pad) {
   };
 }
 
-function previewInvert(ctx) {
+function previewInvert(ctx: PreviewCtx): Preview {
   const el = h('div', { class: 'iw-pv iw-pv--invert', html: `
     <div class="iw-pv-inv__in">${mouseGlyph('M')}<i class="iw-pv-inv__arrow">${GLYPHS.next}</i></div>
     <div class="iw-pv-inv__eq">${GLYPHS.next}</div>
@@ -581,19 +623,19 @@ function previewInvert(ctx) {
       <circle cx="250" cy="40" r="16" fill="#fff6c8"/>${skyline(340, 5).replace(/<rect x="/g, '<rect transform="translate(-10 -3)" x="')}</g>
       <g transform="translate(160 90)"><circle r="11" fill="none" stroke="#fff" stroke-width="4"/><circle r="11" fill="none" stroke="${K}" stroke-width="1.5"/><circle r="2.6" fill="#fff" stroke="${K}" stroke-width="1.2"/></g>`, 'iw-pv-inv__screen')}
     <div class="iw-pv-cap"></div>` });
-  const cap = el.querySelector('.iw-pv-cap');
-  const set = (v) => { el.classList.toggle('is-on', !!v); cap.innerHTML = v ? 'Push up <b>→ look DOWN</b>' : 'Push up <b>→ look UP</b>'; };
+  const cap = el.querySelector('.iw-pv-cap')!;
+  const set = (v: unknown) => { el.classList.toggle('is-on', !!v); cap.innerHTML = v ? 'Push up <b>→ look DOWN</b>' : 'Push up <b>→ look UP</b>'; };
   set(ctx.value);
   return { el, set };
 }
 
-function previewFov(ctx) {
+function previewFov(ctx: PreviewCtx): Preview {
   const T = [[-58, 118], [-46, 72], [-35, 128], [-20, 96], [-4, 140], [12, 110], [27, 78], [39, 132], [49, 100], [61, 60]];
   const cx = 160, cy = 172, R = 158;
-  const pos = ([a, d]) => [cx + Math.sin(a * Math.PI / 180) * d, cy - Math.cos(a * Math.PI / 180) * d];
+  const pos = ([a, d]: number[]) => [cx + Math.sin(a * Math.PI / 180) * d, cy - Math.cos(a * Math.PI / 180) * d];
   const blocks = [[36, 40, 34, 22], [238, 36, 40, 26], [120, 64, 30, 20], [72, 118, 26, 26], [226, 114, 30, 22]]
     .map(([x, y, w, hh]) => `<rect x="${x}" y="${y + 4}" width="${w}" height="${hh}" rx="5" fill="#cdbd9f"/><rect x="${x}" y="${y}" width="${w}" height="${hh}" rx="5" fill="#fffaf0" stroke="#cdbd9f" stroke-width="2"/>`).join('');
-  const wedge = (deg) => {
+  const wedge = (deg: number) => {
     const hh = (deg / 2) * Math.PI / 180;
     const x1 = cx - Math.sin(hh) * R, y1 = cy - Math.cos(hh) * R, x2 = cx + Math.sin(hh) * R;
     return `M${cx} ${cy} L${x1.toFixed(1)} ${y1.toFixed(1)} A${R} ${R} 0 0 1 ${x2.toFixed(1)} ${y1.toFixed(1)} Z`;
@@ -603,15 +645,15 @@ function previewFov(ctx) {
       <g stroke="#dccdb0" stroke-width="2">${Array.from({ length: 9 }, (_, i) => `<path d="M${i * 40} 0 V180"/>`).join('')}${Array.from({ length: 5 }, (_, i) => `<path d="M0 ${i * 40} H320"/>`).join('')}</g>
       ${blocks}
       <path class="iw-pv-fov__ghost" d="${wedge(82)}"/>
-      <path class="iw-pv-fov__wedge" d="${wedge(+ctx.value || 82)}"/>
+      <path class="iw-pv-fov__wedge" d="${wedge(+(ctx.value as number) || 82)}"/>
       ${T.map((t) => { const [x, y] = pos(t); return `<g class="iw-pv-fov__t" transform="translate(${x.toFixed(1)} ${y.toFixed(1)})"><circle r="10" class="iw-pv-fov__halo"/><circle r="6.5" class="iw-fb" stroke="${K}" stroke-width="2.5"/><circle cx="-1.8" cy="-1" r="1.4" fill="#fff"/><circle cx="1.8" cy="-1" r="1.4" fill="#fff"/></g>`; }).join('')}
       <g transform="translate(${cx - 14} ${cy - 30}) scale(.44)" style="color:var(--a)">${SQUID.replace('class="iw-ico iw-squid"', 'x="0" y="0" width="64" height="64"')}</g>
       <rect x="1" y="1" width="318" height="178" rx="14" fill="none" stroke="${K}" stroke-width="3"/>
     </svg><div class="iw-pv-cap"></div>` });
-  const wedgeEl = el.querySelector('.iw-pv-fov__wedge');
+  const wedgeEl = el.querySelector('.iw-pv-fov__wedge')!;
   const tEls = [...el.querySelectorAll('.iw-pv-fov__t')];
-  const cap = el.querySelector('.iw-pv-cap');
-  let target = +ctx.value || 82, cur = target, lastN = -1;
+  const cap = el.querySelector('.iw-pv-cap')!;
+  let target = +(ctx.value as number) || 82, cur = target, lastN = -1;
   const apply = () => {
     wedgeEl.setAttribute('d', wedge(cur));
     let n = 0;
@@ -621,22 +663,22 @@ function previewFov(ctx) {
   apply();
   return {
     el,
-    set: (v) => { target = +v || 82; },
-    tick: (dt) => { if (Math.abs(target - cur) > 0.05) { cur += (target - cur) * (1 - Math.exp(-dt * 14)); apply(); } },
+    set: (v: string | number) => { target = +v || 82; },
+    tick: (dt: number) => { if (Math.abs(target - cur) > 0.05) { cur += (target - cur) * (1 - Math.exp(-dt * 14)); apply(); } },
   };
 }
 
-function previewQuality(ctx) {
+function previewQuality(ctx: PreviewCtx): Preview {
   const tiers = [['low', 'LOW'], ['medium', 'MED'], ['high', 'HIGH'], ['ultra', 'ULTRA']];
   const ladder = h('div', { class: 'iw-pv-ladder' }, tiers.map(([id, lab], i) => h('span', { class: 'iw-pv-ladder__col', 'data-q': id, style: { '--h': (0.3 + i * 0.233).toFixed(3) } }, h('i'), h('b', null, lab))));
   const chips = h('div', { class: 'iw-pv-chips' });
   const el = h('div', { class: 'iw-pv iw-pv--quality' }, ladder, chips);
   const Q = ctx.qualityTable || {};
-  const set = (v) => {
-    const q = Q[v] || Q.high || {};
-    ladder.querySelectorAll('.iw-pv-ladder__col').forEach((c) => c.classList.toggle('is-on', c.dataset.q === v));
+  const set = (v: unknown) => {
+    const q: Partial<QualityPreset> = Q[v as string] || Q.high || {};
+    ladder.querySelectorAll<HTMLElement>('.iw-pv-ladder__col').forEach((c) => c.classList.toggle('is-on', c.dataset.q === v));
     const rows = [
-      ['Pixel density', `up to ${(+q.pixelRatio || 1).toFixed(q.pixelRatio % 1 ? 2 : 1).replace(/0$/, '')}×`],
+      ['Pixel density', `up to ${(+q.pixelRatio! || 1).toFixed(q.pixelRatio! % 1 ? 2 : 1).replace(/0$/, '')}×`],
       ['Shadow map', `${q.shadowSize || 0}px`],
       ['Anti-aliasing', q.msaa ? `${q.msaa}× MSAA` : 'Off'],
       ['Ink detail', `${Math.round((q.paintAtlas || 2048) / 1024)}K atlas`],
@@ -650,7 +692,7 @@ function previewQuality(ctx) {
   return { el, set };
 }
 
-function previewShadows(ctx) {
+function previewShadows(ctx: PreviewCtx): Preview {
   const el = h('div', { class: 'iw-pv iw-pv--shadow', html: frameSVG(`
     <circle cx="262" cy="34" r="17" fill="#fff6c8"/><circle cx="262" cy="34" r="27" fill="#fff6c8" opacity=".35"/>
     <path class="iw-pv-shadow" d="M104 150 L154 150 L228 176 L178 176 Z" fill="#000" fill-opacity=".24"/>
@@ -658,13 +700,13 @@ function previewShadows(ctx) {
     <rect x="104" y="96" width="50" height="54" rx="6" fill="#e9dfcb" stroke="#bfae8e" stroke-width="3"/><rect x="104" y="92" width="50" height="18" rx="6" fill="#fffaf0" stroke="#bfae8e" stroke-width="3"/>
     <g transform="translate(160 74) scale(.5)" style="color:var(--a)">${SQUID.replace('class="iw-ico iw-squid"', 'x="0" y="0" width="64" height="64"')}</g>
     <path class="iw-fa" d="M60 150 q20 -9 40 0 q10 6 -6 12 q-20 7 -34 -2 q-8 -6 0 -10z"/>`) + '<div class="iw-pv-cap"></div>' });
-  const cap = el.querySelector('.iw-pv-cap');
-  const set = (v) => { el.classList.toggle('is-on', !!v); cap.innerHTML = v ? 'Soft sun shadows <b>ON</b>' : 'Shadows <b>OFF</b> — faster on older machines'; };
+  const cap = el.querySelector('.iw-pv-cap')!;
+  const set = (v: unknown) => { el.classList.toggle('is-on', !!v); cap.innerHTML = v ? 'Soft sun shadows <b>ON</b>' : 'Shadows <b>OFF</b> — faster on older machines'; };
   set(ctx.value);
   return { el, set };
 }
 
-function previewBloom(ctx) {
+function previewBloom(ctx: PreviewCtx): Preview {
   const s = splatShape(160, 92, 46, { seed: 21, arms: 9, drops: 6, armLen: 0.5 });
   const splat = `<path d="${s.core}"/>${s.drops.map((d) => `<circle cx="${d.x}" cy="${d.y}" r="${d.r}"/>`).join('')}`;
   const el = h('div', { class: 'iw-pv iw-pv--bloom', html: `<svg class="iw-pvsvg" viewBox="0 0 320 180" aria-hidden="true">
@@ -674,47 +716,47 @@ function previewBloom(ctx) {
       <g class="iw-fa">${splat}</g>
       <g transform="translate(136 66) scale(.75)" style="color:#fff">${SPECIAL_ICONS.slam.replace('class="iw-ico "', 'x="0" y="0" width="64" height="64"')}</g>
       <rect x="1" y="1" width="318" height="178" rx="14" fill="none" stroke="${K}" stroke-width="3"/></svg><div class="iw-pv-cap"></div>` });
-  const cap = el.querySelector('.iw-pv-cap');
-  const set = (v) => { el.classList.toggle('is-on', !!v); cap.innerHTML = v ? 'Bright ink and specials <b>glow</b>' : 'Glow <b>OFF</b>'; };
+  const cap = el.querySelector('.iw-pv-cap')!;
+  const set = (v: unknown) => { el.classList.toggle('is-on', !!v); cap.innerHTML = v ? 'Bright ink and specials <b>glow</b>' : 'Glow <b>OFF</b>'; };
   set(ctx.value);
   return { el, set };
 }
 
-function hudFrame(inner) {
+function hudFrame(inner: string) {
   return frameSVG(`<rect x="40" y="118" width="240" height="70" fill="#efe4cf"/>
     <path class="iw-fa" d="M70 140 q30 -14 60 0 q16 9 -8 18 q-30 10 -52 -2 q-12 -8 0 -16z"/><path class="iw-fb" d="M200 132 q26 -10 50 0 q12 7 -6 14 q-24 8 -44 -2 q-10 -6 0 -12z"/>
     <g transform="translate(145 92) scale(.46)" style="color:var(--a)">${SQUID.replace('class="iw-ico iw-squid"', 'x="0" y="0" width="64" height="64"')}</g>
     <g transform="translate(160 72)"><circle r="7" fill="none" stroke="#fff" stroke-width="3"/></g>
     <rect x="128" y="10" width="64" height="16" rx="8" fill="${K}"/><text x="160" y="22" text-anchor="middle" font-family="Titan One, sans-serif" font-size="11" fill="#fff">2:47</text>${inner}`);
 }
-function previewFps(ctx) {
+function previewFps(ctx: PreviewCtx): Preview {
   const el = h('div', { class: 'iw-pv iw-pv--fps', html: hudFrame(`<g class="iw-pv-pop"><rect x="12" y="10" width="58" height="18" rx="6" fill="${K}"/><text x="41" y="23" text-anchor="middle" font-family="Rubik, sans-serif" font-weight="800" font-size="10.5" fill="#7dffa8">60 FPS</text></g>`) + '<div class="iw-pv-cap"></div>' });
-  const cap = el.querySelector('.iw-pv-cap');
-  const set = (v) => { el.classList.toggle('is-on', !!v); cap.innerHTML = v ? 'Frame counter <b>shown</b> in matches' : 'Frame counter <b>hidden</b>'; };
+  const cap = el.querySelector('.iw-pv-cap')!;
+  const set = (v: unknown) => { el.classList.toggle('is-on', !!v); cap.innerHTML = v ? 'Frame counter <b>shown</b> in matches' : 'Frame counter <b>hidden</b>'; };
   set(ctx.value);
   return { el, set };
 }
-function previewMinimap(ctx) {
+function previewMinimap(ctx: PreviewCtx): Preview {
   const el = h('div', { class: 'iw-pv iw-pv--map', html: hudFrame(`<g class="iw-pv-pop"><rect x="228" y="100" width="80" height="66" rx="10" fill="${K}"/><rect x="233" y="105" width="70" height="56" rx="7" fill="#e9e0cd"/>
       <path class="iw-fa" d="M238 118 q10 -6 20 0 q6 5 -4 10 q-10 4 -16 -2z M244 140 q9 -5 16 2 q4 6 -6 8 q-9 1 -10 -10z"/><path class="iw-fb" d="M280 112 q9 -4 16 2 q4 6 -6 9 q-9 2 -10 -11z M276 140 q10 -6 20 1 q5 6 -6 10 q-11 2 -14 -11z"/>
       <circle cx="252" cy="132" r="4" fill="#fff" stroke="${K}" stroke-width="2"/></g>`) + '<div class="iw-pv-cap"></div>' });
-  const cap = el.querySelector('.iw-pv-cap');
-  const set = (v) => { el.classList.toggle('is-on', !!v); cap.innerHTML = v ? 'Turf minimap <b>in the corner</b>' : 'Minimap <b>hidden</b> — hold TAB for the big map'; };
+  const cap = el.querySelector('.iw-pv-cap')!;
+  const set = (v: unknown) => { el.classList.toggle('is-on', !!v); cap.innerHTML = v ? 'Turf minimap <b>in the corner</b>' : 'Minimap <b>hidden</b> — hold TAB for the big map'; };
   set(ctx.value);
   return { el, set };
 }
 
-function previewShake(ctx) {
+function previewShake(ctx: PreviewCtx): Preview {
   const el = h('div', { class: 'iw-pv iw-pv--shake', html: `<div class="iw-pv-shake__frame">${hudFrame(`<g transform="translate(212 112)"><g class="iw-pv-boom"><path class="iw-fb" d="${splatShape(0, 0, 22, { seed: 9, arms: 9, drops: 0 }).core}"/><text y="5" text-anchor="middle" font-family="Titan One, sans-serif" font-size="13" fill="#fff" stroke="${K}" stroke-width="3" paint-order="stroke">BOOM</text></g></g>`)}</div><div class="iw-pv-cap"></div>` });
-  const frame = el.querySelector('.iw-pv-shake__frame');
-  const boom = el.querySelector('.iw-pv-boom');
-  const cap = el.querySelector('.iw-pv-cap');
-  let v = +ctx.value, t = 0.6;
-  const set = (nv) => { v = clamp(+nv || 0); cap.innerHTML = v <= 0 ? 'Screen shake <b>OFF</b>' : `Shake strength <b>${Math.round(v * 100)}%</b>`; };
+  const frame = el.querySelector('.iw-pv-shake__frame')!;
+  const boom = el.querySelector('.iw-pv-boom')!;
+  const cap = el.querySelector('.iw-pv-cap')!;
+  let v = +(ctx.value as number), t = 0.6;
+  const set = (nv: unknown) => { v = clamp(+(nv as number) || 0); cap.innerHTML = v <= 0 ? 'Screen shake <b>OFF</b>' : `Shake strength <b>${Math.round(v * 100)}%</b>`; };
   set(v);
   return {
     el, set,
-    tick: (dt) => {
+    tick: (dt: number) => {
       t -= dt;
       if (t > 0) return;
       t = 1.7;
@@ -728,7 +770,7 @@ function previewShake(ctx) {
   };
 }
 
-function previewAudio(ctx, key) {
+function previewAudio(ctx: PreviewCtx, key: string): Preview {
   const N = 18;
   const bars = Array.from({ length: N }, () => h('i'));
   const meter = h('div', { class: 'iw-pv-meter' }, bars);
@@ -737,10 +779,10 @@ function previewAudio(ctx, key) {
   const el = h('div', { class: 'iw-pv iw-pv--audio' }, h('div', { class: 'iw-pv-audio__box' }, icon, meter), cap);
   const R = rng(key.length * 97 + 5);
   const seeds = bars.map(() => [R() * TAU, 2 + R() * 5, 0.4 + R() * 0.6]);
-  let v = +ctx.value, s = ctx.settings || {}, t = 0, shown = 0;
+  let v = +(ctx.value as number), s = ctx.settings || {}, t = 0, shown = 0;
   const eff = () => (key === 'master' ? v : v * (s.master ?? 1));
-  const set = (nv, ss) => {
-    v = clamp(+nv || 0); if (ss) s = ss;
+  const set = (nv: unknown, ss?: PreviewCtx['settings']) => {
+    v = clamp(+(nv as number) || 0); if (ss) s = ss;
     const e = eff();
     cap.innerHTML = key === 'master' ? `Overall output <b>${Math.round(v * 100)}%</b>` : `Heard at <b>${Math.round(e * 100)}%</b> after master volume`;
     el.classList.toggle('is-mute', e <= 0.001);
@@ -748,7 +790,7 @@ function previewAudio(ctx, key) {
   set(v);
   return {
     el, set,
-    tick: (dt) => {
+    tick: (dt: number) => {
       t += dt;
       shown += (eff() - shown) * (1 - Math.exp(-dt * 8));
       const beat = key === 'sfx' ? Math.pow(Math.max(0, Math.sin(t * 5.1)), 6) : 0.55 + 0.45 * Math.pow(Math.max(0, Math.sin(t * Math.PI * 2.4)), 3);
@@ -763,7 +805,7 @@ function previewAudio(ctx, key) {
   };
 }
 
-function previewAimAssist(ctx) {
+function previewAimAssist(ctx: PreviewCtx): Preview {
   // a crosshair sweeps past a rival; the assist bends its path onto the target (strength = the slider)
   const el = h('div', { class: 'iw-pv iw-pv--aim', html: frameSVG(`
     <g transform="translate(160 104)"><ellipse cx="0" cy="34" rx="30" ry="7" fill="#000" opacity=".16"/>
@@ -771,13 +813,13 @@ function previewAimAssist(ctx) {
     <path class="iw-pv-aim__trail" d="M20 90 L300 90" fill="none"/>
     <g class="iw-pv-aim__x"><circle r="13" fill="none" stroke="#fff" stroke-width="4"/><circle r="13" fill="none" stroke="${K}" stroke-width="1.6"/><circle r="3" fill="#fff" stroke="${K}" stroke-width="1.4"/>
       <path d="M0 -21 V-15 M0 21 V15 M-21 0 H-15 M21 0 H15" stroke="#fff" stroke-width="3.2" stroke-linecap="round"/></g>`) + '<div class="iw-pv-cap"></div>' });
-  const xEl = el.querySelector('.iw-pv-aim__x'), trail = el.querySelector('.iw-pv-aim__trail'), cap = el.querySelector('.iw-pv-cap');
-  let v = clamp(+ctx.value || 0), t = 0;
-  const set = (nv) => { v = clamp(+nv || 0); cap.innerHTML = v <= 0.001 ? 'Aim assist <b>OFF</b>' : `Pull strength <b>${Math.round(v * 100)}%</b>`; };
+  const xEl = el.querySelector('.iw-pv-aim__x')!, trail = el.querySelector('.iw-pv-aim__trail')!, cap = el.querySelector('.iw-pv-cap')!;
+  let v = clamp(+(ctx.value as number) || 0), t = 0;
+  const set = (nv: unknown) => { v = clamp(+(nv as number) || 0); cap.innerHTML = v <= 0.001 ? 'Aim assist <b>OFF</b>' : `Pull strength <b>${Math.round(v * 100)}%</b>`; };
   set(v);
   return {
     el, set,
-    tick: (dt) => {
+    tick: (dt: number) => {
       t = (t + dt / 2.6) % 1;
       // raw sweep left → right; assisted path eases toward the target centre (160, 100) as it passes
       const x0 = 30 + t * 260, near = Math.exp(-Math.pow((x0 - 160) / 60, 2));
@@ -789,23 +831,23 @@ function previewAimAssist(ctx) {
   };
 }
 
-function previewAimMouse(ctx) {
+function previewAimMouse(ctx: PreviewCtx): Preview {
   const el = h('div', { class: 'iw-pv iw-pv--aimm', html: `<div class="iw-pv-aimm__row"><span class="iw-pv-aimm__dev is-pad">${GLYPHS.gamepad}<b>ASSIST</b></span><span class="iw-pv-aimm__dev is-mouse">${mouseGlyph('M')}<b>ASSIST</b></span></div><div class="iw-pv-cap"></div>` });
-  const cap = el.querySelector('.iw-pv-cap');
-  const set = (v) => { el.classList.toggle('is-on', !!v); cap.innerHTML = v ? 'Assist on <b>controller and mouse</b> (lighter on mouse)' : 'Assist on <b>controller only</b>'; };
+  const cap = el.querySelector('.iw-pv-cap')!;
+  const set = (v: unknown) => { el.classList.toggle('is-on', !!v); cap.innerHTML = v ? 'Assist on <b>controller and mouse</b> (lighter on mouse)' : 'Assist on <b>controller only</b>'; };
   set(ctx.value);
   return { el, set };
 }
 
-function previewRumble(ctx) {
+function previewRumble(ctx: PreviewCtx): Preview {
   const el = h('div', { class: 'iw-pv iw-pv--rumble', html: `<div class="iw-pv-rumble__pad">${GLYPHS.gamepad}<i class="l"></i><i class="r"></i></div><div class="iw-pv-cap"></div>` });
-  const pad = el.querySelector('.iw-pv-rumble__pad'), cap = el.querySelector('.iw-pv-cap');
-  let v = clamp(+ctx.value || 0), t = 0.4;
-  const set = (nv) => { v = clamp(+nv || 0); cap.innerHTML = v <= 0 ? 'Vibration <b>OFF</b>' : `Rumble strength <b>${Math.round(v * 100)}%</b>`; el.classList.toggle('is-off', v <= 0); };
+  const pad = el.querySelector('.iw-pv-rumble__pad')!, cap = el.querySelector('.iw-pv-cap')!;
+  let v = clamp(+(ctx.value as number) || 0), t = 0.4;
+  const set = (nv: unknown) => { v = clamp(+(nv as number) || 0); cap.innerHTML = v <= 0 ? 'Vibration <b>OFF</b>' : `Rumble strength <b>${Math.round(v * 100)}%</b>`; el.classList.toggle('is-off', v <= 0); };
   set(v);
   return {
     el, set,
-    tick: (dt) => {
+    tick: (dt: number) => {
       t -= dt;
       if (t > 0) return;
       t = 1.5;
@@ -819,41 +861,41 @@ function previewRumble(ctx) {
   };
 }
 
-function previewColorblind(ctx) {
+function previewColorblind(ctx: PreviewCtx): Preview {
   const pals = ctx.palettes || [];
   const cb = ctx.cbPalette || { a: '#ffd21a', b: '#2a52ff' };
-  const pair = (a, b) => `<span class="iw-pv-pair"><i style="background:${a}"></i><i style="background:${b}"></i></span>`;
+  const pair = (a: string, b: string) => `<span class="iw-pv-pair"><i style="background:${a}"></i><i style="background:${b}"></i></span>`;
   const el = h('div', { class: 'iw-pv iw-pv--cb', html: `
     <div class="iw-pv-pal iw-pv-pal--std"><small>STANDARD INKS · rotate each match</small><div class="iw-pv-pal__row">${pals.map((p) => pair(p.a, p.b)).join('')}</div><i class="iw-pv-pal__check">${GLYPHS.check}</i></div>
     <div class="iw-pv-pal iw-pv-pal--cb"><small>COLORBLIND-SAFE · always</small><div class="iw-pv-pal__row">${pair(cb.a, cb.b)}<span class="iw-pv-pal__name">${(cb.names || ['Sun', 'Sea']).join(' vs ')}</span></div><i class="iw-pv-pal__check">${GLYPHS.check}</i></div>` });
-  const set = (v) => el.classList.toggle('is-on', !!v);
+  const set = (v: unknown) => el.classList.toggle('is-on', !!v);
   set(ctx.value);
   return { el, set };
 }
 
-function previewDifficulty(ctx) {
+function previewDifficulty(ctx: PreviewCtx): Preview {
   const diffs = Object.values(ctx.diffs || {});
   const info = ctx.diffInfo || {};
   const el = h('div', { class: 'iw-pv iw-pv--diff' },
     h('div', { class: 'iw-pv-bots' }, diffs.map((d, i) => h('span', { class: 'iw-pv-bot', 'data-d': d.id, style: { '--i': i } },
       h('i', { html: GLYPHS.bot }), h('span', { class: 'iw-pips' }, Array.from({ length: 3 }, (_, k) => h('i', { class: k < (info[d.id]?.pips || i + 1) ? 'on' : '' }))), h('b', null, d.name)))),
     h('div', { class: 'iw-pv-cap' }));
-  const cap = el.querySelector('.iw-pv-cap');
-  const set = (v) => { el.querySelectorAll('.iw-pv-bot').forEach((b) => b.classList.toggle('is-on', b.dataset.d === v)); cap.textContent = info[v]?.text || ''; };
+  const cap = el.querySelector('.iw-pv-cap')!;
+  const set = (v: unknown) => { el.querySelectorAll<HTMLElement>('.iw-pv-bot').forEach((b) => b.classList.toggle('is-on', b.dataset.d === v)); cap.textContent = info[v as string]?.text || ''; };
   set(ctx.value);
   return { el, set };
 }
 
-function previewLength(ctx) {
+function previewLength(ctx: PreviewCtx): Preview {
   const el = h('div', { class: 'iw-pv iw-pv--len', html: `<div class="iw-pv-len__box"><svg class="iw-pv-watch" viewBox="0 0 120 120" aria-hidden="true">
       <circle cx="60" cy="64" r="44" fill="${K}"/><rect x="50" y="6" width="20" height="12" rx="4" fill="${K}"/>
       <circle cx="60" cy="64" r="36" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="9"/>
       <circle class="iw-pv-watch__arc" cx="60" cy="64" r="36" fill="none" stroke="var(--a)" stroke-width="9" stroke-linecap="round" transform="rotate(-90 60 64)" pathLength="100" stroke-dasharray="100 100"/>
     </svg><div class="iw-pv-len__num iw-display"></div></div><div class="iw-pv-cap"></div>` });
-  const arc = el.querySelector('.iw-pv-watch__arc'), num = el.querySelector('.iw-pv-len__num'), cap = el.querySelector('.iw-pv-cap');
+  const arc = el.querySelector('.iw-pv-watch__arc')!, num = el.querySelector<HTMLElement>('.iw-pv-len__num')!, cap = el.querySelector('.iw-pv-cap')!;
   const max = Math.max(...(ctx.durations || [90, 180]));
-  const set = (v) => {
-    v = +v || 180;
+  const set = (v0: unknown) => {
+    const v = +(v0 as number) || 180;
     num.textContent = `${Math.floor(v / 60)}:${String(v % 60).padStart(2, '0')}`;
     arc.setAttribute('stroke-dasharray', `${((v / max) * 100).toFixed(1)} 100`);
     cap.innerHTML = v < 120 ? 'A quick <b>sprint</b> — every second counts' : 'The full <b>turf war</b> — room for comebacks';
@@ -863,27 +905,27 @@ function previewLength(ctx) {
   return { el, set };
 }
 
-function previewLink() {
+function previewLink(_ctx?: PreviewCtx): Preview {
   const el = h('div', { class: 'iw-pv iw-pv--link', html: `<div class="iw-pv-link__art"><i>${GLYPHS.keyboard}</i><i>${GLYPHS.gamepad}</i></div>
     <div class="iw-pv-link__keys">${keycap('W')}${keycap('A')}${keycap('S')}${keycap('D')}<em>+</em>${mouseGlyph('L')}<em>·</em>${padGlyph('LS')}${padGlyph('RT')}</div>
     <div class="iw-pv-cap">Every binding for <b>keyboard, mouse and controller</b></div>` });
   return { el, set() {} };
 }
 
-function previewTab(ctx) {
+function previewTab(ctx: PreviewCtx): Preview {
   const t = ctx.tab || {};
-  const el = h('div', { class: 'iw-pv iw-pv--tab', html: `<div class="iw-pv-tab__icon">${GLYPHS[t.icon] || GLYPHS.gear}</div>
+  const el = h('div', { class: 'iw-pv iw-pv--tab', html: `<div class="iw-pv-tab__icon">${(GLYPHS as Record<string, string>)[t.icon as string] || GLYPHS.gear}</div>
     <div class="iw-pv-tab__list">${(t.rows || []).map((r) => `<span>${r.label}</span>`).join('')}</div>` });
   return { el, set() {} };
 }
-function previewReset() {
+function previewReset(_ctx?: PreviewCtx): Preview {
   const el = h('div', { class: 'iw-pv iw-pv--tab', html: `<div class="iw-pv-tab__icon iw-pv-tab__icon--reset">${GLYPHS.reset}</div>
     <div class="iw-pv-cap">Press twice to restore <b>every setting</b> on every tab</div>` });
   return { el, set() {} };
 }
 
 /** ctx: { value, settings, qualityTable, palettes, cbPalette, diffs, diffInfo, durations, tab } */
-export function createPreview(key, ctx = {}) {
+export function createPreview(key: string, ctx: PreviewCtx = {}): Preview {
   switch (key) {
     case 'sensitivity': return previewLook(ctx, false);
     case 'padSensitivity': return previewLook(ctx, true);
@@ -911,8 +953,8 @@ export function createPreview(key, ctx = {}) {
 // ================================================================================== JS-driven ink reveals (clip-path)
 // Both generators return a `path('…')`-ready string in the element's own px space. The command structure only depends
 // on the seed, so successive frames differ only in coordinates (cheap to rebuild every frame; no layout reads).
-const f1 = (v) => Math.round(v * 10) / 10;
-function curveThrough(pts) {
+const f1 = (v: number) => Math.round(v * 10) / 10;
+function curveThrough(pts: number[][]) {
   let d = `L${f1(pts[0][0])} ${f1(pts[0][1])}`;
   for (let i = 0; i < pts.length - 1; i++) {
     const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
@@ -925,7 +967,7 @@ export function sweepEdge(seed = 1, rows = 26) {
   const R = rng(seed * 7919 + 13);
   const ph = [R() * TAU, R() * TAU, R() * TAU];
   const tongues = Array.from({ length: 3 + ((R() * 3) | 0) }, () => ({ y: 0.08 + R() * 0.84, w: 0.03 + R() * 0.045, L: 0.05 + R() * 0.08 }));
-  const pts = [];
+  const pts: number[][] = [];
   for (let i = 0; i <= rows; i++) {
     const y = -0.04 + (i / rows) * 1.08;
     let x = 0.024 * Math.sin(y * 6.3 + ph[0]) + 0.014 * Math.sin(y * 14.1 + ph[1]) + 0.007 * Math.sin(y * 29 + ph[2]);
@@ -935,7 +977,7 @@ export function sweepEdge(seed = 1, rows = 26) {
   return pts;
 }
 /** clip-path for a sweep that covers fraction f (0 = nothing, 1 = all) of a W×H box, travelling right (dir 1) or left (-1). */
-export function sweepClip(edge, W, H, f, dir = 1) {
+export function sweepClip(edge: number[][], W: number, H: number, f: number, dir = 1) {
   const reach = 0.22 * W, far = W * 0.5 + 40;
   const base = -reach + f * (W + reach * 2);
   const pts = edge.map(([x, y]) => [dir > 0 ? base + x * W : W - base - x * W, y * H]);
@@ -943,17 +985,17 @@ export function sweepClip(edge, W, H, f, dir = 1) {
   return `path('M${f1(bx)} ${f1(-0.04 * H - 20)}${curveThrough(pts)}L${f1(bx)} ${f1(1.04 * H + 20)}Z')`;
 }
 /** clip-path for an ink splat of radius r centred on (x, y) (arms reach ≈ 1.5 r, valleys ≈ 0.8 r). */
-export function splatClip(x, y, r, seed = 3) {
+export function splatClip(x: number, y: number, r: number, seed = 3) {
   return `path('${splatShape(x, y, Math.max(0.01, r), { seed, arms: 9, armLen: 0.5, drops: 0 }).core}')`;
 }
 /** Radius a splat centred on (x, y) needs before its valleys clear every corner of a W×H box. */
-export function splatCover(x, y, W, H) {
+export function splatCover(x: number, y: number, W: number, H: number) {
   return Math.max(Math.hypot(x, y), Math.hypot(W - x, y), Math.hypot(x, H - y), Math.hypot(W - x, H - y)) / 0.74;
 }
 
 // ================================================================================== locker swatches / fallback art
 /** Skin tone swatch: a glossy round cheek-blob with soft shading. */
-export function skinSwatch(hex) {
+export function skinSwatch(hex: ColorLike) {
   const id = 'sk' + ((burstSeed += 31) % 1e6);
   return `<svg viewBox="0 0 64 64" aria-hidden="true"><defs><radialGradient id="${id}" cx=".38" cy=".32" r=".75"><stop offset="0" stop-color="${shade(hex, 0.28)}"/><stop offset=".55" stop-color="${hex}"/><stop offset="1" stop-color="${shade(hex, -0.34)}"/></radialGradient></defs>
     <circle cx="32" cy="33" r="25" fill="url(#${id})" stroke="${K}" stroke-width="3"/>
@@ -961,7 +1003,7 @@ export function skinSwatch(hex) {
     <ellipse cx="24" cy="22" rx="7" ry="4.2" fill="#fff" opacity=".45" transform="rotate(-24 24 22)"/></svg>`;
 }
 /** Eye colour swatch: almond eye with a two-tone iris (matches the in-game iris gradient). */
-export function irisSwatch(pair) {
+export function irisSwatch(pair: string | string[]) {
   const [a, b] = Array.isArray(pair) ? pair : [pair, pair];
   const id = 'ir' + ((burstSeed += 31) % 1e6);
   return `<svg viewBox="0 0 64 64" aria-hidden="true"><defs><radialGradient id="${id}" cx=".5" cy=".35" r=".65"><stop offset="0" stop-color="${a}"/><stop offset=".7" stop-color="${b}"/><stop offset="1" stop-color="${shade(b, -0.45)}"/></radialGradient></defs>
@@ -970,9 +1012,9 @@ export function irisSwatch(pair) {
     <circle cx="32" cy="32" r="5.2" fill="${K}"/><circle cx="36.5" cy="27" r="3.4" fill="#fff"/><circle cx="27.5" cy="36.5" r="1.6" fill="#fff" opacity=".8"/></svg>`;
 }
 /** Outfit icon (fallback when no 3D portrait): tee + shorts + sneakers in the outfit's colours; team trims use --a. */
-export function outfitIcon(o = {}) {
+export function outfitIcon(o: { shirt?: string; shorts?: string; shoe?: string; sole?: string; sock?: string; pattern?: number } = {}) {
   const shirt = o.shirt || '#f4f2ec', shorts = o.shorts || '#27304a', shoe = o.shoe || '#272b34', sole = o.sole || '#f4f2ec', sock = o.sock || '#f7f7f4';
-  const p = o.pattern | 0;
+  const p = o.pattern! | 0;
   const ol = `stroke="${K}" stroke-width="2.6" stroke-linejoin="round"`;
   const tee = 'M22 6 L13 9.5 L6 19 L12.5 23.5 L16 20 L16 38 L40 38 L40 20 L43.5 23.5 L50 19 L43 9.5 L34 6 Q31.5 11 28 11 Q24.5 11 22 6 Z';
   let deco = '';
@@ -996,7 +1038,7 @@ export const TAG_KINDS = 7;
 export function tagArt(seed = 1) {
   const R = rng((seed >>> 0) * 16807 + 11);
   const kind = (seed >>> 0) % TAG_KINDS;
-  const sq = (x, y, s, r, cls) => `<path class="${cls}" transform="translate(${f1(x)} ${f1(y)}) rotate(${f1(r)}) scale(${f1(s * 100) / 100}) translate(-32 -32)" d="${SQUID_PATH}"/>`;
+  const sq = (x: number, y: number, s: number, r: number, cls: string) => `<path class="${cls}" transform="translate(${f1(x)} ${f1(y)}) rotate(${f1(r)}) scale(${f1(s * 100) / 100}) translate(-32 -32)" d="${SQUID_PATH}"/>`;
   let b = '';
   if (kind === 0) {        // splats
     const s1 = splatShape(196, 38, 30, { seed: 3 + (seed % 97), arms: 9, drops: 5, armLen: 0.5 });
@@ -1007,7 +1049,7 @@ export function tagArt(seed = 1) {
     for (let x = -70; x < 280; x += 34) b += `<path class="iw-tf1" d="M${x} 0 L${x + 17} 0 L${x - 13} 64 L${x - 30} 64 Z"/>`;
     b = `<rect class="iw-tf0" width="240" height="64"/>${b}<rect class="iw-tf2" y="52" width="240" height="4" opacity=".7"/>`;
   } else if (kind === 2) { // waves
-    const wave = (y0, a, ph) => { let d = `M0 64 L0 ${y0}`; for (let x = 0; x <= 240; x += 20) d += ` Q${x + 10} ${f1(y0 + Math.sin(x * 0.05 + ph) * a - a)} ${x + 20} ${f1(y0 + Math.sin((x + 20) * 0.05 + ph) * a)}`; return d + ' L240 64 Z'; };
+    const wave = (y0: number, a: number, ph: number) => { let d = `M0 64 L0 ${y0}`; for (let x = 0; x <= 240; x += 20) d += ` Q${x + 10} ${f1(y0 + Math.sin(x * 0.05 + ph) * a - a)} ${x + 20} ${f1(y0 + Math.sin((x + 20) * 0.05 + ph) * a)}`; return d + ' L240 64 Z'; };
     b = `<rect class="iw-tf2" width="240" height="64"/><path class="iw-tf0" d="${wave(22, 6, R() * 6)}"/><path class="iw-tf1" d="${wave(44, 5, R() * 6)}"/>`;
   } else if (kind === 3) { // sunburst
     const cx = 170 + R() * 40, cy = 64;
@@ -1017,7 +1059,7 @@ export function tagArt(seed = 1) {
     for (let i = 0; i < 9; i++) b += sq(14 + i * 27 + R() * 8, 10 + (i % 2) * 34 + R() * 10, 0.36 + R() * 0.12, -30 + R() * 60, i % 3 ? 'iw-tf0' : 'iw-tf2');
     b = `<rect class="iw-tf1" width="240" height="64"/>${b}`;
   } else if (kind === 5) { // zigzag
-    const zig = (y, a, n) => { let d = `M0 ${y}`; for (let i = 0; i <= n; i++) d += ` L${f1((i + 0.5) * (240 / n))} ${y + (i % 2 ? -a : a)}`; return d; };
+    const zig = (y: number, a: number, n: number) => { let d = `M0 ${y}`; for (let i = 0; i <= n; i++) d += ` L${f1((i + 0.5) * (240 / n))} ${y + (i % 2 ? -a : a)}`; return d; };
     b = `<rect class="iw-tf0" width="240" height="64"/><path class="iw-tf1" d="${zig(40, 8, 12)} L240 64 L0 64 Z"/><path d="${zig(22, 5, 16)}" fill="none" stroke="var(--tc-light)" stroke-width="5" stroke-linejoin="round"/>`;
   } else {                 // halftone swell
     for (let x = 0; x < 16; x++) for (let y = 0; y < 5; y++) { const r = 1 + (x / 15) * 6.2; b += `<circle class="iw-tf1" cx="${x * 16 + (y % 2) * 8}" cy="${y * 16}" r="${f1(r)}"/>`; }
@@ -1040,7 +1082,7 @@ export function inkBand(seed = 5) {
 }
 
 /** Drips hanging off a sticker's bottom edge (400×60 box, stretched along the edge). spec: [[x, length 0.6..1.8], …]. */
-export function dripsSVG(spec, cls = 'iw-fa') {
+export function dripsSVG(spec: number[][], cls = 'iw-fa') {
   return `<svg viewBox="0 0 400 60" preserveAspectRatio="none" aria-hidden="true">${spec.map(([x, k], i) =>
     `<g class="iw-sdrip" style="--d:${i}"><path class="${cls}" d="M${x - 7} -2 L${x + 7} -2 L${x + 5} ${f1(22 * k)} Q${x} ${f1(32 * k)} ${x - 5} ${f1(22 * k)} Z"/></g>`).join('')}</svg>`;
 }

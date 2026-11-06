@@ -1,13 +1,8 @@
 // 캠페인 작업장 화면(33번 T032~T035·T037): 모듈 장비(보관함·대기함·비교·잠금·분해), 특성 배분·무료 재배분, 난이도·저장 관리,
 // 캠페인 일시 정지. 모든 변경은 api.commit(순수 변환)으로 한 번에 저장하고, 저장이 끝난 뒤에 화면을 갱신한다
 // (실패하면 성공 안내 대신 실패를 알린다). 메뉴의 공용 부품(Menus의 _btn·_bind·_header 등)을 MenuKit으로 받는다.
-import { h as untypedH } from './ui-util.js';
+import { h } from './ui-util.js';
 
-// ui-util.js의 h()는 JS라 속성 형식이 null로 추론된다(menus.ts와 같은 형식을 붙인다)
-interface HProps { class?: string; style?: string | Record<string, string | number>; html?: string; [attr: string]: unknown }
-type HChild = Node | string | number | null | undefined | false | readonly HChild[];
-type HFn = <K extends keyof HTMLElementTagNameMap>(tag: K, props?: HProps | null, ...kids: HChild[]) => HTMLElementTagNameMap[K];
-const h = untypedH as unknown as HFn;
 import { MODULES, STAT_LABEL, type Slot } from '../campaign/data/modules.js';
 import { TRAITS, TRAIT_LINES, TRAIT_MAX_RANK, type TraitLine } from '../campaign/data/traits.js';
 import { SALVAGE, INVENTORY_SLOTS, CRAFT, UPGRADE_UNLOCK_CHAPTER } from '../campaign/data/economy.js';

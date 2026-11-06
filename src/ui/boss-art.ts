@@ -24,21 +24,21 @@ export const MOVE_LABELS = {
 };
 
 // ------------------------------------------------------------------ bits
-const eye = (x, y, r, lidRot = 0) => `
+const eye = (x: number, y: number, r: number, lidRot = 0) => `
   <circle cx="${x}" cy="${y}" r="${r * 1.9}" fill="${WEAK}" opacity=".32" class="bx-glow"/>
   <circle cx="${x}" cy="${y}" r="${r}" fill="${K}"/>
   <circle cx="${x}" cy="${y}" r="${r * 0.62}" fill="${WEAK}" class="bx-eye"/>
   <circle cx="${x - r * 0.25}" cy="${y - r * 0.28}" r="${r * 0.2}" fill="#fff"/>
   <path d="M${x - r * 1.08} ${y - r * 0.05} A${r * 1.08} ${r * 1.08} 0 0 1 ${x + r * 1.08} ${y - r * 0.05} Z" fill="${CARA_D}" stroke="${K}" stroke-width="${r * 0.32}" stroke-linejoin="round" transform="rotate(${lidRot} ${x} ${y})"/>`;
-const stalk = (x0, y0, x1, y1, w) => `<path d="M${x0} ${y0} Q${(x0 + x1) / 2 + (x1 - x0) * 0.35} ${(y0 + y1) / 2} ${x1} ${y1}" fill="none" stroke="${K}" stroke-width="${w + 5}" stroke-linecap="round"/>
+const stalk = (x0: number, y0: number, x1: number, y1: number, w: number) => `<path d="M${x0} ${y0} Q${(x0 + x1) / 2 + (x1 - x0) * 0.35} ${(y0 + y1) / 2} ${x1} ${y1}" fill="none" stroke="${K}" stroke-width="${w + 5}" stroke-linecap="round"/>
   <path d="M${x0} ${y0} Q${(x0 + x1) / 2 + (x1 - x0) * 0.35} ${(y0 + y1) / 2} ${x1} ${y1}" fill="none" stroke="${CARA}" stroke-width="${w}" stroke-linecap="round"/>`;
-const seg = (a, b, wa, wb) => {
+const seg = (a: number[], b: number[], wa: number, wb: number) => {
   const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L;
-  const f = (v) => v.toFixed(1);
+  const f = (v: number) => v.toFixed(1);
   return `M${f(a[0] + nx * wa)} ${f(a[1] + ny * wa)} L${f(b[0] + nx * wb)} ${f(b[1] + ny * wb)} L${f(b[0] - nx * wb)} ${f(b[1] - ny * wb)} L${f(a[0] - nx * wa)} ${f(a[1] - ny * wa)} Z`;
 };
 // jointed walking leg: thick upper segment, tapering to a pointed dark tip
-const leg = ([a, k, t], w, col) => {
+const leg = ([a, k, t]: [number[], number[], number[]], w: number, col: string) => {
   const m = [k[0] + (t[0] - k[0]) * 0.72, k[1] + (t[1] - k[1]) * 0.72];
   return `<g stroke="${K}" stroke-width="5" stroke-linejoin="round" paint-order="stroke">
       <path d="${seg(a, k, w * 0.62, w * 0.5)}" fill="${col}"/>
@@ -131,7 +131,7 @@ export function bossSilhouette() {
 }
 
 // ------------------------------------------------------------------ move glyphs (64×64, currentColor + outline)
-const svg = (body) => `<svg class="iw-ico" viewBox="0 0 64 64" aria-hidden="true">${body}</svg>`;
+const svg = (body: string) => `<svg class="iw-ico" viewBox="0 0 64 64" aria-hidden="true">${body}</svg>`;
 const OL = `stroke="${K}" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"`;
 export const MOVE_ICONS = {
   slam: svg(`<path d="M20 6 C12 6 8 14 10 22 L16 20 L14 30 C22 34 34 32 38 24 C42 14 32 6 20 6 Z" fill="currentColor" ${OL}/>
