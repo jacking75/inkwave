@@ -2,15 +2,36 @@
 // connected by walk / jump-up / drop-down edges. A* with a binary heap.
 import * as THREE from 'three';
 import { PLAYER } from '../config.js';
-import { Hit } from './physics.js';
+import { Hit, Physics } from './physics.js';
+import type { Level } from '../world/level.js';
 
 const _p = new THREE.Vector3(), _d = new THREE.Vector3();
 
+
+// 길찾기 간선: 도착 노드·비용·종류(walk·jump·drop·climb), 벽 오르기면 벽 접점·법선·윗면 높이
+export interface NavEdge { to: number; cost: number; type: string; wallP?: number[]; wallN?: number[]; topY?: number }
+// 길찾기 노드: 1 m 격자의 걸을 수 있는 표본, 이웃 간선, 출발 구역 팀(-1 없음), 물가 정도, 물 위 여부
+export interface NavNode { id: number; x: number; y: number; z: number; ix: number; iz: number; nb: NavEdge[]; zone: number; wet?: number; overWater?: boolean }
+
 export class NavGraph {
-  constructor(level, physics) {
+  level: Level;
+  physics: Physics;
+  step: number;
+  nodes: NavNode[] = [];
+  x0 = 0; z0 = 0; nx = 0; nz = 0;
+  cells: number[][] = [];
+  declare _bh: Hit;
+  valid = new Uint8Array(0);
+  exitable = new Uint8Array(0);
+  validIds: number[] = [];
+  _g: Float32Array | null = null;
+  _from = new Int32Array(0);
+  _seen = new Uint32Array(0);
+  _closed = new Uint32Array(0);
+  _stamp = 0;
+  constructor(level: Level, physics: Physics) {
     this.level = level; this.physics = physics;
     this.step = 1.0;
-    this.nodes = [];
     this._build();
   }
 
@@ -20,11 +41,11 @@ export class NavGraph {
     this.nx = Math.floor((B.maxX - B.minX) / st); this.nz = Math.floor((B.maxZ - B.minZ) / st);
     this.cells = new Array(this.nx * this.nz);
     const topBlocks = L.blocks.filter((b) => b.solid && b.axes[1].y > 0.6);
-    const ids = [];
+    const ids: number[] = [];
     for (let iz = 0; iz < this.nz; iz++) {
       for (let ix = 0; ix < this.nx; ix++) {
         const x = this.x0 + ix * st, z = this.z0 + iz * st;
-        const heights = [];
+        const heights: number[] = [];
         L.queryBlocks(x - 0.01, z - 0.01, x + 0.01, z + 0.01, ids);
         for (const id of ids) {
           const b = L.blocks[id];
@@ -37,11 +58,11 @@ export class NavGraph {
           if (heights.some((h) => Math.abs(h - y) < 0.15)) continue;
           heights.push(y);
         }
-        const list = [];
+        const list: number[] = [];
         for (const y of heights) {
           // headroom + clearance (not inside geometry, not hugging walls)
           if (!this._clear(x, y, z)) continue;
-          const node = { id: this.nodes.length, x, y, z, ix, iz, nb: [], zone: -1 };
+          const node: NavNode = { id: this.nodes.length, x, y, z, ix, iz, nb: [], zone: -1 };
           for (let t = 0; t < 2; t++) {
             const pad = L.spawnPads[t];
             if (Math.hypot(x - pad.x, z - pad.z) < L.spawnBarrier + 0.6 && y > pad.y - 1) node.zone = t;
@@ -98,7 +119,7 @@ export class NavGraph {
 
   // is the walk between two neighbouring cells cut by something solid at waist height — a railing, fence or thin wall
   // standing between the cell centres (grates and rails count: kids can't pass them)
-  _blocked(n, m, y) {
+  _blocked(n: NavNode, m: NavNode, y: number) {
     if (!this.physics) return false;
     _p.set(n.x, y + 0.6, n.z); _d.set(m.x - n.x, 0, m.z - n.z);
     const len = _d.length(); if (len < 1e-4) return false;
@@ -108,18 +129,18 @@ export class NavGraph {
 
   // a drop lands on m only if nothing solid hangs over it below the ledge it drops from (a walkway / veranda / deck
   // overhead would otherwise read as a drop "through" its own floor)
-  _openAbove(m, fromY) {
+  _openAbove(m: NavNode, fromY: number) {
     const L = this.level;
     for (let y = m.y + 1.0; y < fromY - 0.05; y += 0.3) if (L.pointInside(_p.set(m.x, y, m.z), 0)) return false;
     return true;
   }
 
-  _has(ix, iz, y) {
+  _has(ix: number, iz: number, y: number) {
     if (ix < 0 || iz < 0 || ix >= this.nx || iz >= this.nz) return false;
-    return this.cells[iz * this.nx + ix].some((id) => Math.abs(this.nodes[id].y - y) <= 0.5);
+    return this.cells[iz * this.nx + ix].some((id: number) => Math.abs(this.nodes[id].y - y) <= 0.5);
   }
 
-  _clear(x, y, z) {
+  _clear(x: number, y: number, z: number) {
     const L = this.level;
     const r = PLAYER.radius + 0.08;
     // the body ring is tested from just above step-up height: the capsule rides that high (curbs below it are walked
@@ -141,15 +162,15 @@ export class NavGraph {
     // (goals: never send a bot into a pit it can't leave); exitable = nodes that can get back to spawn (starts: a bot
     // that fell somewhere odd can still path home).
     const N = this.nodes.length;
-    const radj = Array.from({ length: N }, () => []);
+    const radj = Array.from({ length: N }, (): number[] => []);
     for (const n of this.nodes) for (const e of n.nb) radj[e.to].push(n.id);
-    const walk = (start, next) => {
+    const walk = (start: number, next: (k: number) => number[]) => {
       const seen = new Uint8Array(N), stack = [start]; seen[start] = 1;
-      while (stack.length) { const k = stack.pop(); for (const j of next(k)) if (!seen[j]) { seen[j] = 1; stack.push(j); } }
+      while (stack.length) { const k = stack.pop()!; for (const j of next(k)) if (!seen[j]) { seen[j] = 1; stack.push(j); } }
       return seen;
     };
     // seed = the node of the largest undirected region nearest the team-0 spawn pad (never a lone node on a prop top)
-    const und = (k) => [...this.nodes[k].nb.map((e) => e.to), ...radj[k]];
+    const und = (k: number) => [...this.nodes[k].nb.map((e) => e.to), ...radj[k]];
     const comp = new Int32Array(N).fill(-1);
     let bestC = -1, bestSize = 0, c = 0;
     for (let i = 0; i < N; i++) {
@@ -168,8 +189,8 @@ export class NavGraph {
     }
     this.valid = new Uint8Array(N);
     if (seed < 0) { this.exitable = this.valid; this.validIds = []; return; }
-    const fwd = walk(seed, (k) => this.nodes[k].nb.map((e) => e.to));
-    const back = walk(seed, (k) => radj[k]);
+    const fwd = walk(seed, (k: number) => this.nodes[k].nb.map((e) => e.to));
+    const back = walk(seed, (k: number) => radj[k]);
     this.exitable = back;
     let count = 0;
     for (let i = 0; i < N; i++) { this.valid[i] = fwd[i] && back[i] ? 1 : 0; count += this.valid[i]; }
@@ -180,7 +201,7 @@ export class NavGraph {
 
 
   // start = true also accepts nodes that are only a way *out* (see _prune)
-  nearest(pos, maxUp = 0.8, start = false) {
+  nearest(pos: THREE.Vector3, maxUp = 0.8, start = false) {
     const ix = Math.round((pos.x - this.x0) / this.step), iz = Math.round((pos.z - this.z0) / this.step);
     let best = -1, bd = Infinity;
     for (let r = 0; r <= 3; r++) {
@@ -203,14 +224,14 @@ export class NavGraph {
 
   // A* from node a to node b; `team` blocks the enemy spawn zone. Returns array of node ids (incl. a and b) or null.
   // noClimb: plan without climb edges (a bot that just failed a climb)
-  path(a, b, team, maxIter = 6000, noClimb = false) {
+  path(a: number, b: number, team: number, maxIter = 6000, noClimb = false) {
     if (a < 0 || b < 0) return null;
     const N = this.nodes.length;
     if (!this._g || this._g.length !== N) { this._g = new Float32Array(N); this._from = new Int32Array(N); this._seen = new Uint32Array(N); this._closed = new Uint32Array(N); this._stamp = 0; }
     const g = this._g, from = this._from, seen = this._seen, closed = this._closed;
     const st = ++this._stamp;
     const nodes = this.nodes, goal = nodes[b];
-    const h = (n) => Math.hypot(n.x - goal.x, n.z - goal.z) + Math.abs(n.y - goal.y) * 0.5;
+    const h = (n: NavNode) => Math.hypot(n.x - goal.x, n.z - goal.z) + Math.abs(n.y - goal.y) * 0.5;
     const heap = new Heap();
     g[a] = 0; from[a] = -1; seen[a] = st;
     heap.push(a, h(nodes[a]));
@@ -238,11 +259,11 @@ export class NavGraph {
     return out.reverse();
   }
 
-  edgeType(a, b) {
+  edgeType(a: number, b: number) {
     for (const e of this.nodes[a].nb) if (e.to === b) return e.type;
     return 'walk';
   }
-  edge(a, b) {
+  edge(a: number, b: number) {
     for (const e of this.nodes[a].nb) if (e.to === b) return e;
     return null;
   }
@@ -283,9 +304,10 @@ export class NavGraph {
 }
 
 class Heap {
-  constructor() { this.ids = []; this.pr = []; }
+  ids: number[] = [];
+  pr: number[] = [];
   get size() { return this.ids.length; }
-  push(id, p) {
+  push(id: number, p: number) {
     const ids = this.ids, pr = this.pr;
     let i = ids.length; ids.push(id); pr.push(p);
     while (i > 0) { const j = (i - 1) >> 1; if (pr[j] <= p) break; ids[i] = ids[j]; pr[i] = pr[j]; i = j; }
@@ -294,7 +316,7 @@ class Heap {
   pop() {
     const ids = this.ids, pr = this.pr;
     const top = ids[0];
-    const lid = ids.pop(), lp = pr.pop();
+    const lid = ids.pop()!, lp = pr.pop()!;
     if (ids.length) {
       let i = 0; const n = ids.length;
       while (true) {

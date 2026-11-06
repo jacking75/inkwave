@@ -12,18 +12,18 @@ import * as THREE from 'three';
 import { G } from '../core/ctx.js';
 
 const V3 = THREE.Vector3;
-const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
-const lerp = (a, b, t) => a + (b - a) * t;
-const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+const sstep = (a: number, b: number, x: number) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const TAU = Math.PI * 2;
-const even = (n) => Math.max(4, 2 * Math.round(n / 2));
+const even = (n: number) => Math.max(4, 2 * Math.round(n / 2));
 
 // ------------------------------------------------------------------------------------------------
 // Detail ladder
 // ------------------------------------------------------------------------------------------------
-const QK = { low: 0.6, medium: 0.8, high: 1, ultra: 1.25 };
+const QK: Record<string, number> = { low: 0.6, medium: 0.8, high: 1, ultra: 1.25 };
 /** Current settings quality (defaults to 'high' outside the game, e.g. in the labs). */
-export function hairQuality() { const q = G.settings?.quality; return QK[q] ? q : 'high'; }
+export function hairQuality(): string { const q = G.settings?.quality; return q && QK[q] ? q : 'high'; }
 export const HAIR_LOD_NAMES = ['hero', 'game', 'far'];
 /**
  * Resolution of the tentacle hair / squid for a LOD tier × settings quality.
@@ -31,7 +31,7 @@ export const HAIR_LOD_NAMES = ['hero', 'game', 'far'];
  *  cups: modelled suction cups ({ radial, prof, gap } — gap scales the spacing) or null (the shader prints them),
  *  cap: scalp-cap grid (around × rows), brow: brow stroke rings × radial.
  */
-export function hairDetail(lod = 'hero', quality = hairQuality()) {
+export function hairDetail(lod = 'hero', quality = hairQuality()): HairDetail {
   const k = QK[quality] ?? 1;
   // far: a few dozen px tall — sized under the far hair target (~1.8k tris) so it is used as-is (never re-clustered)
   if (lod === 'far') return { lod, k, ringsPerM: 24, radial: 6, tipSteps: 2, cups: null, locks: false, cap: [24, 5], brow: [4, 4], squid: { around: 24, rows: 16, arm: [8, 6] } };
@@ -56,6 +56,37 @@ export function hairDetail(lod = 'hero', quality = hairQuality()) {
 // ------------------------------------------------------------------------------------------------
 // Tentacle surface
 // ------------------------------------------------------------------------------------------------
+
+// 모델링 흡판 해상도: 둘레 분할, 단면 종류('hi'·'lo'), 간격 배수
+export interface CupDetail { radial: number; prof: string; gap: number }
+/** hairDetail 결과(설명은 hairDetail 주석). squid는 오징어 형태의 같은 값이다. */
+export interface HairDetail {
+  lod: string; k: number; ringsPerM: number; radial: number; tipSteps: number; cups: CupDetail | null; locks?: boolean;
+  cap: number[]; brow: number[];
+  squid: { around: number; rows: number; arm: number[]; cups?: CupDetail | null };
+}
+// 촉수 표면 선택(설명은 TentacleSurface 주석)
+export interface SurfOpts {
+  radius: (t: number) => number;
+  flat?: (t: number) => number;
+  twist?: (t: number) => number;
+  section?: (c: number, s: number, t: number) => number[];
+  outward?: (P: THREE.Vector3, out: THREE.Vector3, t: number) => void;
+  transport?: boolean; samples?: number; curveType?: 'centripetal' | 'chordal' | 'catmullrom';
+}
+// 촉수 관 선택(설명은 tentacleTube 주석)
+export interface TubeOpts { rings?: number; radial?: number; tipSteps?: number; startSteps?: number; t0?: number; t1?: number; tipLen?: number; tipBias?: number; capStart?: boolean }
+// 흡판 선택(설명은 suctionCups 주석)
+export interface CupOpts {
+  rows: Array<{ th: number; phase?: number }>; from: number; to: number; size: (t: number) => number;
+  gap?: number; radial?: number; prof?: string; height?: number;
+  skip?: (C: THREE.Vector3, t: number, R: number) => unknown;
+}
+// 앞머리 다발: 옆 퍼짐 d·층 h(m), 길이 비율, 굵기·납작함 배수, 말림, 비틀림, 뿌리 퍼짐, 아래 처짐, 색조
+export interface LockDef { d?: number; h?: number; len?: number; r?: number; flat?: number; curl?: number; tw?: number; root?: number; dy?: number; tint?: number }
+// 척추 표본(근접 시험용)
+export interface SpineSample { p: THREE.Vector3; r: number; h: number; O: THREE.Vector3; T: THREE.Vector3; t: number }
+
 const _a = new V3(), _b = new V3(), _c = new V3(), _d = new V3(), _e = new V3();
 
 /**
@@ -63,21 +94,26 @@ const _a = new V3(), _b = new V3(), _c = new V3(), _d = new V3(), _e = new V3();
  * o.outward(P, out, t) "top" hint · o.transport: carry the frame (no flips at curled tips), biased toward the hint.
  */
 export class TentacleSurface {
-  constructor(points, o = {}) {
+  o: SurfOpts;
+  curve: THREE.CatmullRomCurve3;
+  len: number;
+  N: number;
+  P: THREE.Vector3[] = []; T: THREE.Vector3[] = []; O: THREE.Vector3[] = []; B: THREE.Vector3[] = [];
+  constructor(points: Array<THREE.Vector3 | number[]>, o: SurfOpts) {
     this.o = o;
-    const curve = this.curve = new THREE.CatmullRomCurve3(points.map((p) => (p.isVector3 ? p.clone() : new V3(...p))), false, o.curveType || 'centripetal');
+    const curve = this.curve = new THREE.CatmullRomCurve3(points.map((p) => (p instanceof THREE.Vector3 ? p.clone() : new V3(p[0], p[1], p[2]))), false, o.curveType || 'centripetal');
     this.len = curve.getLength();
     const N = this.N = o.samples ?? 240;
-    const P = this.P = [], T = this.T = [], O = this.O = [], B = this.B = [];
+    const P = this.P, T = this.T, O = this.O, B = this.B;
     for (let i = 0; i <= N; i++) { P.push(curve.getPointAt(i / N)); T.push(curve.getTangentAt(i / N).normalize()); }
     const hint = new V3(), prev = new V3();
-    const wStep = (hl) => 1 - Math.pow(1 - 0.22 * hl * hl, 18 / N); // same bias per unit length as the old 18-ring sweep
+    const wStep = (hl: number) => 1 - Math.pow(1 - 0.22 * hl * hl, 18 / N); // same bias per unit length as the old 18-ring sweep
     for (let i = 0; i <= N; i++) {
       const Ti = T[i];
       if (o.outward) o.outward(P[i], hint, i / N); else hint.set(0, 1, 0);
       hint.addScaledVector(Ti, -hint.dot(Ti));
       const hl = hint.length();
-      let oi;
+      let oi: THREE.Vector3;
       if (i === 0 || !o.transport) {
         if (hl > 1e-6) oi = hint.clone().divideScalar(hl);
         else { oi = new V3(0, 1, 0).addScaledVector(Ti, -Ti.y); if (oi.lengthSq() < 1e-6) oi.set(1, 0, 0).addScaledVector(Ti, -Ti.x); oi.normalize(); }
@@ -89,7 +125,7 @@ export class TentacleSurface {
     }
   }
   /** Spine frame at t (t outside [0, 1] extrapolates along the end tangents). */
-  frame(t, P, T, O, B) {
+  frame(t: number, P: THREE.Vector3, T: THREE.Vector3, O: THREE.Vector3, B: THREE.Vector3) {
     const N = this.N;
     const tc = clamp(t, 0, 1);
     const f = tc * N, i0 = Math.min(N - 1, Math.floor(f)), a = f - i0;
@@ -101,9 +137,9 @@ export class TentacleSurface {
     return P;
   }
   /** Section at t: { r, flat, tw } (profiles are evaluated at the clamped t). */
-  section(t) { const o = this.o, tc = clamp(t, 0, 1); return { r: o.radius(tc), flat: o.flat ? o.flat(tc) : 1, tw: o.twist ? o.twist(tc) : 0 }; }
+  section(t: number) { const o = this.o, tc = clamp(t, 0, 1); return { r: o.radius(tc), flat: o.flat ? o.flat(tc) : 1, tw: o.twist ? o.twist(tc) : 0 }; }
   /** Local (O, B) offset of ring angle th at t (scale shrinks the section, e.g. for the rounded tip). */
-  offset(t, th, scale = 1, sec = null) {
+  offset(t: number, th: number, scale = 1, sec: { r: number; flat: number; tw: number } | null = null) {
     const s0 = sec || this.section(t);
     let c = Math.cos(th), s = Math.sin(th);
     if (this.o.section) [c, s] = this.o.section(c, s, clamp(t, 0, 1));
@@ -112,13 +148,13 @@ export class TentacleSurface {
     return [xo * ct - xb * st, xo * st + xb * ct, Math.abs(c) * s0.r * s0.flat * scale];
   }
   /** Surface point S(t, th). */
-  point(t, th, out, scale = 1, shift = 0) {
+  point(t: number, th: number, out: THREE.Vector3, scale = 1, shift = 0) {
     const P = this.frame(t, _a, _b, _c, _d);
     const [x, y] = this.offset(t, th, scale);
     return out.copy(P).addScaledVector(_c, x).addScaledVector(_d, y).addScaledVector(_b, shift);
   }
   /** Outward unit normal of the surface at (t, th) (finite differences; oriented away from the spine). */
-  normal(t, th, out) {
+  normal(t: number, th: number, out: THREE.Vector3) {
     const e = 1e-3;
     const p0 = this.point(t, th, new V3());
     const pt = this.point(t + e, th, new V3()).sub(this.point(t - e, th, new V3()));
@@ -129,7 +165,7 @@ export class TentacleSurface {
     return out;
   }
   /** Curvature-adaptive ring params: n + 1 values on [0, 1], denser in tight curls, at the root and toward the tip. */
-  ringParams(n, tipBias = 1) {
+  ringParams(n: number, tipBias = 1) {
     const N = this.N, rho = new Float64Array(N);
     const ds = this.len / N;
     for (let i = 0; i < N; i++) {
@@ -160,13 +196,13 @@ export class TentacleSurface {
  * opts: rings (spine rings), radial, tipSteps, startSteps, t0/t1 (build only [t0, t1]), tipLen (tip cap length / r).
  * Per vertex: t (spine param), cs/sn (ring angle), thick (half-thickness through the section there, metres).
  */
-export function tentacleTube(S, opts = {}) {
+export function tentacleTube(S: TentacleSurface, opts: TubeOpts = {}) {
   const radial = opts.radial ?? 16;
   const t0 = opts.t0 ?? 0, t1 = opts.t1 ?? 1;
-  const ts = S.ringParams(Math.max(4, opts.rings ?? 32), opts.tipBias ?? 1).map((u) => t0 + u * (t1 - t0));
-  const pos = [], tt = [], cs = [], sn = [], th = [], idx = [];
+  const ts = S.ringParams(Math.max(4, opts.rings ?? 32), opts.tipBias ?? 1).map((u: number) => t0 + u * (t1 - t0));
+  const pos: number[] = [], tt: number[] = [], cs: number[] = [], sn: number[] = [], th: number[] = [], idx: number[] = [];
   const P = new V3(), T = new V3(), O = new V3(), B = new V3();
-  const ring = (t, scale, shift) => {
+  const ring = (t: number, scale: number, shift: number) => {
     S.frame(t, P, T, O, B);
     const sec = S.section(t);
     for (let k = 0; k < radial; k++) {
@@ -176,7 +212,7 @@ export function tentacleTube(S, opts = {}) {
       tt.push(t); cs.push(Math.cos(a)); sn.push(Math.sin(a)); th.push(Math.max(h, 0.18 * sec.r * sec.flat * scale));
     }
   };
-  const pole = (t, shift) => {
+  const pole = (t: number, shift: number) => {
     S.frame(t, P, T, O, B); pos.push(P.x + T.x * shift, P.y + T.y * shift, P.z + T.z * shift);
     const sec = S.section(t);
     tt.push(t); cs.push(shift > 0 ? 1 : -1); sn.push(0); th.push(0.3 * sec.r * sec.flat);
@@ -194,7 +230,7 @@ export function tentacleTube(S, opts = {}) {
   const r1 = S.section(ts[ts.length - 1]).r, tipLen = (opts.tipLen ?? 1.05) * r1;
   for (let j = 1; j < tipSteps; j++) { const a = (j / tipSteps) * Math.PI * 0.5; ring(ts[ts.length - 1], Math.cos(a), tipLen * Math.sin(a)); rings++; }
   pole(ts[ts.length - 1], tipLen);
-  const base = (r) => (hasStart ? 1 : 0) + r * radial;
+  const base = (r: number) => (hasStart ? 1 : 0) + r * radial;
   for (let r = 0; r < rings - 1; r++) {
     const a0 = base(r), a1 = base(r + 1);
     for (let k = 0; k < radial; k++) { const k1 = (k + 1) % radial; idx.push(a0 + k, a1 + k1, a1 + k, a0 + k, a0 + k1, a1 + k1); }
@@ -213,7 +249,7 @@ export function tentacleTube(S, opts = {}) {
 // Suction cups: small ringed cups stamped onto S in two staggered rows along the underside
 // ------------------------------------------------------------------------------------------------
 // cup profile: [radius / R, height / h] from the buried foot (fillet into the skin) → skirt → rolled rim → dish → centre
-const CUP_PROF = {
+const CUP_PROF: Record<string, number[][]> = {
   hi: [[1.22, -0.1], [0.98, 0.36], [0.84, 0.94], [0.68, 1.0], [0.55, 0.72], [0.34, 0.3], [0.0, 0.16]],
   lo: [[1.18, -0.1], [0.92, 0.7], [0.7, 1.0], [0.52, 0.55], [0.0, 0.2]],
 };
@@ -222,14 +258,14 @@ const CUP_PROF = {
  * gap (spacing multiplier), radial, prof ('hi' | 'lo'), skip(C, t) → true drops a cup (inside the head / another strand).
  * Returns { geo, t (per vertex: the cup centre's spine param), ring (0 centre … 1 rim top … ≥1 foot), list: [{t, th, R}] }.
  */
-export function suctionCups(S, opts) {
+export function suctionCups(S: TentacleSurface, opts: CupOpts) {
   const prof = CUP_PROF[opts.prof || 'hi'];
   const radial = opts.radial ?? 9;
   const gap = opts.gap ?? 1;
-  const pos = [], tt = [], rr = [], idx = [], list = [];
+  const pos: number[] = [], tt: number[] = [], rr: number[] = [], idx: number[] = [], list: Array<{ t: number; th: number; R: number }> = [];
   const n = new V3(), et = new V3(), ea = new V3(), C = new V3(), q = new V3(), qn = new V3();
   const eps = 1e-3;
-  const rimK = prof.findIndex((p) => p[1] >= 0.99);
+  const rimK = prof.findIndex((p: number[]) => p[1] >= 0.99);
   for (const row of opts.rows) {
     let t = opts.from;
     const R0 = opts.size(t);
@@ -261,7 +297,7 @@ export function suctionCups(S, opts) {
           }
         }
         // rings j (radial verts) → j+1; the last profile entry is the centre point
-        const ringStart = (j) => b0 + j * radial;
+        const ringStart = (j: number) => b0 + j * radial;
         for (let j = 0; j < nr - 2; j++) {
           const a0 = ringStart(j), a1 = ringStart(j + 1);
           for (let k = 0; k < radial; k++) { const k1 = (k + 1) % radial; idx.push(a0 + k, a0 + k1, a1 + k1, a0 + k, a1 + k1, a1 + k); }
@@ -281,7 +317,7 @@ export function suctionCups(S, opts) {
   {
     const N = geo.attributes.normal, Pp = geo.attributes.position; let acc = 0; const sp = new V3(), tmp = new V3(), nn = new V3();
     for (let i = 0; i < Pp.count; i += 7) { S.frame(tt[i], sp, _b, _c, _d); tmp.fromBufferAttribute(Pp, i).sub(sp); nn.fromBufferAttribute(N, i); acc += nn.dot(tmp); }
-    if (acc < 0) { const ix = geo.index.array; for (let i = 0; i < ix.length; i += 3) { const s = ix[i + 1]; ix[i + 1] = ix[i + 2]; ix[i + 2] = s; } geo.computeVertexNormals(); }
+    if (acc < 0) { const ix = geo.index!.array; for (let i = 0; i < ix.length; i += 3) { const s = ix[i + 1]; ix[i + 1] = ix[i + 2]; ix[i + 2] = s; } geo.computeVertexNormals(); }
   }
   return { geo, t: new Float32Array(tt), ring: new Float32Array(rr), list };
 }
@@ -293,7 +329,7 @@ export function suctionCups(S, opts) {
  * Roll the end of a spine: extend the last segment and curl it toward `outDir(b)` (away from the head) in a tightening
  * spiral (≈ a quarter to three-quarter turn for curl 0.5 … 1.2). Returns a new point list.
  */
-export function curlTip(pts, curl, outDir, lift = 0.35) {
+export function curlTip(pts: THREE.Vector3[], curl: number, outDir: (b: THREE.Vector3) => THREE.Vector3, lift = 0.35) {
   if (!curl) return pts.map((p) => p.clone());
   const out = pts.map((p) => p.clone());
   const a = pts[pts.length - 2], b = pts[pts.length - 1];
@@ -318,11 +354,11 @@ export function curlTip(pts, curl, outDir, lift = 0.35) {
  * by `d` (m, at the lock's tip; ~35 % of it at the root) and layered by `h` (m along the top direction), then curls.
  * S = the main strand's surface (frames), n = samples. Returns an array of point lists (V3).
  */
-export function lockSpines(S, locks, outDir, n = 12) {
-  const res = [];
+export function lockSpines(S: TentacleSurface, locks: LockDef[], outDir: (b: THREE.Vector3) => THREE.Vector3, n = 12) {
+  const res: THREE.Vector3[][] = [];
   const P = new V3(), T = new V3(), O = new V3(), B = new V3();
   for (const L of locks) {
-    const pts = [];
+    const pts: THREE.Vector3[] = [];
     for (let k = 0; k <= n; k++) {
       const u = k / n, t = u * (L.len ?? 0.8);
       S.frame(t, P, T, O, B);
@@ -339,8 +375,8 @@ export function lockSpines(S, locks, outDir, n = 12) {
 // Baked contact occlusion for the hair: distance of a point to a set of occluders (head / other strands)
 // ------------------------------------------------------------------------------------------------
 /** Spine samples of a surface (for proximity tests): [{ p, r, h }] every ~1 cm. */
-export function spineSamples(S, from = 0, to = 1) {
-  const out = []; const P = new V3(), T = new V3(), O = new V3(), B = new V3();
+export function spineSamples(S: TentacleSurface, from = 0, to = 1) {
+  const out: SpineSample[] = []; const P = new V3(), T = new V3(), O = new V3(), B = new V3();
   const n = Math.max(4, Math.ceil((S.len * (to - from)) / 0.008));
   for (let i = 0; i <= n; i++) {
     const t = lerp(from, to, i / n); S.frame(t, P, T, O, B); const s = S.section(t);

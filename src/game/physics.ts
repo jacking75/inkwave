@@ -1,5 +1,8 @@
 // Collision queries against the level's oriented boxes: raycasts, capsule resolution, point/segment helpers,
 // plus the character-controller queries (flat-footprint ground probe, lifted body capsule, camera probe).
+import type { Level, Block } from '../world/level.js';
+// 충돌 접촉 결과(actor.ts makeContacts가 만든다)
+export interface Contacts { ground: boolean; wall: boolean; ceiling: boolean; groundNormal: THREE.Vector3; wallNormal: THREE.Vector3; groundBlock: number; wallBlock: number; [k: string]: unknown }
 import * as THREE from 'three';
 
 const _o = new THREE.Vector3(), _d = new THREE.Vector3(), _p = new THREE.Vector3(), _q = new THREE.Vector3();
@@ -15,23 +18,47 @@ for (let i = 0; i < 6; i++) { const a = (i / 6) * Math.PI * 2; CAM_RAYS.push([Ma
 for (let i = 0; i < 8; i++) { const a = (i / 8) * Math.PI * 2 + 0.39; CAM_RAYS.push([Math.cos(a), Math.sin(a), 0.4]); }
 
 export class Hit {
+  declare v: number;
+  declare u: number;
+  declare face: number;
+  declare block: number;
+  declare normal: THREE.Vector3;
+  declare point: THREE.Vector3;
+  declare dist: number;
+  declare hit: boolean;
   constructor() { this.hit = false; this.dist = 0; this.point = new THREE.Vector3(); this.normal = new THREE.Vector3(); this.block = -1; this.face = -1; this.u = 0; this.v = 0; }
 }
 
 // Result of Physics.groundProbe (feet support under a character).
 export class GroundHit {
+  declare grate: boolean;
+  declare center: boolean;
+  declare v: number;
+  declare u: number;
+  declare face: number;
+  declare block: number;
+  declare normal: THREE.Vector3;
+  declare y: number;
+  declare hit: boolean;
   constructor() { this.hit = false; this.y = 0; this.normal = new THREE.Vector3(0, 1, 0); this.block = -1; this.face = -1; this.u = 0; this.v = 0; this.center = false; this.grate = false; }
 }
 
 export class Physics {
-  constructor(level) {
+  declare _camHit: Hit;
+  declare _gh2: Hit;
+  declare _gh: Hit;
+  declare _losHit: Hit;
+  declare _segDir: THREE.Vector3;
+  _ids: number[] = [];
+  declare level: Level;
+  constructor(level: Level) {
     this.level = level;
     this._ids = [];
   }
 
   // Ray vs all blocks. dir must be normalized. Ignores blocks containing the origin.
   // opts.skipGrates: ink, shots, droplets and the camera pass straight through grates
-  raycast(origin, dir, maxDist, out = new Hit(), skipGrates = false) {
+  raycast(origin: THREE.Vector3, dir: THREE.Vector3, maxDist: number, out = new Hit(), skipGrates = false) {
     out.hit = false; out.dist = maxDist; out.block = -1; out.face = -1;
     const ex = origin.x + dir.x * maxDist, ez = origin.z + dir.z * maxDist;
     const ids = this.level.queryBlocks(Math.min(origin.x, ex), Math.min(origin.z, ez), Math.max(origin.x, ex), Math.max(origin.z, ez), this._ids);
@@ -70,7 +97,7 @@ export class Physics {
     return out;
   }
 
-  segment(a, b, out = new Hit(), skipGrates = false) {
+  segment(a: THREE.Vector3, b: THREE.Vector3, out = new Hit(), skipGrates = false) {
     _d.copy(b).sub(a);
     const len = _d.length();
     if (len < 1e-6) { out.hit = false; return out; }
@@ -79,7 +106,7 @@ export class Physics {
   }
 
   // Line of sight between two points (true = clear).
-  los(a, b) {
+  los(a: THREE.Vector3, b: THREE.Vector3) {
     _ab.copy(b).sub(a);
     const len = _ab.length();
     if (len < 1e-4) return true;
@@ -87,7 +114,7 @@ export class Physics {
     return !this.raycast(a, dir, len - 0.05, this._losHit || (this._losHit = new Hit()), true).hit;
   }
 
-  closestOnBlock(b, p, out) {
+  closestOnBlock(b: Block, p: THREE.Vector3, out: THREE.Vector3) {
     _o.copy(p).sub(b.center);
     out.copy(b.center);
     for (let k = 0; k < 3; k++) {
@@ -101,7 +128,7 @@ export class Physics {
 
   // Resolve a vertical capsule (feet at pos) against the level. Mutates pos. Fills contact info in `c`.
   // squid = true: grates don't collide (squids slip through the mesh)
-  collideCapsule(pos, radius, height, c, iterations = 3, squid = false) {
+  collideCapsule(pos: THREE.Vector3, radius: number, height: number, c: Contacts, iterations = 3, squid = false) {
     c.ground = false; c.wall = false; c.ceiling = false;
     c.groundNormal.set(0, 1, 0); c.wallNormal.set(0, 0, 0); c.groundBlock = -1; c.wallBlock = -1;
     const blocks = this.level.blocks;
@@ -161,7 +188,7 @@ export class Physics {
   // so slopes are exact (no hovering, no sphere-on-plane bounce); ring samples take over when the centre is over a
   // gap (feet stay planted on a ledge until the whole footprint is off) or when one of them sits on a clear step
   // (> stepMin above the centre: curbs/lips are stepped onto as soon as the foot reaches them).
-  groundProbe(x, y, z, up, down, foot, out, skipGrates = false, stepMin = 0.12) {
+  groundProbe(x: number, y: number, z: number, up: number, down: number, foot: number, out: GroundHit, skipGrates = false, stepMin = 0.12) {
     out.hit = false; out.center = false;
     const h = this._gh || (this._gh = new Hit());
     const len = up + down;
@@ -186,7 +213,7 @@ export class Physics {
     return out;
   }
 
-  _fillGround(out, h, center) {
+  _fillGround(out: GroundHit, h: Hit, center: boolean) {
     out.y = h.point.y; out.normal.copy(h.normal); out.block = h.block; out.face = h.face; out.u = h.u; out.v = h.v;
     out.center = center; out.grate = h.block >= 0 && !!this.level.blocks[h.block].grate;
   }
@@ -194,7 +221,7 @@ export class Physics {
   // Resolve the character BODY: a vertical capsule whose bottom is lifted `lift` above the feet (everything below the
   // lift is the feet's job — step-ups, curbs). `horizontal` (grounded) turns push-outs into horizontal pushes so walls
   // never shove a grounded character up or down (no fighting with the ground snap). Mutates pos, fills contacts `c`.
-  collideBody(pos, radius, lift, height, c, horizontal = false, skipGrates = false, iterations = 3) {
+  collideBody(pos: THREE.Vector3, radius: number, lift: number, height: number, c: Contacts, horizontal = false, skipGrates = false, iterations = 3) {
     c.ground = false; c.wall = false; c.ceiling = false;
     c.groundNormal.set(0, 1, 0); c.wallNormal.set(0, 0, 0); c.groundBlock = -1; c.wallBlock = -1;
     const blocks = this.level.blocks;
@@ -254,7 +281,7 @@ export class Physics {
   }
 
   // Would a body capsule (same shape as collideBody) at `pos` overlap solid geometry? (step-up / ledge checks)
-  bodyFits(pos, radius, lift, height, skipGrates = false, margin = 0.01) {
+  bodyFits(pos: THREE.Vector3, radius: number, lift: number, height: number, skipGrates = false, margin = 0.01) {
     const blocks = this.level.blocks;
     const bot = lift + radius, top = Math.max(bot, height - radius);
     const ids = this.level.queryBlocks(pos.x - radius - 0.1, pos.z - radius - 0.1, pos.x + radius + 0.1, pos.z + radius + 0.1, this._ids);
@@ -280,7 +307,7 @@ export class Physics {
   // obstacle sweeping toward the line of sight starts pulling the camera in several frames before it crosses it.
   // `back` = unit boom direction (pivot → lens). Returns out = { hard, soft, floor }: hard = centre-ray limit,
   // soft = blended limit (≤ hard), floor = true when the centre ray hit an upward-facing surface (never go under).
-  cameraProbe(pivot, back, want, radius, out, pad = 0.3) {
+  cameraProbe(pivot: THREE.Vector3, back: THREE.Vector3, want: number, radius: number, out: { hard: number; soft: number; floor: boolean }, pad = 0.3) {
     const h = this._camHit || (this._camHit = new Hit());
     _a.set(0, 1, 0); if (Math.abs(back.y) > 0.95) _a.set(1, 0, 0);
     _p.crossVectors(back, _a).normalize();     // side
@@ -302,14 +329,14 @@ export class Physics {
   }
 
   // Distance from point p to the vertical capsule (feet at base).
-  static pointCapsuleDist(p, base, radius, height) {
+  static pointCapsuleDist(p: THREE.Vector3, base: THREE.Vector3, radius: number, height: number) {
     const y = Math.min(Math.max(p.y, base.y + radius), base.y + Math.max(radius, height - radius));
     const dx = p.x - base.x, dy = p.y - y, dz = p.z - base.z;
     return Math.sqrt(dx * dx + dy * dy + dz * dz);
   }
 
   // Closest approach of segment a→b to the vertical capsule; returns distance and sets outT (0..1 along segment).
-  static segmentCapsuleDist(a, b, base, radius, height, res) {
+  static segmentCapsuleDist(a: THREE.Vector3Like, b: THREE.Vector3Like, base: THREE.Vector3, radius: number, height: number, res: { t: number; dist: number }) {
     // sample-based closest point (short segments; robust enough for projectiles)
     let best = Infinity, bt = 0;
     const steps = 6;
