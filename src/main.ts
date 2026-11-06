@@ -862,7 +862,7 @@ class Game {
   // the room's colours while you're in one (so the lobby line-up and the match agree on every screen)
   _pickPalette() {
     if (this.settings.colorblind) return COLORBLIND_PALETTE;
-    const room = G.net && G.net.state !== 'offline' && G.net.state !== 'error' && TEAM_PALETTES[G.net.lobby?.palette];
+    const room = G.net && G.net.state !== 'offline' && G.net.state !== 'error' && TEAM_PALETTES[G.net.lobby?.palette as number];   // (방이 없으면 undefined 열쇠 → 없음)
     if (room) return room;
     const p = TEAM_PALETTES[(Math.random() * TEAM_PALETTES.length) | 0];
     return p;
@@ -1619,7 +1619,7 @@ class Game {
     this._setPalette(this.settings.colorblind ? COLORBLIND_PALETTE : TEAM_PALETTES[cfg.palette] || TEAM_PALETTES[0]);
     const m = (this.match = G.match = new Match({
       attract: false, duration: cfg.duration, difficulty: cfg.difficulty, mode: cfg.mode, CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
-      roster: cfg.roster as RosterEntry[], myId: G.net!.myId, host: G.net!.isHost, autopilot: params.has('autopilot'),
+      roster: cfg.roster as RosterEntry[], myId: G.net!.myId!, host: G.net!.isHost, autopilot: params.has('autopilot'),
     }));
     m.setup();
     await this._warmCharacters(m);   // before 'ready': nobody starts until every shader a squidkid can use is compiled

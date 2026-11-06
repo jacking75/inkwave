@@ -67,7 +67,9 @@ export class Boss {
   model: BossModel;
   st: BossAnimState;
   brain: BossBrain | null;
-  net: { buf: BossSnap[]; err: THREE.Vector3; errV: THREE.Vector3; prev: BossSnap | null; ready: boolean; handoff: boolean; cur?: BossSnap | null; fl?: number; wk?: number; crabSeen?: Set<number> };
+  // 게스트 재생 상태(net/netmatch.ts _sampleBoss가 채운다): 스냅숏 버퍼, 보정, 그린 위치, 지난 표본·시각, 현재·재측정 표본
+  net: { buf: BossSnap[]; err: THREE.Vector3; errV: THREE.Vector3; prev: THREE.Vector3 | null; ready: boolean; handoff: boolean; cur?: BossSnap | null; fl?: number; wk?: number; crabSeen?: Set<number>;
+    prevRaw?: THREE.Vector3; prevT?: number; _P?: BossSnap };
   _ev = { key: '', phase: 1, stun: false, dead: false, anim: 0, hp: -1, intro: false };
   _paintBt = 0;
   _rain = new Map<Actor, number>();

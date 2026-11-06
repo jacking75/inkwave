@@ -20,11 +20,22 @@ export function relayURL() {
 // message of a 250 ms Wi-Fi hiccup that holds everything behind it).
 const SIM = (() => {
   const q = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
-  const lag = +q.get('netlag') || 0, jit = +q.get('netjitter') || 0, spike = +q.get('netspike') || 0;
+  const lag = +q.get('netlag')! || 0, jit = +q.get('netjitter')! || 0, spike = +q.get('netspike')! || 0;
   return lag || jit || spike ? { lag, jit, spike, last: 0 } : null;
 })();
 
+/** 중계의 제어 프레임(welcome·join·leave·err·pong): t 종류, 그 밖 필드는 종류마다 다르다(id·e·c·members 등) */
+export interface ControlFrame { t: string; id?: string; e?: string; c?: number; [k: string]: unknown }
 export class Transport {
+  declare ws: WebSocket | null;
+  declare id: string | null;
+  declare onControl: ((obj: ControlFrame) => void) | null;
+  declare onMessage: ((from: string, obj: unknown) => void) | null;
+  declare onClose: ((reason: string) => void) | null;
+  declare rtt: number;
+  declare _pingT: ReturnType<typeof setInterval> | null;
+  declare _pingSent: number;
+  declare bytesIn: number; declare bytesOut: number;
   constructor() {
     this.ws = null;
     this.id = null;
@@ -37,16 +48,16 @@ export class Transport {
   }
 
   /** Resolves with the welcome frame, rejects with an Error carrying a player-facing message. */
-  connect(code, name, create) {
-    return new Promise((resolve, reject) => {
+  connect(code: string, name: string, create?: boolean) {
+    return new Promise<ControlFrame>((resolve, reject) => {
       let settled = false;
-      const done = (fn, v) => { if (!settled) { settled = true; clearTimeout(timer); fn(v); } };
+      const done = <T>(fn: (v: T) => void, v: T) => { if (!settled) { settled = true; clearTimeout(timer); fn(v); } };
       const url = `${relayURL()}/room/${encodeURIComponent(code)}?name=${encodeURIComponent(name)}&v=${PROTO}${create ? '&create=1' : ''}`;
-      let ws;
+      let ws: WebSocket;
       try { ws = new WebSocket(url); } catch { reject(new Error('Could not connect')); return; }
       this.ws = ws;
       const timer = setTimeout(() => { done(reject, new Error('Could not connect')); try { ws.close(); } catch { /* ignore */ } }, 8000);
-      const handle = (ev) => {
+      const handle = (ev: MessageEvent) => {
         const s = typeof ev.data === 'string' ? ev.data : '';
         this.bytesIn += s.length;
         if (s === 'pong') {   // answered by the relay runtime itself (it doubles as our liveness signal there)
@@ -55,14 +66,14 @@ export class Transport {
         }
         if (s.charCodeAt(0) === 109 && s.charCodeAt(1) === 124) {            // "m|from|json"
           const k = s.indexOf('|', 2);
-          let obj; try { obj = JSON.parse(s.slice(k + 1)); } catch { return; }
+          let obj: unknown; try { obj = JSON.parse(s.slice(k + 1)); } catch { return; }
           this.onMessage?.(s.slice(2, k), obj);
           return;
         }
-        let o; try { o = JSON.parse(s); } catch { return; }
+        let o: ControlFrame; try { o = JSON.parse(s); } catch { return; }
         if (o.t === 'err') { done(reject, new Error(o.e || 'Could not connect')); return; }
-        if (o.t === 'pong') { const r = performance.now() - o.c; this.rtt = this.rtt ? this.rtt + (r - this.rtt) * 0.3 : r; return; }
-        if (o.t === 'welcome') { this.id = o.id; this._startPing(); done(resolve, o); }
+        if (o.t === 'pong') { const r = performance.now() - o.c!; this.rtt = this.rtt ? this.rtt + (r - this.rtt) * 0.3 : r; return; }
+        if (o.t === 'welcome') { this.id = o.id!; this._startPing(); done(resolve, o); }
         this.onControl?.(o);
       };
       ws.onmessage = !SIM ? handle : (ev) => {
@@ -90,16 +101,16 @@ export class Transport {
   }
   _stopPing() { if (this._pingT) clearInterval(this._pingT); this._pingT = null; }
 
-  _raw(s) {
+  _raw(s: string) {
     const ws = this.ws;
     if (!ws || ws.readyState !== 1) return false;
     this.bytesOut += s.length;
     ws.send(s);
     return true;
   }
-  broadcast(obj) { return this._raw('b|' + JSON.stringify(obj)); }
-  sendTo(id, obj) { return this._raw('s|' + id + '|' + JSON.stringify(obj)); }
-  lock(v) { return this._raw(JSON.stringify({ t: 'lock', v: !!v })); }
+  broadcast(obj: unknown) { return this._raw('b|' + JSON.stringify(obj)); }
+  sendTo(id: string, obj: unknown) { return this._raw('s|' + id + '|' + JSON.stringify(obj)); }
+  lock(v: unknown) { return this._raw(JSON.stringify({ t: 'lock', v: !!v })); }
   get open() { return !!this.ws && this.ws.readyState === 1; }
 
   close() {

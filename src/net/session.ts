@@ -5,19 +5,61 @@
 // sends one roster to everyone; every client builds the stage, reports ready, and the host says go — so intros start
 // together. In the match NetMatch (netmatch.js) does the replication.
 import { G, emit } from '../core/ctx.js';
-import { MAPS, WEAPONS, WEAPON_ORDER, SUBS, SUB_ORDER, SPECIALS, SPECIAL_ORDER, MATCH, ZONES, BOT_NAMES, TEAM_PALETTES, mapNoBots, mapBossOk, bossFallbackMap, noBotsStartBlock } from '../config.js';
+import { MAPS, WEAPON_CFG, WEAPON_ORDER, SUB_CFG, SUB_ORDER, SPECIAL_CFG, SPECIAL_ORDER, MATCH, ZONES, BOT_NAMES, TEAM_PALETTES, mapNoBots, mapBossOk, bossFallbackMap, noBotsStartBlock } from '../config.js';
 import { randomStyle } from '../game/character-style.js';
 import { Transport } from './transport.js';
+import type { ControlFrame } from './transport.js';
+import type { RosterEntry } from '../game/match.js';
+import type { MapDef } from '../config.js';
 import { NetMatch } from './netmatch.js';
 
 // no 0/O or 1/I (misread), and no W/A/S/D: those move the menu cursor, so any other key typed on the online hub can
 // only mean a room code (28⁵ ≈ 17 M codes)
+/** 방의 선수(호스트가 정리한 목록): 팀은 요청 중 'auto'일 수 있다(_fixTeams가 0·1로 바꾼다) */
+export interface SessionPlayer {
+  id: string; name: string; team: number | 'auto'; weapon: string; sub: string | null; special: string | null; style: object | null;
+  ready: boolean; ping?: number; host?: boolean; you?: boolean;
+}
+/** 방 설정 + 선수(docs/NET.md lobby) */
+export interface SessionLobby {
+  map: string; time: string; duration: number; bots: boolean; difficulty: string; palette: number; mode: string; players: SessionPlayer[]; maxPlayers: number;
+}
+/** 시작 설정(호스트가 모두에게 보내는 명단·무대) */
+export interface StartCfg {
+  k: 'start'; roster: RosterEntry[]; map: string; time: string; duration: number; difficulty: string; palette: number; mode: string; host: string; id: string;
+}
+/** 내 선수 변경(이름·장비·모양·준비·팀) — 호스트에게 보내고 호스트가 검증한다 */
+interface MeChange { name?: string; weapon?: string; sub?: string | null; special?: string | null; style?: object | null; ready?: boolean; team?: number | 'auto'; ping?: number }
+/** 방 메시지(k로 구분): lobby·me·emote·start·ready·go, 그 밖은 경기(NetMatch) */
+type SessionMsg = { k: string; l?: SessionLobby; n?: string; id?: string } & MeChange & Partial<Omit<StartCfg, 'k' | 'id'>>;
+/** 세션이 읽는 G.game(메인 게임) 부분 */
+interface GameView {
+  mapDef?: MapDef; time?: string; settings?: { matchLength?: number; difficulty?: string } | null; paletteIndex?(): number;
+  profile?: { name?: string; weapon?: string; sub?: string | null; special?: string | null; style?: object | null };
+  menus?: { launchLobby?(): Promise<unknown> } | null; startNetMatch(cfg: StartCfg, m: NetMatch): Promise<unknown>; netMatchGo?(): void; netMatchAborted?(msg: string | null): void;
+}
+const game = () => G.game as GameView | null | undefined;
 const CODE_CHARS = 'BCEFGHJKLMNPQRTUVXYZ23456789';
 const TEAM = 4;
 // a loadout's sub / special: a known id, or null (= the weapon's own)
-const subOf = (id) => (SUBS[id] ? id : null), specialOf = (id) => (SPECIALS[id] ? id : null);
+const subOf = (id: string | null | undefined) => (SUB_CFG[id as string] ? id! : null), specialOf = (id: string | null | undefined) => (SPECIAL_CFG[id as string] ? id! : null);
 
 export class NetSession {
+  declare _pingT: number;
+  declare _goT: ReturnType<typeof setTimeout> | null | undefined;
+  declare _ready: Set<string>;
+  declare _botsPref: boolean | null;
+  declare _startCfg: StartCfg | null;
+  declare _members: Map<string, string>;
+  declare match: NetMatch | null;
+  declare tr: Transport | null;
+  declare _subs: Map<string, Set<(data: unknown) => void>>;
+  declare lobby: SessionLobby;
+  declare error: string | null;
+  declare hostId: string | null;
+  declare myId: string | null;
+  declare code: string | null;
+  declare state: string;
   constructor() {
     this.state = 'offline';
     this.code = null;
@@ -37,24 +79,25 @@ export class NetSession {
   get active() { return this.state === 'match' && !!this.match; }
 
   // ------------------------------------------------------------------ events
-  on(ev, fn) {
+  on<T>(ev: string, fn: (data: T) => void) {
     let s = this._subs.get(ev);
     if (!s) this._subs.set(ev, (s = new Set()));
-    s.add(fn);
-    return () => s.delete(fn);
+    const f = fn as (data: unknown) => void;   // (사건마다 페이로드 모양이 다르다: 구독자가 자기 형태로 받는다)
+    s.add(f);
+    return () => s.delete(f);
   }
-  _emit(ev, data) {
+  _emit(ev: string, data: unknown) {
     const s = this._subs.get(ev);
     if (s) for (const fn of [...s]) { try { fn(data); } catch (e) { console.error('[net]', ev, e); } }
   }
-  _setState(s) {
+  _setState(s: string) {
     if (this.state === s) return;
     this.state = s;
     this._emit('state', { state: s });
   }
 
-  _blankLobby() {
-    const g = G.game;
+  _blankLobby(): SessionLobby {
+    const g = game();
     // palette: the room's team colours (index into TEAM_PALETTES) — the host's current menu colours carry into the room
     // mode: 'turf' | 'zones' (Zone Control: the host runs the rules — zones.js) | 'boss' (Boss Battle: everyone is one
     // squad vs HULLBREAKER — docs/BOSS.md)
@@ -63,28 +106,28 @@ export class NetSession {
   }
 
   _profile() {
-    const p = G.game?.profile || {};
-    return { name: (p.name || 'Player').slice(0, 16), weapon: WEAPONS[p.weapon] ? p.weapon : 'shooter', sub: subOf(p.sub), special: specialOf(p.special), style: p.style || null };
+    const p: NonNullable<GameView['profile']> = game()?.profile || {};
+    return { name: (p.name || 'Player').slice(0, 16), weapon: WEAPON_CFG[p.weapon as string] ? p.weapon! : 'shooter', sub: subOf(p.sub), special: specialOf(p.special), style: p.style || null };
   }
 
   // ------------------------------------------------------------------ rooms
-  async create(name) {
-    let lastErr = null;
+  async create(name: string) {
+    let lastErr: unknown = null;
     for (let tries = 0; tries < 4; tries++) {
       const code = Array.from({ length: 5 }, () => CODE_CHARS[(Math.random() * CODE_CHARS.length) | 0]).join('');
-      try { await this._connect(code, name, true); return code; } catch (e) { lastErr = e; if (e.message !== 'Room code taken') break; }
+      try { await this._connect(code, name, true); return code; } catch (e) { lastErr = e; if ((e as Error).message !== 'Room code taken') break; }
     }
     this._fail(lastErr);
     throw lastErr;
   }
 
-  async join(code, name) {
+  async join(code: string, name: string) {
     code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (code.length < 4) { const e = new Error('Room not found'); this._fail(e); throw e; }
     try { await this._connect(code, name, false); } catch (e) { this._fail(e); throw e; }
   }
 
-  async _connect(code, name, create) {
+  async _connect(code: string, name: string, create: boolean) {
     this.leave(true);
     this.error = null;
     this._setState('connecting');
@@ -95,10 +138,10 @@ export class NetSession {
     const me = this._profile();
     const welcome = await tr.connect(code, name || me.name, create);
     this.code = code;
-    this.myId = welcome.id;
-    this.hostId = welcome.host;
+    this.myId = welcome.id!;
+    this.hostId = welcome.host as string;
     this._members.clear();
-    for (const m of welcome.members) this._members.set(m.id, m.name);
+    for (const m of welcome.members as Array<{ id: string; name: string }>) this._members.set(m.id, m.name);
     this.lobby = this._blankLobby();
     this._botsPref = this.isHost ? true : null;   // a new room fills with bots unless its stage forbids them
     if (this.isHost) {
@@ -107,7 +150,7 @@ export class NetSession {
     }
     this._setState('lobby');
     // tell the host who we are (the host already knows itself)
-    if (!this.isHost) tr.sendTo(this.hostId, { k: 'me', name: name || me.name, weapon: me.weapon, sub: me.sub, special: me.special, style: me.style });
+    if (!this.isHost) tr.sendTo(this.hostId!, { k: 'me', name: name || me.name, weapon: me.weapon, sub: me.sub, special: me.special, style: me.style });
     this._pushLobby();
   }
 
@@ -123,14 +166,14 @@ export class NetSession {
     else this.state = 'offline';
   }
 
-  _fail(e) {
-    this.error = e?.message || 'Could not connect';
+  _fail(e: unknown) {
+    this.error = (e as Error | null)?.message || 'Could not connect';
     this.tr?.close(); this.tr = null;
     this._setState('error');
     this._emit('error', { message: this.error });
   }
 
-  _closed(reason) {
+  _closed(reason: string) {
     const inMatch = this.state === 'match' || this.state === 'starting';
     this.error = reason === 'bye' ? null : 'Lost connection to the room';
     this.match?.dispose(); this.match = null;
@@ -138,26 +181,28 @@ export class NetSession {
     this.code = null;
     this._setState(this.error ? 'error' : 'offline');
     if (this.error) this._emit('error', { message: this.error });
-    if (inMatch) G.game?.netMatchAborted?.(this.error);
+    if (inMatch) game()?.netMatchAborted?.(this.error);
   }
 
   // ------------------------------------------------------------------ relay membership
-  _control(o) {
+  _control(o: ControlFrame & { m?: { id: string; name: string }; host?: string }) {
     if (o.t === 'join') {
-      this._members.set(o.m.id, o.m.name);
+      const m = o.m!;
+      this._members.set(m.id, m.name);
       if (this.isHost) {
-        this.lobby.players.push(this._newPlayer(o.m.id, o.m.name, {}));
+        this.lobby.players.push(this._newPlayer(m.id, m.name, {}));
         this._fixTeams();
         this._broadcastLobby();
       }
     } else if (o.t === 'leave') {
-      const gone = this.lobby.players.find((p) => p.id === o.id) || { id: o.id, name: this._members.get(o.id) || 'Player' };
-      this._members.delete(o.id);
+      const id = o.id!;
+      const gone = this.lobby.players.find((p) => p.id === id) || { id, name: this._members.get(id) || 'Player' };
+      this._members.delete(id);
       const hostChanged = o.host && o.host !== this.hostId;
-      this.hostId = o.host;
-      this.lobby.players = this.lobby.players.filter((p) => p.id !== o.id);
+      this.hostId = o.host!;
+      this.lobby.players = this.lobby.players.filter((p) => p.id !== id);
       for (const p of this.lobby.players) p.host = p.id === this.hostId;
-      this.match?.onLeave(o.id, hostChanged);
+      this.match?.onLeave(id, !!hostChanged);
       if (hostChanged) this._emit('host', { hostId: this.hostId });
       if (this.isHost) { this._fixTeams(); this._broadcastLobby(); }
       this._emit('leave', { player: gone, reason: 'left' });
@@ -165,8 +210,8 @@ export class NetSession {
     }
   }
 
-  _newPlayer(id, name, o) {
-    return { id, name: (name || 'Player').slice(0, 16), team: 'auto', weapon: WEAPONS[o.weapon] ? o.weapon : 'shooter', sub: subOf(o.sub), special: specialOf(o.special), style: o.style || randomStyle(), ready: false, host: id === this.hostId, ping: 0 };
+  _newPlayer(id: string, name: string, o: MeChange): SessionPlayer {
+    return { id, name: (name || 'Player').slice(0, 16), team: 'auto', weapon: WEAPON_CFG[o.weapon as string] ? o.weapon! : 'shooter', sub: subOf(o.sub), special: specialOf(o.special), style: o.style || randomStyle(), ready: false, host: id === this.hostId, ping: 0 };
   }
 
   // host: honour team requests while keeping ≤ 4 a side, then place everyone still on 'auto' on the smaller side
@@ -194,11 +239,11 @@ export class NetSession {
   }
 
   // ------------------------------------------------------------------ lobby actions
-  setMe(ch = {}) {
+  setMe(ch: MeChange = {}) {
     if (!this.tr || !this.myId) return;
-    const o = {};
+    const o: MeChange = {};
     if (ch.name != null) o.name = String(ch.name).slice(0, 16);
-    if (ch.weapon && WEAPONS[ch.weapon]) o.weapon = ch.weapon;
+    if (ch.weapon && WEAPON_CFG[ch.weapon]) o.weapon = ch.weapon;
     if (ch.sub !== undefined) o.sub = subOf(ch.sub);
     if (ch.special !== undefined) o.special = specialOf(ch.special);
     if (ch.style) o.style = ch.style;
@@ -208,16 +253,16 @@ export class NetSession {
     else {
       // optimistic local echo for things the host won't refuse
       const me = this.lobby.players.find((p) => p.id === this.myId);
-      if (me) { for (const k of ['name', 'weapon', 'sub', 'special', 'style', 'ready']) if (o[k] !== undefined) me[k] = o[k]; this._pushLobby(); }
-      this.tr.sendTo(this.hostId, { k: 'me', ...o });
+      if (me) { for (const k of ['name', 'weapon', 'sub', 'special', 'style', 'ready'] as const) if (o[k] !== undefined) (me as unknown as Record<string, unknown>)[k] = o[k]; this._pushLobby(); }
+      this.tr.sendTo(this.hostId!, { k: 'me', ...o });
     }
   }
 
-  _applyMe(id, o) {
+  _applyMe(id: string | null, o: MeChange) {
     const p = this.lobby.players.find((x) => x.id === id);
     if (!p) return;
     if (o.name) p.name = o.name;
-    if (o.weapon && WEAPONS[o.weapon]) p.weapon = o.weapon;
+    if (o.weapon && WEAPON_CFG[o.weapon]) p.weapon = o.weapon;
     if (o.sub !== undefined) p.sub = subOf(o.sub);
     if (o.special !== undefined) p.special = specialOf(o.special);
     if (o.style) p.style = o.style;
@@ -232,7 +277,7 @@ export class NetSession {
     this._broadcastLobby();
   }
 
-  setSettings(s = {}) {
+  setSettings(s: Partial<SessionLobby> = {}) {
     if (!this.isHost) return;
     const l = this.lobby, wasMap = l.map;
     if (s.map && MAPS.some((m) => m.id === s.map)) l.map = s.map;
@@ -240,7 +285,7 @@ export class NetSession {
     if (s.duration) l.duration = Math.max(60, Math.min(600, +s.duration | 0));
     if (s.bots != null) this._botsPref = !!s.bots;
     if (s.difficulty && ['easy', 'normal', 'hard'].includes(s.difficulty)) l.difficulty = s.difficulty;
-    if (Number.isInteger(s.palette) && s.palette >= 0 && s.palette < TEAM_PALETTES.length) l.palette = s.palette;
+    if (Number.isInteger(s.palette) && s.palette! >= 0 && s.palette! < TEAM_PALETTES.length) l.palette = s.palette!;
     if (s.mode === 'turf' || s.mode === 'zones' || s.mode === 'boss') l.mode = s.mode;
     // stage rules (config MAPS flags): a Boss Battle never runs on a noBoss stage — picking one in boss mode is refused,
     // switching a room on one to boss mode moves it to a boss-eligible stage; a noBots stage forces bots off (the host's
@@ -255,9 +300,9 @@ export class NetSession {
     return !this.startBlock() && this.lobby.players.every((p) => p.ready || p.id === this.myId);
   }
   // why the room can't start regardless of ready-ups (a humans-only stage without 2+ players, one per side), else null
-  startBlock() { return noBotsStartBlock(this.lobby); }
+  startBlock() { return noBotsStartBlock(this.lobby as Parameters<typeof noBotsStartBlock>[0]); }   // (정리 뒤 팀은 0·1)
 
-  emote(name) {
+  emote(name: string) {
     if (!this.tr || !this.myId) return;
     this.tr.broadcast({ k: 'emote', n: String(name).slice(0, 16) });
     this._emit('emote', { id: this.myId, name });
@@ -268,7 +313,7 @@ export class NetSession {
     if (!this.isHost || this.state !== 'lobby' || !this.tr || this.startBlock()) return false;
     const l = this.lobby;
     const bots = l.bots && !mapNoBots(l.map);   // (a humans-only stage never gets bots, whatever the setting says)
-    const roster = [];
+    const roster: RosterEntry[] = [];
     let nid = 0;
     const names = [...BOT_NAMES].sort(() => Math.random() - 0.5);
     const boss = l.mode === 'boss' && mapBossOk(l.map);   // one squad of up to 8 (all team 0), bots fill the rest
@@ -276,7 +321,7 @@ export class NetSession {
       const humans = boss ? l.players : l.players.filter((p) => p.team === team);
       const weapons = [...WEAPON_ORDER].sort(() => Math.random() - 0.5);
       let slot = 0;
-      for (const p of humans) roster.push({ nid: nid++, owner: p.id, bot: false, team, slot: slot++, name: p.name, weapon: p.weapon, sub: subOf(p.sub), special: specialOf(p.special), style: p.style });
+      for (const p of humans) roster.push({ nid: nid++, owner: p.id, bot: false, team, slot: slot++, name: p.name, weapon: p.weapon, sub: subOf(p.sub), special: specialOf(p.special), style: p.style as object });
       if (bots) {
         while (slot < (boss ? TEAM * 2 : TEAM)) {
           const used = new Set(roster.filter((r) => r.team === team).map((r) => r.weapon));
@@ -284,40 +329,40 @@ export class NetSession {
           // bots carry a random sub / special about half the time, as offline (else their weapon's own)
           const sub = Math.random() < 0.5 ? null : SUB_ORDER[(Math.random() * SUB_ORDER.length) | 0];
           const special = Math.random() < 0.5 ? null : SPECIAL_ORDER[(Math.random() * SPECIAL_ORDER.length) | 0];
-          roster.push({ nid: nid++, owner: this.myId, bot: true, team, slot: slot++, name: names.pop() || 'Bot', weapon: wpn, sub, special, style: randomStyle() });
+          roster.push({ nid: nid++, owner: this.myId!, bot: true, team, slot: slot++, name: names.pop() || 'Bot', weapon: wpn, sub, special, style: randomStyle() });
         }
       }
     }
     // (Zone Control always runs its own 5:00 + overtime, as offline)
-    const cfg = { k: 'start', roster, map: l.map, time: l.time, duration: !boss && l.mode === 'zones' ? ZONES.duration : l.duration, difficulty: l.difficulty, palette: l.palette, mode: boss ? 'boss' : l.mode === 'zones' ? 'zones' : 'turf', host: this.myId, id: Math.random().toString(36).slice(2, 8) };
+    const cfg: StartCfg = { k: 'start', roster, map: l.map, time: l.time, duration: !boss && l.mode === 'zones' ? ZONES.duration : l.duration, difficulty: l.difficulty, palette: l.palette, mode: boss ? 'boss' : l.mode === 'zones' ? 'zones' : 'turf', host: this.myId!, id: Math.random().toString(36).slice(2, 8) };
     this.tr.lock(true);
     this.tr.broadcast(cfg);
     this._begin(cfg);
     return true;
   }
 
-  async _begin(cfg) {
+  async _begin(cfg: StartCfg) {
     this._startCfg = cfg;
     this._ready = new Set();
     for (const p of this.lobby.players) p.ready = false;
     this._setState('starting');
     this._emit('match', { phase: 'start' });
     // the lobby plays its 3·2·1 + super-jump launch first (resolves at once when the lobby isn't on screen)
-    try { await G.game?.menus?.launchLobby?.(); } catch (e) { console.warn('[net] launch', e); }
+    try { await game()?.menus?.launchLobby?.(); } catch (e) { console.warn('[net] launch', e); }
     if (this.state !== 'starting' || this._startCfg !== cfg) return;
     this.match = new NetMatch(this, cfg);
     try {
-      await G.game.startNetMatch(cfg, this.match);
+      await game()!.startNetMatch(cfg, this.match);
     } catch (e) {
       console.error('[net] match start failed', e);
       this._fail(new Error('Could not start the match'));
       return;
     }
-    if (this.isHost) this._markReady(this.myId);
-    else this.tr?.sendTo(this.hostId, { k: 'ready', id: cfg.id });
+    if (this.isHost) this._markReady(this.myId!);
+    else this.tr?.sendTo(this.hostId!, { k: 'ready', id: cfg.id });
   }
 
-  _markReady(id) {
+  _markReady(id: string) {
     if (!this.isHost || this.state !== 'starting' || !this._startCfg) return;
     this._ready.add(id);
     const humans = new Set(this._startCfg.roster.filter((r) => !r.bot).map((r) => r.owner));
@@ -328,16 +373,16 @@ export class NetSession {
   }
 
   _go() {
-    clearTimeout(this._goT); this._goT = null;
+    clearTimeout(this._goT ?? undefined); this._goT = null;
     if (this.state !== 'starting') return;
-    this.tr?.broadcast({ k: 'go', id: this._startCfg.id });
+    this.tr?.broadcast({ k: 'go', id: this._startCfg!.id });
     this._launch();
   }
 
   _launch() {
     this._setState('match');
     this.match?.go();
-    G.game.netMatchGo?.();
+    game()!.netMatchGo?.();
   }
 
   // the match's results have been shown: everyone back to the lobby (the room stays)
@@ -352,13 +397,14 @@ export class NetSession {
   }
 
   // ------------------------------------------------------------------ incoming payloads
-  _message(from, d) {
-    if (!d || typeof d !== 'object') return;
+  _message(from: string, d0: unknown) {
+    if (!d0 || typeof d0 !== 'object') return;
+    const d = d0 as SessionMsg;
     switch (d.k) {
       case 'lobby':
         if (from !== this.hostId) return;
         {
-          const l = d.l;
+          const l = d.l!;
           this.lobby.map = l.map; this.lobby.time = l.time; this.lobby.duration = l.duration; this.lobby.bots = l.bots; this.lobby.difficulty = l.difficulty;
           if (Number.isInteger(l.palette)) this.lobby.palette = l.palette;
           this.lobby.mode = l.mode === 'boss' || l.mode === 'zones' ? l.mode : 'turf';
@@ -370,22 +416,22 @@ export class NetSession {
         break;
       case 'me': if (this.isHost) this._applyMe(from, d); break;
       case 'emote': this._emit('emote', { id: from, name: d.n }); break;
-      case 'start': if (from === this.hostId && this.state === 'lobby') this._begin(d); break;
+      case 'start': if (from === this.hostId && this.state === 'lobby') this._begin(d as StartCfg); break;
       case 'ready': if (this.isHost && this._startCfg && d.id === this._startCfg.id) this._markReady(from); break;
       case 'go': if (from === this.hostId && this.state === 'starting') this._launch(); break;
-      default: this.match?.onMessage(from, d);
+      default: this.match?.onMessage(from, d as Parameters<NetMatch['onMessage']>[1]);
     }
   }
 
   // ------------------------------------------------------------------ per frame
-  update(dt) {
+  update(dt: number) {
     if (this.tr && this.state === 'lobby') {
       this._pingT = (this._pingT || 0) - dt;
       if (this._pingT <= 0) {
         this._pingT = 2;
         const ping = Math.round(this.tr.rtt);
         if (this.isHost) { const me = this.lobby.players.find((p) => p.id === this.myId); if (me && me.ping !== ping) { me.ping = ping; this._broadcastLobby(); } }
-        else this.tr.sendTo(this.hostId, { k: 'me', ping });
+        else this.tr.sendTo(this.hostId!, { k: 'me', ping });
       }
     }
     this.match?.update(dt);

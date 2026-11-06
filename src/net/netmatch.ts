@@ -26,16 +26,57 @@ import { MAIN_KITS, SUB_KITS, KIT_GHOSTS } from '../game/kits/registry.js';
 import { specialNetState, specialNetApply } from '../game/specials.js';
 import { BotBrain } from '../game/bots.js';
 import { Boss } from '../boss/boss.js';
+import type { BossSnap } from '../boss/boss.js';
+import type { BossMove } from '../boss/bossHazards.js';
+import type { Actor } from '../game/actor.js';
+import type { Character } from '../game/character.js';
+import type { Match, MatchResult } from '../game/match.js';
+import type { Shot, Bomb } from '../game/weapons.js';
+import type { SplatOptions } from '../world/paint.js';
+import type { ZoneNet } from '../game/zones.js';
+import type { LoopHandle } from '../audio/audio.js';
+import type { NetSession } from './session.js';
 
+/** 원격 액터 표본(packActor 한 줄 → unpackActor): 시각, 위치·속도, 방향·조준, 상태 비트, 체력·잉크·스페셜·충전·영역, 순간이동 수,
+ *  벽 법선, 고정, 키트·스페셜 상태 */
+interface Sample {
+  t: number; x: number; y: number; z: number; vx: number; vy: number; vz: number; yaw: number; aimYaw: number; aimPitch: number; f: number;
+  hp: number; ink: number; sp: number; ch: number; turf: number; tp: number; wx: number; wy: number; wz: number; lock: number; ks: number; spx: number; spst: number;
+}
+/** 원격 액터의 네트워크 상태: 표본 버퍼, 보정 오프셋·속도, 순간이동 수, 이전 프레임 값, 소리 고리, 슈퍼 점프 목적지 */
+interface ActorNet {
+  buf: Sample[]; err: THREE.Vector3; errV?: THREE.Vector3; tp: number; lastRaw: null; rendered: THREE.Vector3; has: boolean; prevGrounded: boolean;
+  prevVy: number; yawPrev: number; loops: Record<string, LoopHandle | null | undefined>; sjTo: THREE.Vector3 | null; sjRing: number;
+  cur?: Sample; prevRaw?: THREE.Vector3; prevT?: number; handoff?: boolean; ready?: boolean; dbg?: number[]; spOff?: number; spawnPending?: boolean; deathTp?: number;
+}
+/** 복제되는 액터(네트워크 상태 + 원래 trigger를 기억하는 캐릭터) */
+type NetActor = Actor & { net: ActorNet; character: Character & { _netTrig?: (name: string, data?: unknown) => void } };
+/** 보내는 쪽 하나의 재생 시계: 시계 차이·지연·속도, 보낸 시각들, 지연 창, 재생 위치, 대기 사건 */
+interface Peer {
+  off: number; delay: number; rate: number; init: boolean; events: RecEvent[]; lastTs?: number; want?: number; tr?: number; prevTs?: number;
+  win?: { late: number[]; gap: number[] };
+}
+/** 타임라인 사건 [시각, 종류, …] (s 칠하기 · p 투사체 · b 폭탄 · tr 동작 · ev 사건 · k 키트 · bm 보스 기술 · z 구역 · bc 꽃게) */
+type RecEvent = [number, string, ...unknown[]];
+/** 주고받는 메시지(k로 구분): t 틱, hit·dh·bhit 피격, st·res·end·own 진행 */
+interface NetMsg {
+  k: string; ts?: number; a?: unknown; e?: RecEvent[]; B?: unknown[]; c?: [string, number]; kind?: string; id?: number; d?: number; v?: number; w?: string;
+  s?: string; t?: number; map?: unknown; st?: Array<Array<number | undefined>>; cov?: number[]; win?: number; mode?: string; bo?: MatchResult['boss']; zc?: number[]; zp?: number[]; zr?: string; zo?: number; zl?: unknown;
+  weak?: number;
+}
+/** 재생한 사건(액터·벡터는 풀어 둔다) */
+interface PlayedEvent { actor?: NetActor | null; victim?: NetActor | null; attacker?: NetActor | null; cause?: string; swim?: boolean; phase?: string; to?: THREE.Vector3; pos?: THREE.Vector3; radius?: number; [k: string]: unknown }
+/** 보스 게스트 표본(스냅숏 보간 + 지난/다음 스냅숏) */
+type BossPose = BossSnap & { s0: BossSnap; s1: BossSnap | null; u: number };
 const TICK = 1 / 20;
 
-const r2 = (x) => Math.round(x * 100) / 100;
-const r3 = (x) => Math.round(x * 1000) / 1000;
+const r2 = (x: number) => Math.round(x * 100) / 100;
+const r3 = (x: number) => Math.round(x * 1000) / 1000;
 const now = () => performance.now() / 1000;
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
 const _P = blankSample();   // scratch: the path re-evaluated at last frame's moment
 const TAU = Math.PI * 2;
-const angDiff = (a, b) => { let d = (b - a) % TAU; if (d > Math.PI) d -= TAU; else if (d < -Math.PI) d += TAU; return d; };
+const angDiff = (a: number, b: number) => { let d = (b - a) % TAU; if (d > Math.PI) d -= TAU; else if (d < -Math.PI) d += TAU; return d; };
 
 // state flags (one int per actor per tick)
 const F = {
@@ -47,10 +88,26 @@ const F = {
 const FORWARD = ['actor:jump', 'superjump', 'superjump:land', 'special:use', 'special:slam', 'weapon:dodge', 'weapon:fire', 'splatted', 'respawn'];
 
 export class NetMatch {
-  constructor(session, cfg) {
+  declare _applyingHit: boolean;
+  declare debug: boolean | undefined;
+  declare bossN: number | undefined;
+  declare stats: { in: number; out: number; extrap: number; snaps: number; };
+  declare unsubs: Array<() => unknown>;
+  declare clockT: number;
+  declare match: Match | null;
+  declare applying: boolean;
+  declare mute: number;
+  declare tickT: number;
+  declare out: RecEvent[];
+  declare peers: Map<string, Peer>;
+  declare byNid: Map<number, NetActor>;
+  declare myId: string;
+  declare cfg: { map: string; difficulty?: string };
+  declare s: NetSession;
+  constructor(session: NetSession, cfg: NetMatch['cfg']) {
     this.s = session;
     this.cfg = cfg;
-    this.myId = session.myId;
+    this.myId = session.myId!;
     this.byNid = new Map();
     this.peers = new Map();        // sender id → playback clock { off, delay, want, tr, rate, lastTs, events }
     this.out = [];                 // events recorded since the last tick
@@ -67,28 +124,28 @@ export class NetMatch {
 
   // ---------------------------------------------------------------------------------------------- setup
   /** Called by main.js once the Match built its actors from the roster. */
-  bind(match) {
+  bind(match: Match) {
     this.match = match;
     G.netm = this;
     for (const a of match.actors) {
-      this.byNid.set(a.nid, a);
-      this._setupActor(a);
+      this.byNid.set(a.nid!, a as NetActor);
+      this._setupActor(a as NetActor);
     }
     for (const ev of FORWARD) this.unsubs.push(on(ev, (e) => this._onLocalEvent(ev, e)));
     // humans-only stage: anyone who left while the match was loading (no NetMatch yet to hear it) is dropped now
-    if (mapNoBots(this.cfg.map)) for (const a of [...this.byNid.values()]) if (a.owner !== this.myId && !this.s._members.has(a.owner)) this._remove(a);
+    if (mapNoBots(this.cfg.map)) for (const a of [...this.byNid.values()]) if (a.owner !== this.myId && !this.s._members.has(a.owner!)) this._remove(a);
     this.unsubs.push(on('match:state', ({ state, match: m }) => { if (m === this.match && this.isHost) this._sendNow({ k: 'st', s: state, t: r2(m.time) }); }));
   }
 
-  _setupActor(a) {
+  _setupActor(a: NetActor) {
     a.remote = a.owner !== this.myId;
     if (!a.net) a.net = { buf: [], err: new THREE.Vector3(), tp: -1, lastRaw: null, rendered: new THREE.Vector3(), has: false, prevGrounded: true, prevVy: 0, yawPrev: 0, loops: {}, sjTo: null, sjRing: 0 };
     const ch = a.character;
     if (!ch._netTrig) {
       const orig = ch.trigger.bind(ch);
-      ch._netTrig = orig;
-      ch.trigger = (name, data) => {
-        orig(name, data);
+      ch._netTrig = orig as (name: string, data?: unknown) => void;
+      ch.trigger = (name: string, data?: unknown) => {
+        orig(name, data as Parameters<typeof orig>[1]);
         if (!a.remote && G.netm === this) this._rec(['tr', a.nid, name, packTrig(data)]);
       };
     }
@@ -104,16 +161,16 @@ export class NetMatch {
   }
 
   // ---------------------------------------------------------------------------------------------- recording
-  _rec(e) { this.out.push([r3(now()), ...e]); }
+  _rec(e: [string, ...unknown[]]) { this.out.push([r3(now()), ...e]); }
 
-  recSplat(c, radius, team, o) {
+  recSplat(c: THREE.Vector3, radius: number, team: number, o: SplatOptions) {
     if (this.applying || this.mute > 0 || o.cosmetic) return;
     const st = o.stretch;
     this._rec(['s', r2(c.x), r2(c.y), r2(c.z), r2(radius), team, r3(o.seed ?? Math.random()), o.kind ?? 0,
       st ? r3(st.x) : 0, st ? r3(st.y) : 0, st ? r3(st.z) : 0, st ? r2(o.stretchAmt ?? 1) : 0]);
   }
 
-  recProj(p) {
+  recProj(p: Shot) {
     const o = p.owner;
     if (!o || o.remote || o.nid === undefined) return;
     this._rec(['p', o.nid, p.type, p.wid || 0, r2(p.pos.x), r2(p.pos.y), r2(p.pos.z), r2(p.vel.x), r2(p.vel.y), r2(p.vel.z),
@@ -121,7 +178,7 @@ export class NetMatch {
       r3(p.vis ?? 0.1), p.tail0 ?? 0.8, p.tailK ?? 1.3, p.wob ?? 0.035, p.wobF ?? 26, p.nose ?? 0.3, p.sats ?? 3]);
   }
 
-  recBomb(b) {
+  recBomb(b: Bomb) {
     const o = b.owner;
     if (!o || o.remote) return;
     this._rec(['b', o.nid, b.kind, r2(b.pos.x), r2(b.pos.y), r2(b.pos.z), r2(b.vel.x), r2(b.vel.y), r2(b.vel.z)]);
@@ -131,45 +188,45 @@ export class NetMatch {
   // ['k', nid, kind, data] (data: a short array of rounded numbers the kit packs); everyone else hands it to the kit's
   // ghost(actor, data) — a visual copy (and, for shields, a solid one): ghosts never paint (mute) and never hurt (a
   // remote attacker's hits are dropped; the owner's splats and hits arrive separately)
-  recKit(a, kind, data) {
+  recKit(a: Actor, kind: string, data: object) {
     if (!a || a.remote || a.nid === undefined || G.netm !== this) return;
     this._rec(['k', a.nid, kind, data]);
   }
 
-  _onLocalEvent(name, e) {
+  _onLocalEvent(name: string, e: Record<string, unknown> & { actor?: Actor; victim?: Actor }) {
     const a = e.actor || e.victim;
     if (!a || a.remote || a.nid === undefined || G.netm !== this) return;
     this._rec(['ev', name, packEvent(e)]);
   }
 
   // Boss Battle: the host's move records / crablet bursts go on its event timeline (played in step with the snapshots)
-  recBoss(e) { if (this.isHost && G.netm === this) this._rec(e); }
+  recBoss(e: (string | number)[] | (string | BossMove)[]) { if (this.isHost && G.netm === this) this._rec(e as [string, ...unknown[]]); }
   // Zone Control: the host's rules decisions + count snapshots (zones.js netEvent), on the same timeline as its paint
-  recZone(e) { if (this.isHost && G.netm === this) this._rec(['z', e]); }
+  recZone(e: ZoneNet) { if (this.isHost && G.netm === this) this._rec(['z', e]); }
   // a guest's hit on the boss (or a crablet): shooter-authoritative, applied by the host that runs it
-  sendBossHit(attacker, d, weak, w, crab = -1) {
+  sendBossHit(attacker: Actor, d: number, weak: boolean, w: string, crab = -1) {
     if (this.isHost || attacker.nid === undefined) return;
     const L = this.match?.boss?.log; if (L) { L.sent++; L.sentDmg += d; }
-    this.s.tr?.sendTo(this.s.hostId, { k: 'bhit', a: attacker.nid, d: r2(d), weak: weak ? 1 : 0, w, c: crab });
+    this.s.tr?.sendTo(this.s.hostId!, { k: 'bhit', a: attacker.nid, d: r2(d), weak: weak ? 1 : 0, w, c: crab });
   }
 
   // a ghost device (a remote player's sprinkler, curtain, waddle …) took a hit here: its owner's copy takes it
-  sendDevHit(owner, kind, id, dmg) {
+  sendDevHit(owner: Actor | null | undefined, kind: string, id: number, dmg: number) {
     if (!owner || !owner.remote || owner.owner === undefined) return;
     this.s.tr?.sendTo(owner.owner, { k: 'dh', kind, id, d: r2(dmg) });
   }
 
   // hits land on the victim's owner right away (not on the playback timeline: health must be current)
-  sendHit(attacker, victim, dmg, wid) {
+  sendHit(attacker: Actor, victim: Actor, dmg: number, wid: string) {
     if (victim.owner === this.myId) return false;
-    this.s.tr?.sendTo(victim.owner, { k: 'hit', v: victim.nid, a: attacker.nid, d: r2(dmg), w: wid });
+    this.s.tr?.sendTo(victim.owner!, { k: 'hit', v: victim.nid, a: attacker.nid, d: r2(dmg), w: wid });
     return true;
   }
 
-  _sendNow(d) { this.s.tr?.broadcast(d); }
+  _sendNow(d: NetMsg) { this.s.tr?.broadcast(d); }
 
   // ---------------------------------------------------------------------------------------------- per frame
-  update(dt) {
+  update(dt: number) {
     if (!this.match) return;
     // timeline samples for every remote actor (Match.update applies them)
     const t = now();
@@ -188,9 +245,9 @@ export class NetMatch {
   }
 
   _sendTick() {
-    const a = [];
+    const a: unknown[][] = [];
     for (const x of this.byNid.values()) if (!x.remote) a.push(packActor(x));
-    const msg = { k: 't', ts: r3(now()), a };
+    const msg: NetMsg = { k: 't', ts: r3(now()), a };
     if (this.out.length) { msg.e = this.out; this.out = []; }
     const boss = this.match?.boss;
     if (this.isHost && boss && boss.sim) { this.bossN = (this.bossN || 0) + 1; msg.B = boss.pack(this.bossN % 10 === 0); }
@@ -203,51 +260,51 @@ export class NetMatch {
   }
 
   // ---------------------------------------------------------------------------------------------- incoming
-  onMessage(from, d) {
+  onMessage(from: string, d: NetMsg) {
     switch (d.k) {
       case 't': this._tick(from, d); break;
       case 'hit': this._hit(d); break;
       case 'dh': {   // a hit on one of our devices, made on another player's screen
-        const K = d.kind === 'subs' ? G.subs : SUB_KITS[d.kind] || MAIN_KITS[d.kind] || KIT_GHOSTS[d.kind];
-        try { K?.netHurt?.(d.id, d.d); } catch (err) { console.warn('[inkwave] device hit', d.kind, err); }
+        const K = d.kind === 'subs' ? G.subs : SUB_KITS[d.kind!] || MAIN_KITS[d.kind!] || KIT_GHOSTS[d.kind!];
+        try { K?.netHurt?.(d.id!, d.d!); } catch (err) { console.warn('[inkwave] device hit', d.kind, err); }
         break;
       }
-      case 'bhit': if (this.isHost) this.match?.boss?.remoteHit(d); break;
+      case 'bhit': if (this.isHost) this.match?.boss?.remoteHit(d as unknown as Parameters<Boss['remoteHit']>[0]); break;
       case 'st': if (from === this.s.hostId) this._hostState(d); break;
       case 'res': if (from === this.s.hostId) this._result(d); break;
-      case 'end': if (from === this.s.hostId) G.game?.netMatchEnd?.(); break;
+      case 'end': if (from === this.s.hostId) (G.game as { netMatchEnd?(): void } | null | undefined)?.netMatchEnd?.(); break;
       case 'own': if (from === this.s.hostId) this._ownership(d.map); break;
     }
   }
 
-  _peer(id) {
+  _peer(id: string): Peer {
     let p = this.peers.get(id);
     if (!p) this.peers.set(id, (p = { off: 0, delay: 0.1, rate: 1, init: false, events: [] }));
     return p;
   }
 
-  _tick(from, d) {
+  _tick(from: string, d: NetMsg) {
     this.stats.in++;
     const p = this._peer(from);
     const t = now();
-    const o = t - d.ts;
-    if (!(d.ts < p.lastTs)) p.lastTs = d.ts;
+    const ts = d.ts!, o = t - ts;
+    if (!(ts < p.lastTs!)) p.lastTs = ts;   // (처음엔 undefined: 비교가 거짓)
     if (!p.init) { p.off = o; p.init = true; }
     else if (o < p.off) p.off = o;                      // a faster packet: the true floor is lower
     else p.off += (o - p.off) * 0.0025;                 // creep up slowly (clock drift / route change)
     // buffer need from the last ~3 s: how late packets run (90th percentile — a rare hiccup must not drag the delay
     // around; the playback clock rides those out) plus the sender's tick spacing (95th: its frames aren't regular)
     const W = p.win || (p.win = { late: [], gap: [] });
-    W.late.push(o - p.off); W.gap.push(p.prevTs !== undefined ? Math.min(0.25, Math.max(0, d.ts - p.prevTs)) : TICK);
-    p.prevTs = d.ts;
+    W.late.push(o - p.off); W.gap.push(p.prevTs !== undefined ? Math.min(0.25, Math.max(0, ts - p.prevTs)) : TICK);
+    p.prevTs = ts;
     if (W.late.length > 60) { W.late.shift(); W.gap.shift(); }
     p.want = Math.min(0.3, Math.max(0.07, quantile(W.gap, 0.95) + quantile(W.late, 0.9) + 0.012));
     // actors
-    if (d.a) for (const s of d.a) {
+    if (d.a) for (const s of d.a as number[][]) {
       const a = this.byNid.get(s[0]);
       if (!a || !a.remote || a.owner !== from) continue;
       const buf = a.net.buf;
-      const snap = unpackActor(s, d.ts);
+      const snap = unpackActor(s, ts);
       if (buf.length && snap.t <= buf[buf.length - 1].t) continue;
       buf.push(snap);
       if (buf.length > 40) buf.splice(0, buf.length - 40);
@@ -258,7 +315,7 @@ export class NetMatch {
     // the boss: the host's snapshot, on the host's playback timeline
     const boss = this.match?.boss;
     if (d.B && from === this.s.hostId && boss && !boss.sim) {
-      const buf = boss.net.buf, snap = Boss.unpack(d.B, d.ts);
+      const buf = boss.net.buf, snap = Boss.unpack(d.B, ts);
       if (!buf.length || snap.t > buf[buf.length - 1].t) { buf.push(snap); if (buf.length > 40) buf.splice(0, buf.length - 40); }
     }
   }
@@ -268,7 +325,7 @@ export class NetMatch {
   // hitch never makes remote squidkids leap ahead) and steers gently — never jumps — toward "now − delay", where the
   // delay covers the sender's tick spacing and packet lateness. When the sender's samples are about to run out (their frame
   // hitched, packets late) it slows down instead of running off the end of the path into a guess.
-  _advance(p, dt) {
+  _advance(p: Peer, dt: number) {
     if (!p.init) return;
     const want = p.want ?? 0.1;
     p.delay += (want - p.delay) * Math.min(1, dt * (want > p.delay ? 2 : 0.35));   // quick to add buffer, slow to trim it
@@ -277,7 +334,7 @@ export class NetMatch {
     // small errors: a barely visible ±8 % time stretch; big ones (after a hitch) catch up faster
     const e = target - p.tr;
     let rate = Math.abs(e) < 0.12 ? 1 + Math.max(-0.08, Math.min(0.08, e * 1.5)) : 1 + Math.max(-0.2, Math.min(0.25, e * 2.5));
-    const ahead = p.lastTs - p.tr;                              // seconds of the sender's path still buffered
+    const ahead = p.lastTs! - p.tr;                              // seconds of the sender's path still buffered
     if (ahead < 0.015) rate = Math.min(rate, 0.5 + 0.5 * Math.max(0, ahead / 0.015));
     p.rate += (rate - p.rate) * Math.min(1, dt * 6);            // the rate itself eases: no sudden change of pace
     p.tr += dt * p.rate;
@@ -285,8 +342,8 @@ export class NetMatch {
 
   // The owner's path at time t (sender clock) from the buffered samples → S; returns 0 interpolating, 1 holding across a
   // teleport, 2 extrapolating past the newest sample, 3 before the oldest.
-  _pathAt(buf, t, S) {
-    let s0 = buf[0], s1 = null;
+  _pathAt(buf: Sample[], t: number, S: Sample) {
+    let s0 = buf[0], s1: Sample | null = null;
     for (let i = 0; i < buf.length - 1; i++) { if (buf[i].t <= t && buf[i + 1].t > t) { s0 = buf[i]; s1 = buf[i + 1]; break; } }
     if (s1 && s0.tp === s1.tp) { hermite(s0, s1, t, S); return 0; }
     if (s1) { copySample(t >= s1.t ? s1 : s0, S); return 1; }      // teleport between these two: hold, then snap
@@ -302,9 +359,9 @@ export class NetMatch {
     return 2;
   }
 
-  _sample(a, t, dt) {
+  _sample(a: NetActor, t: number, dt: number) {
     const n = a.net, buf = n.buf;
-    const peer = this._peer(a.owner);
+    const peer = this._peer(a.owner!);
     const tr = peer.tr;
     if (!buf.length || tr === undefined) return;
     // drop history older than what we might still need (last frame's moment must stay covered)
@@ -338,7 +395,7 @@ export class NetMatch {
     n.prevT = tr;
     if (err.x || err.y || err.z || ev.x || ev.y || ev.z) {
       const w = 13, k = Math.exp(-w * dt);
-      for (const c of ['x', 'y', 'z']) { const x0 = err[c], v0 = ev[c], q = v0 + w * x0; err[c] = (x0 + q * dt) * k; ev[c] = (v0 - w * q * dt) * k; }
+      for (const c of ['x', 'y', 'z'] as const) { const x0 = err[c], v0 = ev[c], q = v0 + w * x0; err[c] = (x0 + q * dt) * k; ev[c] = (v0 - w * q * dt) * k; }
       if (err.lengthSq() < 1e-6 && ev.lengthSq() < 1e-4) { err.set(0, 0, 0); ev.set(0, 0, 0); }
     }
     if (this.debug) n.dbg = [mode, +(tr - buf[buf.length - 1].t).toFixed(3), buf.length, +err.length().toFixed(3), 0, +peer.rate.toFixed(2), +peer.delay.toFixed(3)];
@@ -346,11 +403,11 @@ export class NetMatch {
   }
 
   /** Match.update → for remote actors instead of Actor.update: apply this frame's sample and run the animation. */
-  applyRemote(a, dt) {
-    const n = a.net;
+  applyRemote(a0: Actor, dt: number) {
+    const a = a0 as NetActor, n = a.net;
     a.anim.time = G.time;
     if (!n.ready) { a.character.root.visible = false; return; }
-    const S = n.cur;
+    const S = n.cur!;   // (ready면 있다)
     if (!a.alive) { a.respawnTimer -= dt; return; }
     // position = sampled path + decaying correction; velocity drives the gait
     a.pos.set(S.x + n.err.x, S.y + n.err.y, S.z + n.err.z);
@@ -379,11 +436,11 @@ export class NetMatch {
     if (S.spx && SPECIAL_ORDER[S.spx - 1]) a.specialId = SPECIAL_ORDER[S.spx - 1];   // their loadout's special
     // a special: its owner's records run a ghost of it here (specials.js netGhost); the flag alone is the fallback, and a
     // ghost whose end never arrived goes when the flag has been off a moment
-    if (f & F.special) { n.spOff = 0; if (!a.specialActive) a.specialActive = { id: a.specialId || a.weapon.special, net: true }; }
+    if (f & F.special) { n.spOff = 0; if (!a.specialActive) a.specialActive = { id: a.specialId || a.weapon.special, net: true } as unknown as Actor['specialActive']; }   // (유령 표시 전 깃발만 있는 자리표시)
     else if (a.specialActive?.ghost) { if ((n.spOff = (n.spOff || 0) + dt) > 0.6) G.specials?.end(a, 'net'); }
     else a.specialActive = null;
     specialNetApply(a, S.spst | 0);
-    a.superJumpState = f & (F.sjCharge | F.sjFlight) ? (a.superJumpState || { phase: 'charge', net: true }) : null;
+    a.superJumpState = f & (F.sjCharge | F.sjFlight) ? (a.superJumpState || { phase: 'charge', net: true } as unknown as Actor['superJumpState']) : null;   // (원격: 단계만 안다)
     if (a.superJumpState) a.superJumpState.phase = f & F.sjFlight ? 'flight' : 'charge';
     // weapon pose state (charge glow, roller drum, splatling spin, dualies lock …)
     const wr = a.weaponRunner;
@@ -395,7 +452,7 @@ export class NetMatch {
     wr.lockT = S.lock;
     if (f & F.dodge) { if (!wr.dodge) wr.dodge = { t: 0, dur: a.weapon.rollTime || 0.3 }; wr.dodge.t += dt; } else wr.dodge = null;
     // kit weapons' own pose state (a mitts leap / wall cling, a brolly canopy …): netState → netApply
-    MAIN_KITS[a.weapon?.kind]?.netApply?.(wr, S.ks | 0, dt);
+    MAIN_KITS[a.weapon?.kind ?? '']?.netApply?.(wr, S.ks | 0, dt);
     // derived moments the owner produced inline: landings (squash, splash, sound) and squid in / out
     if (!n.prevGrounded && a.grounded && !a.superJumpState) {
       const speed = Math.max(0, -n.prevVy);
@@ -421,7 +478,7 @@ export class NetMatch {
       if (S.tp === n.deathTp) { a.character.root.visible = false; return; }
       n.spawnPending = false;
       a.character.setVisible(true);
-      const pad = G.level.spawnPads[a.team];
+      const pad = G.level!.spawnPads[a.team];
       G.fx?.spawnFlash(_v2.set(a.pos.x, pad.y, a.pos.z), a.color);
     }
     a.character.root.visible = true;
@@ -429,11 +486,11 @@ export class NetMatch {
   }
 
   // continuous weapon sounds for remote actors (the owner's loops live in its WeaponRunner)
-  _voices(dt) {
+  _voices(dt: number) {
     for (const a of this.byNid.values()) {
       if (!a.remote) continue;
       const L = a.net.loops, wr = a.weaponRunner, near = a.alive && a._nearCamera();
-      const want = (key, on, snd, set) => {
+      const want = (key: string, on: boolean, snd: string, set: (h: LoopHandle) => void) => {
         if (on && near && !L[key]) L[key] = G.audio?.loop?.(snd, { pos: a.pos, volume: 0 });
         const h = L[key];
         if (!h) return;
@@ -446,10 +503,10 @@ export class NetMatch {
       want('roll', wr.rolling, 'roll', (h) => { const s = Math.min(1, Math.hypot(a.vel.x, a.vel.z) / (a.weapon.rollSpeed || 5)); h.set({ pos: a.pos, volume: s * 0.45, pitch: 0.6 + s }); });
     }
   }
-  _stopLoops(a) { const L = a.net?.loops; if (L) for (const k in L) { L[k]?.stop?.(0.05); L[k] = null; } }
+  _stopLoops(a: NetActor) { const L = a.net?.loops; if (L) for (const k in L) { L[k]?.stop?.(0.05); L[k] = null; } }
 
   // ---- event playback -----------------------------------------------------------------------------------------------
-  _playEvents() {
+  _playEvents(_t?: number) {
     for (const [id, p] of this.peers) {
       if (!p.events.length || p.tr === undefined) continue;
       const tr = p.tr;
@@ -461,39 +518,40 @@ export class NetMatch {
     }
   }
 
-  _play(from, e) {
+  _play(from: string, e: RecEvent) {
     switch (e[1]) {
       case 's': {
         this.applying = true;
-        const st = e[9] || e[10] || e[11] ? _v2.set(e[9], e[10], e[11]) : undefined;
-        const opts = { seed: e[7] };
-        if (e[8]) opts.kind = e[8];
-        if (st) { opts.stretch = st; opts.stretchAmt = e[12]; }
-        G.paint?.splat(_v.set(e[2], e[3], e[4]), e[5], e[6], opts);
+        const n = e as number[];   // (칠하기 기록은 숫자뿐)
+        const st = n[9] || n[10] || n[11] ? _v2.set(n[9], n[10], n[11]) : undefined;
+        const opts: SplatOptions = { seed: n[7] };
+        if (n[8]) opts.kind = n[8] as unknown as SplatOptions['kind'];   // (기록된 종류 값 그대로)
+        if (st) { opts.stretch = st; opts.stretchAmt = n[12]; }
+        G.paint?.splat(_v.set(n[2], n[3], n[4]), n[5], n[6], opts);
         this.applying = false;
         break;
       }
-      case 'p': { const a = this.byNid.get(e[2]); if (a) G.projectiles?.ghostProjectile(a, e); break; }
-      case 'b': { const a = this.byNid.get(e[2]); if (a) G.projectiles?.ghostBomb(a, e[3], e[4], e[5], e[6], e[7], e[8], e[9]); break; }
+      case 'p': { const a = this.byNid.get(e[2] as number); if (a) G.projectiles?.ghostProjectile(a, e as Parameters<NonNullable<typeof G.projectiles>['ghostProjectile']>[1]); break; }
+      case 'b': { const a = this.byNid.get(e[2] as number), n = e as number[]; if (a) G.projectiles?.ghostBomb(a, e[3] as string, n[4], n[5], n[6], n[7], n[8], n[9]); break; }
       case 'tr': {
-        const a = this.byNid.get(e[2]);
+        const a = this.byNid.get(e[2] as number);
         if (!a || !a.remote || !a.alive && e[3] !== 'spawn') break;
-        a.character._netTrig?.(e[3], unpackTrig(e[4]));
-        this._trigSideEffects(a, e[3]);
+        a.character._netTrig?.(e[3] as string, unpackTrig(e[4]));
+        this._trigSideEffects(a, e[3] as string);
         break;
       }
-      case 'ev': this._playEvent(e[2], e[3]); break;
+      case 'ev': this._playEvent(e[2] as string, e[3] as Record<string, unknown>); break;
       case 'k': {
-        const a = this.byNid.get(e[2]);
-        const K = MAIN_KITS[e[3]] || SUB_KITS[e[3]] || KIT_GHOSTS[e[3]];
+        const a = this.byNid.get(e[2] as number), kind = e[3] as string;
+        const K = MAIN_KITS[kind] || SUB_KITS[kind] || KIT_GHOSTS[kind];
         if (!a || !a.remote || !K || !K.ghost) break;
         this.mute++;
-        try { K.ghost(a, e[4]); } catch (err) { console.warn('[inkwave] kit ghost', e[3], err); } finally { this.mute--; }
+        try { K.ghost(a, e[4] as number[]); } catch (err) { console.warn('[inkwave] kit ghost', e[3], err); } finally { this.mute--; }
         break;
       }
-      case 'bm': this.match?.boss?.onMove(e[2]); break;
-      case 'z': this.match?.zones?.netEvent(e[2]); break;
-      case 'bc': { const b = this.match?.boss; if (b && !b.sim) b._crabBurst(e[2], e[3], e[4], e[5], !!e[6]); break; }
+      case 'bm': this.match?.boss?.onMove(e[2] as BossMove); break;
+      case 'z': this.match?.zones?.netEvent(e[2] as ZoneNet); break;
+      case 'bc': { const b = this.match?.boss, n = e as number[]; if (b && !b.sim) b._crabBurst(n[2], n[3], n[4], n[5], !!e[6]); break; }
     }
   }
 
@@ -501,16 +559,16 @@ export class NetMatch {
   // Same playback clock as the host's squidkids: Hermite through its snapshots, the boss clock read off them, one-shot
   // state from the snapshot already passed. Corrections (a rewritten extrapolation, a host handoff) settle on the same
   // critically damped offset as remote actors — the boss never pops.
-  _sampleBoss(dt) {
+  _sampleBoss(dt: number) {
     const b = this.match?.boss;
     if (!b || b.sim) return;
-    const n = b.net, buf = n.buf, peer = this.peers.get(this.s.hostId);
+    const n = b.net, buf = n.buf, peer = this.peers.get(this.s.hostId!);
     if (!buf.length || !peer || peer.tr === undefined) return;
     const tr = peer.tr;
     while (buf.length > 2 && buf[1].t < tr - 0.3) buf.shift();
-    const S = n.cur || (n.cur = {});
-    const at = (t, O) => {
-      let s0 = buf[0], s1 = null;
+    const S = (n.cur || (n.cur = {} as BossPose)) as BossPose;   // (at()이 채운다)
+    const at = (t: number, O: BossPose) => {
+      let s0 = buf[0], s1: BossSnap | null = null;
       for (let i = 0; i < buf.length - 1; i++) if (buf[i].t <= t && buf[i + 1].t > t) { s0 = buf[i]; s1 = buf[i + 1]; break; }
       if (s1) {
         const d = Math.max(1e-3, s1.t - s0.t), u = Math.min(1, Math.max(0, (t - s0.t) / d)), u2 = u * u, u3 = u2 * u;
@@ -531,7 +589,7 @@ export class NetMatch {
     at(tr, S);
     // discrete state + crablets from the snapshot already passed (crablets interpolate by id)
     const s0 = S.s0, s1 = S.s1;
-    for (const k of ['hp', 'phase', 'f', 'mv', 'anim', 'turn', 'fl', 'wk', 'killer', 'maxHp', 'move']) S[k] = s0[k];
+    for (const k of ['hp', 'phase', 'f', 'mv', 'anim', 'turn', 'fl', 'wk', 'killer', 'maxHp', 'move'] as const) (S as unknown as Record<string, unknown>)[k] = s0[k];
     if (s1 && s1.move) S.move = s1.move;
     const cr = S.crabs || (S.crabs = []);
     cr.length = 0;
@@ -546,9 +604,9 @@ export class NetMatch {
       n.handoff = false;
       if (n.prev && n.ready) { err.set(n.prev.x - S.x, n.prev.y - S.y, n.prev.z - S.z); if (err.lengthSq() > 144) { err.set(0, 0, 0); ev.set(0, 0, 0); } }
     } else if (n.prev && n.prevT !== undefined && n.ready) {
-      const P = n._P || (n._P = {});
+      const P = (n._P || (n._P = {} as BossPose)) as BossPose;
       at(n.prevT, P);
-      const jx = n.prevRaw.x - P.x, jz = n.prevRaw.z - P.z, j2 = jx * jx + jz * jz;
+      const jx = n.prevRaw!.x - P.x, jz = n.prevRaw!.z - P.z, j2 = jx * jx + jz * jz;
       // (a charging boss covers 4 m in a quarter second: only a genuinely lost thread — > 12 m — is shown as a cut)
       if (j2 > 1e-6 && j2 < 144) { err.x += jx; err.z += jz; } else if (j2 >= 144) { err.set(0, 0, 0); ev.set(0, 0, 0); }
     }
@@ -556,22 +614,22 @@ export class NetMatch {
     n.prevT = tr;
     if (err.x || err.y || err.z || ev.x || ev.y || ev.z) {
       const w = 13, k = Math.exp(-w * dt);
-      for (const c of ['x', 'y', 'z']) { const x0 = err[c], v0 = ev[c], q = v0 + w * x0; err[c] = (x0 + q * dt) * k; ev[c] = (v0 - w * q * dt) * k; }
+      for (const c of ['x', 'y', 'z'] as const) { const x0 = err[c], v0 = ev[c], q = v0 + w * x0; err[c] = (x0 + q * dt) * k; ev[c] = (v0 - w * q * dt) * k; }
       if (err.lengthSq() < 1e-6 && ev.lengthSq() < 1e-4) { err.set(0, 0, 0); ev.set(0, 0, 0); }
     }
     (n.prev || (n.prev = new THREE.Vector3())).set(S.x + err.x, S.y + err.y, S.z + err.z);
     n.ready = true;
   }
 
-  _trigSideEffects(a, name) {
+  _trigSideEffects(a: NetActor, name: string) {
     if (!a._nearCamera()) return;
     const pos = a.pos;
     if (name === 'flick') G.audio?.play('roller_flick', { pos, volume: 0.8 });
     else if (name === 'slosh') G.audio?.play('slosh_throw', { pos, volume: 0.55 });
   }
 
-  _playEvent(name, d) {
-    const e = unpackEvent(d, this);
+  _playEvent(name: string, d: Record<string, unknown>) {
+    const e = unpackEvent(d, this) as PlayedEvent;
     if (!e) return;
     const a = e.actor || e.victim;
     if (!a || !a.remote) return;
@@ -590,17 +648,17 @@ export class NetMatch {
       case 'superjump:land': a.net.sjTo = null; G.fx?.burst(e.pos || a.pos, UPV, a.color, { count: 14, speed: 5, size: 0.09 }); break;
       case 'special:use': G.audio?.play('special_activate', { pos: a.pos, volume: 0.7 }); break;
       case 'special:slam':
-        G.fx?.explosion(_v2.copy(e.pos).setY(e.pos.y + 0.3), a.color, e.radius);
+        G.fx?.explosion(_v2.copy(e.pos!).setY(e.pos!.y + 0.3), a.color, e.radius!);
         G.audio?.play('special_slam', { pos: e.pos });
-        emit('shake', { pos: e.pos.clone(), amount: 1.0 });
+        emit('shake', { pos: e.pos!.clone(), amount: 1.0 });
         break;
       case 'weapon:dodge': if (near) G.audio?.play('dualies_roll', { pos: a.pos, volume: 0.5 }); break;
-      case 'weapon:fire': G.projectiles?.ghostFire(a, e); break;
+      case 'weapon:fire': G.projectiles?.ghostFire(a, e as unknown as Parameters<NonNullable<typeof G.projectiles>['ghostFire']>[1]); break;
     }
     emit(name, e);
   }
 
-  _remoteSplat(victim, attacker, cause) {
+  _remoteSplat(victim: NetActor | null | undefined, attacker: NetActor | null | undefined, cause: string | undefined) {
     if (!victim || !victim.alive) return;
     victim.alive = false; victim.hp = 0;
     victim.respawnTimer = PLAYER.respawnTime;
@@ -609,7 +667,7 @@ export class NetMatch {
     victim.weaponRunner.reset();
     this._stopLoops(victim);
     _v2.copy(victim.pos); _v2.y += 0.6;
-    G.fx?.splatted(_v2, attacker ? attacker.color : G.teamColors[victim.enemyTeam]);
+    G.fx?.splatted(_v2, attacker ? attacker.color : G.teamColors[victim.enemyTeam]!);
     if (attacker) attacker.stats.splats++;
     victim.character.setVisible(false);
     victim.net.buf.length = 0; victim.net.ready = false; victim.net.has = false;
@@ -620,47 +678,47 @@ export class NetMatch {
 
   // Alive again, but the path still holds the old life until the owner's first post-respawn sample is due: stay hidden
   // until then (applyRemote), so the squidkid never flashes up where it was splatted and slides to the pad.
-  _remoteRespawn(a) {
+  _remoteRespawn(a: NetActor) {
     a.alive = true; a.hp = PLAYER.hp; a.invuln = PLAYER.spawnInvuln;
     a.respawnTimer = 0;
     a.net.spawnPending = true;
   }
 
   // ---- hits (victim's owner) ------------------------------------------------------------------------------------------
-  _hit(d) {
-    const v = this.byNid.get(d.v), atk = this.byNid.get(d.a);
+  _hit(d: NetMsg) {
+    const v = this.byNid.get(d.v!), atk = this.byNid.get(d.a as number);
     if (!v || v.remote || !v.alive || !atk || atk.team === v.team) return;
     this._applyingHit = true;
-    G.projectiles?.applyHit(atk, v, d.d, d.w);
+    G.projectiles?.applyHit(atk, v, d.d!, d.w!);
     this._applyingHit = false;
   }
 
   // ---- host clock / state / result --------------------------------------------------------------------------------------
-  _hostClock([state, time]) {
+  _hostClock([state, time]: [string, number]) {
     const m = this.match;
     if (!m || this.isHost) return;
     if (state === 'playing' && m.state === 'playing' && Math.abs(m.time - time) > 0.2) m.time += (time - m.time) * 0.5;
   }
-  _hostState(d) {
+  _hostState(d: NetMsg) {
     const m = this.match;
     if (!m || this.isHost) return;
     if (typeof d.t === 'number') m.time = d.t;
-    if (d.s !== m.state && d.s !== 'judge') m.setState(d.s);
+    if (d.s !== m.state && d.s !== 'judge') m.setState(d.s as Match['state']);
   }
-  sendResult(result) {
+  sendResult(result: MatchResult) {
     if (!this.isHost) return;
     this._sendNow({ k: 'res', cov: result.coverage, win: result.winner, mode: result.mode, bo: result.boss,
       ...(result.mode === 'zones' ? { zc: result.counts, zp: result.penalty, zr: result.reason, zo: result.overtime ? 1 : 0, zl: result.log } : {}),
-      st: this.match.actors.map((a) => [a.nid, Math.round(a.stats.turf), a.stats.splats, a.stats.deaths, Math.round(a.stats.bossDmg || 0), a.stats.weakHits || 0]) });
+      st: this.match!.actors.map((a) => [a.nid, Math.round(a.stats.turf), a.stats.splats, a.stats.deaths, Math.round(a.stats.bossDmg || 0), a.stats.weakHits || 0]) });
   }
-  _result(d) {
+  _result(d: NetMsg) {
     const m = this.match;
     if (!m || this.isHost) return;
-    for (const [nid, turf, splats, deaths, bossDmg, weakHits] of d.st || []) { const a = this.byNid.get(nid); if (a) { a.stats.turf = turf; a.stats.splats = splats; a.stats.deaths = deaths; if (bossDmg !== undefined) { a.stats.bossDmg = bossDmg; a.stats.weakHits = weakHits; } } }
+    for (const [nid, turf, splats, deaths, bossDmg, weakHits] of (d.st || []) as number[][]) { const a = this.byNid.get(nid); if (a) { a.stats.turf = turf; a.stats.splats = splats; a.stats.deaths = deaths; if (bossDmg !== undefined) { a.stats.bossDmg = bossDmg; a.stats.weakHits = weakHits; } } }
     if (d.mode !== 'boss') m.time = 0;   // (a boss win stops the clock where it was)
-    m.result = d.mode === 'boss' ? { mode: 'boss', coverage: d.cov, winner: d.win, boss: d.bo }
-      : d.mode === 'zones' ? { mode: 'zones', coverage: d.cov, winner: d.win, reason: d.zr, counts: d.zc, penalty: d.zp, overtime: !!d.zo, log: d.zl || [] }
-        : { coverage: d.cov, winner: d.win };
+    m.result = d.mode === 'boss' ? { mode: 'boss', coverage: d.cov!, winner: d.win!, boss: d.bo }
+      : d.mode === 'zones' ? { mode: 'zones', coverage: d.cov!, winner: d.win!, reason: d.zr, counts: d.zc, penalty: d.zp, overtime: !!d.zo, log: d.zl || [] }
+        : { coverage: d.cov!, winner: d.win! };   // (호스트가 늘 담아 보낸다)
     m.setState('judge');
   }
   sendEnd() { if (this.isHost) this._sendNow({ k: 'end' }); }
@@ -668,13 +726,13 @@ export class NetMatch {
   // ---- players leaving: their squidkid carries on as a bot, run by the host -------------------------------------------
   // (a humans-only stage — config noBots, Cargo Terminal — removes it instead: it vanishes in an ink burst on every
   // screen; the clock and judge still move with the host)
-  onLeave(id, hostChanged) {
+  onLeave(id: string, hostChanged: boolean) {
     if (!this.match) return;
     const drop = mapNoBots(this.cfg.map);
     for (const a of [...this.byNid.values()]) {
       if (a.owner !== id) continue;
       if (drop) { this._remove(a); continue; }
-      a.owner = this.s.hostId;
+      a.owner = this.s.hostId!;
       if (a.owner === this.myId) this._adopt(a);
       else { a.net.buf.length = 0; a.net.handoff = true; }   // same squidkid, new sender: glide onto its new path
     }
@@ -683,13 +741,13 @@ export class NetMatch {
     if (hostChanged && this.match.boss) { if (this.isHost) this.match.boss.adopt(); else this.match.boss.handoff(); }
   }
 
-  _remove(a) {
-    this.byNid.delete(a.nid);
+  _remove(a: NetActor) {
+    this.byNid.delete(a.nid!);
     this._stopLoops(a);
-    this.match.removeActor(a);
+    this.match!.removeActor(a);
   }
 
-  _adopt(a) {
+  _adopt(a: NetActor) {
     // continue from exactly where it was drawn — no pop
     a.remote = false;
     this._stopLoops(a);
@@ -706,9 +764,9 @@ export class NetMatch {
     a.net.err.set(0, 0, 0); a.net.errV?.set(0, 0, 0);   // a.pos is already where it was drawn (path + offset)
   }
 
-  _ownership() { /* reserved: explicit transfers */ }
+  _ownership(_map?: unknown) { /* reserved: explicit transfers */ }
 
-  shouldApplyHit(attacker, victim) {
+  shouldApplyHit(attacker: Actor, victim: Actor) {
     // ghosts never hurt anyone; the shooter's client decides, the victim's owner applies
     if (this._applyingHit) return 'local';
     if (attacker.remote) return 'drop';
@@ -720,7 +778,7 @@ export class NetMatch {
 // ---------------------------------------------------------------------------------------------- packing helpers
 const UPV = new THREE.Vector3(0, 1, 0);
 
-function packActor(a) {
+function packActor(a: Actor): unknown[] {
   const wr = a.weaponRunner;
   let f = 0;
   if (a.alive) f |= F.alive;
@@ -747,23 +805,23 @@ function packActor(a) {
   return [a.nid, r2(a.pos.x), r2(y), r2(a.pos.z), r2(a.vel.x), r2(a.vel.y), r2(a.vel.z), r3(a.yaw), r3(a.aimYaw), r3(a.aimPitch), f,
     Math.round(a.hp), Math.round(a.ink), Math.round(a.special), r2(wr.streaming ? wr.burstFrac : wr.charge), Math.round(a.stats.turf), a.netTp || 0,
     n ? r2(n.x) : 0, n ? r2(n.y) : 0, n ? r2(n.z) : 0, r2(wr.lockT || 0),
-    MAIN_KITS[a.weapon?.kind]?.netState?.(wr) | 0, SPECIAL_ORDER.indexOf(a.specialId) + 1, specialNetState(a)];
+    MAIN_KITS[a.weapon?.kind ?? '']?.netState?.(wr)! | 0, SPECIAL_ORDER.indexOf(a.specialId) + 1, specialNetState(a)];
 }
 
-function unpackActor(s, ts) {
+function unpackActor(s: number[], ts: number): Sample {
   return { t: ts, x: s[1], y: s[2], z: s[3], vx: s[4], vy: s[5], vz: s[6], yaw: s[7], aimYaw: s[8], aimPitch: s[9], f: s[10], hp: s[11], ink: s[12], sp: s[13], ch: s[14], turf: s[15], tp: s[16], wx: s[17], wy: s[18], wz: s[19], lock: s[20], ks: s[21] || 0, spx: s[22] || 0, spst: s[23] || 0 };
 }
 
-function blankSample() { return { t: 0, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, yaw: 0, aimYaw: 0, aimPitch: 0, f: 0, hp: 100, ink: 100, sp: 0, ch: 0, turf: 0, tp: 0, wx: 0, wy: 0, wz: 1, lock: 0, ks: 0, spx: 0, spst: 0 }; }
-function copySample(s, o) { for (const k in s) o[k] = s[k]; return o; }
+function blankSample(): Sample { return { t: 0, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, yaw: 0, aimYaw: 0, aimPitch: 0, f: 0, hp: 100, ink: 100, sp: 0, ch: 0, turf: 0, tp: 0, wx: 0, wy: 0, wz: 1, lock: 0, ks: 0, spx: 0, spst: 0 }; }
+function copySample<T extends object>(s: T, o: T) { for (const k in s) o[k] = s[k]; return o; }
 
 // cubic Hermite on position (owner velocities as tangents), linear on velocity/angles, discrete state from the earlier
-function quantile(arr, q) {
-  const s = arr.slice().sort((x, y) => x - y);
+function quantile(arr: number[], q: number) {
+  const s = arr.slice().sort((x: number, y: number) => x - y);
   return s.length ? s[Math.min(s.length - 1, Math.floor(q * s.length))] : 0;
 }
 
-function hermite(a, b, t, o) {
+function hermite(a: Sample, b: Sample, t: number, o: Sample) {
   const d = Math.max(1e-3, b.t - a.t), u = Math.min(1, Math.max(0, (t - a.t) / d));
   const u2 = u * u, u3 = u2 * u;
   const h00 = 2 * u3 - 3 * u2 + 1, h10 = u3 - 2 * u2 + u, h01 = -2 * u3 + 3 * u2, h11 = u3 - u2;
@@ -786,37 +844,37 @@ function hermite(a, b, t, o) {
 }
 
 // trigger payloads: numbers, plain objects, or the dualies hand objects (valueOf)
-function packTrig(d) {
+function packTrig(d: unknown) {
   if (d == null) return 0;
   if (typeof d === 'number') return r3(d);
-  if (typeof d === 'object') { const o = {}; for (const k in d) { const v = d[k]; if (typeof v === 'number') o[k] = r3(v); } return o; }
+  if (typeof d === 'object') { const o: Record<string, number> = {}; for (const k in d) { const v = (d as Record<string, unknown>)[k]; if (typeof v === 'number') o[k] = r3(v); } return o; }
   return 0;
 }
-function unpackTrig(d) {
+function unpackTrig(d: unknown) {
   if (!d) return undefined;
   if (typeof d === 'number') return d;
-  if (typeof d === 'object') { const o = { ...d }; if (o.amp !== undefined) o.valueOf = function () { return this.amp; }; else if (o.hand !== undefined) o.valueOf = () => 1; return o; }
+  if (typeof d === 'object') { const o: Record<string, unknown> & { amp?: number; hand?: number } = { ...d }; if (o.amp !== undefined) o.valueOf = function (this: { amp: number }) { return this.amp; }; else if (o.hand !== undefined) o.valueOf = () => 1; return o; }
   return undefined;
 }
 
 // event payloads: actors → {n: nid}, vectors → [x, y, z]
-function packEvent(e) {
-  const o = {};
+function packEvent(e: Record<string, unknown>) {
+  const o: Record<string, unknown> = {};
   for (const k in e) {
-    const v = e[k];
-    if (v && v.nid !== undefined && v.character) o[k] = { n: v.nid };
-    else if (v && v.isVector3) o[k] = [r2(v.x), r2(v.y), r2(v.z)];
+    const v = e[k] as { nid?: number; character?: unknown; isVector3?: boolean; x: number; y: number; z: number } | number | string | boolean | null | undefined;
+    if (v && typeof v === 'object' && v.nid !== undefined && v.character) o[k] = { n: v.nid };
+    else if (v && typeof v === 'object' && v.isVector3) o[k] = [r2(v.x), r2(v.y), r2(v.z)];
     else if (typeof v === 'number') o[k] = r3(v);
     else if (typeof v === 'string' || typeof v === 'boolean') o[k] = v;
   }
   return o;
 }
-function unpackEvent(d, nm) {
-  const e = {};
+function unpackEvent(d: Record<string, unknown>, nm: NetMatch) {
+  const e: Record<string, unknown> = {};
   for (const k in d) {
-    const v = d[k];
-    if (v && typeof v === 'object' && !Array.isArray(v) && v.n !== undefined) e[k] = nm.byNid.get(v.n) || null;
-    else if (Array.isArray(v) && v.length === 3) e[k] = new THREE.Vector3(v[0], v[1], v[2]);
+    const v = d[k] as { n?: number } | number[] | unknown;
+    if (v && typeof v === 'object' && !Array.isArray(v) && (v as { n?: number }).n !== undefined) e[k] = nm.byNid.get((v as { n: number }).n) || null;
+    else if (Array.isArray(v) && v.length === 3) e[k] = new THREE.Vector3(v[0] as number, v[1] as number, v[2] as number);
     else e[k] = v;
   }
   return e;

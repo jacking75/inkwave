@@ -17,17 +17,50 @@ import { G } from '../core/ctx.js';
 import { WEAPON_ORDER, MAPS, TEAM_PALETTES, mapNoBots, mapBossOk, bossFallbackMap, noBotsStartBlock } from '../config.js';
 import * as LOOK from '../game/character-style.js';
 
+/** 모의 방 선수 */
+interface MockPlayer { id: string; name: string; team: number; weapon: string; style: object; ready: boolean; host: boolean; you: boolean; ping: number; _base?: number }
+/** 모의 방(실제 세션 lobby와 같은 모양) */
+interface MockLobby { map: string; time: string; duration: number; bots: boolean; difficulty: string; palette: number; mode?: string; players: MockPlayer[]; maxPlayers: number }
+/** 모의 방이 읽는 G.game 부분 */
+interface MockGameView { paletteIndex?(): number; profile?: { name?: string; weapon?: string; style?: object }; _roomPalette?(lobby: MockLobby): void }
+const game = () => G.game as MockGameView | null | undefined;
+/** 모의 방이 읽는 설정 부분 */
+type MockSettings = { lastStage?: string; stageTimes?: Record<string, string>; matchLength?: number; difficulty?: string };
+
 const q = new URLSearchParams(typeof location !== 'undefined' ? location.search : '');
 const NAMES = ['Mako', 'Tentakool', 'inkjet', 'Wavebreaker', 'Tidal Tia', 'Blot', 'Pixel', 'Kraken Kai', 'sploosh', 'Lulu',
   'Squee', 'Dashi', 'Juniper', 'Rin', 'Otto', 'Beanie', 'Glub', 'Zippy', 'Nibbles', 'Coraline', 'Seafoam', 'Momo'];
 const EMOTES = ['booyah', 'wave', 'dance', 'flex'];
 const CODE_ABC = 'BCEFGHJKLMNPQRTUVXYZ23456789'; // no O/0, I/1, W/A/S/D (as session.js)
-const FAIL = { ZZZZZ: 'Room not found', FULLY: 'Room is full', BUZYY: 'Match in progress', NETXX: 'Could not connect' };
-const clone = (o) => JSON.parse(JSON.stringify(o));
+const FAIL: Record<string, string | undefined> = { ZZZZZ: 'Room not found', FULLY: 'Room is full', BUZYY: 'Match in progress', NETXX: 'Could not connect' };
+const clone = <T>(o: T): T => JSON.parse(JSON.stringify(o));
 const rnd = Math.random;
-const pick = (a) => a[(rnd() * a.length) | 0];
+const pick = <T>(a: ArrayLike<T>): T => a[(rnd() * a.length) | 0];
 
 export class MockNet {
+  declare _hostGo: ReturnType<typeof setTimeout> | null;
+  declare _tick: ReturnType<typeof setTimeout> | null;
+  declare _botsPref: boolean;
+  declare mock: {
+    auto(on?: boolean): void; add(o?: Partial<MockPlayer>): string | null; drop(id: string): void; ready(id: string, v?: boolean | null): void; emote(id: string, name?: string): void;
+    swap(id: string, o?: Partial<MockPlayer>): void; fill(n?: number): void; clear(): void; host(id: string | null): void; startMatch(): void; endMatch(): void; lose(msg?: string): void;
+  };
+  declare _pending: number;
+  declare _matchS: number;
+  declare _fill: number | null;
+  declare _lat: number;
+  declare _auto: boolean;
+  declare _seq: number;
+  declare _timers: Set<ReturnType<typeof setTimeout>>;
+  declare _ls: Map<string, Set<(data: unknown) => void>>;
+  declare isMock: boolean;
+  declare startAt: number;
+  declare lobby: MockLobby | null;
+  declare error: string | null;
+  declare hostId: string | null;
+  declare myId: string | null;
+  declare code: string | null;
+  declare state: string;
   constructor() {
     this.state = 'offline';
     this.code = null;
@@ -42,7 +75,7 @@ export class MockNet {
     this._seq = 0;
     this._auto = q.get('mockauto') !== '0';
     this._lat = Math.max(0, +(q.get('mocklat') ?? 700) || 0);
-    this._fill = q.has('mockfill') ? Math.max(0, Math.min(7, +q.get('mockfill') | 0)) : null;
+    this._fill = q.has('mockfill') ? Math.max(0, Math.min(7, +q.get('mockfill')! | 0)) : null;
     this._matchS = Math.max(1, +(q.get('mockmatch') ?? 6) || 6);
     this._pending = 0;
     this.mock = {
@@ -64,28 +97,29 @@ export class MockNet {
   // ------------------------------------------------------------------ contract
   get isHost() { return !!this.myId && this.myId === this.hostId; }
 
-  on(ev, fn) {
+  on<T>(ev: string, fn: (data: T) => void) {
     if (!this._ls.has(ev)) this._ls.set(ev, new Set());
-    this._ls.get(ev).add(fn);
-    return () => this._ls.get(ev)?.delete(fn);
+    const f = fn as (data: unknown) => void;   // (사건마다 페이로드 모양이 다르다)
+    this._ls.get(ev)!.add(f);
+    return () => this._ls.get(ev)?.delete(f);
   }
 
-  async create(name) {
+  async create(name?: string) {
     if (this.state !== 'offline' && this.state !== 'error') return this.code;
     this._reset();
     this._setState('connecting');
     const tok = ++this._pending;
     await this._sleep(this._lat * (0.8 + rnd() * 0.5));
-    if (tok !== this._pending || this.state !== 'connecting') throw new Error('Cancelled');
+    if (tok !== this._pending || (this.state as string) !== 'connecting') throw new Error('Cancelled');   // (기다리는 동안 바뀔 수 있다)
     this.code = Array.from({ length: 5 }, () => pick(CODE_ABC)).join('');
     this.myId = this._id();
     this.hostId = this.myId;
-    const s = G.settings || {};
+    const s: MockSettings = G.settings || {};
     this.lobby = {
-      map: MAPS.some((m) => m.id === s.lastStage) ? s.lastStage : MAPS[0].id,
-      time: (s.stageTimes && s.stageTimes[s.lastStage]) === 'dusk' ? 'dusk' : 'day',
+      map: MAPS.some((m) => m.id === s.lastStage) ? s.lastStage! : MAPS[0].id,
+      time: (s.stageTimes && s.stageTimes[s.lastStage!]) === 'dusk' ? 'dusk' : 'day',
       duration: s.matchLength === 90 ? 90 : 180, bots: true, difficulty: s.difficulty || 'normal',
-      palette: G.game && G.game.paletteIndex ? G.game.paletteIndex() : 0,
+      palette: game() && game()!.paletteIndex ? game()!.paletteIndex!() : 0,
       players: [this._me(name, 0, true)], maxPlayers: 8,
     };
     this._botsPref = true;
@@ -98,14 +132,14 @@ export class MockNet {
     return this.code;
   }
 
-  async join(code, name) {
+  async join(code: string, name?: string) {
     code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (this.state !== 'offline' && this.state !== 'error') throw new Error('Already in a room');
     this._reset();
     this._setState('connecting');
     const tok = ++this._pending;
     await this._sleep(this._lat * (0.9 + rnd() * 0.6) + (code === 'NETXX' ? 1800 : 0));
-    if (tok !== this._pending || this.state !== 'connecting') throw new Error('Cancelled');
+    if (tok !== this._pending || (this.state as string) !== 'connecting') throw new Error('Cancelled');   // (기다리는 동안 바뀔 수 있다)
     const fail = code.length < 4 ? 'Room not found' : FAIL[code];
     if (fail) {
       this.error = fail;
@@ -138,10 +172,10 @@ export class MockNet {
     if (this.state !== 'offline') this._setState('offline');
   }
 
-  setMe(o = {}) {
+  setMe(o: Partial<Omit<MockPlayer, 'team'>> & { team?: number | 'auto' } = {}) {
     const me = this._p(this.myId);
     if (!me || !this.lobby) return;
-    const patch = {};
+    const patch: Partial<MockPlayer> = {};
     if (o.name != null) patch.name = String(o.name).slice(0, 16) || me.name;
     if (o.weapon != null) patch.weapon = o.weapon;
     if (o.style != null) patch.style = { ...o.style };
@@ -157,7 +191,7 @@ export class MockNet {
     this._later(this._rtt(), () => this._patch(me.id, patch));
   }
 
-  setSettings(o = {}) {
+  setSettings(o: Partial<MockLobby> = {}) {
     if (!this.isHost || !this.lobby || this.state !== 'lobby') return;
     const L = this.lobby, wasMap = L.map;
     if (o.map && MAPS.some((m) => m.id === o.map)) L.map = o.map;
@@ -166,7 +200,7 @@ export class MockNet {
     if (o.bots != null) this._botsPref = !!o.bots;
     if (o.difficulty) L.difficulty = o.difficulty;
     if (o.mode === 'turf' || o.mode === 'boss') L.mode = o.mode;   // Boss Battle lobby setting (UI testing)
-    if (Number.isInteger(o.palette) && TEAM_PALETTES[o.palette]) L.palette = o.palette;
+    if (Number.isInteger(o.palette) && TEAM_PALETTES[o.palette!]) L.palette = o.palette!;
     // stage rules, exactly as session.js applies them (no Boss Battle on a noBoss stage, no bots on a noBots one)
     if (L.mode === 'boss' && !mapBossOk(L.map)) L.map = bossFallbackMap(wasMap);
     L.bots = mapNoBots(L.map) ? false : (this._botsPref ?? L.bots);
@@ -184,7 +218,7 @@ export class MockNet {
     this._launch();
   }
 
-  emote(name) {
+  emote(name: string) {
     if (!this.lobby || !EMOTES.includes(name)) return;
     this._emit('emote', { id: this.myId, name });
   }
@@ -200,7 +234,7 @@ export class MockNet {
     this._emit('match', { phase: 'start' });
     const beat = G.menus && G.menus.launchLobby ? G.menus.launchLobby() : null;
     await Promise.race([beat || this._sleep(3600), this._sleep(8000)]);
-    if (this.state !== 'starting' || this.lobby !== L) return;
+    if ((this.state as string) !== 'starting' || this.lobby !== L) return;   // (기다리는 동안 바뀔 수 있다)
     this._setState('match');
     this._later(this._matchS * 1000, () => this._endMatch());
   }
@@ -220,7 +254,7 @@ export class MockNet {
     });
   }
 
-  _lose(msg) {
+  _lose(msg: string | null) {
     if (this.state === 'offline') return;
     this._reset();
     this.error = msg;
@@ -241,7 +275,7 @@ export class MockNet {
   }
 
   _act() {
-    const L = this.lobby, others = L.players.filter((p) => !p.you);
+    const L = this.lobby!, others = L.players.filter((p) => !p.you);   // (방에 있을 때만 부른다)
     // guest: the simulated host launches once everybody (you included) is ready
     if (!this.isHost && L.players.every((p) => p.host || p.ready)) {
       if (!this._hostGo) this._hostGo = this._later(1800, () => { this._hostGo = null; if (this.lobby === L && L.players.every((p) => p.host || p.ready)) this._launch(); });
@@ -268,7 +302,7 @@ export class MockNet {
     this._emit('lobby', { lobby: this.lobby });
   }
 
-  _add(o) {
+  _add(o: Partial<MockPlayer>) {
     const L = this.lobby;
     if (!L || L.players.length >= L.maxPlayers) return null;
     const p = this._bot({ ...o, team: o.team ?? this._teamFor() });
@@ -278,7 +312,7 @@ export class MockNet {
     return p.id;
   }
 
-  _drop(id, reason = 'left') {
+  _drop(id: string, reason = 'left') {
     const L = this.lobby;
     if (!L) return;
     const i = L.players.findIndex((p) => p.id === id && !p.you);
@@ -289,7 +323,7 @@ export class MockNet {
     this._emit('lobby', { lobby: L });
   }
 
-  _migrate(id) {
+  _migrate(id: string | null) {
     const L = this.lobby;
     if (!L) return;
     const next = (id && L.players.find((p) => p.id === id)) || L.players[0];
@@ -301,7 +335,7 @@ export class MockNet {
     this._emit('lobby', { lobby: L });
   }
 
-  _patch(id, patch) {
+  _patch(id: string, patch: Partial<MockPlayer>) {
     const p = this._p(id);
     if (!p || !patch || !Object.keys(patch).length) return;
     Object.assign(p, patch);
@@ -309,14 +343,14 @@ export class MockNet {
     this._emit('lobby', { lobby: this.lobby });
   }
 
-  _teamFor(except) {
+  _teamFor(except?: string) {
     const ps = (this.lobby ? this.lobby.players : []).filter((p) => p.id !== except);
     const a = ps.filter((p) => p.team === 0).length, b = ps.length - a;
     return a <= b ? 0 : 1;
   }
 
-  _me(name, team, host) {
-    const prof = (G.game && G.game.profile) || {};
+  _me(name: string | undefined, team: number, host: boolean): MockPlayer {
+    const prof: NonNullable<MockGameView['profile']> = (game() && game()!.profile) || {};
     return {
       id: this.myId || (this.myId = this._id()), name: String(name || prof.name || 'Player').slice(0, 16), team,
       weapon: prof.weapon || 'shooter', style: prof.style ? { ...prof.style } : LOOK.randomStyle(rnd),
@@ -324,7 +358,7 @@ export class MockNet {
     };
   }
 
-  _bot(o = {}) {
+  _bot(o: Partial<MockPlayer> = {}): MockPlayer {
     const used = new Set((this.lobby ? this.lobby.players : []).map((p) => p.name));
     const free = NAMES.filter((n) => !used.has(n));
     return {
@@ -334,32 +368,32 @@ export class MockNet {
     };
   }
 
-  _p(id) { return this.lobby ? this.lobby.players.find((p) => p.id === id) : null; }
+  _p(id: string | null) { return this.lobby ? this.lobby.players.find((p) => p.id === id) : null; }
   _id() { return 'p' + (++this._seq).toString(36) + ((rnd() * 1e6) | 0).toString(36); }
   _rtt() { return 60 + rnd() * 70; }
 
-  _setState(s) {
+  _setState(s: string) {
     if (this.state === s) return;
     this.state = s;
     if (s !== 'error' && s !== 'offline') this.error = null;
     this._emit('state', { state: s });
   }
 
-  _emit(ev, data) {
+  _emit(ev: string, data: unknown) {
     // main.js keeps the room's palette in sync for the real session (its 'lobby' hook); mirror that for the mock
-    if (ev === 'lobby' && this.lobby && G.game && G.game._roomPalette) { try { G.game._roomPalette(this.lobby); } catch (e) { /* optional */ } }
+    if (ev === 'lobby' && this.lobby && game() && game()!._roomPalette) { try { game()!._roomPalette!(this.lobby); } catch (e) { /* optional */ } }
     const set = this._ls.get(ev);
     if (!set) return;
-    const payload = ev === 'lobby' ? { lobby: data.lobby ? clone(data.lobby) : null } : data;
+    const payload = ev === 'lobby' ? { lobby: (data as { lobby?: MockLobby }).lobby ? clone((data as { lobby: MockLobby }).lobby) : null } : data;
     for (const fn of [...set]) { try { fn(payload); } catch (e) { console.error('[netmock]', ev, e); } }
   }
 
-  _later(ms, fn) {
+  _later(ms: number, fn: () => void) {
     const t = setTimeout(() => { this._timers.delete(t); fn(); }, ms);
     this._timers.add(t);
     return t;
   }
-  _sleep(ms) { return new Promise((r) => setTimeout(r, ms)); } // untracked: a leave() mid-connect must still settle
+  _sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); } // untracked: a leave() mid-connect must still settle
 
   _reset() {
     for (const t of this._timers) clearTimeout(t);
@@ -371,7 +405,7 @@ export class MockNet {
 
 /** Install the mock as G.net (idempotent). Returns the session. */
 export function installMockNet() {
-  if (G.net && G.net.isMock) return G.net;
+  if (G.net && (G.net as { isMock?: boolean }).isMock) return G.net;
   G.net = new MockNet();
   console.info('[netmock] G.net is the offline mock (?netmock=1)');
   return G.net;
