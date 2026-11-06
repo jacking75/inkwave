@@ -8,15 +8,22 @@
 // blooms with sustained fire, recovers when you let go). Hit tests use the victim's visual (smoothed) body.
 import * as THREE from 'three';
 import { G, emit, clamp, lerp, smoothstep } from '../core/ctx.js';
-import { WEAPONS, SUB, SPECIALS, PLAYER } from '../config.js';
+import { WEAPONS, SUB, SPECIALS, PLAYER, WEAPON_CFG, SUB_CFG } from '../config.js';
+import type { WeaponCfg, SubCfg } from '../config.js';
+import type { Actor } from './actor.js';
+import type { LoopHandle } from '../audio/audio.js';
+import type { HitTarget } from '../boss/boss.js';
+import type { HitShape } from '../boss/bossModel.js';
+/** 보스 판정 대상이 껍데기 구(게가 아님)인가 */
+const isShape = (t: HitTarget): t is HitShape => !!t && 'socket' in t && !('hp' in t);
 import { Physics, Hit } from './physics.js';
 import { MAIN_KITS, SUB_KITS } from './kits/registry.js';
 
 // local-player gamepad rumble (subtle; no-op without a pad or with settings.rumble = 0)
-function rumble(a, strong, weak, ms) { if (a && a.isLocal && !a.isBot) G.input?.rumble?.(strong, weak, ms); }
+function rumble(a: Actor, strong: number, weak: number, ms: number | undefined) { if (a && a.isLocal && !a.isBot) G.input?.rumble?.(strong, weak, ms); }
 // feet of the victim's *visual* body (the smoothed root), so what you see is what you hit
 const _hb = new THREE.Vector3();
-function hitBase(e) { return _hb.set(e.pos.x, e.pos.y + (e.smoothY || 0), e.pos.z); }
+function hitBase(e: Actor) { return _hb.set(e.pos.x, e.pos.y + (e.smoothY || 0), e.pos.z); }
 const SIM_DT = 1 / 60;
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _dir = new THREE.Vector3(), _fwd = new THREE.Vector3(), _vh = new THREE.Vector3(), _v4 = new THREE.Vector3();
@@ -30,8 +37,62 @@ const DEG = Math.PI / 180;
 const HAND_R = Object.freeze({ hand: 0, valueOf() { return 1; } }), HAND_L = Object.freeze({ hand: 1, valueOf() { return 1; } });
 
 // ---------------------------------------------------------------------------------------------- per-actor runner
+// ---------------------------------------------------------------------------------------------- contracts
+/** 무기 입력(actor.ts가 프레임마다 만든다) */
+export interface WeaponInput { fire: boolean; firePressed: boolean; sub: boolean; subReleased: boolean; lastDevice?: string }
+/** 투사체 외형(시각 전용: _draw가 쓴다) */
+export interface ShotLook { vis: number; tail0?: number; tailK?: number; wob?: number; wobF: number; nose: number; sats: number }
+/** 한 차례 슬로셔 물결 기록(한 번 던진 물방울이 공유한다): 이미 직격한 대상 */
+export interface Volley { hits: object[] }   // 배우·보스·게
+/** 날아가는 탄(풀에서 재사용): 종류, 무기·주인·팀, 위치·속도, 수명·직진 시간, 충돌·피해, 꼬리·궤적, 외형 */
+export interface Shot extends ShotLook {
+  type: string; wid: string | null; weaponId: string | null; owner: Actor; team: number;
+  pos: THREE.Vector3; prev: THREE.Vector3; vel: THREE.Vector3; start: THREE.Vector3;
+  age: number; life: number; straight: number; delay: number;
+  radius: number; damage: number; dmgFar?: number; belowFalloff: number; belowFalloffMax: number;
+  size: number; trail: number; trailEvery: number; trailRadius: number; grav: number; drag: number; seed: number;
+  head: boolean; volley: { hit: Set<Actor> } | null; vol: Volley | null; burst: ShotBurst | null; sp?: boolean; ghost: boolean;
+}
+/** fireCustom 선택: 종류('blast'면 폭발탄), 속도·사거리·수명, 직진·중력·저항, 충돌·피해, 꼬리, 터짐, 외형 */
+export interface CustomShot {
+  type?: string; speed: number; range?: number; life?: number; straight?: number; grav?: number; drag?: number;
+  radius?: number; damage: number; size?: number; trailEvery?: number; trailRadius?: number;
+  burst?: ShotBurst | null; weaponId?: string | null; look?: Partial<ShotLook> | null;
+}
+/** 폭발탄 터짐: 폭발 반지름, 튐 반지름, 최대·최소 튐 피해, 칠 반지름(없으면 폭발 반지름의 0.6) */
+export interface ShotBurst { radius: number; splashRadius: number; dmgMax: number; dmgMin: number; paint?: number }
+/** 던진 폭탄(스플랫 폭탄·폭풍): 메시·몸체, 위치·속도·회전, 신관, 경과 */
+export interface Bomb {
+  kind: string; owner: Actor; team: number; mesh: THREE.Group; body: THREE.Mesh<THREE.BufferGeometry, THREE.MeshPhysicalMaterial>; pos: THREE.Vector3; vel: THREE.Vector3;
+  fuse: number; age: number; spin: THREE.Vector3; beepT: number; sp?: boolean; dir?: THREE.Vector3; ghost?: boolean;
+}
+/** 폭풍 구름: 무리, 경과·지속, 진행 방향, 비 간격, 반복음, 땅 높이 */
+export interface Cloud { owner: Actor; team: number; group: THREE.Group; t: number; dur: number; dir: THREE.Vector3; rainT: number; loop: LoopHandle | null | undefined; groundY: number; ghost?: boolean }
+/** 차저 빔·조준선 리본 */
+export interface Beam { mesh: THREE.Mesh<THREE.BufferGeometry, RibbonMaterial>; t: number; life: number; th: number }
+/** 온라인 유령 탄 기록(netmatch가 넘긴다) */
+export type GhostShotRec = Array<number | string | null>;
+
 export class WeaponRunner {
-  constructor(actor) {
+  declare a: Actor;
+  // 공통: 쿨다운·차지·롤러·휘두르기(flick: -1 = 아님)·발사 자세·빈 탄창 대기·보조 조준·퍼짐
+  declare cooldown: number; declare charge: number; declare charging: boolean; declare rolling: boolean; declare flick: number;
+  declare firingT: number; declare emptyCd: number; declare aimingSub: boolean; declare bloom: number; declare spread: number;
+  declare rollT: number; declare chargeT: number; declare flickRecover: number; declare rumbleT: number;
+  // rollHits: 이번 롤·붓질에 맞은 대상(배우·보스·게) → 시각
+  declare rollDist: number; declare rollHits: Map<object, number>; declare chargeLoop: LoopHandle | null | undefined; declare chargeDinged: boolean;
+  declare rollLoop: LoopHandle | null | undefined; declare lastRollPos: THREE.Vector3 | null;
+  // 스피너 버스트·스플랫링 연사·쌍권총 회피·고정 자세·슬로셔 준비
+  declare burstT: number; declare burstPower: number; declare streamCd: number;
+  declare dodgeT: number; declare dodgeDir: THREE.Vector3; declare rollsUsed: number; declare rollLock: number; declare sinceRoll: number; declare rollQueued: boolean;
+  declare turret: boolean; declare twinSide: number; declare swipeSide: number;
+  declare hand: number; declare sinceHand: number[]; declare dodge: { t: number; dur: number } | null; declare lockT: number; declare dualRolls: number; declare rollPaint: number;
+  declare _dodgeDir: THREE.Vector3;
+  declare slosh: number; declare streaming: boolean; declare burstDur: number; declare burstFrac: number; declare spinLoop: LoopHandle | null | undefined;
+  /** 키트 무기(kits/*.ts)의 러너별 상태 — 형식은 키트가 정한다 */
+  declare kit: unknown;
+  declare _streamN?: number;   // 스플랫링 연사 소리 격번
+  constructor(actor: Actor) {
     this.a = actor;
     this.reset();
   }
@@ -50,7 +111,7 @@ export class WeaponRunner {
     // dualies: alternating hand, per-hand shot clocks ([right, left] s since that hand fired — twins use them too),
     // dodge roll + locked turret afterwards. dualRolls = rolls left in the chain (rollsLeft() is the HUD accessor)
     this.hand = 0; this.sinceHand = this.sinceHand || [99, 99]; this.sinceHand[0] = this.sinceHand[1] = 99;
-    this.dodge = null; this.lockT = 0; this.dualRolls = this.a?.weapon?.rolls ?? 2; this.rollPaint = 0;
+    this.dodge = null; this.lockT = 0; this.dualRolls = (this.a?.weapon as WeaponCfg | undefined)?.rolls ?? 2; this.rollPaint = 0;
     this._dodgeDir = this._dodgeDir || new THREE.Vector3();
     // slosher windup · splatling stream
     this.slosh = -1; this.streaming = false; this.burstDur = 0; this.burstFrac = 0;
@@ -61,9 +122,9 @@ export class WeaponRunner {
   onDeath() { this.reset(); }
   busy() { return this.charging || this.flick >= 0 || this.burstT > 0 || this.dodgeT > 0 || this.slosh >= 0 || this.streaming || !!this.dodge || this.lockT > 0 || !!MAIN_KITS[this.a.weapon?.kind]?.busy?.(this); }
   firingPose() { return this.firingT > 0 || this.charging || this.flick >= 0 || this.rolling || this.burstT > 0 || this.turret || this.slosh >= 0 || this.streaming || !!this.dodge || this.lockT > 0 || !!MAIN_KITS[this.a.weapon?.kind]?.firingPose?.(this); }
-  moveSpeed() {
+  moveSpeed(): number {
     { const K = MAIN_KITS[this.a.weapon?.kind]; const v = K?.moveSpeed?.(this, this.a.weapon); if (v) return v; }
-    const w = this.a.weapon;
+    const w: WeaponCfg = this.a.weapon;
     switch (w.kind) {
       case 'brush':   // brushing is faster than running; swipes barely slow you
         if (this.rolling) return lerp(w.moveSpeedFiring, w.brushSpeed, smoothstep(0, 0.35, this.rollT));
@@ -92,7 +153,7 @@ export class WeaponRunner {
   }
 
   // current shot cone half-angle in degrees (HUD crosshair should use this)
-  _spreadDeg(w) {
+  _spreadDeg(w: WeaponCfg): number {
     { const K = MAIN_KITS[w.kind]; if (K?.spreadDeg) return K.spreadDeg(this, w); }
     const a = this.a;
     if (w.kind === 'shooter' || w.kind === 'splatling' || w.kind === 'dualies') {
@@ -100,19 +161,19 @@ export class WeaponRunner {
       const base = a.grounded ? w.spreadGround : w.spreadAir;
       return base * lerp(w.spreadFirst ?? 0.45, 1, this.bloom);
     }
-    if (w.kind === 'blaster') return a.grounded ? (w.spread ?? 1.2) : (w.spreadAir ?? 4);
+    if (w.kind === 'blaster') return a.grounded ? ((w as { spread?: number }).spread ?? 1.2) : (w.spreadAir ?? 4);   // (설정에 없으면 기본값)
     if (w.kind === 'twins') return this.turret ? w.turretSpread : (a.grounded ? w.spreadGround : w.spreadAir) * lerp(0.5, 1, this.bloom);
     if (w.kind === 'spinner') return a.grounded ? w.spreadGround : w.spreadAir;
     return 0;
   }
 
-  update(dt, inp) {
-    const a = this.a, w = a.weapon;
+  update(dt: number, inp: WeaponInput) {
+    const a = this.a, w: WeaponCfg = a.weapon;
     this.cooldown -= dt; this.emptyCd -= dt; this.rumbleT -= dt;
     this.firingT = Math.max(0, this.firingT - dt);
     this.flickRecover = Math.max(0, this.flickRecover - dt);
     // spread bloom recovers when the trigger is released (and slowly while still firing between shots)
-    if (!inp.fire) this.bloom = Math.max(0, this.bloom - dt / (w.bloomRecover ?? 0.28));
+    if (!inp.fire) this.bloom = Math.max(0, this.bloom - dt / ((w as { bloomRecover?: number }).bloomRecover ?? 0.28));
     this.spread = this._spreadDeg(w);
     this.sinceHand[0] += dt; this.sinceHand[1] += dt;
     switch (w.kind) {
@@ -131,7 +192,7 @@ export class WeaponRunner {
     // ---- sub weapon (the actor's own: the Splat Bomb here, everything else via G.subs). Bomb Barrage: its bomb,
     // no ink, as fast as its throw gap allows
     const bar = a.specialActive && a.specialActive.kind === 'barrage' ? a.specialActive : null;
-    const sub = bar ? bar.bomb : (a.sub || SUB.bomb);
+    const sub: SubCfg = (bar ? bar.bomb : a.sub) || SUB_CFG.bomb!;
     const SK = SUB_KITS[sub.kind];
     if (this.aimingSub && SK?.hold) SK.hold(this, dt, inp, sub);   // charge-up subs
     if (inp.sub && !this.aimingSub) {
@@ -146,10 +207,10 @@ export class WeaponRunner {
       if (refused) emit('sub:cantuse', { actor: a, kind: sub.kind });
       const ok = !refused && (bar ? G.time >= (bar.nextThrow || 0) : a.ink >= sub.inkCost);
       if (ok) {
-        if (bar) bar.nextThrow = G.time + bar.def.gap; else a.ink -= sub.inkCost;
+        if (bar) bar.nextThrow = G.time + bar.def!.gap; else a.ink -= sub.inkCost;
         a.lastFire = 0;
         a.character.trigger('throw');
-        if (sub.kind === 'bomb') G.projectiles.throwBomb(a); else G.subs.use(a, sub);
+        if (sub.kind === 'bomb') G.projectiles!.throwBomb(a); else G.subs!.use(a, sub);
         rumble(a, 0.08, 0.22, 70);
       }
     }
@@ -163,7 +224,7 @@ export class WeaponRunner {
     if (a.isLocal) { G.audio?.play('empty_click'); emit('lowink', { actor: a }); }
   }
 
-  _auto(dt, inp, w) {
+  _auto(dt: number, inp: WeaponInput, w: WeaponCfg) {
     const a = this.a;
     if (!inp.fire) { if (this.cooldown < 0) this.cooldown = 0; return; }
     this.firingT = 0.35;
@@ -174,15 +235,15 @@ export class WeaponRunner {
       a.ink -= w.inkPerShot;
       a.lastFire = 0;
       this.spread = this._spreadDeg(w);
-      if (w.kind === 'shooter') G.projectiles.fireShooter(a, w, this.spread);
-      else G.projectiles.fireBlaster(a, w, this.spread);
+      if (w.kind === 'shooter') G.projectiles!.fireShooter(a, w, this.spread);
+      else G.projectiles!.fireBlaster(a, w, this.spread);
       this.bloom = Math.min(1, this.bloom + (w.bloomPerShot ?? 0.3));
       a.character.trigger('shoot');
       this.cooldown += w.fireInterval;
     }
   }
 
-  _charger(dt, inp, w) {
+  _charger(dt: number, inp: WeaponInput, w: WeaponCfg) {
     const a = this.a;
     if (inp.fire && this.cooldown <= 0) {
       if (!this.charging) {
@@ -208,7 +269,7 @@ export class WeaponRunner {
       const c = Math.max(0.12, this.charge);
       a.ink = Math.max(0, a.ink - w.inkFull * c);
       a.lastFire = 0;
-      G.projectiles.fireCharger(a, w, c);
+      G.projectiles!.fireCharger(a, w, c);
       a.character.trigger('charge_release');
       this.charge = 0; this.chargeT = 0;
       this.firingT = 0.35;
@@ -216,7 +277,7 @@ export class WeaponRunner {
     }
   }
 
-  _roller(dt, inp, w) {
+  _roller(dt: number, inp: WeaponInput, w: WeaponCfg) {
     const a = this.a;
     // flick wind-up → release
     if (this.flick >= 0) {
@@ -224,7 +285,7 @@ export class WeaponRunner {
       a.fireFacing = 0.4;
       if (this.flick >= w.flickWindup) {
         this.flick = -1;
-        G.projectiles.fireFlick(a, w);
+        G.projectiles!.fireFlick(a, w);
         this.cooldown = w.flickInterval - w.flickWindup;
         this.firingT = 0.25;
         this.flickRecover = 0.18;
@@ -254,7 +315,8 @@ export class WeaponRunner {
     a.lastFire = 0;
     const hs = Math.hypot(a.vel.x, a.vel.z);
     this.rollLoop?.set({ volume: clamp(hs / w.rollSpeed, 0, 1) * (a.isLocal ? 0.7 : 0.45), pitch: 0.6 + clamp(hs / w.rollSpeed, 0, 1), pos: a.isLocal ? undefined : a.pos });
-    const moved = a.pos.distanceTo(this.lastRollPos);
+    const last = this.lastRollPos!;   // 롤·붓질을 시작할 때 정한다
+    const moved = a.pos.distanceTo(last);
     // roll damage in front of the drum
     const fx = Math.sin(a.yaw), fz = Math.cos(a.yaw);
     for (const e of G.actors) {
@@ -263,17 +325,17 @@ export class WeaponRunner {
       const fwd = dx * fx + dz * fz, lat = Math.abs(dx * fz - dz * fx);
       if (fwd > -0.2 && fwd < 1.35 && lat < w.rollWidth / 2 + 0.35 && Math.abs(dy) < 1.2 && hs > 1.0) {
         const last = this.rollHits.get(e) || -9;
-        if (G.time - last > 0.5) { this.rollHits.set(e, G.time); G.projectiles.applyHit(a, e, w.rollDamage, 'roller'); }
+        if (G.time - last > 0.5) { this.rollHits.set(e, G.time); G.projectiles!.applyHit(a, e, w.rollDamage, 'roller'); }
       }
     }
     // boss mode: the drum crushes into HULLBREAKER's claws / belly and flattens crablets
     if (G.boss && hs > 1.0) {
       const bh = G.boss.rollHit(a.pos, fx, fz, w.rollWidth);
-      const key = bh && (bh.boss ? G.boss : bh.target);
-      if (bh && G.time - (this.rollHits.get(key) || -9) > 0.5) { this.rollHits.set(key, G.time); G.boss.hit(a, w.rollDamage, bh.target, 'roller', bh.point); }
+      const key: object | null = bh && bh.target && (bh.boss ? G.boss : bh.target);   // (돌려줄 때 target은 늘 있다)
+      if (bh && key && G.time - (this.rollHits.get(key) || -9) > 0.5) { this.rollHits.set(key, G.time); G.boss.hit(a, w.rollDamage, bh.target, 'roller', bh.point); }
     }
     if (moved < 0.28) return;
-    this.lastRollPos.copy(a.pos);
+    last.copy(a.pos);
     a.ink = Math.max(0, a.ink - w.rollInkPerMeter * moved);
     // paint a stripe across the drum: kind 'roll' + the roll direction → paint.js lays one straight-edged band segment
     // per splat (identical on the CPU turf grid) instead of round blobs, so rolled turf reads as a clean stripe
@@ -283,7 +345,7 @@ export class WeaponRunner {
     for (let i = -1; i <= 1; i++) {
       const off = i * w.rollWidth * 0.33;
       _v.set(a.pos.x + fx * 0.75 + rx * off, a.pos.y + 0.35, a.pos.z + fz * 0.75 + rz * off);
-      area += G.paint.splat(_v, 0.62, a.team, { seed: Math.random(), kind: 'roll', stretch: _fwd });
+      area += G.paint!.splat(_v, 0.62, a.team, { seed: Math.random(), kind: 'roll', stretch: _fwd });
     }
     a.addTurf(area);
     emit('weapon:impact', { pos: _v.set(a.pos.x + fx * 0.75, a.pos.y + 0.02, a.pos.z + fz * 0.75).clone(), normal: a.groundN ? a.groundN.clone() : UP.clone(), team: a.team, kind: 'roll', radius: w.rollWidth / 2 });
@@ -293,7 +355,7 @@ export class WeaponRunner {
   // ---- dualies (upstream): the hands alternate (12 shots/s). A jump press while firing with a move direction
   // dodge-rolls instead (actor.js calls tryDodge / dodgeVel): a 0.3 s ink-trailing roll, then a 0.5 s locked turret —
   // planted, tight spread, faster fire. Two rolls chain; they refill once you stop firing and the lock has ended.
-  _dualies(dt, inp, w) {
+  _dualies(dt: number, inp: WeaponInput, w: WeaponCfg) {
     const a = this.a;
     if (this.dodge) {
       const d = this.dodge;
@@ -303,7 +365,7 @@ export class WeaponRunner {
       if (this.rollPaint <= 0 && a.grounded) {          // the roll smears a trail of ink behind it
         this.rollPaint = 0.045;
         _v.set(a.pos.x, a.pos.y + 0.3, a.pos.z);
-        a.addTurf(G.paint.splat(_v, 0.62, a.team, { seed: Math.random(), kind: 'trail' }));
+        a.addTurf(G.paint!.splat(_v, 0.62, a.team, { seed: Math.random(), kind: 'trail' }));
       }
       if (d.t >= d.dur) { this.dodge = null; this.lockT = w.lockTime; }
       return;                                           // no shots mid-roll
@@ -320,7 +382,7 @@ export class WeaponRunner {
       a.lastFire = 0;
       this.spread = this._spreadDeg(w);
       this.hand ^= 1;
-      G.projectiles.fireDualies(a, w, this.spread, this.hand);
+      G.projectiles!.fireDualies(a, w, this.spread, this.hand);
       this.sinceHand[this.hand] = 0;
       this.bloom = Math.min(1, this.bloom + (w.bloomPerShot ?? 0.25));
       a.character.trigger('shoot', this.hand ? HAND_L : HAND_R);
@@ -329,7 +391,7 @@ export class WeaponRunner {
   }
 
   // dualies dodge roll along `move` (world xz); tryDodge() dispatches here. true = rolling (skip the jump).
-  _dualDodge(move) {
+  _dualDodge(move: THREE.Vector3 | null | undefined) {
     const a = this.a, w = a.weapon;
     if (w.kind !== 'dualies' || this.dodge || !a.alive || !a.grounded || a.form === 'squid' || this.aimingSub || !move) return false;
     if (!(this.firingT > 0 || a.intent.fire)) return false;
@@ -350,7 +412,7 @@ export class WeaponRunner {
 
   /** actor.js (_horizontal): while a dualies roll runs, sets the horizontal velocity (fast-out ease: 1.5·dist/time → 0)
    *  and returns true. (Twins use dodgeVelocity(out) instead.) */
-  dodgeVel(vel) {
+  dodgeVel(vel: THREE.Vector3) {
     const d = this.dodge;
     if (!d) return false;
     const w = this.a.weapon, u = Math.min(1, d.t / d.dur);
@@ -361,11 +423,11 @@ export class WeaponRunner {
 
   // ---- slosher (upstream): press / hold → a 0.13 s heave, then the wave leaves (Projectiles.fireSlosher); repeats
   // at the fire rate
-  _slosher(dt, inp, w) {
+  _slosher(dt: number, inp: WeaponInput, w: WeaponCfg) {
     const a = this.a;
     if (this.slosh >= 0) {
       this.slosh += dt; a.fireFacing = 0.5; this.firingT = 0.35;
-      if (this.slosh >= w.windup) { this.slosh = -1; G.projectiles.fireSlosher(a, w); this.cooldown = w.fireInterval - w.windup; }
+      if (this.slosh >= w.windup) { this.slosh = -1; G.projectiles!.fireSlosher(a, w); this.cooldown = w.fireInterval - w.windup; }
       return;
     }
     if (inp.fire && this.cooldown <= 0) {
@@ -380,7 +442,7 @@ export class WeaponRunner {
   // ---- splatling (upstream): hold → spin up (chargeTime; a motor loop rising in pitch, a clunk at full), release → a
   // stream of burstMin…burstMax s scaled by the charge at 15 shots/s. charge = spin-up while charging, the stream left
   // while streaming (burstFrac), so the HUD meter / weapon meter fill and then drain. burstT = stream time left.
-  _splatling(dt, inp, w) {
+  _splatling(dt: number, inp: WeaponInput, w: WeaponCfg) {
     const a = this.a;
     const pos = a.isLocal ? undefined : a.pos;
     if (this.streaming) {
@@ -393,7 +455,7 @@ export class WeaponRunner {
         if (a.ink < w.inkPerShot) { this._empty(); this.burstT = 0; break; }
         a.ink -= w.inkPerShot; a.lastFire = 0;
         this.spread = this._spreadDeg(w);
-        G.projectiles.fireSplatling(a, w, this.spread);
+        G.projectiles!.fireSplatling(a, w, this.spread);
         this.bloom = Math.min(1, this.bloom + (w.bloomPerShot ?? 0.05));
         a.character.trigger('shoot');
         this.cooldown += w.fireInterval;
@@ -430,13 +492,27 @@ export class WeaponRunner {
 }
 
 // ---------------------------------------------------------------------------------------------- new weapon kinds
-Object.assign(WeaponRunner.prototype, {
+/** 아래 Object.assign이 프로토타입에 더하는 메서드(새 무기 종류·회피) */
+export interface WeaponRunner {
+  _bucket(dt: number, inp: WeaponInput, w: WeaponCfg): void;
+  _spinner(dt: number, inp: WeaponInput, w: WeaponCfg): void;
+  _twins(dt: number, inp: WeaponInput, w: WeaponCfg): void;
+  _brush(dt: number, inp: WeaponInput, w: WeaponCfg): void;
+  tryDodge(intent: ActorIntentLike | THREE.Vector3 | null | undefined): boolean;
+  _twinDodge(intent: ActorIntentLike): boolean;
+  dodgeVelocity(out: THREE.Vector3): THREE.Vector3 | null;
+  rollsLeft(): number;
+  endDodge(): void;
+}
+/** 회피 판정이 읽는 의도(actor.ts ActorIntent의 일부) */
+type ActorIntentLike = { move: THREE.Vector3; fire: boolean };
+const runnerExtras: ThisType<WeaponRunner> & Pick<WeaponRunner, '_bucket' | '_spinner' | '_twins' | '_brush' | 'tryDodge' | '_twinDodge' | 'dodgeVelocity' | 'rollsLeft' | 'endDodge'> = {
   // bucket: a short wind-up swing, then a volley of ink hurled in an arc (holding fire keeps hurling)
   _bucket(dt, inp, w) {
     const a = this.a;
     if (this.flick >= 0) {
       this.flick += dt; a.fireFacing = 0.45;
-      if (this.flick >= w.windup) { this.flick = -1; G.projectiles.fireSlosh(a, w); this.cooldown = w.fireInterval - w.windup; this.firingT = 0.35; }
+      if (this.flick >= w.windup) { this.flick = -1; G.projectiles!.fireSlosh(a, w); this.cooldown = w.fireInterval - w.windup; this.firingT = 0.35; }
       return;
     }
     if (!(inp.fire || inp.firePressed) || this.cooldown > 0) return;
@@ -453,7 +529,7 @@ Object.assign(WeaponRunner.prototype, {
     if (this.burstT > 0) {
       this.burstT -= dt; this.streamCd -= dt; this.firingT = 0.2; a.fireFacing = 0.5; a.lastFire = 0;
       let guard = 0;
-      while (this.streamCd <= 0 && guard++ < 4) { G.projectiles.fireStream(a, w, this.burstPower, this._spreadDeg(w)); this.streamCd += w.fireInterval; a.character.trigger('stream'); }
+      while (this.streamCd <= 0 && guard++ < 4) { G.projectiles!.fireStream(a, w, this.burstPower, this._spreadDeg(w)); this.streamCd += w.fireInterval; a.character.trigger('stream'); }
       this.chargeLoop?.set({ pitch: 1.5 + 0.06 * Math.sin(G.time * 31), pos: a.isLocal ? undefined : a.pos });
       if (this.burstT <= 0) {
         this.burstT = 0; this.cooldown = 0.2; this.chargeLoop?.stop(0.12); this.chargeLoop = null;
@@ -508,7 +584,7 @@ Object.assign(WeaponRunner.prototype, {
       if (a.ink < w.inkPerShot) { this._empty(); this.cooldown += w.fireInterval; break; }
       a.ink -= w.inkPerShot; a.lastFire = 0;
       this.twinSide = -this.twinSide;
-      G.projectiles.fireTwin(a, w, this._spreadDeg(w), this.turret ? 0 : this.twinSide);
+      G.projectiles!.fireTwin(a, w, this._spreadDeg(w), this.turret ? 0 : this.twinSide);
       this.bloom = Math.min(1, this.bloom + 0.25);
       // side +1 = the left gun, -1 = the right (planted mode keeps alternating the animation between both guns)
       const hand = this.twinSide > 0 ? 1 : 0;
@@ -521,9 +597,10 @@ Object.assign(WeaponRunner.prototype, {
   // (ours: needs fire held + a move direction) and dualies (upstream: firing + a move direction). Accepts the actor's
   // intent (or a bare move vector). Returns true if a roll started.
   tryDodge(intent) {
+    const it = intent as ActorIntentLike | null | undefined;
     const k = this.a.weapon.kind;
-    if (k === 'twins') return !!intent && intent.move !== undefined && this._twinDodge(intent);
-    if (k === 'dualies') return this._dualDodge(intent && intent.move ? intent.move : intent);
+    if (k === 'twins') return !!it && it.move !== undefined && this._twinDodge(it);
+    if (k === 'dualies') return this._dualDodge(it && it.move ? it.move : (intent as THREE.Vector3 | null | undefined));
     return false;
   },
   // twins: jump pressed while firing and moving → roll instead of jumping. Returns true if a roll started.
@@ -573,7 +650,7 @@ Object.assign(WeaponRunner.prototype, {
     const a = this.a;
     if (this.flick >= 0) {
       this.flick += dt; a.fireFacing = 0.4;
-      if (this.flick >= 0.04) { this.flick = -1; G.projectiles.fireSwipe(a, w, this.swipeSide); this.cooldown = w.swipeInterval; this.firingT = 0.25; }
+      if (this.flick >= 0.04) { this.flick = -1; G.projectiles!.fireSwipe(a, w, this.swipeSide); this.cooldown = w.swipeInterval; this.firingT = 0.25; }
       return;
     }
     const hs = Math.hypot(a.vel.x, a.vel.z);
@@ -607,25 +684,27 @@ Object.assign(WeaponRunner.prototype, {
       const fwd = dx * fx + dz * fz, lat = Math.abs(dx * fz - dz * fx);
       if (fwd > -0.2 && fwd < 1.2 && lat < w.brushWidth / 2 + 0.3 && Math.abs(dy) < 1.2) {
         const last = this.rollHits.get(e) || -9;
-        if (G.time - last > w.brushHitCd) { this.rollHits.set(e, G.time); G.projectiles.applyHit(a, e, w.brushDamage, 'brush'); }
+        if (G.time - last > w.brushHitCd) { this.rollHits.set(e, G.time); G.projectiles!.applyHit(a, e, w.brushDamage, 'brush'); }
       }
     }
     // Boss Battle: the bristles drag across HULLBREAKER's claws / belly or a crablet (like the roller's drum)
     if (G.boss) {
       const bh = G.boss.rollHit(a.pos, fx, fz, w.brushWidth);
-      const key = bh && (bh.boss ? G.boss : bh.target);
-      if (bh && G.time - (this.rollHits.get(key) || -9) > w.brushHitCd) { this.rollHits.set(key, G.time); G.boss.hit(a, w.brushDamage, bh.target, 'brush', bh.point.clone()); }
+      const key: object | null = bh && bh.target && (bh.boss ? G.boss : bh.target);   // (돌려줄 때 target은 늘 있다)
+      if (bh && key && G.time - (this.rollHits.get(key) || -9) > w.brushHitCd) { this.rollHits.set(key, G.time); G.boss.hit(a, w.brushDamage, bh.target, 'brush', bh.point.clone()); }
     }
-    const moved = a.pos.distanceTo(this.lastRollPos);
+    const last = this.lastRollPos!;   // 롤·붓질을 시작할 때 정한다
+    const moved = a.pos.distanceTo(last);
     if (moved < 0.22) return;
-    this.lastRollPos.copy(a.pos);
+    last.copy(a.pos);
     a.ink = Math.max(0, a.ink - w.brushInkPerMeter * moved);
     _v.set(a.pos.x + fx * 0.65, a.pos.y + 0.35, a.pos.z + fz * 0.65);
-    a.addTurf(G.paint.splat(_v, w.brushWidth * 0.45, a.team, { seed: Math.random(), stretch: _v2.set(fx, 0, fz), stretchAmt: 0.5 }));
+    a.addTurf(G.paint!.splat(_v, w.brushWidth * 0.45, a.team, { seed: Math.random(), stretch: _v2.set(fx, 0, fz), stretchAmt: 0.5 }));
     emit('weapon:impact', { pos: _v.clone().setY(a.pos.y + 0.02), normal: a.groundN ? a.groundN.clone() : UP.clone(), team: a.team, kind: 'roll', radius: w.brushWidth / 2 });
     if (this.rumbleT <= 0) { this.rumbleT = 0.12; rumble(a, 0.02, clamp(hs / w.brushSpeed, 0, 1) * 0.08, 90); }
   },
-});
+};
+Object.assign(WeaponRunner.prototype, runnerExtras);
 
 // ---------------------------------------------------------------------------------------------- projectiles
 const MAX_BLOBS = 700;
@@ -758,7 +837,7 @@ void main() {
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
-function makeRibbonMaterial(mode) {
+function makeRibbonMaterial(mode: number) {
   const m = new THREE.ShaderMaterial({
     uniforms: {
       uColor: { value: new THREE.Color() }, uT: { value: 0 }, uLife: { value: 0.34 }, uLen: { value: 1 }, uCharge: { value: 0 },
@@ -767,15 +846,42 @@ function makeRibbonMaterial(mode) {
     vertexShader: RIBBON_VERT, fragmentShader: RIBBON_FRAG,
     transparent: true, depthWrite: false, side: THREE.DoubleSide, forceSinglePass: true,
   });
-  m.color = new THREE.Color();   // compat: fxHooks reads beam.material.color (= team colour × 2.2)
-  return m;
+  (m as RibbonMaterial).color = new THREE.Color();   // compat: fxHooks reads beam.material.color (= team colour × 2.2)
+  return m as RibbonMaterial;
 }
 // Ribbons are drawn camera-facing by their own vertex shader; an override pass (GTAO normals/depth) would draw the raw
 // flat strip instead and carve a false dark occluder line down the beam — so they sit those passes out.
-function ribbonGate(renderer, scene, camera, geometry) { geometry.drawRange.count = scene.overrideMaterial ? 0 : Infinity; }
+/** 리본 재질: 셰이더 재질 + fxHooks가 읽는 팀 색 */
+export type RibbonMaterial = THREE.ShaderMaterial & { color: THREE.Color };
+function ribbonGate(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, geometry: THREE.BufferGeometry) { geometry.drawRange.count = scene.overrideMaterial ? 0 : Infinity; }
 
 export class Projectiles {
-  constructor(scene) {
+  declare _arcPrev: THREE.Vector3;
+  declare _arcVel: THREE.Vector3;
+  declare _bossAt: THREE.Vector3;
+  declare cloudGeo: THREE.IcosahedronGeometry;
+  declare arcRing: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial, THREE.Object3DEventMap>;
+  declare arcLine: THREE.Line<THREE.BufferGeometry, THREE.LineDashedMaterial, THREE.Object3DEventMap>;
+  declare arcN: number;
+  declare arcDist: THREE.BufferAttribute<THREE.BufferAttributeEventMap>;
+  declare arcGeo: THREE.BufferGeometry<THREE.NormalBufferAttributes, THREE.BufferGeometryEventMap>;
+  declare sights: Map<Actor, Beam['mesh']>;
+  declare volI: number;
+  declare vols: Volley[];
+  declare beamPool: Beam['mesh'][];
+  declare ribbonGeo: THREE.BufferGeometry<THREE.NormalBufferAttributes, THREE.BufferGeometryEventMap>;
+  declare bombMatCache: Map<number, THREE.MeshPhysicalMaterial>;
+  declare bombCapGeo: THREE.CylinderGeometry;
+  declare bombGeo: THREE.SphereGeometry;
+  declare blobs: THREE.InstancedMesh<THREE.SphereGeometry, THREE.MeshPhysicalMaterial, THREE.Object3DEventMap>;
+  declare blobShape: THREE.InstancedBufferAttribute;
+  declare beams: Beam[];
+  declare clouds: Cloud[];
+  declare bombs: Bomb[];
+  declare pool: Shot[];
+  declare list: Shot[];
+  declare scene: THREE.Scene;
+  constructor(scene: THREE.Scene) {
     this.scene = scene;
     this.list = [];
     this.pool = [];
@@ -790,7 +896,7 @@ export class Projectiles {
     this.blobs = new THREE.InstancedMesh(geo, makeBlobMaterial(), MAX_BLOBS);
     this.blobs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.blobs.setColorAt(0, new THREE.Color());
-    this.blobs.instanceColor.setUsage(THREE.DynamicDrawUsage);
+    this.blobs.instanceColor!.setUsage(THREE.DynamicDrawUsage);
     this.blobs.frustumCulled = false;
     this.blobs.castShadow = true;
     this.blobs.count = 0;
@@ -842,18 +948,18 @@ export class Projectiles {
     for (const [, s] of this.sights) { this.scene.remove(s); s.material.dispose(); }
     this.sights.clear();
     this.blobs.count = 0;
-    for (const k in MAIN_KITS) MAIN_KITS[k].clear?.();
+    for (const k in MAIN_KITS) MAIN_KITS[k]!.clear?.();
   }
 
   // a shot knocked out of the air (Mega Stamp guard): gone, no impact, no paint
-  removeShot(p) { const i = this.list.indexOf(p); if (i < 0) return; this.list[i] = this.list[this.list.length - 1]; this.list.pop(); this.pool.push(p); }
+  removeShot(p: Shot) { const i = this.list.indexOf(p); if (i < 0) return; this.list[i] = this.list[this.list.length - 1]; this.list.pop(); this.pool.push(p); }
   // a bomb smashed before it goes off: gone, no blast
-  defuseBomb(b) { const i = this.bombs.indexOf(b); if (i < 0) return; this.scene.remove(b.mesh); this.bombs.splice(i, 1); }
+  defuseBomb(b: Bomb) { const i = this.bombs.indexOf(b); if (i < 0) return; this.scene.remove(b.mesh); this.bombs.splice(i, 1); }
   // turf from a projectile / bomb: counts for the owner, but ink from a special never charges the special meter
-  _credit(o, area) { if (o.sp) o.owner.addTurfNoSpecial(area); else o.owner.addTurf(area); }
+  _credit(o: { sp?: boolean; owner: Actor }, area: number) { if (o.sp) o.owner.addTurfNoSpecial(area); else o.owner.addTurf(area); }
 
-  _new() {
-    const p = this.pool.pop() || { pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), start: new THREE.Vector3() };
+  _new(): Shot {
+    const p = this.pool.pop() || ({ pos: new THREE.Vector3(), prev: new THREE.Vector3(), vel: new THREE.Vector3(), start: new THREE.Vector3() } as Shot);   // 아래와 fire*가 나머지를 채운다
     // pooled: clear the per-kind optional fields so nothing leaks from the projectile's previous life
     p.volley = null; p.belowFalloff = 0; p.belowFalloffMax = 0; p.burst = null; p.weaponId = null;
     p.delay = 0; p.head = false; p.wid = null; p.dmgFar = undefined; p.vol = null; p.sp = undefined; p.ghost = false;
@@ -863,7 +969,7 @@ export class Projectiles {
   }
 
   // every round enters the world here; online, rounds you own are recorded so the other players see them fly
-  _push(p) {
+  _push(p: Shot) {
     if (p.owner?.remote) p.ghost = true;   // a remote player's round made here (a ghost sub's drop …) is a ghost too
     this.list.push(p);
     const nm = G.netm;
@@ -872,8 +978,8 @@ export class Projectiles {
 
   // ---- online: other players' rounds, bombs and shots, replayed as visual copies (they never paint or hurt anyone —
   // the owner's splats and hits arrive separately)
-  ghostProjectile(a, e) {
-    const [, , , type, wid, px, py, pz, vx, vy, vz, delay, life, straight, radius, size, grav, drag, trailEvery, head, vis, tail0, tailK, wob, wobF, nose, sats] = e;
+  ghostProjectile(a: Actor, e: GhostShotRec) {
+    const [, , , type, wid, px, py, pz, vx, vy, vz, delay, life, straight, radius, size, grav, drag, trailEvery, head, vis, tail0, tailK, wob, wobF, nose, sats] = e as [unknown, unknown, unknown, string, string | null, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
     const p = this._new();
     Object.assign(p, { type, wid: wid || null, owner: a, team: a.team, age: 0, life, straight, radius, damage: 0, size, trail: -1.5, trailEvery, trailRadius: 0.45,
       grav, drag, seed: Math.random(), delay, head: !!head, vis, tail0, tailK, wob, wobF, nose, sats, ghost: true });
@@ -882,7 +988,7 @@ export class Projectiles {
     this.list.push(p);
   }
 
-  ghostBomb(a, kind, px, py, pz, vx, vy, vz) {
+  ghostBomb(a: Actor, kind: string, px: number, py: number, pz: number, vx: number, vy: number, vz: number) {
     const s = this.bombs.length;
     if (kind === 'storm') this.throwStorm(a); else this.throwBomb(a);
     const b = this.bombs[s];
@@ -893,8 +999,8 @@ export class Projectiles {
   }
 
   // presentation of someone else's shot (sound + muzzle flash + charger beam); the round itself is a ghost projectile
-  ghostFire(a, e) {
-    const w = WEAPONS[e.weapon] || a.weapon;
+  ghostFire(a: Actor, e: { weapon: string; muzzle?: THREE.Vector3; dir?: THREE.Vector3; hand?: number; len?: number; charge?: number }) {
+    const w = WEAPON_CFG[e.weapon] || a.weapon;
     const m = e.muzzle || a.pos, dir = e.dir || a.aimDir;
     const near = a._nearCamera();
     switch (w.kind) {
@@ -907,7 +1013,7 @@ export class Projectiles {
     }
   }
 
-  _ghostBeam(a, m, dir, len, charge, near) {
+  _ghostBeam(a: Actor, m: THREE.Vector3, dir: THREE.Vector3, len: number, charge: number, near: boolean) {
     const mesh = this._beamMesh();
     mesh.position.copy(m);
     mesh.quaternion.setFromUnitVectors(ZAX, _v3.copy(dir).normalize());
@@ -936,18 +1042,18 @@ export class Projectiles {
   // Where the muzzle is — or, while the gun is still coming up to the aim pose (the first shot of a burst fires on
   // the same frame the trigger is pulled), where it is about to be: shots never leave from the hip. (Degrades to the
   // plain muzzle on a character without aimReady / getAimMuzzle.)
-  _muzzle(a, out) {
+  _muzzle(a: Actor, out: THREE.Vector3) {
     const ch = a.character;
     ch.getMuzzle(out);
     const w = ch.aimReady?.() ?? 1;
     if (w < 0.98 && ch.getAimMuzzle?.(_v2, a.aimPitch)) out.lerp(_v2, 1 - w);
     _v3.copy(a.pos); _v3.y += a.form === 'squid' ? 0.4 : 1.05;
-    if (!isFinite(out.x) || out.distanceToSquared(_v3) > 2.5 || !G.physics.los(_v3, out)) out.copy(_v3).addScaledVector(a.aimDir, 0.3);
+    if (!isFinite(out.x) || out.distanceToSquared(_v3) > 2.5 || !G.physics!.los(_v3, out)) out.copy(_v3).addScaledVector(a.aimDir, 0.3);
     return out;
   }
 
   // direction from muzzle toward the actor's aim point (falls back to aimDir)
-  _aimFrom(a, from, out) {
+  _aimFrom(a: Actor, from: THREE.Vector3, out: THREE.Vector3) {
     out.copy(a.aimPoint).sub(from);
     const d = out.length();
     if (d < 2.0 || out.dot(a.aimDir) < 0) out.copy(a.aimDir);
@@ -955,7 +1061,7 @@ export class Projectiles {
     return out;
   }
 
-  _spread(dir, deg) {
+  _spread(dir: THREE.Vector3, deg: number) {
     if (deg <= 0) return dir;
     const r = deg * DEG * Math.sqrt(Math.random());
     const t = Math.random() * Math.PI * 2;
@@ -968,13 +1074,13 @@ export class Projectiles {
 
   // Raise/lower the launch direction so a gravity shot (straight phase, then gravity + drag — the exact integrator
   // update() uses) passes through `target`. Secant iterations on the launch pitch; no-op beyond maxDist.
-  _ballistic(from, dir, target, speed, straight, grav, drag, maxDist) {
+  _ballistic(from: THREE.Vector3, dir: THREE.Vector3, target: THREE.Vector3, speed: number, straight: number, grav: number, drag: number, maxDist: number) {
     const hx = target.x - from.x, hz = target.z - from.z, hd = Math.hypot(hx, hz);
     if (hd < 1.5 || hd > maxDist || !grav) return dir;
     const dy = target.y - from.y;
     const hdir = Math.hypot(dir.x, dir.z);
     if (hdir < 1e-4) return dir;
-    const sim = (pitch) => {
+    const sim = (pitch: number) => {
       let vh = Math.cos(pitch) * speed, vy = Math.sin(pitch) * speed, x = 0, y = 0, age = 0;
       for (let i = 0; i < 90; i++) {
         age += SIM_DT;
@@ -1002,11 +1108,11 @@ export class Projectiles {
   // Lob solver (bucket): the lowest launch pitch whose arc passes through `target`, found by sweeping pitch with the
   // flight integrator update() uses (gravity + drag from launch) and bisecting the first crossing. Keeps dir's heading;
   // leaves dir alone (returns false) when the target is out of reach.
-  _lobAim(from, dir, target, speed, grav, drag, maxDist) {
+  _lobAim(from: THREE.Vector3, dir: THREE.Vector3, target: THREE.Vector3, speed: number, grav: number, drag: number, maxDist: number) {
     const hd = Math.hypot(target.x - from.x, target.z - from.z);
     if (hd < 1 || hd > maxDist) return false;
     const dy = target.y - from.y;
-    const f = (pitch) => {
+    const f = (pitch: number) => {
       let vh = Math.cos(pitch) * speed, vy = Math.sin(pitch) * speed, x = 0, y = 0;
       for (let i = 0; i < 180; i++) {
         const px = x, py = y;
@@ -1032,7 +1138,7 @@ export class Projectiles {
     return false;
   }
 
-  fireShooter(a, w, spreadDeg) {
+  fireShooter(a: Actor, w: WeaponCfg, spreadDeg: number) {
     const m = this._muzzle(a, _v.set(0, 0, 0));
     const dir = this._aimFrom(a, m, _dir);
     this._ballistic(m, dir, a.aimPoint, w.projSpeed, w.straightTime, 28, 0.8, w.range);
@@ -1055,7 +1161,7 @@ export class Projectiles {
 
   // Left-hand muzzle for dual wield: the rig's own left pistol when it exposes one, else the right muzzle mirrored
   // across the kid's midline (actor frame) — the pistols are held symmetrically.
-  _muzzleHand(a, hand, out) {
+  _muzzleHand(a: Actor, hand: number, out: THREE.Vector3) {
     const ch = a.character;
     if (hand && ch.getMuzzleHand) {
       ch.getMuzzleHand(out, 1);
@@ -1068,12 +1174,12 @@ export class Projectiles {
     const lx = -(dx * cy - dz * sy), lz = dx * sy + dz * cy;
     out.x = a.pos.x + lx * cy + lz * sy; out.z = a.pos.z - lx * sy + lz * cy;
     _v3.copy(a.pos); _v3.y += 1.05;
-    if (!G.physics.los(_v3, out)) out.copy(_v3).addScaledVector(a.aimDir, 0.3);
+    if (!G.physics!.los(_v3, out)) out.copy(_v3).addScaledVector(a.aimDir, 0.3);
     return out;
   }
 
   // one stream round (shooter-family): ballistic correction onto the crosshair, spread cone, teardrop look
-  _fireRound(a, w, spreadDeg, m, look, snd, sndVol, pitch) {
+  _fireRound(a: Actor, w: WeaponCfg, spreadDeg: number, m: THREE.Vector3, look: ShotLook, snd: string, sndVol: number, pitch: number) {
     const dir = this._aimFrom(a, m, _dir);
     this._ballistic(m, dir, a.aimPoint, w.projSpeed, w.straightTime, 28, 0.8, w.range);
     this._spread(dir, spreadDeg ?? (a.grounded ? w.spreadGround : w.spreadAir));
@@ -1089,7 +1195,7 @@ export class Projectiles {
     return dir;
   }
 
-  fireDualies(a, w, spreadDeg, hand) {
+  fireDualies(a: Actor, w: WeaponCfg, spreadDeg: number, hand: number) {
     const m = this._muzzleHand(a, hand, _v.set(0, 0, 0));
     const dir = this._fireRound(a, w, spreadDeg, m, hand ? LOOK_DUAL_L : LOOK_DUAL_R, 'shoot_dualies', 0.5, hand ? 1.05 : 0.97);
     emit('weapon:fire', { actor: a, weapon: w.id, muzzle: m.clone(), dir: dir.clone(), hand });
@@ -1097,7 +1203,7 @@ export class Projectiles {
     if (wr.rumbleT <= 0) { wr.rumbleT = 0.08; rumble(a, hand ? 0.01 : 0.03, hand ? 0.1 : 0.05, 35); }
   }
 
-  fireSplatling(a, w, spreadDeg) {
+  fireSplatling(a: Actor, w: WeaponCfg, spreadDeg: number) {
     const m = this._muzzle(a, _v.set(0, 0, 0));
     const dir = this._fireRound(a, w, spreadDeg, m, LOOK_SPLAT, 'shoot_splatling', 0.46, 1);
     emit('weapon:fire', { actor: a, weapon: w.id, muzzle: m.clone(), dir: dir.clone() });
@@ -1110,7 +1216,7 @@ export class Projectiles {
   // Later globs leave slower and a touch lower, so they land in a line back toward the thrower — one thick stripe,
   // and the arc carries over cover and up onto ledges. Globs are type 'slosh' (shared with the bucket) and carry
   // `vol` (+ `head` on the lead glob): that is what marks them as slosher globs in update() / _impact().
-  fireSlosher(a, w) {
+  fireSlosher(a: Actor, w: WeaponCfg) {
     const m = this._muzzle(a, _v.set(0, 0, 0));
     _v2.copy(a.aimPoint).sub(m);
     let hd = Math.hypot(_v2.x, _v2.z);
@@ -1157,13 +1263,13 @@ export class Projectiles {
   }
 
   // slosher head glob landing: a heavy splash that also catches anyone standing next to where it lands
-  _sloshSplash(p, at, direct) {
-    const w = WEAPONS[p.wid] || WEAPONS.slosher;
+  _sloshSplash(p: Shot, at: THREE.Vector3, direct: Actor | 'boss' | null) {
+    const w = (p.wid && WEAPON_CFG[p.wid]) || WEAPON_CFG.slosher!;
     for (const e of G.actors) {
       if (e.team === p.team || !e.alive || e === direct || (p.vol && p.vol.hits.includes(e))) continue;
       _v3.copy(e.pos); _v3.y += 0.6;
       if (_v3.distanceTo(at) > w.splashRadius + 0.3) continue;
-      if (!G.physics.los(_v2.copy(at).setY(at.y + 0.25), _v3)) continue;
+      if (!G.physics!.los(_v2.copy(at).setY(at.y + 0.25), _v3)) continue;
       if (p.vol) p.vol.hits.push(e);
       this.applyHit(p.owner, e, w.splashDamage, p.wid || 'slosher');
     }
@@ -1171,14 +1277,14 @@ export class Projectiles {
     G.specials?.areaHit(at, w.splashRadius, w.splashDamage, p.team, p.owner);
     // boss mode: one splash per throw (a direct head hit already counted)
     if (G.boss && direct !== 'boss' && !(p.vol && p.vol.hits.includes(G.boss))) { p.vol?.hits.push(G.boss); G.boss.splash(p.owner, at, w.splashRadius + 0.3, w.splashDamage, w.splashDamage, p.wid || 'slosher'); }
-    if (p.owner.isLocal || G.camera.position.distanceToSquared(at) < 26 * 26) {
+    if (p.owner.isLocal || G.camera!.position.distanceToSquared(at) < 26 * 26) {
       G.fx?.burst(at, UP, p.owner.color, { count: 16, speed: 4.2, size: 0.09 });
       G.fx?.ring?.(at, UP, p.owner.color, { radius: w.splashRadius, life: 0.32 });
       G.audio?.play('slosh_land', { pos: at, volume: p.owner.isLocal ? 0.75 : 0.6 });
     }
   }
 
-  fireBlaster(a, w, spreadDeg) {
+  fireBlaster(a: Actor, w: WeaponCfg, spreadDeg: number) {
     const m = this._muzzle(a, _v.set(0, 0, 0));
     const dir = this._aimFrom(a, m, _dir);
     this._spread(dir, spreadDeg ?? 1.2);
@@ -1203,7 +1309,7 @@ export class Projectiles {
   // o: { type: 'shot'|'blast', speed, damage, straight, range, radius (paint), size, trailEvery, trailRadius, grav, drag,
   //      burst: { radius, splashRadius, dmgMax, dmgMin } (blast only), weaponId, look: { vis, tail0, tailK, wob, wobF,
   //      nose, sats } (optional; defaults to the blaster / shooter teardrop scaled to size) }
-  fireCustom(a, from, dir, o) {
+  fireCustom(a: Actor, from: THREE.Vector3, dir: THREE.Vector3, o: CustomShot) {
     const p = this._new();
     const blast = o.type === 'blast';
     const size = o.size ?? (blast ? 0.26 : 0.14);
@@ -1220,7 +1326,7 @@ export class Projectiles {
     return p;
   }
 
-  fireFlick(a, w) {
+  fireFlick(a: Actor, w: WeaponCfg) {
     const m = _v.copy(a.pos); m.y += 1.0;
     const fx = Math.sin(a.yaw), fz = Math.cos(a.yaw);
     const up = clamp(a.aimPitch, -0.2, 0.5) + 0.32;
@@ -1243,14 +1349,14 @@ export class Projectiles {
     rumble(a, 0.3, 0.32, 110);
   }
 
-  fireCharger(a, w, charge) {
+  fireCharger(a: Actor, w: WeaponCfg, charge: number) {
     const m = this._muzzle(a, _v.set(0, 0, 0)).clone();
     const dir = this._aimFrom(a, m, _dir).clone();
     const range = lerp(w.rangeMin, w.rangeMax, charge);
     const dmg = charge >= 0.999 ? w.damageMax : lerp(w.damageMin, w.damageMax * 0.62, charge);
-    const hit = G.physics.raycast(m, dir, range, _hit, true);
+    const hit = G.physics!.raycast(m, dir, range, _hit, true);
     let len = hit.hit ? hit.dist : range;
-    if (G.subs) { const cut = G.subs.blockRay(m, dir, len, a.team, dmg); if (cut < len) { len = cut; hit.hit = false; } }
+    if (G.subs) { const cut = G.subs!.blockRay(m, dir, len, a.team, dmg); if (cut < len) { len = cut; hit.hit = false; } }
     if (G.specials) { const cut = G.specials.rayHit(m, dir, len, a.team, dmg, a); if (cut < len) { len = cut; hit.hit = false; } }
     // first enemy along the beam
     let victim = null;
@@ -1275,12 +1381,12 @@ export class Projectiles {
     const step = w.lineSplatEvery;
     for (let s = 1.2; s < len - 0.3; s += step) {
       _v2.copy(m).addScaledVector(dir, s);
-      const g = G.physics.raycast(_v2, DOWN, 3.5, _hit2, true);
-      if (g.hit) area += G.paint.splat(_v3.copy(g.point).addScaledVector(g.normal, 0.1), w.lineRadius * (0.8 + charge * 0.4), a.team, { seed: Math.random(), stretch: dir, stretchAmt: 1.2 });
+      const g = G.physics!.raycast(_v2, DOWN, 3.5, _hit2, true);
+      if (g.hit) area += G.paint!.splat(_v3.copy(g.point).addScaledVector(g.normal, 0.1), w.lineRadius * (0.8 + charge * 0.4), a.team, { seed: Math.random(), stretch: dir, stretchAmt: 1.2 });
     }
     if (hit.hit && !victim && !bossHit) {
       _v2.copy(hit.point).addScaledVector(hit.normal, 0.12);
-      area += G.paint.splat(_v2, w.impactRadius * (0.6 + 0.4 * charge), a.team, { seed: Math.random(), stretch: dir, stretchAmt: 0.6 });
+      area += G.paint!.splat(_v2, w.impactRadius * (0.6 + 0.4 * charge), a.team, { seed: Math.random(), stretch: dir, stretchAmt: 0.6 });
       G.fx?.burst(hit.point, hit.normal, a.color, { count: 10, speed: 4, size: 0.09, paint: false });
       if (a.isLocal || a._nearCamera()) G.audio?.play('ink_hit_wall', { pos: hit.point, volume: 0.6 });
     }
@@ -1312,7 +1418,7 @@ export class Projectiles {
 
   // bucket: a volley of blobs thrown along the aim, lobbed upward so it clears cover; the lead blob carries most of
   // the damage and only the first blob of a volley to reach an enemy hurts them (the rest still paint)
-  fireSlosh(a, w) {
+  fireSlosh(a: Actor, w: WeaponCfg) {
     const m = this._muzzle(a, _v.set(0, 0, 0)).clone();
     const dir = this._aimFrom(a, m, _dir).clone();
     // default: the aim lifted by the lob (sails over cover when you aim above it). With the crosshair on something in
@@ -1340,7 +1446,7 @@ export class Projectiles {
   }
 
   // spinner stream: small fast shots; reach and speed follow the burst's charge
-  fireStream(a, w, power, spreadDeg) {
+  fireStream(a: Actor, w: WeaponCfg, power: number, spreadDeg: number) {
     const m = this._muzzle(a, _v.set(0, 0, 0));
     const dir = this._aimFrom(a, m, _dir);
     const speed = lerp(w.speedMin, w.speedMax, power), straight = lerp(w.straightMin, w.straightMax, power), range = lerp(w.rangeMin, w.rangeMax, power);
@@ -1361,10 +1467,10 @@ export class Projectiles {
   }
 
   // twin pistols: side = -1 / 1 alternates left and right guns (0 = both guns together after a roll)
-  fireTwin(a, w, spreadDeg, side) {
+  fireTwin(a: Actor, w: WeaponCfg, spreadDeg: number, side: number) {
     let m;
     // a dual-wield rig (a real pistol in each fist) fires each side from its own gun; otherwise offset the one muzzle
-    if (side && a.character.dual && a.character.getMuzzleHand) m = this._muzzleHand(a, side > 0 ? 1 : 0, _v.set(0, 0, 0));
+    if (side && a.character.dual && typeof a.character.getMuzzleHand === 'function') m = this._muzzleHand(a, side > 0 ? 1 : 0, _v.set(0, 0, 0));
     else {
       m = this._muzzle(a, _v.set(0, 0, 0));
       if (side) {
@@ -1377,7 +1483,7 @@ export class Projectiles {
         if (side > 0) m.addScaledVector(_v2, 0.17).add(_v4).multiplyScalar(0.5);
         else m.addScaledVector(_v2, -0.085);
         _v4.copy(a.pos); _v4.y += 1.05;
-        if (!G.physics.los(_v4, m)) m.copy(_v4).addScaledVector(a.aimDir, 0.3);
+        if (!G.physics!.los(_v4, m)) m.copy(_v4).addScaledVector(a.aimDir, 0.3);
       }
     }
     const dir = this._aimFrom(a, m, _dir);
@@ -1401,7 +1507,7 @@ export class Projectiles {
 
   // brush swipe: globs flung off the brush head as it sweeps sideways low across the front — each leaves from its point
   // on the arc, flying outward and along the sweep, low and flat (side +1 sweeps right → left)
-  fireSwipe(a, w, side) {
+  fireSwipe(a: Actor, w: WeaponCfg, side: number) {
     const fx = Math.sin(a.yaw), fz = Math.cos(a.yaw);
     const up = clamp(a.aimPitch, -0.3, 0.3) * 0.5 + 0.08;
     const arc = w.swipeSpreadDeg * DEG * 1.6;
@@ -1425,7 +1531,7 @@ export class Projectiles {
   }
 
   // a loose ink drop (sprinkler spray): owner's team, damage with no falloff
-  spawnDrop(owner, pos, vx, vy, vz, o = {}) {
+  spawnDrop(owner: Actor, pos: THREE.Vector3, vx: number, vy: number, vz: number, o: { size?: number; radius?: number; damage?: number; weaponId?: string } = {}) {
     const p = this._new();
     const size = o.size ?? 0.08;
     Object.assign(p, { type: 'drop', owner, team: owner.team, age: 0, life: 1.2, straight: 0, radius: o.radius ?? 0.5, damage: o.damage ?? 8, dmgFar: o.damage ?? 8, size, trail: 0, trailEvery: 0, trailRadius: 0.3, grav: 22, drag: 0.4, seed: Math.random(),
@@ -1437,24 +1543,24 @@ export class Projectiles {
   }
 
   // ---- bombs
-  _bombMat(team) {
+  _bombMat(team: number): THREE.MeshPhysicalMaterial {
     const key = team;
     if (!this.bombMatCache.has(key)) {
-      this.bombMatCache.set(key, new THREE.MeshPhysicalMaterial({ color: G.teamColors[team], roughness: 0.25, clearcoat: 1, clearcoatRoughness: 0.1, emissive: G.teamColors[team], emissiveIntensity: 0 }));
+      this.bombMatCache.set(key, new THREE.MeshPhysicalMaterial({ color: G.teamColors[team]!, roughness: 0.25, clearcoat: 1, clearcoatRoughness: 0.1, emissive: G.teamColors[team]!, emissiveIntensity: 0 }));
     }
-    return this.bombMatCache.get(key);
+    return this.bombMatCache.get(key)!;
   }
   refreshColors() {
-    for (const [team, m] of this.bombMatCache) { m.color.copy(G.teamColors[team]); m.emissive.copy(G.teamColors[team]); }
+    for (const [team, m] of this.bombMatCache) { m.color.copy(G.teamColors[team]!); m.emissive.copy(G.teamColors[team]!); }
   }
 
-  throwVelocity(a, speed, out) {
+  throwVelocity(a: Actor, speed: number, out: THREE.Vector3) {
     const pitch = clamp(a.aimPitch + 0.28, -0.3, 1.1);
     const cp = Math.cos(pitch);
     return out.set(Math.sin(a.aimYaw) * cp * speed + a.vel.x * 0.4, Math.sin(pitch) * speed + 1.5, Math.cos(a.aimYaw) * cp * speed + a.vel.z * 0.4);
   }
 
-  throwBomb(a) {
+  throwBomb(a: Actor) {
     const b = SUB.bomb;
     const group = new THREE.Group();
     const body = new THREE.Mesh(this.bombGeo, this._bombMat(a.team).clone());
@@ -1472,7 +1578,7 @@ export class Projectiles {
     emit('bomb:throw', { actor: a, pos: pos.clone(), team: a.team, radius: SUB.bomb.radius });
   }
 
-  throwStorm(a) {
+  throwStorm(a: Actor) {
     const sp = SPECIALS.storm;
     const group = new THREE.Group();
     const body = new THREE.Mesh(this.bombGeo, this._bombMat(a.team).clone());
@@ -1486,13 +1592,13 @@ export class Projectiles {
     if (G.netm && !a.remote) G.netm.recBomb(this.bombs[this.bombs.length - 1]);
   }
 
-  _explodeBomb(b) {
+  _explodeBomb(b: Bomb) {
     const s = SUB.bomb;
     const c = b.pos;
-    let area = G.paint.splat(_v.copy(c).setY(c.y + 0.2), s.paintRadius, b.team, { seed: Math.random() });
+    let area = G.paint!.splat(_v.copy(c).setY(c.y + 0.2), s.paintRadius, b.team, { seed: Math.random() });
     for (let i = 0; i < 5; i++) {
       const a = Math.random() * Math.PI * 2, r = s.paintRadius * (0.6 + Math.random() * 0.4);
-      area += G.paint.splat(_v.set(c.x + Math.cos(a) * r, c.y + 0.5, c.z + Math.sin(a) * r), 0.7 + Math.random() * 0.5, b.team, { seed: Math.random() });
+      area += G.paint!.splat(_v.set(c.x + Math.cos(a) * r, c.y + 0.5, c.z + Math.sin(a) * r), 0.7 + Math.random() * 0.5, b.team, { seed: Math.random() });
     }
     this._credit(b, area);
     G.subs?.damageArea(c, s.radius, 60, b.team);
@@ -1507,23 +1613,23 @@ export class Projectiles {
       _v.copy(e.pos); _v.y += 0.7;
       const d = _v.distanceTo(c);
       if (d > s.radius) continue;
-      if (!G.physics.los(_v2.copy(c).setY(c.y + 0.3), _v)) continue;
+      if (!G.physics!.los(_v2.copy(c).setY(c.y + 0.3), _v)) continue;
       const k = 1 - clamp((d - 0.8) / (s.radius - 0.8), 0, 1);
       this.applyHit(b.owner, e, lerp(s.damageMin, s.damageMax, k * k), 'bomb');
     }
     G.boss?.splash(b.owner, c, s.radius, s.damageMax, s.damageMin, 'bomb');
   }
 
-  _spawnCloud(b) {
+  _spawnCloud(b: Bomb) {
     const sp = SPECIALS.storm;
-    const g = G.physics.raycast(_v.copy(b.pos).setY(b.pos.y + 0.5), DOWN, 12, _hit);
+    const g = G.physics!.raycast(_v.copy(b.pos).setY(b.pos.y + 0.5), DOWN, 12, _hit);
     const groundY = g.hit ? g.point.y : b.pos.y;
     const group = new THREE.Group();
-    const col = G.teamColors[b.team];
+    const col = G.teamColors[b.team]!;
     // a soft cumulus: a flattened ring of big puffs with smaller, paler puffs piled on top; tinted underside
     const base = new THREE.MeshStandardMaterial({ color: col.clone().lerp(new THREE.Color(1, 1, 1), 0.12), roughness: 0.95, emissive: col, emissiveIntensity: 0.16, transparent: true, opacity: 0.97 });
     const top = new THREE.MeshStandardMaterial({ color: col.clone().lerp(new THREE.Color(1, 1, 1), 0.55), roughness: 0.95, emissive: col, emissiveIntensity: 0.08, transparent: true, opacity: 0.97 });
-    const puff = (x, y, z, r, m) => {
+    const puff = (x: number, y: number, z: number, r: number, m: THREE.MeshStandardMaterial) => {
       const p = new THREE.Mesh(this.cloudGeo, m);
       p.position.set(x, y, z); p.scale.set(r, r * 0.68, r);
       p.castShadow = true;
@@ -1544,19 +1650,19 @@ export class Projectiles {
     group.scale.setScalar(0.01);
     this.scene.add(group);
     const loop = G.audio?.loop('storm_rain', { pos: group.position, volume: 0.6 });
-    this.clouds.push({ owner: b.owner, team: b.team, group, t: 0, dur: sp.duration, dir: b.dir, rainT: 0, loop, groundY });
+    this.clouds.push({ owner: b.owner, team: b.team, group, t: 0, dur: sp.duration, dir: b.dir!, rainT: 0, loop, groundY });   // (폭풍 폭탄은 늘 dir이 있다)
     G.audio?.play('storm_thunder', { pos: group.position });
     emit('storm:start', { pos: group.position.clone(), team: b.team, actor: b.owner, radius: sp.radius });
   }
 
   // ---- damage routing
-  applyHit(attacker, victim, dmg, weaponId) {
+  applyHit(attacker: Actor, victim: Actor, dmg: number, weaponId: string) {
     if (!victim.alive || victim.team === attacker.team) return;
     const nm = G.netm;
     let killed = false;
     const route = nm ? nm.shouldApplyHit(attacker, victim) : 'local';
     if (route === 'drop') return;
-    if (route === 'send') nm.sendHit(attacker, victim, dmg, weaponId);   // the kill confirm arrives with their splat
+    if (route === 'send') nm!.sendHit(attacker, victim, dmg, weaponId);   // the kill confirm arrives with their splat
     else killed = victim.damage(dmg, attacker, weaponId);
     emit('hit', { attacker, victim, damage: dmg, killed, weaponId });
     // ink smacking the body, at the body (heavier + lower for big hits); the UI tick / kill sting are main.js's
@@ -1568,8 +1674,8 @@ export class Projectiles {
   }
 
   // ---- per-frame
-  update(dt) {
-    for (const k in MAIN_KITS) MAIN_KITS[k].tick?.(dt);   // kit weapons' own world objects (kits/*.js)
+  update(dt: number) {
+    for (const k in MAIN_KITS) MAIN_KITS[k]!.tick?.(dt);   // kit weapons' own world objects (kits/*.js)
     const list = this.list;
     const nm = G.netm;
     for (let i = list.length - 1; i >= 0; i--) {
@@ -1588,7 +1694,7 @@ export class Projectiles {
   }
 
   // one round, one frame; true = it's done
-  _step(p, dt) {
+  _step(p: Shot, dt: number) {
     {
       p.age += dt;
       p.prev.copy(p.pos);
@@ -1608,7 +1714,7 @@ export class Projectiles {
           if (p.volley) p.volley.hit.add(e);
           _v.copy(p.prev).lerp(p.pos, _res.t);
           let dmg = p.damage;
-          if (p.type === 'drop') dmg = lerp(p.damage, p.dmgFar, clamp(p.start.distanceTo(_v) / 7, 0, 1));
+          if (p.type === 'drop') dmg = lerp(p.damage, p.dmgFar ?? p.damage, clamp(p.start.distanceTo(_v) / 7, 0, 1));
           // bucket: full damage at any range, less only when the target stands below the thrower
           if (p.belowFalloff) dmg *= 1 - clamp((p.start.y - (e.pos.y + 0.8) - 0.5) * p.belowFalloff, 0, p.belowFalloffMax);
           // slosher: one direct hit per throw per victim (the rest of the wave still splashes on them, harmlessly)
@@ -1622,7 +1728,7 @@ export class Projectiles {
         }
       }
       // enemy ink curtains and devices (sprinklers, beacons) catch shots; so do special objects (bubbles, tanks)
-      if (!dead && G.subs && G.subs.blockShot(p.prev, p.pos, p.team, p.damage || 10)) dead = true;
+      if (!dead && G.subs && G.subs!.blockShot(p.prev, p.pos, p.team, p.damage || 10)) dead = true;
       if (!dead && G.specials && G.specials.shotHit(p.prev, p.pos, p.team, p.damage || 10, p.owner)) dead = true;
       // world
       // boss mode: HULLBREAKER's hit spheres and its crablets
@@ -1631,7 +1737,7 @@ export class Projectiles {
         if (bh) { this._bossImpact(p, bh); dead = true; }
       }
       if (!dead) {
-        const hit = G.physics.segment(p.prev, p.pos, _hit, true);
+        const hit = G.physics!.segment(p.prev, p.pos, _hit, true);
         if (hit.hit) {
           this._impact(p, hit);
           dead = true;
@@ -1642,8 +1748,8 @@ export class Projectiles {
         p.trail += p.vel.length() * dt;
         if (p.trail > p.trailEvery) {
           p.trail = 0;
-          const g = G.physics.raycast(p.pos, DOWN, 4, _hit2, true);
-          if (g.hit) this._credit(p, G.paint.splat(_v.copy(g.point).addScaledVector(g.normal, 0.1), p.trailRadius * (0.8 + Math.random() * 0.4), p.team, { seed: Math.random() }));
+          const g = G.physics!.raycast(p.pos, DOWN, 4, _hit2, true);
+          if (g.hit) this._credit(p, G.paint!.splat(_v.copy(g.point).addScaledVector(g.normal, 0.1), p.trailRadius * (0.8 + Math.random() * 0.4), p.team, { seed: Math.random() }));
         }
       }
       if (!dead && p.age > p.life) {
@@ -1656,23 +1762,23 @@ export class Projectiles {
   }
 
   // a blob / drop / blast connecting with the boss or a crablet (bh from boss.segHit)
-  _bossImpact(p, bh) {
+  _bossImpact(p: Shot, bh: NonNullable<ReturnType<NonNullable<typeof G.boss>['segHit']>>) {
     const at = (this._bossAt || (this._bossAt = new THREE.Vector3())).copy(bh.point), target = bh.target;
-    const key = target.hp !== undefined && target.id !== undefined ? target : G.boss;   // one hit per volley per body
+    const key: object = target && 'hp' in target && target.hp !== undefined && target.id !== undefined ? target : G.boss!;   // one hit per volley per body
     let dmg = p.damage;
-    if (p.type === 'drop') dmg = lerp(p.damage, p.dmgFar, clamp(p.start.distanceTo(at) / 7, 0, 1));
+    if (p.type === 'drop') dmg = lerp(p.damage, p.dmgFar ?? p.damage, clamp(p.start.distanceTo(at) / 7, 0, 1));
     if (p.vol) { if (p.vol.hits.includes(key)) dmg = 0; else p.vol.hits.push(key); }
     // a roller flick is one sheet of ink: against a body this size every drop would land, so only the first counts
     // in full and the rest chip
     if (p.type === 'drop') { const o = p.owner, t = o._flickBossT ?? -9; if (G.time - t < 0.3) dmg *= 0.12; else o._flickBossT = G.time; }
-    if (dmg > 0) G.boss.hit(p.owner, dmg, target, p.wid || p.type, at.clone());
+    if (dmg > 0) G.boss!.hit(p.owner, dmg, target, p.wid || p.type, at.clone());
     else G.fx?.burst(at, _v2.copy(p.vel).normalize().negate(), p.owner.color, { count: 4, speed: 3, size: 0.07 });
     if (p.type !== 'blast') emit('weapon:impact', { pos: at.clone(), normal: _v2.copy(p.vel).normalize().negate().clone(), team: p.team, kind: p.type === 'drop' || p.type === 'slosh' ? 'drop' : 'shot', radius: p.radius * 0.5, victim: null });
     if (p.type === 'blast') this._blastBurst(p, at, 'boss');
     if (p.type === 'slosh' && p.head) this._sloshSplash(p, at, 'boss');
   }
 
-  _impact(p, hit) {
+  _impact(p: Shot, hit: Hit) {
     _v.copy(hit.point).addScaledVector(hit.normal, 0.14);
     _dir.copy(p.vel).normalize();
     const rad = p.radius * (0.85 + Math.random() * 0.3);
@@ -1681,12 +1787,12 @@ export class Projectiles {
     if (sloshr) {
       // the wave lands as a thick stripe along its travel: stretched along the horizontal heading
       _dir.y = 0; if (_dir.lengthSq() < 1e-4) _dir.set(0, 0, 1); _dir.normalize();
-      area = G.paint.splat(_v, rad * 1.12, p.team, { seed: p.seed, stretch: _dir, stretchAmt: 1.25 });
+      area = G.paint!.splat(_v, rad * 1.12, p.team, { seed: p.seed, stretch: _dir, stretchAmt: 1.25 });
       if (p.head) this._sloshSplash(p, hit.point, null);
-    } else area = G.paint.splat(_v, rad, p.team, { seed: p.seed, stretch: _dir, stretchAmt: 0.7 });
+    } else area = G.paint!.splat(_v, rad, p.team, { seed: p.seed, stretch: _dir, stretchAmt: 0.7 });
     this._credit(p, area);
     if (p.type !== 'blast') emit('weapon:impact', { pos: hit.point.clone(), normal: hit.normal.clone(), team: p.team, kind: p.type === 'drop' || sloshr ? 'drop' : 'shot', radius: rad });
-    const near = p.owner.isLocal || G.camera.position.distanceToSquared(hit.point) < 22 * 22;
+    const near = p.owner.isLocal || G.camera!.position.distanceToSquared(hit.point) < 22 * 22;
     if (near) {
       G.fx?.burst(hit.point, hit.normal, p.owner.color, { count: p.type === 'blast' ? 14 : 5, speed: p.type === 'blast' ? 5 : 3, size: 0.07, paint: false });
       if (Math.random() < (p.type === 'shot' ? 0.45 : 1)) G.audio?.play(p.type === 'blast' ? 'splat_big' : 'splat_small', { pos: hit.point, volume: p.type === 'shot' ? 0.35 : 0.6 });
@@ -1694,39 +1800,39 @@ export class Projectiles {
     if (p.type === 'blast') this._blastBurst(p, hit.point, null);
   }
 
-  _blastBurst(p, at, direct) {
+  _blastBurst(p: Shot, at: THREE.Vector3, direct: Actor | 'boss' | null) {
     const b = p.burst;
-    const w = b ? { burstRadius: b.radius, impactRadius: b.paint ?? b.radius * 0.6, splashRadius: b.splashRadius, splashDamageMax: b.dmgMax, splashDamageMin: b.dmgMin } : WEAPONS.blaster;
+    const w: { burstRadius: number; impactRadius: number; splashRadius: number; splashDamageMax: number; splashDamageMin: number } = b ? { burstRadius: b.radius, impactRadius: b.paint ?? b.radius * 0.6, splashRadius: b.splashRadius, splashDamageMax: b.dmgMax, splashDamageMin: b.dmgMin } : WEAPONS.blaster;
     const c = at.clone();
     G.fx?.explosion(c, p.owner.color, w.burstRadius);
     G.audio?.play('blaster_boom', { pos: c, volume: 0.7 });
     emit('weapon:impact', { pos: c.clone(), normal: new THREE.Vector3(0, 1, 0), team: p.team, kind: 'blast', radius: w.burstRadius });
     // paint under the burst
-    const g = G.physics.raycast(_v2.copy(c).setY(c.y + 0.2), DOWN, 3.5, _hit2);
-    if (g.hit) this._credit(p, G.paint.splat(_v3.copy(g.point).addScaledVector(g.normal, 0.1), w.impactRadius, p.team, { seed: Math.random() }));
+    const g = G.physics!.raycast(_v2.copy(c).setY(c.y + 0.2), DOWN, 3.5, _hit2);
+    if (g.hit) this._credit(p, G.paint!.splat(_v3.copy(g.point).addScaledVector(g.normal, 0.1), w.impactRadius, p.team, { seed: Math.random() }));
     for (const e of G.actors) {
       if (e.team === p.team || !e.alive || e === direct) continue;
       _v.copy(e.pos); _v.y += 0.7;
       const d = _v.distanceTo(c);
       if (d > w.splashRadius) continue;
-      if (!G.physics.los(c, _v)) continue;
+      if (!G.physics!.los(c, _v)) continue;
       this.applyHit(p.owner, e, lerp(w.splashDamageMax, w.splashDamageMin, d / w.splashRadius), p.weaponId || 'blaster');
     }
     G.specials?.areaHit(c, w.splashRadius, w.splashDamageMin, p.team, p.owner);
     if (direct !== 'boss') G.boss?.splash(p.owner, c, w.splashRadius, w.splashDamageMax, w.splashDamageMin, 'blaster');
   }
 
-  _updateBombs(dt) {
+  _updateBombs(dt: number) {
     for (let i = this.bombs.length - 1; i >= 0; i--) {
       const b = this.bombs[i];
       b.age += dt;
       b.vel.y -= 24 * dt;
       _v.copy(b.pos);
       b.pos.addScaledVector(b.vel, dt);
-      const hit = G.physics.segment(_v, b.pos, _hit);
+      const hit = G.physics!.segment(_v, b.pos, _hit);
       // boss mode: bombs glance off HULLBREAKER's shell (they'd otherwise sail through it)
       if (!hit.hit && G.boss && b.kind === 'bomb') {
-        const bh = G.boss.segHit(_v, b.pos, 0.2), sh = bh && bh.target.pos && bh.target;
+        const bh = G.boss.segHit(_v, b.pos, 0.2), bt = bh && bh.target, sh = isShape(bt) && bt.pos ? bt : null;   // (게는 pos가 없다: 껍데기 판정 구만)
         if (sh) {
           _v2.copy(b.pos).sub(sh.pos).normalize(); b.pos.copy(sh.pos).addScaledVector(_v2, sh.r + 0.22);
           const vn = b.vel.dot(_v2); if (vn < 0) b.vel.addScaledVector(_v2, -vn * 1.35);
@@ -1754,7 +1860,7 @@ export class Projectiles {
         b.mesh.scale.setScalar(1 + k * 0.35 + Math.sin(b.age * 40) * 0.03 * k);
         if (b.beepT <= 0) {
           b.beepT = 0.3 - k * 0.2;
-          if (G.camera.position.distanceToSquared(b.pos) < 30 * 30) G.audio?.play('bomb_beep', { pos: b.pos, volume: 0.35 + k * 0.4, pitch: 1 + k * 0.25 });
+          if (G.camera!.position.distanceToSquared(b.pos) < 30 * 30) G.audio?.play('bomb_beep', { pos: b.pos, volume: 0.35 + k * 0.4, pitch: 1 + k * 0.25 });
         }
         if (b.fuse <= 0) { const nm = G.netm; if (b.ghost && nm) nm.mute++; try { this._explodeBomb(b); } finally { if (b.ghost && nm) nm.mute--; } this.scene.remove(b.mesh); this.bombs.splice(i, 1); continue; }
       }
@@ -1765,7 +1871,7 @@ export class Projectiles {
     }
   }
 
-  _updateClouds(dt) {
+  _updateClouds(dt: number) {
     const sp = SPECIALS.storm;
     for (let i = this.clouds.length - 1; i >= 0; i--) {
       const c = this.clouds[i];
@@ -1783,8 +1889,8 @@ export class Projectiles {
           c.rainT += 0.045;
           const a = Math.random() * Math.PI * 2, r = Math.sqrt(Math.random()) * sp.radius;
           _v.set(c.group.position.x + Math.cos(a) * r, c.group.position.y - 0.8, c.group.position.z + Math.sin(a) * r);
-          const g = G.physics.raycast(_v, DOWN, 12, _hit);
-          if (g.hit && !c.ghost) c.owner.addTurfNoSpecial(G.paint.splat(_v2.copy(g.point).addScaledVector(g.normal, 0.1), 0.45 + Math.random() * 0.35, c.team, { seed: Math.random() }));   // (a special's rain)
+          const g = G.physics!.raycast(_v, DOWN, 12, _hit);
+          if (g.hit && !c.ghost) c.owner.addTurfNoSpecial(G.paint!.splat(_v2.copy(g.point).addScaledVector(g.normal, 0.1), 0.45 + Math.random() * 0.35, c.team, { seed: Math.random() }));   // (a special's rain)
         }
         if (!c.ghost) G.boss?.rain(c.owner, c.group.position.x, c.group.position.z, sp.radius * s, sp.dps * dt);
         for (const e of G.actors) {
@@ -1793,7 +1899,7 @@ export class Projectiles {
           if (dx * dx + dz * dz > sp.radius * sp.radius || e.pos.y > c.group.position.y) continue;
           _v.copy(e.pos); _v.y += 1.2;
           _v2.set(e.pos.x, c.group.position.y - 0.6, e.pos.z);
-          if (!G.physics.los(_v, _v2)) continue;
+          if (!G.physics!.los(_v, _v2)) continue;
           const killed = e.damage(sp.dps * dt, c.owner, 'storm');
           if (killed) emit('hit', { attacker: c.owner, victim: e, damage: 0, killed: true, weaponId: 'storm' });
         }
@@ -1802,7 +1908,7 @@ export class Projectiles {
     }
   }
 
-  _updateBeams(dt) {
+  _updateBeams(dt: number) {
     for (let i = this.beams.length - 1; i >= 0; i--) {
       const b = this.beams[i];
       b.t += dt;
@@ -1829,7 +1935,7 @@ export class Projectiles {
         const w = a.weapon;
         const ch = a.weaponRunner.charge;
         const range = lerp(w.rangeMin, w.rangeMax, ch);
-        const hit = G.physics.raycast(m, dir, range, _hit);
+        const hit = G.physics!.raycast(m, dir, range, _hit);
         const len = hit.hit ? hit.dist : range;
         s.position.copy(m);
         s.quaternion.setFromUnitVectors(ZAX, dir);
@@ -1846,8 +1952,8 @@ export class Projectiles {
   }
 
   // bomb/special throw arc preview (local player holding the sub button)
-  updateArc(a, show) {
-    const sub = (a && a.specialActive && a.specialActive.bomb) || (a && a.sub) || SUB.bomb;
+  updateArc(a: Actor | null | undefined, show: boolean) {
+    const sub: SubCfg = (a && a.specialActive && a.specialActive.bomb) || (a && a.sub) || SUB_CFG.bomb!;
     if (!show || !a || !a.alive || sub.placed || SUB_KITS[sub.kind]?.noArc) { this.arcLine.visible = false; this.arcRing.visible = false; return; }   // noArc: kit subs that draw their own aim guide (tracer)
     const vel = this._arcVel || (this._arcVel = new THREE.Vector3());
     this.throwVelocity(a, sub.throwSpeed, vel);
@@ -1862,7 +1968,7 @@ export class Projectiles {
       prev.copy(p);
       vel.y -= 24 * dt;
       p.addScaledVector(vel, dt);
-      const h = G.physics.segment(prev, p, _hit);
+      const h = G.physics!.segment(prev, p, _hit);
       if (h.hit) { pos.setXYZ(n, h.point.x, h.point.y, h.point.z); n++; landed = true; this.arcRing.position.copy(h.point).addScaledVector(h.normal, 0.03); this.arcRing.quaternion.setFromUnitVectors(UP, h.normal); break; }
       if ((i + 1) % per === 0) { pos.setXYZ(n, p.x, p.y, p.z); n++; }
       if (n >= this.arcN) break;

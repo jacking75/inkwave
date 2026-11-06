@@ -407,6 +407,17 @@ export const SUBS = {
 export const SUB_ORDER = ['bomb', 'sticky', 'burst', 'shaker', 'seeker', 'waddle', 'torpedo', 'tracer', 'boomerang', 'scan', 'curtain', 'sprinkler', 'mine', 'beacon', 'mist'];
 export const SUB = SUBS; // older code reads SUB.bomb
 
+// ---- 무기·보조무기·스페셜 설정 형식: 모든 종류의 필드를 합친 하나의 형식이다. 종류별 필드(예: brushSpeed)는 그 종류의
+// 항목에만 있고, 코드는 kind 분기 안에서만 읽는다(없는 종류에서 읽을 때는 ?? 기본값을 둔다).
+type KeysOfUnion<T> = T extends T ? keyof T : never;
+type ValOf<T, K extends PropertyKey> = T extends { [P in K]?: infer V } ? V : never;
+type MergedCfg<U> = { [K in KeysOfUnion<U>]: ValOf<U, K> };
+export type WeaponCfg = MergedCfg<(typeof WEAPONS)[keyof typeof WEAPONS]>;
+export type SubCfg = MergedCfg<(typeof SUBS)[keyof typeof SUBS]>;
+// 합친 형식으로 읽는 보기(종류별 필드가 빠진 항목이 있어 한 번 넓힌다)
+export const WEAPON_CFG = WEAPONS as unknown as Record<string, WeaponCfg | undefined>;
+export const SUB_CFG = SUBS as unknown as Record<string, SubCfg | undefined>;
+
 // Specials. Every special refills your ink tank when it starts. `duration` = how long a timed special lasts (s).
 export const SPECIALS = {
   slam: { id: 'slam', name: 'Tidal Slam', blurb: 'Leap up and slam down in a huge ink shockwave.', rise: 0.55, hang: 0.25, radius: 5.2, killRadius: 3.2, damageMax: 180, damageMin: 55 },
@@ -466,6 +477,8 @@ export const SPECIALS = {
     duration: 9, hp: 460, speed: 3.0, rollSpeed: 9.5, turnRate: 1.5, gunInterval: 0.075, gunDamage: 18, gunSpeed: 36, gunRange: 22, gunSpread: 3.5,
     cannonGap: 1.15, cannonSpeed: 17, cannonRadius: 3.0, cannonDamageMax: 150, cannonDamageMin: 40, rollArmor: 0.35 },
 };
+export type SpecialCfg = MergedCfg<(typeof SPECIALS)[keyof typeof SPECIALS]>;
+export const SPECIAL_CFG = SPECIALS as unknown as Record<string, SpecialCfg | undefined>;
 export const SPECIAL_ORDER = ['slam', 'storm', 'barrage', 'barrage_sticky', 'barrage_burst', 'barrage_seeker', 'barrage_mist', 'bubbler', 'sonar', 'strike', 'zooka', 'wail', 'kraken', 'blower', 'jetpack', 'stamp', 'booyah', 'zipcaster', 'crab'];
 
 // ---- Match ----

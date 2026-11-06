@@ -15,7 +15,8 @@ import type { BotBrain } from './bots.js';
 import type { EnemyBrain } from '../campaign/enemies/brain.js';
 import * as THREE from 'three';
 import { G, emit, clamp, damp, angleDiff, smoothstep } from '../core/ctx.js';
-import { PLAYER, WEAPONS, SPECIALS, SUBS } from '../config.js';
+import { PLAYER, WEAPONS, SPECIALS, SUBS, WEAPON_CFG, SUB_CFG } from '../config.js';
+import type { SubCfg, SpecialCfg, WeaponCfg } from '../config.js';
 import { makeContacts, Hit, GroundHit, WALKABLE } from './physics.js';
 import { WeaponRunner } from './weapons.js';
 import { MAIN_KITS } from './kits/registry.js';
@@ -23,10 +24,10 @@ import type { Character } from './character.js';
 // 캠페인 전투 훅(35번 R016~R020): 캠페인 세션(개발 중에는 ?tune=campaign 미리보기)만 G.campaign을 가진다. 대전·온라인은 null이다.
 import { runScale, type PlayerTuning } from '../campaign/tuning.js';
 
-type WeaponDef = (typeof WEAPONS)[keyof typeof WEAPONS];
-type SubDef = (typeof SUBS)[keyof typeof SUBS];
-const WEAPON_DEFS: Record<string, WeaponDef> = WEAPONS;
-const SUB_DEFS: Record<string, SubDef> = SUBS;
+type WeaponDef = WeaponCfg;
+type SubDef = SubCfg;
+const WEAPON_DEFS = WEAPON_CFG as Record<string, WeaponDef>;
+const SUB_DEFS = SUB_CFG as Record<string, SubDef>;
 const SPECIAL_DEFS: Record<string, (typeof SPECIALS)[keyof typeof SPECIALS]> = SPECIALS;
 
 // 진행 중인 스페셜(specials.js가 만든다)이다. 여기서는 Actor가 읽는 플래그만 형식으로 둔다. 나머지는 specials.js 소유이다.
@@ -34,7 +35,8 @@ export interface ActiveSpecial {
   id: string; t: number; phase?: string; startY?: number;
   armor?: boolean; body?: boolean; inkProof?: boolean; noSquid?: boolean; faceMove?: boolean; aimFace?: boolean; raise?: boolean; aiming?: boolean;
   speed?: number | null; accel?: number; faceYaw?: number | null; firing?: number; seat?: number; hang?: number;
-  jumpBack?: boolean; origin?: THREE.Vector3; kind?: string; charge?: number; bomb?: { kind: string; inkCost: number };
+  jumpBack?: boolean; origin?: THREE.Vector3; kind?: string; charge?: number; bomb?: SubCfg;
+  def?: SpecialCfg; nextThrow?: number;
   [key: string]: unknown;
 }
 export interface SuperJumpState {
@@ -74,6 +76,7 @@ export function rumble(actor: Actor | null | undefined, strong: number, weak: nu
 const _dodgeV = new THREE.Vector3();
 export class Actor {
   declare team: number; declare name: string; declare isLocal: boolean; declare isBot: boolean; declare slot: number;
+  declare _flickBossT?: number;   // 롤러 휘두르기 보스 피해의 첫 방울 시각(weapons.ts)
   declare weaponId: string; declare weapon: WeaponDef; declare subId: string; declare sub: SubDef; declare specialId: string;
   declare status: { track: number; trackTeam: number; poison: number; reveal: number; revealTeam: number; shield: number };
   declare pos: THREE.Vector3; declare vel: THREE.Vector3;

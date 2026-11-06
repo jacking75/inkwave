@@ -36,7 +36,7 @@ export interface Crab { id: number; x: number; y: number; z: number; yaw: number
 export interface BossSnap { t: number; bt: number; x: number; y: number; z: number; yaw: number; vx: number; vz: number; hp: number; phase: number; f: number; mv: number; anim: number; turn: number; fl: number; wk: number; killer: number; crabs: number[][]; maxHp: number; move: BossMove | null }
 // 분대원이 맞을 때 '공격자'로 쓰는 가짜 액터(이름·팀·위치·색·통계만): Actor 자리에 덕 타이핑으로 들어간다
 export interface BossAttacker { name: string; team: number; pos: THREE.Vector3; boss: true; isLocal: false; isBot: true; stats: { splats: number; turf: number; deaths: number }; addTurf(): void; readonly color: THREE.Color; _nearCamera(): boolean; readonly vel: THREE.Vector3 }
-type HitTarget = HitShape | Crab | null;
+export type HitTarget = HitShape | Crab | null;
 // 꽃게 표시 모델(만들기에 실패하면 빈 대체물)
 type CrabletView = Pick<Crablet, 'root' | 'update' | 'pop' | 'dispose'>;
 
