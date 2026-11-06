@@ -26,6 +26,24 @@ export const ENEMY_ROLES: Record<EnemyRoleId, EnemyRoleDef> = {
   watcher: { role: 'watcher', name: '감시병', weapon: 'charger', hp: 90, tier: 'grunt', sight: 30, range: 26, leash: 6, telegraph: 0.9, burst: [0.1, 0.1], rest: 2.5, damage: 60, mark: '▲' },
   mortar: { role: 'mortar', name: '포격병', weapon: 'bucket', hp: 110, tier: 'grunt', sight: 24, range: 18, leash: 8, telegraph: 1.1, burst: [0.1, 0.1], rest: 2.0, damage: 40, mark: '●' },
   rollerElite: { role: 'rollerElite', name: '청소반장', weapon: 'roller', hp: 420, tier: 'elite', sight: 30, range: 14, leash: 30, telegraph: 1.0, burst: [0.9, 0.9], rest: 2.0, damage: 45, mark: '★' },
+  // 유리눈 감시자(2-2): 직선 조준 1초 → 발사, 두 번째 조준(새 방향) → 발사, 2.5초 정비. 절반 체력에서 사격 위치 한 번 변경
+  watcherElite: { role: 'watcherElite', name: '유리눈 감시자', weapon: 'charger', hp: 380, tier: 'elite', sight: 32, range: 28, leash: 4, telegraph: 1.0, burst: [0.15, 0.15], rest: 2.5, damage: 45, mark: '★' },
+  // 적재장 포수(3-2): 통 두 개 시간차 낙하 → 3초 장전
+  mortarElite: { role: 'mortarElite', name: '적재장 포수', weapon: 'bucket', hp: 480, tier: 'elite', sight: 26, range: 20, leash: 3, telegraph: 1.0, burst: [0.3, 0.3], rest: 3.0, damage: 40, mark: '★' },
+  // 계류 수문장(4-2): 방패 정예, 1초 예고 방패 발사 → 3초 노출, 절반 체력 위치 변경 1회
+  shieldElite: { role: 'shieldElite', name: '계류 수문장', weapon: 'brolly', hp: 500, tier: 'elite', sight: 28, range: 12, leash: 6, telegraph: 1.0, burst: [0.5, 0.5], rest: 1.2, damage: 40, mark: '★' },
+  // 계류장 스큐(4-3): 두 발 사선 → 3초 정비, 두 거점
+  skew: { role: 'skew', name: '계류장 스큐', weapon: 'charger', hp: 2100, tier: 'captain', sight: 36, range: 34, leash: 4, telegraph: 1.0, burst: [0.15, 0.15], rest: 3.0, damage: 45, mark: '♛' },
+  // 살수 장치(5-2·5-3): 움직이지 않는 낮은 장치, 주기마다 둘레를 적 잉크로 칠한다(공격 없음)
+  sprinkler: { role: 'sprinkler', name: '살수 장치', weapon: 'shooter', hp: 160, tier: 'grunt', sight: 0, range: 0, leash: 0, telegraph: 1.0, burst: [0.1, 0.1], rest: 0, damage: 1, mark: '✚' },
+  // 염전 청소조(5-2): 도색 정예 — 청소반장과 같은 직선 돌진·휘두름, 살수 장치가 꺼질 때마다 2초 정비
+  painterElite: { role: 'painterElite', name: '염전 청소조', weapon: 'roller', hp: 520, tier: 'elite', sight: 30, range: 14, leash: 30, telegraph: 1.0, burst: [0.9, 0.9], rest: 2.0, damage: 45, mark: '★' },
+  // 풍차장 솔트(5-3): 스피너 대장, 직선 예고 연사 → 2초 정비, 안전 원이 차면 4초 과열
+  saltBoss: { role: 'saltBoss', name: '풍차장 솔트', weapon: 'spinner', hp: 2400, tier: 'captain', sight: 34, range: 16, leash: 8, telegraph: 1.0, burst: [1.2, 1.2], rest: 2.0, damage: 40, mark: '♛' },
+  // 잔향 지휘관(7-2): 포격 정예, 통 두 개 → 3초 정비, 지원 중에는 다음 포격을 늦춘다
+  commander: { role: 'commander', name: '잔향 지휘관', weapon: 'bucket', hp: 600, tier: 'elite', sight: 28, range: 22, leash: 4, telegraph: 1.0, burst: [0.3, 0.3], rest: 3.0, damage: 40, mark: '★' },
+  // 배전탑 오르골의 중심핵(2-3): 움직이지 않는 장치, 공격은 enemies/orgel.ts가 예고 판정으로 한다
+  orgelCore: { role: 'orgelCore', name: '배전탑 오르골', weapon: 'shooter', hp: 2400, tier: 'captain', sight: 60, range: 40, leash: 0, telegraph: 1.0, burst: [0.1, 0.1], rest: 0, damage: 35, mark: '♛' },
   umbrellaCaptain: { role: 'umbrellaCaptain', name: '통행대장 바리', weapon: 'brolly', hp: 1800, tier: 'captain', sight: 40, range: 16, leash: 40, telegraph: 1.0, burst: [0.5, 0.5], rest: 3.0, damage: 40, mark: '♛' },
 };
 

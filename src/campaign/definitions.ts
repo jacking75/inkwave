@@ -2,13 +2,20 @@
 // 순수 모듈이다(DOM·저장·네트워크 없음). 검사: tests/client/definitions.test.ts.
 import type { MissionDefinition, Rect, Vec3 } from './data/types.js';
 import { M_1_1, M_1_2, M_1_3 } from './data/missions/ch1.js';
+import { M_2_1, M_2_2, M_2_3 } from './data/missions/ch2.js';
+import { M_3_1, M_3_2, M_3_3 } from './data/missions/ch3.js';
+import { M_4_1, M_4_2, M_4_3 } from './data/missions/ch4.js';
+import { M_5_1, M_5_2, M_5_3 } from './data/missions/ch5.js';
+import { M_6_1, M_6_2, M_6_3 } from './data/missions/ch6.js';
+import { M_7_1, M_7_2, M_7_3 } from './data/missions/ch7.js';
 import { ENEMY_ROLES } from './data/enemies.js';
 import { MODULES } from './data/modules.js';
 import { GRADE_ODDS } from './data/economy.js';
 import { DISTRICTS } from './story/districts.js';
+import { validateDevices } from './action/devices.js';
 import { ALL_RECORDS } from './story/scripts/index.js';
 
-export const MISSIONS: readonly MissionDefinition[] = [M_1_1, M_1_2, M_1_3];
+export const MISSIONS: readonly MissionDefinition[] = [M_1_1, M_1_2, M_1_3, M_2_1, M_2_2, M_2_3, M_3_1, M_3_2, M_3_3, M_4_1, M_4_2, M_4_3, M_5_1, M_5_2, M_5_3, M_6_1, M_6_2, M_6_3, M_7_1, M_7_2, M_7_3];
 const byId = new Map(MISSIONS.map((m) => [m.id, m]));
 export const getMission = (id: string): MissionDefinition | null => byId.get(id) ?? null;
 // 항구 지도에 있는 모든 임무 id(아직 구현하지 않은 임무 포함: 해금 대상은 될 수 있지만 출전은 못 한다)
@@ -43,7 +50,8 @@ export function validateMission(m: MissionDefinition, known: readonly string[] =
   for (const o of m.objectives) {
     for (const r of o.requires) if (!objs.has(r)) P(`목표 ${o.id}의 선행 ${r} 없음`);
     if (['restore', 'retrieve', 'exit', 'crate'].includes(o.kind) && (!o.device || !devs.has(o.device))) P(`목표 ${o.id}의 장치 ${o.device ?? '(없음)'} 없음`);
-    if (o.kind === 'defeat' && (!o.target || !units.has(o.target))) P(`목표 ${o.id}의 대상 ${o.target ?? '(없음)'} 없음`);
+    const giantTarget = !!m.boss?.giant && o.target === m.boss.unit;
+    if (o.kind === 'defeat' && (!o.target || (!units.has(o.target) && !giantTarget))) P(`목표 ${o.id}의 대상 ${o.target ?? '(없음)'} 없음`);
     if (o.kind === 'clear' && (!o.encounter || !encs.has(o.encounter))) P(`목표 ${o.id}의 출현 ${o.encounter ?? '(없음)'} 없음`);
     if (o.checkpoint && !cps.has(o.checkpoint)) P(`목표 ${o.id}의 체크포인트 ${o.checkpoint} 없음`);
     if (o.optional && m.objectives.some((x) => x.requires.includes(o.id))) P(`선택 목표 ${o.id}를 다른 목표가 선행으로 요구`);
@@ -77,7 +85,9 @@ export function validateMission(m: MissionDefinition, known: readonly string[] =
   }
   for (const c of m.checkpoints) {
     for (const r of c.resets) if (!encs.has(r)) P(`체크포인트 ${c.id}의 출현 ${r} 없음`);
-    if (!m.objectives.some((o) => o.checkpoint === c.id)) P(`체크포인트 ${c.id}를 켜는 목표 없음`);
+    for (const r of c.after ?? []) if (!objs.has(r)) P(`체크포인트 ${c.id}의 선행 ${r} 없음`);
+    if (c.area && !inRect(c.area, c.at, 0.5)) P(`도착형 체크포인트 ${c.id}의 위치가 영역 밖`);
+    if (!c.area && !m.objectives.some((o) => o.checkpoint === c.id)) P(`체크포인트 ${c.id}를 켜는 목표·도착 영역 없음`);
   }
   // 3) 선행 순환
   const state = new Map<string, 0 | 1 | 2>();
@@ -92,7 +102,18 @@ export function validateMission(m: MissionDefinition, known: readonly string[] =
   for (const o of m.objectives) visit(o.id, []);
   // 필수 목표가 하나 이상, 마지막 필수 목표는 출구·단말류
   if (!m.objectives.some((o) => !o.optional)) P('필수 목표 없음');
-  if (m.boss && !units.has(m.boss.unit)) P(`보스 유닛 ${m.boss.unit} 없음`);
+  if (m.boss && !m.boss.giant && !units.has(m.boss.unit)) P(`보스 유닛 ${m.boss.unit} 없음`);
+  if (m.boss?.giant && units.has(m.boss.unit)) P(`거대 보스 ${m.boss.unit}가 출현 묶음에도 있음`);
+  for (const t of m.boss?.transmitters ?? []) if (objs.get(t)?.kind !== 'restore') P(`송신기 목표 ${t}가 복구 목표가 아님`);
+  for (const t of m.boss?.relocateOn ?? []) if (!objs.has(t)) P(`거점 이동 목표 ${t} 없음`);
+  for (const z of m.boss?.safeZones?.zones ?? []) if (!units.has(z.sprinkler)) P(`안전 원의 살수 장치 ${z.sprinkler} 없음`);
+  for (const r of m.boss?.giant?.rings ?? []) { if (!devs.has(r.device)) P(`제어 고리 장치 ${r.device} 없음`); if (!(r.at >= 0 && r.at < 1)) P(`제어 고리 ${r.device} 경계 ${r.at}`); }
+  if (m.boss?.giant?.from && !objs.has(m.boss.giant.from)) P(`거대 보스 시작 목표 ${m.boss.giant.from} 없음`);
+  // 3.5) 레벨 액션 장치(분수·잉크통·스위치): 잉크통 상한·연결·위치
+  if (m.actionDevices) {
+    for (const x of validateDevices(m.actionDevices)) P(`액션 장치: ${x}`);
+    for (const d of m.actionDevices) if (!m.segments.some((s) => inRect(s.bounds, d.at, 1))) P(`액션 장치 ${d.id}가 어느 구간에도 없음`);
+  }
   // 4) 보상
   const rw = m.reward;
   for (const id of rw.firstSet ?? []) if (!MODULES[id] || MODULES[id].signature) P(`첫 세트 모듈 ${id}가 기본 설계가 아님`);

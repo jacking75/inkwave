@@ -13,6 +13,7 @@
 //     (화면에 표시) 가운데를 누르면 멈춘다. 그 뒤 오른쪽 영역 드래그로 조준, 발사 버튼을 누른 채 끌면 쏘면서 조준한다.
 //     메뉴·포커스 이탈·장치 전환(releaseAll)은 방향 유지를 취소한다.
 //   * 화면 가장자리(제스처 내비게이션)와 안전 영역(노치)을 피한다. 배치 계산 결과 하나를 그리기와 판정 양쪽에 쓴다.
+import { t } from '../ui/i18n.js';
 import { TOUCH } from '../config.js';
 import type { Input, TouchButton } from './input.js';
 
@@ -141,7 +142,7 @@ export class TouchControls {
     for (const b of [...LAYOUT, ...TOP_LAYOUT]) {
       const d = document.createElement('div');
       d.className = 'iw-touch__btn' + (b.cls ? ' ' + b.cls : '');
-      if (b.label) d.textContent = b.label;
+      if (b.label) d.textContent = t(b.label);   // 34번 F06
       el.appendChild(d);
       this.btnEls.set(b.name, d);
     }
@@ -153,7 +154,7 @@ export class TouchControls {
     // PC 방향 패드: 늘 같은 자리. 가운데 = 정지
     const dp = (this.dpadEl = document.createElement('div'));
     dp.className = 'iw-touch__dpad';
-    dp.innerHTML = '<i></i><b>정지</b>';
+    dp.innerHTML = '<i></i><b></b>'; dp.querySelector('b')!.textContent = t('정지');
     el.appendChild(dp);
     this.dpadKnob = dp.firstChild as HTMLElement;
     parent.appendChild(el);
@@ -161,7 +162,8 @@ export class TouchControls {
     // SIBLING of the control layer so it can paint over the menus too.
     const rotate = (this.rotateEl = document.createElement('div'));
     rotate.className = 'iw-touch-rotate';
-    rotate.innerHTML = '<div><i>▭</i><b>기기를 가로로 돌려 주세요</b><span>INKWAVE는 가로 화면으로 플레이한다.</span></div>';
+    rotate.innerHTML = '<div><i>▭</i><b></b><span></span></div>';
+    rotate.querySelector('b')!.textContent = t('기기를 가로로 돌려 주세요'); rotate.querySelector('span')!.textContent = t('INKWAVE는 가로 화면으로 플레이한다.');
     parent.appendChild(rotate);
     this._bind();
     this.layout();
@@ -364,7 +366,7 @@ export class TouchControls {
     const el = this.btnEls.get('map');
     if (!el) return;
     el.classList.toggle('is-on', !!this.input.touch.map);
-    el.textContent = this.input.touch.map ? '닫기' : '지도';
+    el.textContent = t(this.input.touch.map ? '닫기' : '지도');
   }
 
   // Drop every gesture, every held control and the PC direction hold. Called whenever the layer is invalidated:

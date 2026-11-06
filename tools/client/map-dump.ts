@@ -65,8 +65,13 @@ try {
       for (const cp of m.checkpoints) dot(cp.at, '#f0f', 5, cp.id);
       for (const e of m.encounters) for (const w of e.waves) for (const u of w.units) dot(u.at, '#f44', 4, u.role[0]);
     }
+    // 높이 격자(1 m)·이동 그래프 노드: 배치 좌표를 수치로 고를 때 쓴다(shots/map/<map>.json)
+    const grid = [];
+    for (let z = Math.ceil(z0); z <= z1; z++) { const row = []; for (let x = Math.ceil(x0); x <= x1; x++) { o.set(x, 30, z); const h = G.physics.raycast(o, d, 40); row.push(h.hit ? Math.round((30 - h.dist) * 10) / 10 : null); } grid.push(row); }
+    window.__dumpJson = JSON.stringify({ x0: Math.ceil(x0), z0: Math.ceil(z0), grid, nav: G.nav.nodes.map((n) => [Math.round(n.x * 10) / 10, Math.round(n.y * 10) / 10, Math.round(n.z * 10) / 10]) });
     return c.toDataURL('image/png').split(',')[1];
   })()`) as string;
+  writeFileSync(`shots/map/${map}.json`, await page.evaluate('window.__dumpJson') as string);
   const out = `shots/map/${map}${mission ? '-' + mission : ''}.png`;
   writeFileSync(out, Buffer.from(png, 'base64'));
   console.log(out);

@@ -11,7 +11,9 @@ export const CH6 = buildChapter({
       intro: [['teal', '고정 제어점 셋을 차례로 복구해. 물은 안 움직여.', 'focus'], ['archive', '최종 초기화 준비. 진행률 12.', 'neutral']],
       outro: [['teal', '수문 통신 일부가 살아났어.', 'smile'], ['mora', '초기화 전에 운하를 열어야 해.', 'determined']],
       death: [['teal', '제어점 옆 포격이야. 예고 원 밖으로.', 'worry'], ['pong', '원 밖으로!', 'determined']],
-      comms: { point2: [['archive', '최종 초기화 준비. 진행률 41.', 'neutral']] } },
+      comms: { point2: [['archive', '최종 초기화 준비. 진행률 41.', 'neutral']],
+        // 쌍문지기의 배경 예고(6-1에서는 싸우지 않는다)
+        tease: [['teal', '다음 통로에 실루엣이 둘 보여. 오늘은 지나가기만 해.', 'worry']] } },
     { id: '6-2',
       intro: [['teal', '방패 정예랑 원거리 정예야. 둘을 떼어 놔.', 'focus'], ['pong', '둘이 같이 오면 무서워…', 'worry']],
       outro: [['teal', '둘로 나눈 열쇠야. 원래 수문지기의 우회선이 있었어.', 'focus'], ['mora', '안전 절차가 봉쇄 절차가 됐네.', 'worry']],

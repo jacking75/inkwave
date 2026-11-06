@@ -9,6 +9,11 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { G } from '../core/ctx.js';
+import type { StageDecor, Vec2Tuple, Vec3Tuple } from './layoutTypes.js';
+
+// Decor가 읽는 Level의 부분(Level은 아직 JavaScript라 구조로 받는다)
+export interface DecorLevel { layout: { decor: StageDecor }; spawnPads: THREE.Vector3[]; spawnBarrier: number; groundHeight(x: number, z: number): number }
+interface SpawnPad { g: THREE.Group; padMat: THREE.ShaderMaterial; barMat: THREE.ShaderMaterial; team: number; pulse: number; pulseT: number }
 
 const TAU = Math.PI * 2;
 const OUT = /* glsl */`
@@ -23,7 +28,7 @@ float dNoise(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f*f*(3.0-2.0*f);
 
 // ---------------------------------------------------------------------------------------------- shared helpers
 // Paint a geometry with a flat vertex colour (for merging into one vertex-coloured mesh).
-function tint(g, color, k = 1) {
+function tint<T extends THREE.BufferGeometry>(g: T, color: THREE.ColorRepresentation, k = 1): T {
   const c = new THREE.Color(color).multiplyScalar(k);
   const n = g.attributes.position.count, a = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; }
@@ -31,20 +36,20 @@ function tint(g, color, k = 1) {
   if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
   return g;
 }
-const at = (g, x, y, z, rx = 0, ry = 0, rz = 0, s = 1) => g.applyMatrix4(new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'YXZ')), new THREE.Vector3(s, s, s)));
-const lathe = (prof, seg = 16) => new THREE.LatheGeometry(prof.map(([r, y]) => new THREE.Vector2(r, y)), seg);
-function tube(pts, r, radial = 6) {
-  const curve = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(...p)));
+const at = <T extends THREE.BufferGeometry>(g: T, x: number, y: number, z: number, rx = 0, ry = 0, rz = 0, s = 1): T => g.applyMatrix4(new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'YXZ')), new THREE.Vector3(s, s, s)));
+const lathe = (prof: ReadonlyArray<readonly [number, number]>, seg = 16): THREE.LatheGeometry => new THREE.LatheGeometry(prof.map(([r, y]) => new THREE.Vector2(r, y)), seg);
+function tube(pts: ReadonlyArray<readonly [number, number, number]>, r: number, radial = 6): THREE.TubeGeometry {
+  const curve = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(p[0], p[1], p[2])));
   return new THREE.TubeGeometry(curve, Math.max(4, pts.length * 4), r, radial, false);
 }
-function merge(list) {
+function merge(list: THREE.BufferGeometry[]): THREE.BufferGeometry {
   const clean = list.map((g) => { const x = g.index ? g.toNonIndexed() : g; for (const k of Object.keys(x.attributes)) if (!['position', 'normal', 'color', 'uv'].includes(k)) x.deleteAttribute(k); return x; });
-  return mergeGeometries(clean, false);
+  return mergeGeometries(clean, false)!;
 }
 // Original squid emblem (white on transparent) — mantle with fins, round head, four tentacles, eye holes.
 function emblemCanvas(size = 256, ring = true) {
   const cv = document.createElement('canvas'); cv.width = cv.height = size;
-  const x = cv.getContext('2d'), c = size / 2, s = size / 256;
+  const x = cv.getContext('2d')!, c = size / 2, s = size / 256;
   x.clearRect(0, 0, size, size);
   if (ring) { x.fillStyle = '#fff'; x.beginPath(); x.arc(c, c, 118 * s, 0, TAU); x.fill(); x.globalCompositeOperation = 'destination-out'; x.beginPath(); x.arc(c, c, 104 * s, 0, TAU); x.fill(); x.globalCompositeOperation = 'source-over'; }
   x.fillStyle = '#fff'; x.beginPath();
@@ -152,7 +157,7 @@ const FLAG_DISP = /* glsl */`
   float dwdx = (cos(fa) * 3.1 * 0.16 + cos(fb) * 5.7 * 0.045) * fk + (sin(fa) * 0.16 + sin(fb) * 0.045) / ${FLAG_W.toFixed(2)};
   float dwdy = cos(fb) * 3.9 * 0.045 * fk;
 `;
-function flagMaterial(emblemTex, uTime) {
+function flagMaterial(emblemTex: THREE.CanvasTexture<HTMLCanvasElement>, uTime: THREE.IUniform<number>) {
   const m = new THREE.MeshStandardMaterial({ map: emblemTex, roughness: 0.78, metalness: 0, side: THREE.DoubleSide });
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uTime = uTime;
@@ -179,7 +184,7 @@ function flagMaterial(emblemTex, uTime) {
   };
   return m;
 }
-function flagDepthMaterial(uTime) {
+function flagDepthMaterial(uTime: THREE.IUniform<number>) {
   const m = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, side: THREE.DoubleSide });
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uTime = uTime;
@@ -191,7 +196,7 @@ function flagDepthMaterial(uTime) {
 }
 
 // ---------------------------------------------------------------------------------------------- palm fronds (wind sway)
-function frondMaterial(uTime) {
+function frondMaterial(uTime: THREE.IUniform<number>) {
   const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0, side: THREE.DoubleSide });
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uTime = uTime;
@@ -205,12 +210,24 @@ function frondMaterial(uTime) {
 }
 
 export class Decor {
-  constructor(scene, level) {
+  declare flagMesh: THREE.InstancedMesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial, THREE.Object3DEventMap>;
+  declare flagTex: THREE.CanvasTexture<HTMLCanvasElement>;
+  declare bulbMat: THREE.MeshStandardMaterial;
+  declare _padBase: { geo: THREE.BufferGeometry<THREE.NormalBufferAttributes, THREE.BufferGeometryEventMap>; mat: THREE.MeshStandardMaterial; };
+  declare emblem: THREE.CanvasTexture<HTMLCanvasElement>;
+  declare uTime: { value: number; };
+  declare time: number;
+  declare flags: Array<{ team: number; index: number }>;
+  declare pads: SpawnPad[];
+  declare group: THREE.Group<THREE.Object3DEventMap>;
+  declare level: DecorLevel;
+  declare scene: THREE.Scene;
+  constructor(scene: THREE.Scene<THREE.Object3DEventMap>, level: DecorLevel) {
     this.scene = scene; this.level = level;
     this.group = new THREE.Group();
     this.group.name = 'decor';
     scene.add(this.group);
-    this.pads = []; this.flags = []; this.barriers = [];
+    this.pads = []; this.flags = [];
     this.time = 0;
     this.uTime = { value: 0 };
     this.emblem = new THREE.CanvasTexture(emblemCanvas(256, true));
@@ -225,7 +242,7 @@ export class Decor {
   _buildPads() {
     const L = this.level;
     // bevelled glossy base ring with a metal lip, recessed face and 24 lip bolts (one merged geometry, vertex colours)
-    const parts = [];
+    const parts: THREE.BufferGeometry[] = [];
     parts.push(tint(lathe([[1.93, 0.072], [1.97, 0.074], [2.01, 0.1], [2.1, 0.104], [2.17, 0.078], [2.2, 0.04], [2.22, 0.0]], 72), 0x2b2f3a));
     parts.push(tint(at(new THREE.TorusGeometry(2.055, 0.016, 6, 96), 0, 0.104, 0, Math.PI / 2), 0x9aa3ad));
     for (let i = 0; i < 24; i++) { const a = (i / 24) * TAU; parts.push(tint(at(new THREE.CylinderGeometry(0.022, 0.026, 0.02, 8), Math.cos(a) * 2.12, 0.1, Math.sin(a) * 2.12), 0xb8c0c8)); }
@@ -261,7 +278,7 @@ export class Decor {
   }
 
   // Flare a team's spawn pad (respawn / super jump home). strength 0..1+.
-  pulse(team, strength = 1) {
+  pulse(team: number, strength = 1) {
     const p = this.pads[team];
     if (!p) return;
     p.pulse = Math.min(1.5, Math.max(p.pulse, strength));
@@ -271,13 +288,13 @@ export class Decor {
   // ------------------------------------------------------------------ lamps (all merged: body + glass)
   _buildLamps() {
     const L = this.level.layout;
-    const pts = [...L.decor.lamps, ...L.decor.lamps.map(([x, z]) => [-x, -z])];
-    const body = [], glass = [];
+    const pts: Vec2Tuple[] = [...L.decor.lamps, ...L.decor.lamps.map(([x, z]): Vec2Tuple => [-x, -z])];
+    const body: THREE.BufferGeometry[] = [], glass: THREE.BufferGeometry[] = [];
     const IRON = 0x2f3947, GOLD = 0xd9b45a, CREAM = 0xf1ece0;
     for (const [x, z] of pts) {
       const y = Math.max(0, this.level.groundHeight(x, z));
       const dir = x > 0 ? -1 : 1;     // arm reaches toward the arena centre
-      const put = (g, c, k) => { g.translate(x, y, z); body.push(tint(g, c, k)); };
+      const put = (g: THREE.BufferGeometry, c: number, k?: number) => { g.translate(x, y, z); body.push(tint(g, c, k)); };
       put(lathe([[0, 0], [0.27, 0], [0.28, 0.04], [0.24, 0.1], [0.24, 0.16], [0.2, 0.2], [0.19, 0.42], [0.21, 0.46], [0.15, 0.52], [0.12, 0.62], [0.1, 0.7], [0, 0.7]], 20), IRON);
       // fluted shaft: slender lathe with a slight taper
       put(lathe([[0.1, 0.7], [0.085, 0.9], [0.075, 3.6], [0.068, 5.05], [0, 5.05]], 14), IRON);
@@ -310,9 +327,9 @@ export class Decor {
   // ------------------------------------------------------------------ palms (trunks + coconuts merged, fronds merged with sway)
   _buildPalms() {
     const L = this.level.layout;
-    const pts = [...L.decor.palms, ...L.decor.palms.map(([x, z]) => [-x, -z])];
+    const pts: Vec2Tuple[] = [...L.decor.palms, ...L.decor.palms.map(([x, z]): Vec2Tuple => [-x, -z])];
     if (!pts.length) return;
-    const trunks = [], fronds = [];
+    const trunks: THREE.BufferGeometry[] = [], fronds: THREE.BufferGeometry[] = [];
     let seed = 7;
     const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
     for (const [x, z] of pts) {
@@ -344,14 +361,14 @@ export class Decor {
       for (let k = 0; k < 4; k++) { const a = (k / 4) * TAU + rnd(); trunks.push(tint(at(new THREE.SphereGeometry(0.11, 10, 8), top.x + Math.cos(a) * 0.15, top.y - 0.14, top.z + Math.sin(a) * 0.15), 0x5b4a2c)); }
       // fronds: arching rib with ~36 narrow drooping leaflets each (V-folded), dark at the base → light at the tips
       const nf = 12;
-      const pos = [], col = [], sway = [], idx = [];
-      const vtx = (px, py, pz, c, s) => { pos.push(px, py, pz); col.push(c.r, c.g, c.b); sway.push(s); return pos.length / 3 - 1; };
+      const pos: number[] = [], col: number[] = [], sway: number[] = [], idx: number[] = [];
+      const vtx = (px: number, py: number, pz: number, c: THREE.Color, s: number) => { pos.push(px, py, pz); col.push(c.r, c.g, c.b); sway.push(s); return pos.length / 3 - 1; };
       const dark = new THREE.Color(0x356f35), light = new THREE.Color(0x86c55e), dry = new THREE.Color(0x9fa04a), cc = new THREE.Color(), ct = new THREE.Color();
       for (let f = 0; f < nf; f++) {
         const lower = f % 3 === 2;
         const az = (f / nf) * TAU + rnd() * 0.35, len = (lower ? 2.0 : 2.3) + rnd() * 0.5, lift = lower ? 0.05 : f % 2 ? 0.55 : 0.35;
         const dx = Math.cos(az), dz = Math.sin(az), sx = -dz, sz = dx;
-        const S = 18, rib = [];
+        const S = 18, rib: Array<[number, number, number, number]> = [];
         for (let s = 0; s <= S; s++) {
           const t = s / S;
           rib.push([top.x + dx * len * t, top.y + 0.05 + lift * t - (lower ? 1.7 : 1.35) * t * t, top.z + dz * len * t, t]);
@@ -395,7 +412,7 @@ export class Decor {
     }
     const trunkMesh = new THREE.Mesh(merge(trunks), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0 }));
     trunkMesh.castShadow = true; trunkMesh.receiveShadow = true; trunkMesh.name = 'palms:trunk';
-    const frondGeo = mergeGeometries(fronds, false);
+    const frondGeo = mergeGeometries(fronds, false)!;
     const frondMesh = new THREE.Mesh(frondGeo, frondMaterial(this.uTime));
     frondMesh.castShadow = true; frondMesh.receiveShadow = true; frondMesh.name = 'palms:fronds';
     this.group.add(trunkMesh, frondMesh);
@@ -404,13 +421,13 @@ export class Decor {
   // ------------------------------------------------------------------ team flags (poles merged, cloth instanced)
   _buildFlags() {
     const L = this.level.layout;
-    const pts = [...L.decor.flags.map((p) => ({ p, team: 0 })), ...L.decor.flags.map(([x, y, z]) => ({ p: [-x, y, -z], team: 1 }))];
+    const pts: Array<{ p: Vec3Tuple; team: number }> = [...L.decor.flags.map((p) => ({ p, team: 0 })), ...L.decor.flags.map(([x, y, z]): { p: Vec3Tuple; team: number } => ({ p: [-x, y, -z], team: 1 }))];
     if (!pts.length) return;
-    const poles = [];
+    const poles: THREE.BufferGeometry[] = [];
     const POLE = 0xe3e0d8, GOLD = 0xd9b45a, DARK = 0x3a3f48;
     for (const { p } of pts) {
       const [x, y, z] = p;
-      const add = (g, c) => { g.translate(x, y, z); poles.push(tint(g, c)); };
+      const add = (g: THREE.BufferGeometry, c: number) => { g.translate(x, y, z); poles.push(tint(g, c)); };
       add(lathe([[0, 0], [0.2, 0], [0.21, 0.03], [0.17, 0.07], [0.07, 0.1], [0, 0.1]], 16), DARK);
       add(lathe([[0.065, 0.1], [0.058, 0.4], [0.045, 4.35], [0, 4.36]], 12), POLE);
       add(at(new THREE.SphereGeometry(0.085, 14, 10), 0, 4.43, 0), GOLD);
@@ -434,7 +451,7 @@ export class Decor {
     }
     this.flagTex = new THREE.CanvasTexture((() => {
       const cv = document.createElement('canvas'); cv.width = 512; cv.height = 320;
-      const x = cv.getContext('2d'); x.clearRect(0, 0, 512, 320);
+      const x = cv.getContext('2d')!; x.clearRect(0, 0, 512, 320);
       x.drawImage(emblemCanvas(256, true), 256 - 120, 160 - 120, 240, 240);
       // two thin wave stripes under the emblem
       x.strokeStyle = '#fff'; x.lineWidth = 7; x.lineCap = 'round';
@@ -456,15 +473,31 @@ export class Decor {
   // lamp bulbs: a dim warm glass by day, properly lit at dusk (k = environment night factor 0…1)
   setNight(k = 0) { if (this.bulbMat) this.bulbMat.emissiveIntensity = 0.22 + 0.68 * Math.min(1, Math.max(0, k)); }
 
-  setTeamColors(colors) {
+  setTeamColors(colors: readonly THREE.Color[]) {
     for (const p of this.pads) { p.padMat.uniforms.uColor.value.copy(colors[p.team]); p.barMat.uniforms.uColor.value.copy(colors[p.team]); }
     if (this.flagMesh) {
       for (const f of this.flags) this.flagMesh.setColorAt(f.index, colors[f.team]);
-      this.flagMesh.instanceColor.needsUpdate = true;
+      if (this.flagMesh.instanceColor) this.flagMesh.instanceColor.needsUpdate = true;
     }
   }
 
-  update(dt) {
+  // 34번 F04: 맵 교체 때 이 장식이 만든 지오메트리·재질·캔버스 텍스처를 정확히 한 번 해제한다(장면에서만 빼면 GPU 자원이 남는다)
+  dispose() {
+    const seen = new Set<{ dispose(): void }>();
+    const once = (x: { dispose(): void } | null | undefined): void => { if (x && !seen.has(x)) { seen.add(x); x.dispose(); } };
+    this.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      once(m.geometry);
+      for (const mat of Array.isArray(m.material) ? m.material : [m.material]) once(mat);
+      once((m as THREE.Mesh & { customDepthMaterial?: THREE.Material }).customDepthMaterial);
+    });
+    once(this.emblem); once(this.flagTex); once(this._padBase?.geo); once(this._padBase?.mat);
+    this.scene.remove(this.group);
+    this.pads = []; this.flags = [];
+  }
+
+  update(dt: number) {
     this.time += dt;
     this.uTime.value = this.time;
     for (const p of this.pads) {

@@ -30,6 +30,8 @@ import type { Settings } from '../core/ctx.js';
 import { CAST_LOOKS, type CastId, type ReactKind } from '../game/cast/cast.js';
 import { DISTRICTS, districtUnlocked, missionUnlocked, districtSat, nextMission, NO_PROGRESS, type HarborProgress } from '../campaign/story/districts.js';
 import { getScript } from '../campaign/story/scripts/index.js';
+import { t, tIn, getLocale, onLocale } from './i18n.js';
+import { ENDING_MAP } from '../campaign/story/scripts/ending.js';
 import { SPEAKER_NAME } from '../campaign/story/dialogue.js';
 import { rewardInfo, rewardInfoText } from '../campaign/rewardInfo.js';
 import { gearScreen, traitsScreen, manageScreen, pauseScreen, craftScreen, type CampaignUiApi, type MenuKit } from './campaignScreens.js';
@@ -114,6 +116,12 @@ export interface MenuApi {
   hasStorySave?: () => boolean;
   storyProgress?: () => HarborProgress;
   storyRecords?: () => Array<{ id: string; title: string; body: string; note?: string; found: boolean; district: string }>;
+  // 엔딩 뒤(33번 T068): 엔딩 해금·도전 목록·무기별 공략 기록, 엔딩 다시 보기, 도전 출전
+  campaignExtras?: () => { ending: boolean; challenges: Array<{ id: string; mission: string; title: string; variants: string; parts: number; clears: number; bestMs: number; hasMark: boolean; locked: boolean }>; weapons: Array<{ id: string; name: string; missions: string[] }> } | null;
+  replayEnding?: () => void;
+  exportPrefs?: () => string | null;
+  importPrefs?: (json: string) => { dropped: number } | { error: string };
+  startChallenge?: (id: string) => void;
   storyRead?: () => string[];
 }
 
@@ -527,6 +535,8 @@ const MENU_DESC: Record<string, string> = {
 const pctFmt = (v: number): string => Math.round(v * 100) + '%';
 const SETTINGS_TABS: SettingsTab[] = [
   { id: 'controls', label: 'Controls', icon: 'gamepad', rows: [
+    // 언어(34번 F06): 두 언어로 함께 적는다(어느 언어에서도 찾을 수 있게). 바꾸면 화면이 바로 다시 그려진다
+    { key: 'locale', label: '언어 / Language', type: 'seg', options: [['ko', '한국어'], ['en', 'English']], help: '메뉴·HUD·안내 문구의 언어. 처음 실행은 한국어이며 고른 언어는 다음 실행에도 유지된다.' },
     { key: 'sensitivity', label: 'Mouse sensitivity', type: 'slider', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) + '×', help: 'How far the camera turns for each bit of mouse movement.' },
     { key: 'padSensitivity', label: 'Controller sensitivity', type: 'slider', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) + '×', help: 'Camera turn speed with the right stick.' },
     { key: 'invertY', label: 'Invert vertical look', type: 'toggle', help: 'Push up to look down, like a flight stick.' },
@@ -540,11 +550,13 @@ const SETTINGS_TABS: SettingsTab[] = [
     { key: 'vcOffsetY', label: '가상 키 위치 · 세로', type: 'slider', min: -240, max: 240, step: 10, fmt: (v) => Math.round(v) + 'px', help: '버튼 묶음을 위(+) 또는 아래(−)로 옮긴다. 자막·위험 예고와 겹치면 조정한다.' },
     { key: 'touchSensitivity', label: '가상 키 시점 감도', type: 'slider', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) + '×', help: '화면을 끌어 시점을 돌릴 때의 속도(손가락·PC 마우스 드래그).' },
     { key: '_vcReset', label: '가상 키 배치 초기화', type: 'link', help: '크기·불투명도·위치를 처음 값으로 되돌린다. 버튼을 찾기 어려울 때 쓴다.' },
+    { key: '_prefsExport', label: '설정·프로필 내보내기', type: 'link', help: '이 기기의 설정과 대전 프로필을 JSON 파일로 받는다. 다른 브라우저·데스크톱 앱으로 옮길 때 쓴다.' },
+    { key: '_prefsImport', label: '설정·프로필 가져오기', type: 'link', help: '내보낸 파일에서 알려진 값만 검사해 가져온다. 이전 Electron 앱의 저장은 자동으로 옮겨지지 않는다.' },
     { key: '_padmap', label: '컨트롤러 매핑 (비표준 패드)', type: 'link', help: '브라우저가 표준 배치를 알려 주지 않는 패드를 버튼 하나씩 눌러 Xbox 배치에 맞춘다. 보정은 그 패드에만 적용된다.' },
     { key: '_howto', label: 'Controls reference', type: 'link', help: 'Every keyboard, mouse and controller binding in one place.' },
   ] },
   { id: 'video', label: 'Video', icon: 'monitor', rows: [
-    { key: 'quality', label: 'Graphics quality', type: 'seg', options: [['low', 'Low'], ['medium', 'Med'], ['high', 'High'], ['ultra', 'Ultra']], help: 'Resolution scale, shadow detail, anti-aliasing and particle counts.' },
+    { key: 'quality', label: 'Graphics quality', type: 'seg', options: [['low', 'Low'], ['medium', 'Med'], ['high', 'High'], ['ultra', 'Ultra']], help: '해상도·안티에일리어싱·후처리·입자는 바로 바뀐다. 도색 해상도는 다음 스테이지를 불러올 때, 재질 텍스처·그림자 지도 크기는 다시 시작한 뒤 바뀐다.' },
     { key: 'fov', label: 'Field of view', type: 'slider', min: 65, max: 100, step: 1, fmt: (v) => Math.round(v) + '°', help: 'Wider shows more of the turf around you.' },
     { key: 'shadows', label: 'Shadows', type: 'toggle', help: 'Soft sun shadows. Turn off for extra speed on older machines.' },
     { key: 'bloom', label: 'Bloom glow', type: 'toggle', help: 'A soft glow around bright ink and specials.' },
@@ -552,6 +564,8 @@ const SETTINGS_TABS: SettingsTab[] = [
     { key: 'look', label: 'Look · 화풍', type: 'seg', options: [['storybook', 'Storybook'], ['classic', 'Classic']], help: '잉크 그림책(외곽선·종이 결·툰 음영) 또는 원본 룩. 외곽선·종이는 바로, 툰 음영과 캐릭터 비율은 다시 시작한 뒤 바뀐다.' },
     { key: 'outlineWidth', label: 'Outline width · 선 두께', type: 'seg', options: [[0.8, 'Thin'], [1, 'Normal'], [1.3, 'Bold']], help: '잉크 외곽선의 두께. 터치 기기·낮은 화질에서는 보통으로 고정된다.' },
     { key: 'halftone', label: 'Halftone shading · 하프톤', type: 'toggle', help: '그림자 안에 인쇄 망점을 찍는다. 낮은 화질·터치 기기에서는 꺼진다.' },
+    // 메뉴 배경(34번 F02): 기본은 정적 배경. 실시간이면 메뉴 뒤에서 자동 전투가 돌고 로비 세트를 미리 준비한다(다시 시작 후 적용)
+    { key: 'menuScene', label: 'Menu backdrop · 메뉴 배경', type: 'seg', options: [['static', 'Still'], ['live', 'Live']], help: '정적 배경은 메뉴에서 3D를 그리지 않아 가볍다. 실시간은 메뉴 뒤에서 봇 경기가 돈다. 다시 시작한 뒤 적용된다.' },
     { key: 'showFps', label: 'Show FPS counter', type: 'toggle', help: 'Displays frames per second in the corner during matches.' },
     { key: 'fpsCap', label: 'Frame rate limit', type: 'seg', options: [[0, 'Max'], [60, '60'], [30, '30']], help: 'Max follows your display (up to 120 Hz on ProMotion Macs). A 60 cap gives steadier pacing and longer battery life.' },
     // desktop app only (the Electron preload provides window.inkwaveNative)
@@ -636,6 +650,11 @@ export class Menus {
   declare _anc?: LobbyAnchor;
   declare _storyFirst?: boolean;              // 첫 실행 "이야기 시작": 라커를 거친 뒤 이야기로(R025)
   declare _storyRes?: StoryResultsData;
+  declare _harborReveal: { onDone: (() => void) | null } | null;
+  // 가벼운 시작 화면(34번 F02): 3D 부팅 전 DOM 타이틀. titleGate가 있으면 타이틀 진행이 부팅을 시작한다
+  declare titleGate: (() => void) | null;
+  declare liteSettings: { quality(): string; setQuality(q: string): boolean; setLocale(l: 'ko' | 'en'): void } | null;
+  declare _litePads: HTMLElement | null;
 
   constructor(rootEl: HTMLElement | null, api: MenuApi | null = {}) {
     this.root = rootEl || document.body;
@@ -647,6 +666,8 @@ export class Menus {
     this.el.append(this.layer, this.cursorEl, this.wipeEl);
     this.root.appendChild(this.el);
     this.wipe = new InkWipe(this.wipeEl, { isFrozen: () => this._frozen() }) as InkWipeView;   // (menu-art.js는 JS라 run()의 onMid가 null로 추론된다)
+    // 언어를 바꾸면 지금 화면을 다시 그린다(포커스 위치는 화면의 첫 포커스로, 34번 F06)
+    onLocale(() => { if (this.current && this.current !== 'loading') this.show(this.current, { force: true, quick: true }); });
 
     this.current = null;
     this.timeScale = 1;
@@ -792,6 +813,7 @@ export class Menus {
    *  `tag: { name, weapon }` leads with that player's mini splashtag (in `color`) instead of the icon. */
   toast(text: string, { kind = 'info', icon = null, color = null, ms = 3400, tag = null }: ToastOpts = {}): HTMLDivElement | null {
     if (!text) return null;
+    text = t(text);   // 34번 F06: 알림 문구는 여기서 한 번 번역한다
     if (!this._toasts || !this._toasts.isConnected) { this._toasts = h('div', { class: 'iw-toasts', 'aria-live': 'polite' }); this.el.insertBefore(this._toasts, this.cursorEl); }
     const ico = icon || GLYPHS[kind === 'error' ? 'close' : kind === 'join' ? 'plus' : kind === 'leave' ? 'exit' : kind === 'good' ? 'check' : 'sparkle'];
     const W = tag && this._weapons()[tag.weapon];
@@ -799,13 +821,13 @@ export class Menus {
       ? h('span', { class: 'iw-stag iw-toast__tag' }, h('span', { class: 'iw-stag__art', html: tagArt(fnv(String(tag.name).toLowerCase())) }),
         h('span', { class: 'iw-stag__w', html: weaponIcon((W && W.kind) || tag.weapon) }), h('span', { class: 'iw-stag__txt' }, h('span', { class: 'iw-stag__title' }, tagTitle(tag.name)), h('b', null, tag.name)))
       : h('i', { class: 'iw-toast__icon', html: ico });
-    const t = h('div', { class: `iw-toast is-${kind}` + (tag ? ' has-tag' : '') }, lead, h('span', { class: 'iw-toast__text' }, String(text)));
-    if (color) colorVars(t, 'tc', color);
-    this._toasts.appendChild(t);
+    const tEl = h('div', { class: `iw-toast is-${kind}` + (tag ? ' has-tag' : '') }, lead, h('span', { class: 'iw-toast__text' }, String(text)));
+    if (color) colorVars(tEl, 'tc', color);
+    this._toasts.appendChild(tEl);
     const max = this.current === 'lobby' ? 2 : 4;   // the lobby's feed band is small: the newest two
     while (this._toasts.childElementCount > max) this._toasts.firstElementChild!.remove();
-    setTimeout(() => { t.classList.add('is-out'); setTimeout(() => t.remove(), 420); }, ms);
-    return t;
+    setTimeout(() => { tEl.classList.add('is-out'); setTimeout(() => tEl.remove(), 420); }, ms);
+    return tEl;
   }
 
   /** The lobby's match launch (countdown → everyone super-jumps out). Resolves when the screen can be taken over;
@@ -991,7 +1013,9 @@ export class Menus {
     this._sfx('ui_confirm');
     this._sfx('splat_small');
     if (this._scr) this._scr.el.classList.add('is-go');
-    setTimeout(() => { this._leavingTitle = false; this.show('main', { wipe: true }); }, 200);
+    // 가벼운 시작 화면(34번 F02): 3D 부팅을 기다리는 main에 시작을 알린다(메인 메뉴는 부팅 뒤에 연다)
+    const gate = this.titleGate;
+    setTimeout(() => { this._leavingTitle = false; if (gate) gate(); else this.show('main', { wipe: true }); }, 200);
   }
 
   // ================================================================ focus + navigation
@@ -1194,6 +1218,26 @@ export class Menus {
       return;
     }
     if (key === '_padmap') this._padMapModal();
+    // 설정·프로필 옮기기(34번 F01-D): 파일로 내보내기·가져오기(원본은 지우지 않는다)
+    if (key === '_prefsExport') {
+      const json = safeCall(() => this.api.exportPrefs?.()) ?? null;
+      if (!json) { this.toast('내보낼 설정이 없다', { kind: 'error' }); return; }
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' })); a.download = `inkwave-prefs-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+      this.toast('설정·프로필을 파일로 내보냈다', { kind: 'good' });
+    }
+    if (key === '_prefsImport') {
+      const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/json,.json';
+      inp.onchange = async () => {
+        const f = inp.files?.[0]; if (!f) return;
+        if (f.size > 262144) { this.toast('파일이 너무 크다', { kind: 'error' }); return; }
+        const text = await f.text();
+        const res = this.api.importPrefs ? this.api.importPrefs(text) : { error: '지원하지 않는다' };
+        if ('error' in res) this.toast(t('가져오지 못했다: {why}', { why: res.error }), { kind: 'error', ms: 5000 });
+        else this.toast(t('설정·프로필을 가져왔다 — 다시 시작하면 모두 적용된다(버린 항목 {n}개)', { n: res.dropped }), { kind: 'good', ms: 6000 });
+      };
+      inp.click();
+    }
   }
 
   // 비표준 패드 보정(33번 T012). 패드 입력은 main의 보정기가 읽고(메뉴 패드 탐색은 그동안 멈춘다), 이 창은 단계 안내와
@@ -1259,7 +1303,7 @@ export class Menus {
       label ? h('span', { class: 'iw-hint__label' }, label) : null);
   }
   _prompts(items: Array<[kbm: string | string[], pad: string | null, label: string]>): HTMLDivElement {
-    return h('div', { class: 'iw-prompts iw-in iw-in--up' }, items.map(([k, p, l]) => this._hint(k, p, l)));
+    return h('div', { class: 'iw-prompts iw-in iw-in--up' }, items.map(([k, p, l]) => this._hint(k, p, t(l))));
   }
   _header(title: string, { back = true, sub = null }: { back?: boolean; sub?: string | null } = {}): HTMLElement {
     return h('header', { class: 'iw-head iw-in iw-in--down' },
@@ -1272,16 +1316,16 @@ export class Menus {
       h('div', { class: 'iw-head__titles' },
         h('div', { class: 'iw-head__title' },
           h('span', { class: 'iw-head__blob', html: splatSVG({ seed: title.length * 7 + 3, cls: 'iw-fa', r: 60, arms: 7, drops: 3 }) }),
-          h('span', { class: 'iw-display' }, title)),
-        sub ? h('div', { class: 'iw-head__sub' }, sub) : null));
+          h('span', { class: 'iw-display' }, t(title))),
+        sub ? h('div', { class: 'iw-head__sub' }, t(sub)) : null));
   }
   _btn({ id, label, sub, icon, cls = '', accept, sound = 'ui_click', tilt = 0, badge = null }: BtnOpts): HTMLButtonElement {
     const b = h('button', { class: `iw-btn ${cls}`, style: { '--tilt': `${tilt}deg` } },
       h('span', { class: 'iw-btn__blob' }),
       icon ? h('span', { class: 'iw-btn__icon', html: icon }) : null,
       h('span', { class: 'iw-btn__text' },
-        h('span', { class: 'iw-btn__label' }, label),
-        sub ? h('span', { class: 'iw-btn__sub' }, sub) : null),
+        h('span', { class: 'iw-btn__label' }, t(label)),
+        sub ? h('span', { class: 'iw-btn__sub' }, t(sub)) : null),
       badge);
     this._fx(b);
     this._bind(b, { id, accept: (src) => { if (sound) this._sfx(sound); if (src === 'mouse') this._press(b); accept && accept(src); } });
@@ -1322,6 +1366,14 @@ export class Menus {
   }
 
   // ================================================================ SCREEN: title
+  // DOM 타이틀의 패드 상태 줄(연결 없음 / 표준 / 비표준 — 비표준은 메뉴에서 보정이 필요하다)
+  setLitePads(pads: Array<{ id: string; standard: boolean }>): void {
+    const el = this._litePads;
+    if (!el) return;
+    const msg = !pads.length ? t('패드 연결 없음 · 키보드·마우스·가상 키로 조작') : pads.every((p) => p.standard) ? t('패드 {n}개 연결 · 버튼을 누르면 시작', { n: pads.length }) : t('비표준 패드 · 시작한 뒤 설정 > 입력에서 버튼 보정이 필요하다');
+    if (el.textContent !== msg) el.textContent = msg;
+  }
+
   _scr_title(): Screen {
     const press = h('div', { class: 'iw-title__press iw-in iw-in--up' },
       h('span', { class: 'iw-title__presstext' }, this._input === 'pad' ? 'PRESS ANY BUTTON' : 'PRESS ANY KEY'),
@@ -1332,6 +1384,34 @@ export class Menus {
       press,
       h('div', { class: 'iw-corner iw-corner--bl iw-in' }, h('b', null, GAME_TITLE), ' · an original turf-war shooter'),
       h('div', { class: 'iw-corner iw-corner--br iw-in' }, `v${this._version()}`));
+    // 3D 전(가벼운 시작): 화질을 고르고 입력 상태를 본 뒤 시작한다. 화질은 GPU 자원을 만들기 전에 적용된다
+    const lite = this.liteSettings && this.titleGate ? this.liteSettings : null;
+    this._litePads = null;
+    if (lite) {
+      const LABEL: Record<string, string> = { low: '낮음(권장)', medium: '보통', high: '높음', ultra: '최고' };
+      const note = h('div', { class: 'iw-lite__note' }, t('화질은 3D를 준비하기 전에 적용된다. 설정에서 언제든 바꿀 수 있다.'));
+      const chips = Object.keys(LABEL).map((q) => {
+        const b = h('button', { class: `iw-lite__chip${lite.quality() === q ? ' is-on' : ''}`, 'data-q': q, type: 'button' }, t(LABEL[q]));
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const saved = lite.setQuality(q);
+          for (const c of chips) c.classList.toggle('is-on', c.dataset.q === lite.quality());
+          note.textContent = saved ? t('화질: {q} — 저장했다', { q: t(LABEL[q]) }) : t('화질: {q} — 이번 실행에만 적용(저장소에 쓸 수 없다)', { q: t(LABEL[q]) });
+        });
+        return b;
+      });
+      const pads = h('div', { class: 'iw-lite__pads' }, t('패드 확인 중…'));
+      this._litePads = pads;
+      const start = h('button', { class: 'iw-btn iw-btn--menu iw-btn--primary iw-lite__start', type: 'button' }, t('시작'));
+      start.addEventListener('click', (e) => { e.stopPropagation(); this._titleGo(); });
+      el.appendChild(h('div', { class: 'iw-lite iw-in iw-in--up', onclick: (e: Event) => e.stopPropagation() },
+        h('div', { class: 'iw-lite__row' }, h('b', null, t('화질')), ...chips), note,
+        h('div', { class: 'iw-lite__row' }, h('b', null, t('언어 / Language')), ...(['ko', 'en'] as const).map((l) => {
+          const b = h('button', { class: `iw-lite__chip${getLocale() === l ? ' is-on' : ''}`, 'data-l': l, type: 'button' }, l === 'ko' ? '한국어' : 'English');
+          b.addEventListener('click', (e) => { e.stopPropagation(); lite.setLocale(l); });   // 언어를 바꾸면 타이틀이 다시 그려진다
+          return b;
+        })), pads, start));
+    }
     // 타이틀 비네트(35번 R025): 작업장 세트 앞의 플레이어와 퐁, 색이 천천히 돌아오는 10초 루프
     const sc = this._sc() as (MenuShowcase & { showWorkshop?: (s: LookStyle, c: ColorLike, w: string, o: { cast: boolean; vignette: boolean }) => void }) | null;
     return {
@@ -1404,8 +1484,8 @@ export class Menus {
     return {
       el, wrap: true, initial: btns[0],
       onFocus: (f) => {
-        const t = MENU_DESC[f.dataset.id!];   // (이 화면의 포커스 대상은 모두 id로 바인딩된다)
-        if (t && descText.textContent !== t) { descText.textContent = t; restartAnim(desc, 'is-swap'); }
+        const d0 = MENU_DESC[f.dataset.id!], tx = d0 && t(d0);   // (이 화면의 포커스 대상은 모두 id로 바인딩된다)
+        if (tx && descText.textContent !== tx) { descText.textContent = tx; restartAnim(desc, 'is-swap'); }
       },
       onBack: () => { this._sfx('ui_back'); this.show('title', { back: true }); },
     };
@@ -1447,25 +1527,27 @@ export class Menus {
       this._prompts([['Enter', 'A', 'Select'], ['Esc', 'B', 'Back']]));
     return {
       el, wrap: true, initial: btns[0],
-      onFocus: (f) => { const t = MENU_DESC[f.dataset.id!]; if (t && descText.textContent !== t) { descText.textContent = t; restartAnim(desc, 'is-swap'); } },
+      onFocus: (f) => { const d0 = MENU_DESC[f.dataset.id!], tx = d0 && t(d0); if (tx && descText.textContent !== tx) { descText.textContent = tx; restartAnim(desc, 'is-swap'); } },
     };
   }
 
   // ---- 작업장(R028): 로비 세트에 선 모라·틸과 메뉴(임무·장비·특성·기록). 고른 항목의 인물이 카메라를 본다
   _scr_workshop(): Screen {
-    const sc = this._sc() as (MenuShowcase & { showWorkshop?: (s: LookStyle, c: ColorLike, w: string) => void; workshopFocus?: (w: 'mora' | 'teal' | null) => void }) | null;
+    type WsFocus = 'mora' | 'teal' | 'board' | 'rack';
+    const sc = this._sc() as (MenuShowcase & { showWorkshop?: (s: LookStyle, c: ColorLike, w: string, o?: { sat?: number }) => void; workshopFocus?: (w: WsFocus | null) => void }) | null;
     const prog = safeCall(() => this.api.storyProgress?.()) ?? NO_PROGRESS;
     const nx = nextMission(prog);
     const moraLine = prog.done.length ? '다음 길은 지도에 표시해 뒀어.' : `${nx.district.missions[nx.index].title}부터야. 중계기 두 개.`;
     const say = h('div', { class: 'iw-ws__say iw-in iw-in--down' }, h('b', null, '모라'), h('span', null, moraLine));
-    const items: Array<BtnOpts & { who: 'mora' | 'teal' | null }> = [
+    // 메뉴 항목 → 시선이 가는 인물·소품(35번 R028): 임무·관리 = 틸(통신 책상), 무기·모듈 = 장비대, 제작·특성 = 모라, 기록 = 기록판
+    const items: Array<BtnOpts & { who: WsFocus | null }> = [
       { id: 'mission', label: '임무', sub: `다음: ${nx.district.missions[nx.index].id} ${nx.district.missions[nx.index].title}`, icon: GLYPHS.map, cls: 'iw-btn--menu iw-btn--xl iw-btn--primary', accept: () => this._go('harbor'), sound: 'ui_confirm', who: 'teal' },
-      { id: 'gear', label: '무기', icon: GLYPHS.target, cls: 'iw-btn--menu', accept: () => this._go('loadout'), who: 'mora' },
-      { id: 'modules', label: '모듈 장비', sub: '어댑터 · 탱크 · 표식', icon: GLYPHS.gear, cls: 'iw-btn--menu', accept: () => (this._campApi()?.save() ? this._go('campGear') : this.toast('임무를 하나 마치면 열린다', { icon: 'lock' })), who: 'mora' },
+      { id: 'gear', label: '무기', icon: GLYPHS.target, cls: 'iw-btn--menu', accept: () => this._go('loadout'), who: 'rack' },
+      { id: 'modules', label: '모듈 장비', sub: '어댑터 · 탱크 · 표식', icon: GLYPHS.gear, cls: 'iw-btn--menu', accept: () => (this._campApi()?.save() ? this._go('campGear') : this.toast('임무를 하나 마치면 열린다', { icon: 'lock' })), who: 'rack' },
       { id: 'craft', label: '제작', sub: '기본 설계 · 서명 재제작', icon: GLYPHS.gear, cls: 'iw-btn--menu', accept: () => (this._campApi()?.save() ? this._go('campCraft') : this.toast('임무를 하나 마치면 열린다', { icon: 'lock' })), who: 'mora' },
       { id: 'perks', label: '특성', icon: GLYPHS.bolt, cls: 'iw-btn--menu', accept: () => (this._campApi()?.save() ? this._go('campTraits') : this.toast('임무를 하나 마치면 열린다', { icon: 'lock' })), who: 'mora' },
       { id: 'manage', label: '캠페인 관리', sub: '난이도 · 저장', icon: GLYPHS.note, cls: 'iw-btn--menu', accept: () => this._go('campManage'), who: 'teal' },
-      { id: 'records', label: '기록', sub: `${prog.records.length} / 14`, icon: GLYPHS.note, cls: 'iw-btn--menu', accept: () => this._go('records'), who: 'teal' },
+      { id: 'records', label: '기록', sub: `${prog.records.length} / 14`, icon: GLYPHS.note, cls: 'iw-btn--menu', accept: () => this._go('records'), who: 'board' },
     ];
     const btns = items.map((it, i) => { const b = this._btn({ ...it, tilt: [-1.6, 1.2, -1.1, 1.4][i % 4] }); b.classList.add('iw-in', 'iw-in--left'); b.dataset.who = it.who ?? ''; return b; });
     const descText = h('span', { class: 'iw-main__desctext' });
@@ -1478,10 +1560,10 @@ export class Menus {
       this._prompts([['Enter', 'A', 'Select'], ['Esc', 'B', 'Back']]));
     return {
       el, wrap: true, initial: btns[0],
-      afterMount: () => { if (sc?.showWorkshop) safeCall(() => sc.showWorkshop!(this._style(), (G.teamColors && G.teamColors[0]) || this._accent()[0], this._loadout().weapon)); },
+      afterMount: () => { if (sc?.showWorkshop) safeCall(() => sc.showWorkshop!(this._style(), (G.teamColors && G.teamColors[0]) || this._accent()[0], this._loadout().weapon, { sat: prog.colorReturn.tidewater ?? 0.18 })); },
       onFocus: (f) => {
-        const t = MENU_DESC[f.dataset.id!]; if (t && descText.textContent !== t) { descText.textContent = t; restartAnim(desc, 'is-swap'); }
-        const who = (f.dataset.who || null) as 'mora' | 'teal' | null;
+        const d0 = MENU_DESC[f.dataset.id!], tx = d0 && t(d0); if (tx && descText.textContent !== tx) { descText.textContent = tx; restartAnim(desc, 'is-swap'); }
+        const who = (f.dataset.who || null) as WsFocus | null;
         safeCall(() => sc?.workshopFocus?.(who));
       },
       destroy: () => { if (sc && !(['harbor', 'records', 'loadout', 'locker'] as Array<string | null>).includes(this.current)) safeCall(() => sc.hide()); },
@@ -1497,8 +1579,11 @@ export class Menus {
 
   // ---- 항구 지도(R029): 종이 지도 위 7개 지역 카드. 카드 채도 = colorReturn[지역], 잠긴 지역은 먹선 실루엣이다.
   // 360 px 폭에서는 지도가 가로로 스크롤된다(지도 최소 폭 960 px). 포커스가 움직이면 그 카드가 보이게 스크롤한다.
+  // 엔딩 연출(33번 T068·35번 R032): showHarborReveal()이면 7개 지역이 잃은 색에서 ENDING_MAP 순서대로 한 곳씩 색을 되찾는다
+  showHarborReveal(onDone?: () => void): void { this._harborReveal = { onDone: onDone ?? null }; this.show('harbor', { force: true }); }
   _scr_harbor(): Screen {
     const prog = safeCall(() => this.api.storyProgress?.()) ?? NO_PROGRESS;
+    const reveal = this._harborReveal; this._harborReveal = null;
     const nx = nextMission(prog);
     const info = h('div', { class: 'iw-harbor__info iw-in iw-in--up' });
     let first: HTMLElement | null = null;
@@ -1522,7 +1607,7 @@ export class Menus {
         if (d === nx.district && i === nx.index) first = b;
         return b;
       });
-      return h('div', { class: `iw-harbor__card${open ? '' : ' is-locked'}`, style: { left: d.at[0] + '%', top: d.at[1] + '%', '--sat': sat.toFixed(2) } },
+      return h('div', { class: `iw-harbor__card${open ? '' : ' is-locked'}`, 'data-district': d.id, style: { left: d.at[0] + '%', top: d.at[1] + '%', '--sat': (reveal ? 0.18 : sat).toFixed(2) } },
         h('div', { class: 'iw-harbor__thumb', style: { backgroundImage: `url(${stageArt(d.id, d.time, true)})` } }),
         h('div', { class: 'iw-harbor__name' }, h('small', null, `${d.chapter}장`), d.name),
         h('div', { class: 'iw-harbor__ms' }, ms));
@@ -1545,7 +1630,17 @@ export class Menus {
       const r = f.getBoundingClientRect(), sr = scroller.getBoundingClientRect();
       if (r.left < sr.left + 12 || r.right > sr.right - 12) scroller.scrollBy({ left: r.left - sr.left - sr.width / 2 + r.width / 2, behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
     };
-    return { el, initial: () => first, onFocus: (f) => showInfo(f) };
+    const timers: number[] = [];
+    if (reveal) {
+      el.classList.add('is-reveal');
+      const step = prefersReducedMotion() ? 0 : ENDING_MAP.stepMs;
+      ENDING_MAP.order.forEach((id, i) => timers.push(window.setTimeout(() => {
+        const card = el.querySelector<HTMLElement>(`[data-district="${id}"]`), d = DISTRICTS.find((x) => x.id === id);
+        if (card && d) { card.style.setProperty('--sat', districtSat(d, prog).toFixed(2)); card.classList.add('is-restored'); }
+        if (i === ENDING_MAP.order.length - 1) { el.dataset.revealed = '1'; reveal.onDone?.(); }
+      }, step * (i + 1))));
+    }
+    return { el, initial: () => first, onFocus: (f) => showInfo(f), destroy: () => { for (const t of timers) clearTimeout(t); } };
   }
 
   // ---- 기록판(R026·R028): 읽은 대화 다시 읽기 + 모은 기록(14개)
@@ -1567,10 +1662,26 @@ export class Menus {
       h('h3', null, r.found ? r.title : '아직 찾지 못한 기록'),
       h('p', null, r.found ? r.body : '선택 상자 안에 있다. 지도에서 ◆가 붙은 임무를 확인한다.'),
       ...(r.found && r.note ? [h('p', { class: 'iw-rec__note' }, r.note)] : []))));
+    // 엔딩 뒤(33번 T068): 엔딩 다시 보기 · 도전 임무 · 무기별 공략 기록
+    const ex = safeCall(() => this.api.campaignExtras?.()) ?? null;
+    const exList: HTMLButtonElement[] = [];
+    if (ex) {
+      if (ex.ending) exList.push(btn('ending', '엔딩 다시 보기', '되찾는 물결', () => body.replaceChildren(h('h3', null, '엔딩'), h('p', null, 'A·Enter로 지도 연출과 아카이브의 마지막 통신을 다시 본다.'))));
+      const endBtn = exList[0];
+      if (endBtn) this._bind(endBtn, { id: 'ending', accept: () => { this._sfx('ui_confirm'); safeCall(() => this.api.replayEnding?.()); } });
+      for (const c of ex.challenges) {
+        const b = btn('c-' + c.id, `도전 ${c.mission} ${c.title}`, c.locked ? '엔딩 뒤에 열린다' : c.clears ? `완료 ${c.clears} · 최고 ${(c.bestMs / 1000).toFixed(1)}초` : '처음', () => body.replaceChildren(
+          h('h3', null, `${c.mission} ${c.title}`), h('p', null, `변형: ${c.variants}`), h('p', null, `보상: 부품 +${c.parts}${c.hasMark ? ' · 외형 표식 획득함' : ' · 첫 완료 시 외형 표식'}`),
+          h('p', { class: 'iw-rec__note' }, c.locked ? '7-3 「되찾는 물결」을 마치면 열린다.' : 'A·Enter로 출전한다. 첫 완료 보상은 다시 나오지 않는다.')));
+        if (!c.locked) this._bind(b, { id: 'c-' + c.id, accept: () => { this._sfx('ui_confirm'); safeCall(() => this.api.startChallenge?.(c.id)); } });
+        exList.push(b);
+      }
+      for (const w of ex.weapons) exList.push(btn('w-' + w.id, w.name, `${w.missions.length} / 21`, () => body.replaceChildren(h('h3', null, `${w.name} 공략 기록`), h('p', null, w.missions.length ? w.missions.join(' · ') : '아직 이 무기로 끝낸 임무가 없다.'))));
+    }
     const el = h('div', { class: 'iw-screen iw-rec' },
       this._header('기록판', { sub: `대화 ${scripts.length} · 기록 ${recs.filter((r) => r.found).length} / ${recs.length}` }),
       h('div', { class: 'iw-rec__cols' },
-        h('div', { class: 'iw-rec__list iw-in iw-in--left' }, h('h4', null, '읽은 대화'), sList.length ? sList : h('p', { class: 'iw-rec__empty' }, '아직 없다'), h('h4', null, '기록'), rList),
+        h('div', { class: 'iw-rec__list iw-in iw-in--left' }, h('h4', null, '읽은 대화'), sList.length ? sList : h('p', { class: 'iw-rec__empty' }, '아직 없다'), h('h4', null, '기록'), rList, ...(exList.length ? [h('h4', null, '엔딩 · 도전 · 공략 기록'), ...exList] : [])),
         body),
       this._prompts([['Enter', 'A', '읽기'], ['Esc', 'B', 'Back']]));
     return { el, initial: () => (sList[0] || rList[0] || null), onFocus: (f) => (f as FocusEl & { _show?: () => void })._show?.() };
@@ -2756,9 +2867,9 @@ export class Menus {
     const rowsEl = h('div', { class: 'iw-rows' });
     const controls = new Map<string, RowControl>();
     const pill = h('span', { class: 'iw-tabs__hl' });
-    const tabBtns = SETTINGS_TABS.map((t, i) => {
-      const b = h('button', { class: 'iw-tab' }, h('i', { html: GLYPHS[t.icon] }), h('span', null, t.label));
-      this._bind(b, { id: 'tab-' + t.id, type: 'tab', accept: () => selectTab(i, true), adjust: (d) => { if (selectTab(i + d, true)) this._setFocus(tabBtns[tabIdx]); } });
+    const tabBtns = SETTINGS_TABS.map((tb, i) => {
+      const b = h('button', { class: 'iw-tab' }, h('i', { html: GLYPHS[tb.icon] }), h('span', null, t(tb.label)));
+      this._bind(b, { id: 'tab-' + tb.id, type: 'tab', accept: () => selectTab(i, true), adjust: (d) => { if (selectTab(i + d, true)) this._setFocus(tabBtns[tabIdx]); } });
       return b;
     });
     tabsEl.append(h('span', { class: 'iw-tabs__hint' }, this._hint('Q', 'LB')), pill, ...tabBtns, h('span', { class: 'iw-tabs__hint' }, this._hint('E', 'RB')));
@@ -2770,14 +2881,14 @@ export class Menus {
     const pvHelp = h('p', { class: 'iw-prev__help' });
     const card = h('aside', { class: 'iw-prev iw-in iw-in--right' }, h('div', { class: 'iw-prev__head' }, pvLabel, pvVal), pvStage, pvHelp);
     const P: { key: string | null; cur: PreviewHandle | null } = { key: null, cur: null };
-    const rowDef = (key: string): SettingsRow | null => { for (const t of SETTINGS_TABS) { const r = t.rows.find((x) => x.key === key); if (r) return r; } return null; };
+    const rowDef = (key: string): SettingsRow | null => { for (const tb of SETTINGS_TABS) { const r = tb.rows.find((x) => x.key === key); if (r) return r; } return null; };
     const optLabel = (r: SegRow, v: unknown): string => {
       if (r.key === 'difficulty') return (this._diffs()[v as string] || {} as Partial<DifficultyInfo>).name || v as string;   // (세그먼트 값: 난이도는 id…
       if (r.key === 'matchLength') return durLabel(v as number);   // …경기 길이는 초)
       const o = (r.options || []).find((x) => x[0] === v);
-      return o ? o[1] : String(v);
+      return o ? t(String(o[1])) : String(v);
     };
-    const fmtVal = (r: SettingsRow | null, v: unknown) => (!r ? '' : r.type === 'slider' ? r.fmt(+(v as number)) : r.type === 'toggle' ? (v ? 'ON' : 'OFF') : r.type === 'seg' ? optLabel(r, v).toUpperCase() : '');
+    const fmtVal = (r: SettingsRow | null, v: unknown) => (!r ? '' : r.type === 'slider' ? r.fmt(+(v as number)) : r.type === 'toggle' ? t(v ? 'ON' : 'OFF') : r.type === 'seg' ? optLabel(r, v).toUpperCase() : '');
     const showPreview = (key: string, { label, help, tab }: { label?: string; help?: string; tab?: SettingsTab } = {}) => {
       if (P.key === key) return;
       P.key = key;
@@ -2791,10 +2902,10 @@ export class Menus {
       for (const old of [...pvStage.children] as PreviewHandle['el'][]) { if (old._out) continue; old._out = true; old.classList.add('is-out'); setTimeout(() => old.remove(), 260); }
       pvStage.appendChild(pv.el);
       P.cur = pv;
-      pvLabel.textContent = label || (r ? r.label : '');
+      pvLabel.textContent = label || (r ? t(r.label) : '');
       pvVal.textContent = fmtVal(r, r ? s[key] : null);
       pvVal.classList.toggle('is-empty', !pvVal.textContent);
-      pvHelp.textContent = help || (r ? r.help : '');
+      pvHelp.textContent = help || (r && r.help ? t(r.help) : '');
       restartAnim(card, 'is-swap');
     };
 
@@ -2805,18 +2916,18 @@ export class Menus {
       const tab = SETTINGS_TABS[tabIdx];
       tab.rows.forEach((r, i) => {
         let ctrl: RowControl;
-        if (r.type === 'link') ctrl = { el: h('span', { class: 'iw-row__link' }, r.key === '_howto' ? 'VIEW' : '열기', h('i', { html: GLYPHS.next })), accept: () => { this._sfx('ui_click'); this._settingsLink(r.key, (k, v) => controls.get(k)?.refresh?.(v)); } };
+        if (r.type === 'link') ctrl = { el: h('span', { class: 'iw-row__link' }, t(r.key === '_howto' ? 'VIEW' : '열기'), h('i', { html: GLYPHS.next })), accept: () => { this._sfx('ui_click'); this._settingsLink(r.key, (k, v) => controls.get(k)?.refresh?.(v)); } };
         else if (r.type === 'slider') ctrl = this._slider(r, s[r.key]);
         else if (r.type === 'toggle') ctrl = this._toggle(r, s[r.key]);
         else {
           let options = r.options;
           if (r.key === 'difficulty') options = Object.values(this._diffs()).map((d) => [d.id, d.name]);
           if (r.key === 'matchLength') options = (MATCH.durations || [90, 180]).map((d) => [d, durLabel(d)]);
-          ctrl = this._seg(options!, s[r.key], (v) => this._setSetting(r.key, v));   // (null 선택지는 바로 위에서 채운다)
+          ctrl = this._seg(options!.map(([v, l]) => [v, t(String(l))] as [typeof v, string]), s[r.key], (v) => this._setSetting(r.key, v));   // (null 선택지는 바로 위에서 채운다)
           ctrl.accept = ctrl.cycle;
         }
         const row: FocusEl = h('div', { class: 'iw-row iw-rowin' + (r.type === 'link' ? ' iw-row--link' : ''), style: { '--i': i, '--dir': dirSign } },
-          h('div', { class: 'iw-row__label' }, h('i', { class: 'iw-row__pip' }), r.label),
+          h('div', { class: 'iw-row__label' }, h('i', { class: 'iw-row__pip' }), t(r.label)),
           h('div', { class: 'iw-row__ctrl' }, ctrl.el));
         row._key = r.key;
         this._bind(row, { id: 'set-' + r.key, type: 'row', accept: ctrl.accept, adjust: ctrl.adjust });

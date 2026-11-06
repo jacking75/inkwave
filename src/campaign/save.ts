@@ -9,8 +9,9 @@ import { MODULES, STAT_LABEL, type StatKey } from './data/modules.js';
 import type { DifficultyId } from './data/economy.js';
 import { INVENTORY_SLOTS } from './data/economy.js';
 import type { ColorReturnSnapshot } from './colorReturn.js';
+import type { ChallengeRecord } from './challenge.js';
 
-export const SCHEMA_VERSION = 2;   // 2: signatures·colorReturn·dialogueLog(33번 T048, 35번 R005·R026)
+export const SCHEMA_VERSION = 3;   // 2: signatures·colorReturn·dialogueLog(33번 T048, 35번 R005·R026), 3: challenges·marks·weaponLog·endingSeen(33번 T068)
 export const CONTENT_VERSION = 1;
 export const SAVE_DB = 'inkwave-campaign';
 
@@ -48,6 +49,10 @@ export interface CampaignSave {
   signatures: string[];        // 한 번이라도 얻은 서명(재제작 해금, 33번 T048)
   colorReturn: Record<string, number>;   // 지역 채도 0..1(35번 R005)
   dialogueLog: string[];       // 읽은 대본 id(기록판 다시 읽기, 35번 R026)
+  challenges: Record<string, ChallengeRecord>;   // 도전 임무 기록(33번 T068)
+  marks: string[];             // 도전 첫 완료로 얻은 외형 표식
+  weaponLog: Record<string, string[]>;   // 무기별 공략 기록: 그 무기로 끝낸 임무 id
+  endingSeen: boolean;         // 엔딩을 한 번 봤다(건너뛰어도 true, 해금은 done의 7-3에서 파생)
   attempts: Record<string, AttemptLoot>;   // 미완료 임무의 추첨 기록(포기해도 남는다)
   inProgress: CheckpointSnapshot | null;
   processed: Record<string, CompletionRecord>;   // 처리한 완료 ID(최근 PROCESSED_KEEP개)
@@ -59,7 +64,7 @@ export function newSave(now: number, difficulty: DifficultyId = 'normal'): Campa
   return {
     schemaVersion: SCHEMA_VERSION, contentVersion: CONTENT_VERSION, revision: 0, createdAt: now, difficulty,
     unlocked: ['1-1'], done: [], clears: {}, xp: 0, traits: {}, inventory: { ...EMPTY_INVENTORY },
-    pity: 0, uidSeq: 1, records: [], signatures: [], colorReturn: {}, dialogueLog: [], attempts: {}, inProgress: null, processed: {}, lastResult: null,
+    pity: 0, uidSeq: 1, records: [], signatures: [], colorReturn: {}, dialogueLog: [], challenges: {}, marks: [], weaponLog: {}, endingSeen: false, attempts: {}, inProgress: null, processed: {}, lastResult: null,
   };
 }
 
@@ -117,6 +122,10 @@ export const decodeSave: Decoder<CampaignSave> = (raw) => {
     signatures: [...new Set([...strs(x.signatures).filter((id) => MODULES[id]?.signature), ...all.filter((c) => MODULES[c.defId].signature).map((c) => c.defId)])],
     colorReturn: isObj(x.colorReturn) ? Object.fromEntries(Object.entries(x.colorReturn).filter(([, v]) => typeof v === 'number' && v >= 0 && v <= 1)) as Record<string, number> : {},
     dialogueLog: [...new Set(strs(x.dialogueLog))],
+    challenges: isObj(x.challenges) ? Object.fromEntries(Object.entries(x.challenges).filter(([, v]) => isObj(v) && typeof v.clears === 'number' && typeof v.bestMs === 'number').map(([k, v]) => [k, { clears: (v as ChallengeRecord).clears, bestMs: (v as ChallengeRecord).bestMs, last: isObj((v as ChallengeRecord).last) ? (v as ChallengeRecord).last : null }])) : {},
+    marks: [...new Set(strs(x.marks))],
+    weaponLog: isObj(x.weaponLog) ? Object.fromEntries(Object.entries(x.weaponLog).map(([k, v]) => [k, [...new Set(strs(v))]])) : {},
+    endingSeen: x.endingSeen === true,
     attempts: isObj(x.attempts) ? (x.attempts as Record<string, AttemptLoot>) : {},
     inProgress: isObj(x.inProgress) && typeof x.inProgress.missionId === 'string' ? (x.inProgress as unknown as CheckpointSnapshot) : null,
     processed: isObj(x.processed) ? (x.processed as Record<string, CompletionRecord>) : {},

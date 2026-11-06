@@ -95,6 +95,493 @@ async function clearEncounter(page: Page, x: number, z: number, enc: string, max
   while (Date.now() - t0 < maxSecs * 1000 && (await ev<string>(page, `__inkwave.session.encounters.state('${enc}')`)) !== 'cleared') await clearArea(page, x, z, 0.5);
 }
 
+// 2장 이후 임무의 공통 검수 계획(아래 generic). 임무 고유 검사는 extra에 둔다.
+const CH5 = ['1-2', '1-3', '2-1', '2-2', '2-3', '3-1', '3-2', '3-3', '4-1', '4-2', '4-3', '5-1', '5-2', '5-3'];
+const PLANS: Record<string, Plan> = {
+  '2-1': { prev: ['1-2', '1-3', '2-1'], walk: ['recA', 'cp1', 'crate', 'cp2', 'recB', 'exit'], route: { take: 'enc-front', other: 'enc-side' } },
+  '2-2': { prev: ['1-2', '1-3', '2-1', '2-2'], walk: ['relayA', 'cp1', 'relayB', 'cp2', 'unit:glass', 'crate', 'box'], before: { 'o-boss': glassEye } },
+  '3-1': { prev: ['1-2', '1-3', '2-1', '2-2', '2-3', '3-1'], walk: ['relay1', 'cp1', 'crate', 'relay2', 'cp2', 'relay3', 'papers'], before: { 'o-3': relayKept } },
+  '3-2': { prev: ['1-2', '1-3', '2-1', '2-2', '2-3', '3-1', '3-2'], walk: ['cp1', 'crate', 'cp2', 'unit:porter', 'seal'], before: { 'o-boss': porter } },
+  '3-3': { prev: ['1-2', '1-3', '2-1', '2-2', '2-3', '3-1', '3-2', '3-3'], walk: ['cp-boss', 'gear'], before: { 'o-boss': hullSolo } },
+  '4-1': { prev: ['1-2', '1-3', '2-1', '2-2', '2-3', '3-1', '3-2', '3-3', '4-1'], walk: ['moorA', 'cp1', 'crate', 'cp2', 'moorB', 'term'], before: { 'o-a': moorHold }, extra: allWeapons },
+  '4-2': { prev: ['1-2', '1-3', '2-1', '2-2', '2-3', '3-1', '3-2', '3-3', '4-1', '4-2'], walk: ['kit1', 'kit2', 'cp1', 'crate', 'cp2', 'unit:gate', 'log'], before: { 'o-boss': gatekeeper } },
+  '4-3': { prev: ['1-2', '1-3', '2-1', '2-2', '2-3', '3-1', '3-2', '3-3', '4-1', '4-2', '4-3'], walk: ['cp-boss', 'beaconA', 'beaconX', 'unit:skew', 'helm'], before: { 'o-x': skewMoved, 'o-boss': skewLate }, ownDeath: true },
+  '5-1': { prev: ['1-2', '1-3', '2-1', '2-2', '2-3', '3-1', '3-2', '3-3', '4-1', '4-2', '4-3', '5-1'], walk: ['pumpW', 'cp1', 'crate', 'pumpE', 'log'], before: { 'o-e2': pumpsSeparate }, skipCrate: true },
+  '5-2': { prev: ['1-2', '1-3', '2-1', '2-2', '2-3', '3-1', '3-2', '3-3', '4-1', '4-2', '4-3', '5-1', '5-2'], walk: ['link1', 'cp1', 'crate', 'link2', 'cp2', 'unit:spr1', 'unit:scrub', 'safe'], before: { 'o-boss': sprinklers } },
+  '5-3': { prev: ['1-2', '1-3', '2-1', '2-2', '2-3', '3-1', '3-2', '3-3', '4-1', '4-2', '4-3', '5-1', '5-2', '5-3'], walk: ['cp-boss', 'unit:sprL', 'unit:salt', 'unit:sprR', 'design'], before: { 'o-boss': saltSafe }, ownDeath: true },
+  '6-1': { prev: [...CH5, '6-1'], walk: ['gate1', 'cp1', 'gate2', 'cp2', 'crate', 'gate3', 'cp3', 'comm'], before: { 'o-e': canalFall } },
+  '6-2': { prev: [...CH5, '6-1', '6-2'], walk: ['cp1', 'crate', 'unit:twinS', 'unit:twinW', 'lock'], before: { 'o-twins': twins } },
+  '6-3': { prev: [...CH5, '6-1', '6-2', '6-3'], walk: ['cp-boss', 'ctrlA', 'ctrlB', 'unit:regulator', 'box'], before: { 'o-boss': regulator }, ownDeath: true },
+  '7-1': { prev: [...CH5, '6-1', '6-2', '6-3', '7-1'], walk: ['relay1', 'cp1', 'crate', 'relay2', 'cp2', 'relay3', 'tower'], before: { 'o-3': highRelay } },
+  '7-2': { prev: [...CH5, '6-1', '6-2', '6-3', '7-1', '7-2'], walk: ['hold', 'cp1', 'cp2', 'unit:cmd', 'origin', 'crate'], before: { 'o-boss': commander } },
+  '7-3': { prev: [...CH5, '6-1', '6-2', '6-3', '7-1', '7-2', '7-3'], walk: ['cp-final', 'ring2', 'ring1', 'ring3', 'core'], before: { 'o-r1': waveRing1, 'o-r2': waveTo(0.33), 'o-r3': waveRing3 }, ownDeath: true },
+  '2-3': { prev: ['1-2', '1-3', '2-1', '2-2', '2-3'], walk: ['cp-boss', 'txL', 'txC', 'txR', 'unit:orgel', 'log'], before: { 'o-t1': orgelClosed, 'o-t2': orgelOpenRetry, 'o-boss': orgelAllOff } },
+};
+// 3-1: 앞서 복구한 중계기 둘레를 적 잉크로 덮어도 복구가 풀리지 않는다(뒤로 돌아가 지킬 필요 없음)
+async function relayKept(page: Page): Promise<void> {
+  const r = await ev<{ done: string[]; c1: boolean; c2: boolean; paint: number }>(page, `(() => { const s = __inkwave.session, G = window.__G, THREE = G.local.pos.constructor;
+    for (const id of ['relay1', 'relay2']) { const d = s.mission.devices.find((x) => x.id === id), p = s._ground(d.at); for (let i = 0; i < 24; i++) { const a = i / 24 * Math.PI * 2; G.paint.splat(new THREE(p.x + Math.cos(a) * 2, p.y + 0.3, p.z + Math.sin(a) * 2), 1.6, 1, { seed: i }); } G.paint.splat(new THREE(p.x, p.y + 0.3, p.z), 2.4, 1, { seed: 77 }); }
+    G.paint.flush(0);
+    return { done: s.objectives.snapshot(), c1: s.devices.get('relay1').complete, c2: s.devices.get('relay2').complete, paint: s._floorPaint(s.mission.devices[0], 0) }; })()`);
+  await pass(page, 1500);
+  const after = await st(page);
+  ok('T053 3-1: 복구한 중계기 1·2를 적 잉크로 덮어도 복구 유지(적이 빼앗지 않음)', r.c1 && r.c2 && after.done.includes('o-1') && after.done.includes('o-2'), { r, after });
+  // 안벽 밖 바다로 떨어지면 → 실패 → 최근 CP(cp2)에서 현재 구간만 재시작
+  await ev(page, `(() => { const C = Math.cos(35 * Math.PI / 180), S = Math.sin(35 * Math.PI / 180), x = 28, z = -15, a = __m.G.local; a.invuln = 0; a.pos.set(x * C + z * S, 0.5, -x * S + z * C); a.vel.set(0, 0, 0); })()`);
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && (await ev<string>(page, '__inkwave.session.state')) === 'combat') await pass(page, 300);
+  const fell = await ev<{ st: string; by: string | null }>(page, '({ st: __inkwave.session.state, by: __inkwave.session.lastAttacker })');
+  await pass(page, 1800);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  const re = await st(page);
+  ok('T053 3-1: 바다 낙하 → 실패 → 최근 CP2에서 재시작(중계기 1·2 유지, 현재 구간 적만 처음 상태)', fell.st === 'failed' && re.cp === 'cp2' && re.done.includes('o-1') && re.done.includes('o-2') && re.enc['enc-c'] === 'idle' && re.alive, { fell, re });
+}
+// 3-2 적재장 포수: 통 두 개(0.6초 시간차, 각각 그때 플레이어 자리, 1초 예고)·3초 장전 중 접근해도 공격 없음·
+// 절반 체력 지원 1회·정예 재도전에서 지원·낙하 예고·기록 상태 복원
+const KELP = '(() => { const c = Math.cos(35 * Math.PI / 180), s = Math.sin(35 * Math.PI / 180); return (x, z) => [x * c + z * s, -x * s + z * c]; })()';
+async function porter(page: Page): Promise<void> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && !(await ev<boolean>(page, `!!__inkwave.session.encounters.unitActor('porter')`))) { await ev(page, `(() => { const k = ${KELP}, w = k(-10, -16); __m.tp(w[0], 3, w[1]); __m.skipStory(); return 0; })()`); await ev(page, '__m.frames(4)'); }
+  const r = await ev<{ drops: Array<{ t: number; at: number[]; me: number[]; dur: number }>; quiet: number; near: boolean }>(page, `(async () => { const s = __inkwave.session, e = s.encounters.unitActor('porter'), b = e.bot, tl = s.preview.telegraphs, G = window.__G, k = ${KELP};
+    const drops = [], seen = new Set(); const t0 = G.time; let i = 0, lastEnd = 0, quiet = 0, near = false;
+    while (G.time - t0 < 14) {
+      const w = near ? k(-9.5, -19) : k(-4 + Math.sin(i++ * 0.15) * 1.6, -14); __m.tp(w[0], 3, w[1]); __m.skipStory();
+      for (const l of tl.live) if (l.spec.attacker === e && !seen.has(l.spec)) { seen.add(l.spec); drops.push({ t: +(G.time - t0).toFixed(2), at: [l.spec.origin.x, l.spec.origin.z].map((v) => +v.toFixed(2)), me: [G.local.pos.x, G.local.pos.z].map((v) => +v.toFixed(2)), dur: l.spec.duration }); }
+      if (drops.length === 2 && b.state === 'recover' && !near) { near = true; lastEnd = G.time; }
+      if (near && drops.length === 2) quiet = G.time - lastEnd;
+      if (drops.length >= 3) break;
+      await __m.frames(1); }
+    return { drops, quiet: +quiet.toFixed(2), near }; })()`);
+  const d = r.drops, gap = d.length >= 2 ? d[1].t - d[0].t : 0;
+  const onMe = (x: { at: number[]; me: number[] }) => Math.hypot(x.at[0] - x.me[0], x.at[1] - x.me[1]) < 0.4;
+  ok('T054 3-2 포수: 1초 예고 통 두 개(0.6초 시간차·각각 그때 플레이어 자리), 장전 중 가까이 가도 즉시 공격 없음(약 3초)', d.length >= 2 && d[0].dur >= 0.9 && gap > 0.45 && gap < 0.8 && onMe(d[0]) && onMe(d[1]) && r.near && r.quiet >= 2.9, r);
+  // 절반 체력 → 지원 사격병 1명(한 번만)
+  await ev(page, `(() => { const a = __inkwave.session.encounters.unitActor('porter'); let n = 0; while (a.hp / a.tune.hp > 0.45 && n++ < 400) a.damage(20, __m.G.local, 'weapon'); })()`);
+  await pass(page, 2500);
+  const sup1 = await ev<string[]>(page, '__inkwave.session.encounters.liveActors().map((a) => a.bot.unit.id)');
+  await ev(page, `(() => { const a = __inkwave.session.encounters.unitActor('porter'); let n = 0; while (a.hp / a.tune.hp > 0.2 && n++ < 400) a.damage(20, __m.G.local, 'weapon'); })()`);
+  await pass(page, 2500);
+  const sup2 = await ev<string[]>(page, '__inkwave.session.encounters.liveActors().map((a) => a.bot.unit.id)');
+  ok('T054 3-2 포수: 절반 체력 지원 사격병 1회(더 맞아도 추가 소환 없음)', sup1.filter((x) => x === 'x-g1').length === 1 && sup2.filter((x) => x.startsWith('x-')).length <= 1, { sup1, sup2 });
+  // 정예 재도전: 지원·낙하 예고·기록 상태 복원
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(page, 2200);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  const re = await ev<{ cp: string; enc: string; live: string[]; tel: number; done: string[]; seal: boolean; sup: boolean }>(page, '(() => { const s = __inkwave.session; const r = s.encounters.runs.get("enc-boss"); return { cp: s.cp.checkpointId, enc: s.encounters.state("enc-boss"), live: s.encounters.liveActors().map((a) => a.bot.unit.id), tel: s.preview.telegraphs.live.length, done: s.objectives.snapshot(), seal: s.devices.get("seal").complete, sup: r.support.size > 0 }; })()');
+  ok('T054 3-2: 포수전 사망 → 전투 직전 CP2, 포수·지원 호출·낙하 예고·봉쇄 기록 처음 상태', re.cp === 'cp2' && re.enc === 'idle' && re.live.length === 0 && re.tel === 0 && !re.done.includes('o-boss') && !re.seal && !re.sup, re);
+}
+// 3-3 솔로 HULLBREAKER: 단계별 허용 기술(1 강타·통 / 2 + 돌진 / 3 + 소형 게, 광선·회전 없음), 돌진 벽 충돌 기절과 근접 높이의
+// 배 약점, 소형 게 동시 3·전체 6 이하, 보스전 사망 → 체력·소환 횟수 초기화, 보스 모드 체력 공식·두뇌 불변
+const HULL_STAND = '13.76, 3, -4.75';   // 부두 좌표 (14, 4): 보스 영역 안 안벽(물에 떨어지지 않는 고정 관전 자리)
+async function hullSolo(page: Page, m: MissionJson): Promise<void> {
+  const g = m.boss!.giant!;
+  const t0 = Date.now();
+  while (Date.now() - t0 < 30000 && !(await ev<boolean>(page, '!!(window.__G.boss && window.__G.boss.visible && window.__G.boss.anim === 0)'))) { await ev(page, `(__m.tp(${g.at[0]}, 3, ${g.at[2] - 6}), __m.skipStory(), 0)`); await ev(page, '__m.frames(4)'); }
+  const info = await ev<{ hp: number; brain: string; modeHp: number }>(page, `(async () => { const b = window.__G.boss; const B = await import('/src/boss/boss.js'); return { hp: b.maxHp, brain: b.brain.constructor.name, modeHp: B.BOSS.hpPerUnit }; })()`);
+  ok('T055 3-3: 솔로 HULLBREAKER 체력 18,000·솔로 두뇌(보스 모드 체력 공식 18,000×인원은 그대로)', info.hp === 18000 && info.brain === 'SoloHullBrain' && info.modeHp === 18000, info);
+  // 단계별 기술: 단계마다 일정 시간 관찰(포효 무적이 끝날 때까지 기다린 뒤)
+  const watch = (secs: number, frac: number) => ev<{ phase: number; moves: string[]; crabMax: number; crabTotal: number }>(page, `(async () => { const b = window.__G.boss, G = window.__G;
+    let n = 0; while (b.hp / b.maxHp > ${frac} && n++ < 400) { if (b.invuln) { await __m.frames(10); continue; } b.applyDamage(G.local, 300, false, null); }
+    const moves = new Set(); let crabMax = 0; const t0 = G.time;
+    while (G.time - t0 < ${secs}) { __m.tp(${HULL_STAND}); __m.skipStory(); if (b.move) moves.add(b.move.id);
+      crabMax = Math.max(crabMax, [...b.crabs.values()].filter((c) => !c.dead).length); await __m.frames(3); }
+    return { phase: b.phase, moves: [...moves], crabMax, crabTotal: b.brain.crabSpawned }; })()`);
+  const p1 = await watch(14, 1);
+  ok('T055 3-3 1단계: 강타·통 낙하만', p1.phase === 1 && p1.moves.length > 0 && p1.moves.every((x) => ['slam', 'barrage'].includes(x)), p1);
+  const p2 = await watch(16, 0.6);
+  ok('T055 3-3 2단계: 강타·통·돌진(광선·회전·소형 게 없음)', p2.phase === 2 && p2.moves.every((x) => ['slam', 'barrage', 'charge'].includes(x)), p2);
+  // 돌진 강제 → 벽 충돌 기절 동안 배 약점이 근접 높이로 내려오고, 플레이어가 몸통에 끼지 않는다
+  const st = await ev<{ charged: boolean; stun: number; belly: boolean; bellyH: number; alive: boolean; seq: string[] }>(page, `(async () => { const b = window.__G.boss, G = window.__G;
+    let charged = false, stun = 0, s0 = 0, belly = false, bellyH = 99; const t0 = G.time; const seq = [];
+    for (let k = 0; k < 10 && !stun; k++) { if (!b.move) { b.pos.x = b.home.x; b.pos.z = b.home.z; b.brain.plan = null; } b.brain.force = 'charge'; const t1 = G.time;
+      seq.push('lane:' + JSON.stringify(b.brain._lane(b.yaw)));
+      while (G.time - t1 < 9) { __m.tp(${HULL_STAND}); __m.skipStory();
+        const tag = (b.brain.plan ? 'P' + b.brain.plan.id : '') + (b.move ? 'M' + b.move.id : '') + (b.brain.force ? 'F' : ''); if (tag !== seq[seq.length - 1]) seq.push(tag);
+        if (b.move && b.move.id === 'charge') charged = true;
+        if (b.stunned) { if (!s0) s0 = G.time; stun = G.time - s0; const h = b.model.hitShapes.find((x) => x.socket === 'belly'); if (h.active) { belly = true; bellyH = Math.min(bellyH, h.pos.y - b.pos.y); } }
+        if (stun && !b.stunned) break; await __m.frames(3); } }
+    return { charged, stun: +stun.toFixed(1), belly, bellyH: +bellyH.toFixed(2), alive: G.local.alive, seq: seq.slice(0, 30) }; })()`);
+  ok('T055 3-3: 돌진 뒤 기절(2단계 기본 3.7초, 배 약점 활성·근접 높이 1.6 m 이하)', st.charged && st.stun >= 3 && st.belly && st.bellyH <= 1.6 && st.alive, st);
+  const p3 = await watch(24, 0.3);
+  ok('T055 3-3 3단계: 소형 게 동시 3 이하·전체 6 이하, 광선·회전 없음', p3.phase === 3 && p3.moves.every((x) => ['slam', 'barrage', 'charge', 'crablets'].includes(x)) && p3.crabMax <= 3 && p3.crabTotal <= 6, p3);
+  // 보스전 사망 → 체력·소환 횟수 초기화(다시 들어가면 새로 선다)
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(page, 2200);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  const gone = await ev<{ boss: boolean; cp: string }>(page, '({ boss: !!window.__G.boss, cp: __inkwave.session.cp.checkpointId })');
+  const t2 = Date.now();
+  while (Date.now() - t2 < 30000 && !(await ev<boolean>(page, '!!(window.__G.boss && window.__G.boss.visible)'))) { await ev(page, `(__m.tp(${g.at[0]}, 3, ${g.at[2] - 6}), __m.skipStory(), 0)`); await ev(page, '__m.frames(4)'); }
+  const fresh = await ev<{ hp: number; max: number; phase: number; crabs: number; spawned: number }>(page, '(() => { const b = window.__G.boss; return { hp: b.hp, max: b.maxHp, phase: b.phase, crabs: b.crabs.size, spawned: b.brain.crabSpawned }; })()');
+  ok('T055 3-3: 보스전 사망 → 보스 앞 CP, 보스 치움 → 재입장 시 체력·단계·소환 횟수 처음 상태', !gone.boss && gone.cp === 'cp-boss' && fresh.hp === fresh.max && fresh.phase === 1 && fresh.crabs === 0 && fresh.spawned === 0, { gone, fresh });
+}
+// 4-1: 안정화 원을 벗어나면 누적만 멈추고(줄지 않음) 사망 때만 지정 상태(여기서는 임무 시작)로 돌아간다
+async function moorHold(page: Page): Promise<void> {
+  const acc = () => ev<number>(page, `+__inkwave.session.devices.get('moorA').accum.toFixed(2)`);
+  await ev(page, `__m.paintAt(-22, -18, 3)`);
+  const EL = '__inkwave.session.elapsed';
+  const stay = async (x: number, z: number, secs: number) => { const e0 = await ev<number>(page, EL), t0 = Date.now(); while (Date.now() - t0 < 30000 && (await ev<number>(page, EL)) - e0 < secs) { await ev(page, `(__m.tp(${x}, 3, ${z}), __m.killAll(), __m.skipStory(), 0)`); await ev(page, '__m.frames(4)'); } };
+  await stay(-22, -18, 4);
+  const a1 = await acc();
+  await stay(-22, -24, 3);
+  const a2 = await acc();
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(page, 2200);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  const a3 = await acc();
+  ok('T056 4-1: 안정화 원 이탈은 누적만 멈춤(줄지 않음), 사망 재시작에서만 처음 상태', a1 > 2 && Math.abs(a2 - a1) < 0.05 && a3 === 0, { a1, a2, a3 });
+}
+// 4-1 완료: 주 무기 12종 모두 캠페인에서 해금(검사 저장은 앞 임무를 해금만 했으므로 실제 진행에 있을 2-1·3-1 완료를 더해 계산)
+async function allWeapons(page: Page): Promise<void> {
+  await pass(page, 1500);
+  // 완료 저장이 확정된 뒤에 읽는다(결과 화면 전 완료 대본을 넘기는 시간만큼 늦을 수 있다)
+  await page.waitForFunction('document.querySelector(".iw-sres") && document.querySelector(".iw-sres").dataset.saved === "ok"', { timeout: 60000, polling: 200 }).catch(() => {});
+  const r = await ev<{ n: number; list: string[]; profile: unknown }>(page, `(async () => { const c = await import('/src/campaign/craft.js'); const cur = __inkwave.store.current; const s = { ...cur, done: [...new Set([...cur.done, '2-1', '3-1'])] }; const l = c.unlockedWeapons(s); return { n: new Set(l).size, list: l, profile: __inkwave.settings && __inkwave.settings.weapon }; })()`);
+  ok('T056 4-1 완료: 캠페인 주 무기 12종 해금(캠페인 저장 기준)', r.n === 12, r);
+}
+// 4-2 계류 수문장: 1초 부채꼴 예고 → 방패 발사 → 3초 노출(측면·후방 약점), 정면은 감소, 절반 체력 위치 변경 1회, 정예 앞 CP 재시작
+async function gatekeeper(page: Page): Promise<void> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && !(await ev<boolean>(page, `!!__inkwave.session.encounters.unitActor('gate')`))) { await ev(page, '(__m.tp(-9, 3, -4.2), __m.skipStory(), 0)'); await ev(page, '__m.frames(4)'); }
+  const cyc = await ev<{ tele: Array<{ shape: string; dur: number }>; open: number; side: number; front: number }>(page, `(async () => { const s = __inkwave.session, e = s.encounters.unitActor('gate'), b = e.bot, tl = s.preview.telegraphs, G = window.__G;
+    const tele = [], seen = new Set(); let open = 0, o0 = 0, side = 0, front = 0; const t0 = G.time;
+    while (G.time - t0 < 16) { __m.tp(-9, 3, -4.2); __m.skipStory();
+      for (const l of tl.live) if (l.spec.attacker === e && !seen.has(l.spec)) { seen.add(l.spec); tele.push({ shape: l.spec.shape, dur: l.spec.duration }); }
+      if (b.state === 'open') { if (!o0) o0 = G.time; open = G.time - o0;
+        if (!side) { const p = G.local, y = e.yaw, sv = p.pos.clone(); p.pos.set(e.pos.x - Math.cos(y) * 3, e.pos.y, e.pos.z + Math.sin(y) * 3); side = s._enemyTaken(e, 20, p); p.pos.copy(sv); } }
+      else if (o0) break;
+      await __m.frames(1); }
+    const p = G.local, y = e.yaw, sv = p.pos.clone(); b.state = 'chase'; p.pos.set(e.pos.x + Math.sin(y) * 4, e.pos.y, e.pos.z + Math.cos(y) * 4); front = s._enemyTaken(e, 20, p); p.pos.copy(sv);
+    return { tele, open: +open.toFixed(2), side: +side.toFixed(1), front: +front.toFixed(1) }; })()`);
+  ok('T057 4-2 수문장: 1초 부채꼴 예고 → 방패 발사 → 약 3초 노출(측면 약점 배율), 방패 정면은 감소', cyc.tele.length >= 1 && cyc.tele[0].shape === 'cone' && cyc.tele[0].dur >= 0.9 && cyc.open >= 2.8 && cyc.side >= 29 && cyc.front < 10, cyc);
+  await ev(page, `(() => { const a = __inkwave.session.encounters.unitActor('gate'); let n = 0; while (a.hp / a.tune.hp > 0.45 && n++ < 400) a.damage(20, __m.G.local, 'weapon'); })()`);
+  const mv = await ev<{ moved: boolean; post: number[]; again: boolean }>(page, `(async () => { const e = __inkwave.session.encounters.unitActor('gate'), b = e.bot, G = window.__G; let t0 = G.time;
+    while (G.time - t0 < 16 && !b.moved) { __m.tp(-9, 3, -4.2); __m.skipStory(); await __m.frames(2); }
+    const post = [b.post.x, b.post.z]; const moved = !!b.moved; let n = 0; while (e.hp / e.tune.hp > 0.2 && n++ < 400) e.damage(20, G.local, 'weapon');
+    let again = false; t0 = G.time; while (G.time - t0 < 10) { __m.tp(-9, 3, -4.2); __m.skipStory(); if (Math.hypot(b.post.x - post[0], b.post.z - post[1]) > 0.5) again = true; await __m.frames(2); }
+    return { moved, post, again }; })()`);
+  ok('T057 4-2 수문장: 절반 체력 뒤 노출이 끝나면 한 번만 자리 이동(반복 없음)', mv.moved && Math.hypot(mv.post[0] + 14, mv.post[1] - 3) < 0.5 && !mv.again, mv);
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(page, 2200);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  const re = await st(page);
+  ok('T057 4-2: 정예전 사망 → 정예 앞 CP2(장비 2개 유지, 수문장 처음 상태)', re.cp === 'cp2' && re.done.includes('o-k1') && re.done.includes('o-k2') && re.enc['enc-boss'] === 'idle', re);
+}
+// 4-3 스큐: 서쪽 거점에서 두 발·3초 정비 → 중계점 A 복구 뒤 동쪽 거점으로 / 30% 이하 정비마다 거점 왕복(예고·정비 유지) / 사망 → 거점·중계점·체력 초기화
+const SKEW = `const s = __inkwave.session, e = s.encounters.unitActor('skew'), b = e && e.bot, tl = s.preview.telegraphs, G = window.__G;`;
+async function skewMoved(page: Page): Promise<void> {
+  const r = await ev<{ post: number[]; relocating: boolean }>(page, `(() => { ${SKEW} return { post: [b.post.x, b.post.z], relocating: b.relocating }; })()`);
+  ok('T058 4-3 스큐: 중계점 A 복구 → 동쪽 거점으로 이동', Math.hypot(r.post[0] - 14, r.post[1] + 2) < 0.5, r);
+}
+async function skewLate(page: Page): Promise<void> {
+  const r = await ev<{ specs: number; moves: number; restGap: number; posts: number[][] }>(page, `(async () => { ${SKEW}
+    let n = 0; while (e.hp / e.tune.hp > 0.28 && n++ < 400) e.damage(20, G.local, 'weapon');
+    const seen = new Set(), posts = []; let specs = 0, moves = 0, last = [b.post.x, b.post.z], lastSpec = 0, restGap = 99; const t0 = G.time;
+    while (G.time - t0 < 30 && moves < 2) { __m.tp(0, 3, -12); __m.skipStory();
+      for (const l of tl.live) if (l.spec.attacker === e && !seen.has(l.spec)) { seen.add(l.spec); specs++; lastSpec = G.time; }
+      if (Math.hypot(b.post.x - last[0], b.post.z - last[1]) > 0.5) { moves++; last = [b.post.x, b.post.z]; posts.push(last.map((v) => +v.toFixed(1))); }
+      await __m.frames(2); }
+    return { specs, moves, restGap, posts }; })()`);
+  ok('T058 4-3 스큐: 30% 이하에서 정비가 끝날 때마다 거점 왕복(새 거점에서 다시 예고)', r.moves >= 2 && r.specs >= 2, r);
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(page, 2200);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  const re = await st(page);
+  ok('T058 4-3: 보스전 사망 → 보스장 앞 CP, 중계점·거점·체력 함께 초기화', re.cp === 'cp-boss' && !re.done.includes('o-a') && !re.done.includes('o-x') && re.enc['enc-boss'] !== 'cleared', re);
+  // 다시 중계점 둘을 복구한다(이후 공통 검수가 스큐를 처치한다)
+  for (const [id, x, z] of [['beaconA', -22, -12], ['beaconX', 20, -11]] as const) { await operate(page, x, z, 2.8); void id; }
+  const again = await st(page);
+  ok('T058 4-3: 재도전에서 중계점 둘 다시 복구', again.done.includes('o-a') && again.done.includes('o-x'), again);
+}
+// 5-1: 첫 펌프는 완료 상태로 남고(다시 잠기지 않음) 둘째 펌프 누적은 0에서 따로 시작한다
+async function pumpsSeparate(page: Page): Promise<void> {
+  await ev(page, '__m.paintAt(6, -14, 3)');
+  const EL = '__inkwave.session.elapsed', e0 = await ev<number>(page, EL), t0 = Date.now();
+  while (Date.now() - t0 < 30000 && (await ev<number>(page, EL)) - e0 < 3) { await ev(page, '(__m.tp(6, 3, -14), __m.killAll(), __m.skipStory(), 0)'); await ev(page, '__m.frames(4)'); }
+  const r = await ev<{ w: boolean; wProg: number; e: number; done: string[] }>(page, `(() => { const s = __inkwave.session; const w = s.devices.get('pumpW'), e = s.devices.get('pumpE'); return { w: w.complete, wProg: w.progress, e: +e.accum.toFixed(2), done: s.objectives.snapshot() }; })()`);
+  ok('T059 5-1: 첫 펌프 완료 유지(다시 잠기지 않음)·둘째 펌프 누적은 따로(3초 머문 만큼만)', r.w && r.wProg === 1 && r.e > 1.5 && r.e < 5 && r.done.includes('o-w'), r);
+}
+// 5-2 살수 장치: 둘레를 적 잉크로 다시 칠함 → 끄면 그 구역 재도색이 멈추고(다른 장치는 계속) 정예는 2초 정비 →
+// 둘 다 꺼도 정예의 일반 공격은 남음(무적 없음) → 정예전 사망 → 연결점 유지·장치·정예·도색 함께 복원
+async function sprinklers(page: Page): Promise<void> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && !(await ev<boolean>(page, `!!__inkwave.session.encounters.unitActor('spr2')`))) { await ev(page, '(__m.tp(0, 3, -6), __m.skipStory(), 0)'); await ev(page, '__m.frames(4)'); }
+  const r = await ev<{ before1: number; after1: number; after2: number; elite: string[]; tele: number; alive: boolean }>(page, `(async () => { const s = __inkwave.session, G = window.__G;
+    const zone = (x, z) => s._floorPaint({ at: [x, -1.2, z], paintRadius: 2.6, radius: 2.6, paintNeed: 0.6, kind: 'terminal', id: 'z' }, 1);
+    const wipe = (x, z) => { __m.paintAt(x, z, 3); };
+    const wait = async (secs) => { const t0 = G.time; while (G.time - t0 < secs) { __m.tp(0, 3, -6); __m.skipStory(); await __m.frames(3); } };
+    const e1 = s.encounters.unitActor('spr1'), elite = s.encounters.unitActor('scrub');
+    wipe(-6, -1); wipe(8, 1); await wait(4.5);
+    const before1 = zone(-6, -1);
+    // 장치 1을 끈다 → 정예 2초 정비
+    const st = []; let n = 0; while (e1.alive && n++ < 200) e1.damage(50, G.local, 'weapon');
+    st.push(elite.bot.state);
+    wipe(-6, -1); wipe(8, 1); await wait(7);
+    const after1 = zone(-6, -1), after2 = zone(8, 1);
+    // 장치 2도 끈다 → 정예는 계속 공격(예고가 나온다)
+    const e2 = s.encounters.unitActor('spr2'); n = 0; while (e2 && e2.alive && n++ < 200) e2.damage(50, G.local, 'weapon');
+    const tl = s.preview.telegraphs, seen = new Set(); let tele = 0; const t1 = G.time;
+    while (G.time - t1 < 10 && !tele) { __m.tp(elite.pos.x + 6, 3, elite.pos.z - 4); __m.skipStory(); for (const l of tl.live) if (l.spec.attacker === elite && !seen.has(l.spec)) { seen.add(l.spec); tele++; } await __m.frames(2); }
+    return { before1: +before1.toFixed(2), after1: +after1.toFixed(2), after2: +after2.toFixed(2), elite: st, tele, alive: elite.alive }; })()`);
+  ok('T060 5-2 살수 장치: 둘레 재도색 → 끄면 그 구역만 멈춤(다른 장치는 계속), 정예 2초 정비, 둘 다 꺼도 정예 공격 유지', r.before1 > 0.25 && r.after1 < 0.05 && r.after2 > 0.25 && r.elite[0] === 'recover' && r.tele >= 1 && r.alive, r);
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(page, 2200);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  const t2 = Date.now();
+  while (Date.now() - t2 < 20000 && !(await ev<boolean>(page, `!!__inkwave.session.encounters.unitActor('spr1')`))) { await ev(page, '(__m.tp(0, 3, -6), __m.skipStory(), 0)'); await ev(page, '__m.frames(4)'); }
+  const re = await ev<{ cp: string; done: string[]; live: string[]; hp: number }>(page, `(() => { const s = __inkwave.session, e = s.encounters.unitActor('scrub'); return { cp: s.cp.checkpointId, done: s.objectives.snapshot(), live: s.encounters.liveActors().map((a) => a.bot.unit.id), hp: e ? e.hp / e.tune.hp : -1 }; })()`);
+  ok('T060 5-2: 정예전 사망 → CP2(연결점 유지), 장치 2개·정예 처음 상태', re.cp === 'cp2' && re.done.includes('o-l1') && re.done.includes('o-l2') && ['scrub', 'spr1', 'spr2'].every((x) => re.live.includes(x)) && re.hp === 1, re);
+}
+// 5-3 솔트: 장치 끄기 → 안전 원 60% 6초 → 4초 과열(예고 없음·약점), 60% 아래면 누적 멈춤(줄지 않음), 절반 체력에 원 다시 열림,
+// 장치·원을 다 쓰면 12초 안에 정비 빈틈, 사망 → 장치·누적·체력 초기화
+async function saltSafe(page: Page): Promise<void> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && !(await ev<boolean>(page, `!!__inkwave.session.encounters.unitActor('sprR')`))) { await ev(page, '(__m.tp(0, 3, -12), __m.skipStory(), 0)'); await ev(page, '__m.frames(4)'); }
+  const r = await ev<Record<string, unknown>>(page, `(async () => { const s = __inkwave.session, G = window.__G, salt = s.encounters.unitActor('salt'), b = salt.bot, tl = s.preview.telegraphs, S = s.safe, THREE = G.local.pos.constructor;
+    const kill = (id) => { const a = s.encounters.unitActor(id); let n = 0; while (a && a.alive && n++ < 200) a.damage(50, G.local, 'weapon'); };
+    const until = async (cond, secs, x, z) => { const t0 = G.time; while (G.time - t0 < secs && !cond()) { __m.tp(x, 3, z); __m.skipStory(); await __m.frames(2); } return +(G.time - t0).toFixed(2); };
+    kill('sprL'); __m.paintAt(-14, -1, 3);
+    const t1 = await until(() => b.overheated, 12, -14, 2.5);
+    const seen = new Set(); let tele = 0; const t2 = G.time; while (G.time - t2 < 3.5) { __m.tp(-14, 3, 2.5); for (const l of tl.live) if (l.spec.attacker === salt && !seen.has(l.spec)) { seen.add(l.spec); tele++; } await __m.frames(2); }
+    const p = G.local, sv = p.pos.clone(); p.pos.set(salt.pos.x + 4, salt.pos.y, salt.pos.z); const hot = s._enemyTaken(salt, 20, p); p.pos.copy(sv);
+    // 둘째 원: 칠한 뒤 2초 누적 → 적 잉크로 덮어 60% 아래 → 2초 동안 누적 그대로
+    kill('sprR'); __m.paintAt(16, -3, 3);
+    await until(() => (S.acc[1] || 0) > 2, 8, 16, 0.5);
+    const a1 = S.acc[1]; const c = s._ground([16, 0, -3]);
+    for (let i = 0; i < 16; i++) { const an = i / 16 * Math.PI * 2; for (const k of [0.4, 0.9]) G.paint.splat(new THREE(c.x + Math.cos(an) * 2.8 * k, c.y + 0.3, c.z + Math.sin(an) * 2.8 * k), 1.5, 1, { seed: i }); } G.paint.splat(new THREE(c.x, c.y + 0.3, c.z), 2.6, 1, { seed: 5 }); G.paint.flush(0);
+    await until(() => false, 2, 16, 0.5);
+    const a2 = S.acc[1];
+    // 절반 체력 → 원 다시 열림
+    let n = 0; while (salt.hp / salt.tune.hp > 0.45 && n++ < 400) { b.state = 'chase'; salt.damage(20, G.local, 'weapon'); }
+    await until(() => S.rearmed, 3, 16, 0.5);
+    const rearmed = S.rearmed && S.used.every((u) => !u);
+    // 원 둘 다 써서 주기 정비로: 두 원을 칠하고 차례로 과열을 끝낸다
+    for (const [x, z, i] of [[-14, -1, 0], [16, -3, 1]]) { __m.paintAt(x, z, 3); await until(() => S.used[i] && !b.overheated, 20, x, z + 3.5); }
+    const tp = await until(() => b.overheated, 14, 0, -14);
+    return { t1, tele, hot: +hot.toFixed(1), a1: +a1.toFixed(2), a2: +a2.toFixed(2), rearmed, periodic: tp, used: S.used }; })()`);
+  ok('T061 5-3 솔트: 장치를 끄고 원을 칠하면 6초 뒤 4초 과열(예고 없음·약점 배율), 60% 아래면 누적이 멈추고 줄지 않음, 절반 체력 원 다시 열림, 다 쓰면 12초 안 정비 빈틈', (r.t1 as number) >= 5.5 && (r.t1 as number) < 9 && r.tele === 0 && (r.hot as number) >= 29 && Math.abs((r.a2 as number) - (r.a1 as number)) < 0.3 && r.rearmed === true && (r.periodic as number) < 13.5, r);
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(page, 2200);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  const t3 = Date.now();
+  while (Date.now() - t3 < 20000 && !(await ev<boolean>(page, `!!__inkwave.session.encounters.unitActor('sprR')`))) { await ev(page, '(__m.tp(0, 3, -12), __m.skipStory(), 0)'); await ev(page, '__m.frames(4)'); }
+  const re = await ev<{ cp: string; live: string[]; hp: number; safe: unknown }>(page, `(() => { const s = __inkwave.session, e = s.encounters.unitActor('salt'); return { cp: s.cp.checkpointId, live: s.encounters.liveActors().map((a) => a.bot.unit.id), hp: e ? e.hp / e.tune.hp : -1, safe: s.safe }; })()`);
+  const sf = re.safe as { acc: number[]; used: boolean[]; rearmed: boolean };
+  ok('T061 5-3: 보스전 사망 → 보스장 앞 CP, 장치 2개·누적·체력 초기화', re.cp === 'cp-boss' && ['salt', 'sprL', 'sprR'].every((x) => re.live.includes(x)) && re.hp === 1 && !sf.rearmed && !sf.used.some(Boolean) && !sf.acc.some((x) => x > 0), re);
+}
+// 6-1: 저수로에 떨어지면 최근 제어점의 CP3에서, 제어점 진행과 CP가 같은 상태로 복원된다
+async function canalFall(page: Page): Promise<void> {
+  const before = await ev<{ cp: string; done: string[] }>(page, '({ cp: __inkwave.session.cp.checkpointId, done: __inkwave.session.cp.done })');
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.pos.set(-3, 0.6, -4); a.vel.set(0, 0, 0); })()`);
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && (await ev<string>(page, '__inkwave.session.state')) === 'combat') await pass(page, 300);
+  const fell = await ev<string>(page, '__inkwave.session.state');
+  await pass(page, 1800);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  const re = await st(page);
+  const devs = await ev<string[]>(page, `[...__inkwave.session.devices.entries()].filter(([, d]) => d.complete).map(([k]) => k)`);
+  ok('T062 6-1: 저수로 낙하 → CP3에서 재시작, 제어점 3개 완료와 CP 진행이 같은 상태', fell === 'failed' && re.cp === 'cp3' && before.cp === 'cp3' && ['o-1', 'o-2', 'o-3'].every((x) => re.done.includes(x)) && ['gate1', 'gate2', 'gate3'].every((x) => devs.includes(x)), { fell, before, re, devs });
+}
+// 6-2 쌍문지기: 방패를 먼저 쓰러뜨려도 감시는 그대로 싸우고(묶음이 멈추지 않음) 자리를 한 번만 옮긴다, 정예전 사망 → 둘 다 복원
+async function twins(page: Page): Promise<void> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && !(await ev<boolean>(page, `!!(__inkwave.session.encounters.unitActor('twinW') && __inkwave.session.encounters.unitActor('twinS'))`))) { await ev(page, '(__m.tp(16, 3, 0), __m.skipStory(), 0)'); await ev(page, '__m.frames(4)'); }
+  const dbg = await ev<unknown>(page, `({ live: __inkwave.session.encounters.liveActors().map((a) => a.bot.unit.id), dead: [...__inkwave.session.encounters.dead], st: __inkwave.session.encounters.state('enc-twins') })`);
+  if (!(await ev<boolean>(page, `!!__inkwave.session.encounters.unitActor('twinS')`))) { ok('T063 6-2: 두 정예 출현', false, dbg); return; }
+  const hp = await ev<number[]>(page, `['twinS', 'twinW'].map((id) => __inkwave.session.encounters.unitActor(id).tune.hp)`);
+  const r = await ev<{ alive: boolean; enc: string; moved: boolean; post: number[]; again: boolean }>(page, `(async () => { const s = __inkwave.session, G = window.__G, a = s.encounters.unitActor('twinS'), w = s.encounters.unitActor('twinW'), b = w.bot;
+    let n = 0; while (a.alive && n++ < 200) a.damage(50, G.local, 'weapon');
+    let t0 = G.time; while (G.time - t0 < 1) { __m.tp(16, 3, 0); await __m.frames(2); }
+    const moved = !!b.moved, post = [b.post.x, b.post.z]; n = 0; while (w.hp / w.tune.hp > 0.3 && n++ < 400) w.damage(20, G.local, 'weapon');
+    let again = false; t0 = G.time; while (G.time - t0 < 8) { __m.tp(16, 3, 0); __m.skipStory(); if (Math.hypot(b.post.x - post[0], b.post.z - post[1]) > 0.5) again = true; await __m.frames(2); }
+    return { alive: w.alive, enc: s.encounters.state('enc-twins'), moved, post, again }; })()`);
+  ok('T063 6-2: 방패 360·감시 300, 한 명이 쓰러져도 묶음은 계속(남은 정예 생존), 남은 정예는 한 번만 자리 이동', hp[0] === 360 && hp[1] === 300 && r.alive && r.enc === 'active' && r.moved && Math.hypot(r.post[0] - 15, r.post[1] - 5) < 0.5 && !r.again, { hp, r });
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(page, 2200);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  const t1 = Date.now();
+  while (Date.now() - t1 < 20000 && !(await ev<boolean>(page, `!!__inkwave.session.encounters.unitActor('twinW')`))) { await ev(page, '(__m.tp(16, 3, 0), __m.skipStory(), 0)'); await ev(page, '__m.frames(4)'); }
+  const re = await ev<{ cp: string; live: string[]; dead: string[] }>(page, `(() => { const s = __inkwave.session; return { cp: s.cp.checkpointId, live: s.encounters.liveActors().map((a) => a.bot.unit.id), dead: [...s.encounters.dead] }; })()`);
+  ok('T063 6-2: 정예전 사망 → 정예 앞 CP에서 두 정예 함께 복원', re.cp === 'cp1' && re.live.includes('twinS') && re.live.includes('twinW') && !re.dead.includes('twinS'), re);
+}
+// 6-3 수문 조율기: 핵 2800·A 뒤 8초 노출·둘 다 끝나면 계속 노출, 사망 → A·B·핵 함께 초기화
+async function regulator(page: Page, m: MissionJson): Promise<void> {
+  const r = await ev<{ hp: number; name: string; allAt: number; phase: number; always: boolean }>(page, `(async () => { const s = __inkwave.session, e = s.encounters.unitActor('regulator'), b = e.bot, G = window.__G;
+    let always = true; const t0 = G.time; while (G.time - t0 < 10) { __m.tp(0, 3, -24); __m.skipStory(); if (!b.exposed) always = false; await __m.frames(3); }
+    return { hp: e.tune.hp, name: e.name, allAt: b.allAt, phase: b.phase, always }; })()`);
+  ok('T064 6-3 조율기: 핵 2800·이름 수문 조율기, 두 제어점 뒤 계속 노출(재가동 요구 없음)', r.hp === 2800 && r.name === '수문 조율기' && r.allAt === 2 && r.phase === 2 && r.always, r);
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(page, 2200);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  const re = await st(page);
+  ok('T064 6-3: 보스전 사망 → 본전투 직전 CP, A·B·핵 함께 초기화', re.cp === 'cp-boss' && !re.done.includes('o-a') && !re.done.includes('o-b') && re.enc['enc-boss'] !== 'cleared', re);
+  // 다시 A·B 안정화(이후 공통 검수가 핵을 부순다)
+  for (const id of ['ctrlA', 'ctrlB']) {
+    const d = m.devices.find((x) => x.id === id)!;
+    await ev(page, `__m.paintAt(${d.at[0]}, ${d.at[2]}, 3)`);
+    const t0 = Date.now();
+    while (Date.now() - t0 < 240000 && !(await ev<boolean>(page, `__inkwave.session.devices.get('${id}').complete`))) { await ev(page, `(__m.tp(${d.at[0]}, 3, ${d.at[2]}), __m.killAll(), __m.skipStory(), 0)`); await ev(page, '__m.frames(4)'); }
+  }
+  const again = await st(page);
+  ok('T064 6-3: 재도전에서 A·B 다시 안정화', again.done.includes('o-a') && again.done.includes('o-b'), again);
+}
+// 7-1: 높은 목표의 화면 방향 표식이 화면 안에 있다(아래 층에서 등을 돌려도), 다른 층 도색은 중계기 도색률에 들어가지 않는다
+async function highRelay(page: Page): Promise<void> {
+  await ev(page, `(() => { __m.tp(-10, 3, -10); __inkwave.rig.yaw = Math.PI; return 0; })()`); await pass(page, 600);
+  const pin = await ev<{ on: boolean; inView: boolean; text: string }>(page, `(() => { const el = document.querySelector('.iw-camp__pin'); const r = el.getBoundingClientRect(); return { on: el.classList.contains('is-on'), inView: r.right > 0 && r.left < innerWidth && r.bottom > 0 && r.top < innerHeight, text: el.textContent }; })()`);
+  ok('T065 7-1: 높은 중계기 방향 표식이 화면 안(아래 광장에서 등을 돌려도)', pin.on && pin.inView && /m$/.test(pin.text), pin);
+}
+// 7-2 지휘관: 70% 사격병 2·35% 도색병 1(각 한 번, 남은 호출 안내), 지원이 살아 있는 동안 다음 포격 지연, 지휘관 전 사망은 방어 반복 없음, 원본 기록 미확정
+async function commander(page: Page): Promise<void> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && !(await ev<boolean>(page, `!!__inkwave.session.encounters.unitActor('cmd')`))) { await ev(page, '(__m.tp(15, 3, 0), __m.skipStory(), 0)'); await ev(page, '__m.frames(4)'); }
+  const r = await ev<Record<string, unknown>>(page, `(async () => { const s = __inkwave.session, G = window.__G, e = s.encounters.unitActor('cmd'), b = e.bot, tl = s.preview.telegraphs;
+    const toasts = []; const T = document.querySelector('.iw-camp__toast'); const ob = new MutationObserver(() => { if (T && T.textContent) toasts.push(T.textContent); }); if (T) ob.observe(T, { childList: true, characterData: true, subtree: true });
+    let n = 0; while (e.hp / e.tune.hp > 0.65 && n++ < 400) e.damage(10, G.local, 'weapon');
+    let t0 = G.time; while (G.time - t0 < 3) { __m.tp(15, 3, 0); __m.skipStory(); await __m.frames(2); }
+    const live1 = s.encounters.liveActors().map((a) => a.bot.unit.id);
+    // 지원이 살아 있는 동안 정비가 끝나지 않는다(다음 포격 지연): 8초 동안 지휘관 새 예고 수
+    const seen = new Set(); let tele = 0; t0 = G.time; while (G.time - t0 < 8) { __m.tp(15, 3, 0); __m.skipStory(); for (const l of tl.live) if (l.spec.attacker === e && !seen.has(l.spec)) { seen.add(l.spec); tele++; } await __m.frames(2); }
+    const sup = b.supportsAlive;
+    for (const id of ['x-g1', 'x-g2']) { const a = s.encounters.unitActor(id); let k = 0; while (a && a.alive && k++ < 200) a.damage(50, G.local, 'weapon'); }
+    n = 0; while (e.hp / e.tune.hp > 0.3 && n++ < 400) e.damage(10, G.local, 'weapon');
+    t0 = G.time; while (G.time - t0 < 3) { __m.tp(15, 3, 0); __m.skipStory(); await __m.frames(2); }
+    const live2 = s.encounters.liveActors().map((a) => a.bot.unit.id);
+    n = 0; while (e.hp / e.tune.hp > 0.1 && n++ < 400) e.damage(10, G.local, 'weapon');
+    t0 = G.time; while (G.time - t0 < 3) { __m.tp(15, 3, 0); __m.skipStory(); await __m.frames(2); }
+    const called = s.encounters.runs.get('enc-cmd').support.size; ob.disconnect();
+    return { live1, live2, tele, sup, called, toasts: [...new Set(toasts)], recSaved: __inkwave.store.current.records.includes('rec.terraces.2') }; })()`);
+  const l1 = r.live1 as string[], l2 = r.live2 as string[];
+  ok('T066 7-2 지휘관: 70% 사격병 2·35% 도색병 1(호출 3회로 끝), 남은 호출 안내, 지원 중 포격 지연', l1.includes('x-g1') && l1.includes('x-g2') && !l1.includes('x-p1') && l2.includes('x-p1') && r.called === 3 && (r.sup as number) >= 1 && (r.tele as number) === 0 && (r.toasts as string[]).some((t) => t.includes('남은 호출')), r);
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(page, 2200);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  const re = await st(page);
+  const sv = await ev<{ inProg: string[]; recs: string[] }>(page, '({ inProg: __inkwave.store.current.inProgress.done, recs: __inkwave.store.current.records })');
+  ok('T066 7-2: 지휘관전 사망 → 방어 반복 없음(제어점 완료 유지), 지원 호출 처음 상태, 원본 기록은 완료 전 미확정', ['cp1', 'cp2'].includes(String(re.cp)) && re.done.includes('o-def') && re.enc['enc-def'] !== 'active' && re.enc['enc-cmd'] === 'idle' && !sv.recs.includes('rec.terraces.2') && !re.done.includes('o-e'), { re, sv });
+}
+// 7-3 파도껍질: 체력 22,000·최종 구성, 고리는 경계 전에는 잠김·경계 아래로 체력이 내려가지 않음, 고리를 끊으면 3초 정비,
+// 단계별 기술(2 광선·소형 게, 3 회전) 한 번에 한 기술, 결전 사망 → 결전만 재시작(보스·고리 초기화)
+const WAVE_JS = `const s = __inkwave.session, b = window.__G.boss, G = window.__G;`;
+async function waveUp(page: Page): Promise<void> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 40000 && !(await ev<boolean>(page, '!!(window.__G.boss && window.__G.boss.visible && window.__G.boss.anim === 0)'))) { await ev(page, '(__m.tp(-6, 3, -6), __m.skipStory(), 0)'); await ev(page, '__m.frames(4)'); }
+}
+const hitTo = (frac: number) => `(async () => { ${WAVE_JS} let n = 0; while (b.hp > Math.max(1, ${frac} * b.maxHp) + 0.5 && n++ < 600) { if (b.invuln) { __m.tp(-6, 3, -6); await __m.frames(8); continue; } b.applyDamage(G.local, 400, false, null); } const t0 = G.time; while (G.time - t0 < 1.5) { __m.tp(-6, 3, -6); __m.skipStory(); await __m.frames(3); } return { hp: +(b.hp / b.maxHp).toFixed(3), phase: b.phase }; })()`;
+function waveTo(frac: number): (page: Page) => Promise<void> { return async (page) => { await waveUp(page); const r = await ev<{ hp: number; phase: number }>(page, hitTo(frac));
+  const big = await ev<{ alive: boolean; hp: number }>(page, `(() => { ${WAVE_JS} b.invuln = false; b.applyDamage(G.local, 99999, true, null); return { alive: !b.dead, hp: b.hp }; })()`);
+  ok(`T067 7-3: 체력 ${frac * 100}% 경계에서 멈춤(고리를 끊기 전에는 한 번에 99,999 피해에도 그 아래로 내려가지 않음)`, Math.abs(r.hp - Math.max(frac, 1 / 22000)) < 0.01 && big.alive && big.hp >= Math.max(1, frac * 22000) - 0.5, { r, big }); }; }
+async function waveRing1(page: Page): Promise<void> {
+  await waveUp(page);
+  const info = await ev<{ hp: number; brain: string; moves: string[] }>(page, `(async () => { ${WAVE_JS} const moves = new Set(); const t0 = G.time; while (G.time - t0 < 12) { __m.tp(-6, 3, -6); __m.skipStory(); if (b.move) moves.add(b.move.id); await __m.frames(3); } return { hp: b.maxHp, brain: b.brain.constructor.name, moves: [...moves] }; })()`);
+  ok('T067 7-3: 파도껍질 22,000·1단계 강타·통·돌진만', info.hp === 22000 && info.moves.every((x) => ['slam', 'barrage', 'charge'].includes(x)), info);
+  await operate(page, -19.8, 1.8, 2.6);
+  const early = await st(page);
+  const r1 = await ev<{ hp: number; phase: number }>(page, hitTo(0.66));
+  ok('T067 7-3: 고리 1은 66% 전에는 잠김, 66% 경계에서 체력이 멈춤', !early.done.includes('o-r1') && Math.abs(r1.hp - 0.66) < 0.01, { early, r1 });
+  await operate(page, -19.8, 1.8, 2.6);
+  const cut = await ev<{ done: string[]; cool: number }>(page, `(() => { ${WAVE_JS} return { done: s.objectives.snapshot(), cool: b.brain.cool }; })()`);
+  const p2 = await ev<{ moves: string[]; phase: number; overlap: number }>(page, `(async () => { ${WAVE_JS} const moves = new Set(); const t0 = G.time; while (G.time - t0 < 20) { __m.tp(-6, 3, -6); __m.skipStory(); if (b.move) moves.add(b.move.id); await __m.frames(3); } return { moves: [...moves], phase: b.phase }; })()`);
+  ok('T067 7-3: 고리 1 끊기 → 3초 정비, 2단계 기술은 강타·통·돌진·광선·소형 게(회전 없음)', cut.done.includes('o-r1') && cut.cool >= 2 && p2.phase === 2 && p2.moves.every((x) => ['slam', 'barrage', 'charge', 'sweep', 'crablets'].includes(x)), { cut, p2 });
+  // 결전 사망 → 결전만 재시작: 보스·고리 처음 상태
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(page, 2200);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  await waveUp(page);
+  const re = await ev<{ cp: string; done: string[]; hp: number; ring: boolean }>(page, `(() => { ${WAVE_JS} return { cp: s.cp.checkpointId, done: s.objectives.snapshot(), hp: b.hp / b.maxHp, ring: s.devices.get('ring1').complete }; })()`);
+  ok('T067 7-3: 결전 사망 → 최종 CP, 파도껍질 체력·고리 처음 상태', re.cp === 'cp-final' && !re.done.includes('o-r1') && re.hp === 1 && !re.ring, re);
+  await ev(page, hitTo(0.66));
+}
+// 3단계(고리 2를 끊은 뒤, 체력 33% 아래): 회전(frenzy)이 실제로 나오고 한 번에 한 기술만 쓴다
+async function waveRing3(page: Page): Promise<void> {
+  await waveUp(page);
+  const p3 = await ev<{ phase: number; moves: string[]; frenzyAt: number | null; overlap: number }>(page, `(async () => { ${WAVE_JS} const moves = new Set(); let frenzyAt = null, overlap = 0, last = null; const t0 = G.time;
+    while (G.time - t0 < 35 && frenzyAt === null) { __m.tp(-6, 3, -6); __m.skipStory(); const mv = b.move && b.move.id; if (mv) { moves.add(mv); if (mv === 'frenzy') frenzyAt = +(G.time - t0).toFixed(1); } if (b.moves && b.moves.length > 1) overlap++; await __m.frames(3); }
+    return { phase: b.phase, moves: [...moves], frenzyAt, overlap }; })()`);
+  ok('T067 7-3: 3단계에서 회전이 실제로 나온다(한 번에 한 기술)', p3.phase >= 3 && p3.frenzyAt !== null && p3.overlap === 0, p3);
+  await waveTo(0)(page);
+}
+// 2-3 배전탑 오르골: 닫힌 핵 피해 0·첫 단계 광선만·공격 겹침 없음 / 송신기 뒤 8초 노출·노출 중에도 마지막 송신기 전 처치 불가 /
+// 본전투 사망 → 보스 앞 CP에서 송신기·핵 체력 함께 복원 / 셋 다 끄면 계속 노출(무적 반복 없음)
+const ORGEL_JS = `const s = __inkwave.session, e = s.encounters.unitActor('orgel'), b = e && e.bot, tl = s.preview.telegraphs, G = window.__G;`;
+async function orgelSpawn(page: Page): Promise<void> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && !(await ev<boolean>(page, `!!__inkwave.session.encounters.unitActor('orgel')`))) { await ev(page, '(__m.tp(0, 3, -5), __m.skipStory(), 0)'); await ev(page, '__m.frames(4)'); }
+}
+async function orgelClosed(page: Page): Promise<void> {
+  await orgelSpawn(page);
+  const r = await ev<{ hit: number; hp: number; kinds: string[]; overlap: number; exposed: boolean }>(page, `(async () => { ${ORGEL_JS}
+    const hp0 = e.hp; e.damage(80, G.local, 'weapon'); const hit = hp0 - e.hp;
+    const seen = new Set(), kinds = []; let overlap = 0; const t0 = G.time;
+    while (G.time - t0 < 7) { __m.tp(-1, 3, -5); __m.skipStory(); const mine = tl.live.filter((l) => l.spec.attacker === e); overlap = Math.max(overlap, mine.length); for (const l of mine) if (!seen.has(l.spec)) { seen.add(l.spec); kinds.push(l.spec.shape); } await __m.frames(2); }
+    return { hit, hp: e.hp, kinds, overlap, exposed: b.exposed }; })()`);
+  await page.screenshot({ path: 'shots/mission/2-3-orgel.png' });
+  ok('T052 2-3 오르골: 닫힌 핵 피해 0, 첫 단계는 직선 광선만, 동시에 두 공격 없음', r.hit === 0 && !r.exposed && r.kinds.length >= 1 && r.kinds.every((k) => k === 'line') && r.overlap <= 1, r);
+}
+async function orgelOpenRetry(page: Page, m: MissionJson): Promise<void> {
+  const r = await ev<{ exposed: boolean; phase: number; hp: number; closedAfter: boolean; t: number; left: number }>(page, `(async () => { ${ORGEL_JS}
+    const exposed = b.exposed, phase = b.phase, left = +(b.openUntil - G.time).toFixed(2); let n = 0; while (n++ < 200) e.damage(80, G.local, 'weapon');
+    const hp = e.hp; const t0 = G.time; while (G.time - t0 < 8.6 && b.exposed) { __m.tp(-1, 3, -5); __m.skipStory(); await __m.frames(3); }
+    return { exposed, phase, hp, closedAfter: !b.exposed, t: +(G.time - t0).toFixed(1), left }; })()`);
+  // left: 확인 시점에 남은 노출(송신기 완료 직후부터 8초 — 검사의 앞 단계가 쓴 시간만큼 줄어 있다)
+  ok('T052 2-3 오르골: 송신기 1 정지 → 핵 노출(8초 뒤 닫힘), 마지막 송신기 전에는 처치되지 않음', r.exposed && r.phase === 1 && r.hp >= 1 && r.closedAfter && r.left <= 8 && r.left > 4 && Math.abs(r.t - r.left) < 0.6, r);
+  // 본전투 사망 → 보스 앞 CP: 송신기·핵 체력 함께 복원
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(page, 2200);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  await orgelSpawn(page);
+  const re = await ev<{ cp: string; done: string[]; hp: number; max: number; phase: number; dev: boolean }>(page, `(() => { ${ORGEL_JS} return { cp: s.cp.checkpointId, done: s.objectives.snapshot(), hp: e.hp, max: e.tune.hp, phase: b.phase, dev: s.devices.get('txL').complete }; })()`);
+  ok('T052 2-3: 본전투 사망 → 보스 앞 CP에서 송신기·핵 체력 함께 복원', re.cp === 'cp-boss' && !re.done.includes('o-t1') && re.hp === re.max && re.phase === 0 && !re.dev, re);
+  // 송신기 1을 다시 끈다
+  const d = m.devices.find((x) => x.id === 'txL')!;
+  await operate(page, d.at[0], d.at[2], 2.8);
+  const again = await st(page);
+  ok('T052 2-3: 재도전에서 송신기 1 다시 정지', again.done.includes('o-t1'), again);
+}
+async function orgelAllOff(page: Page): Promise<void> {
+  const r = await ev<{ phase: number; always: boolean; kinds: string[]; overlap: number }>(page, `(async () => { ${ORGEL_JS}
+    let always = true, overlap = 0; const seen = new Set(), kinds = []; const t0 = G.time;
+    while (G.time - t0 < 12) { __m.tp(-1, 3, -5); __m.skipStory(); if (!b.exposed) always = false; const mine = tl.live.filter((l) => l.spec.attacker === e); overlap = Math.max(overlap, mine.length); for (const l of mine) if (!seen.has(l.spec)) { seen.add(l.spec); kinds.push(l.spec.shape); } await __m.frames(3); }
+    return { phase: b.phase, always, kinds, overlap }; })()`);
+  ok('T052 2-3 오르골: 세 송신기 정지 뒤 핵이 계속 노출(무적 반복 없음), 광선·원형 교대·겹침 없음', r.phase === 3 && r.always && r.kinds.includes('line') && r.kinds.includes('circle') && r.overlap <= 1, r);
+}
+// 2-2 유리눈 감시자: 엄폐 뒤 조준 없음, 두 발(두 번째는 새 방향)·2.5초 정비 중 예고 없음, 절반 체력 위치 변경 1회, 정예 앞 CP 재시작
+async function glassEye(page: Page): Promise<void> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000 && !(await ev<boolean>(page, `!!__inkwave.session.encounters.unitActor('glass')`))) { await ev(page, '(__m.tp(12.75, 3, -12), __m.skipStory(), 0)'); await ev(page, '__m.frames(4)'); }
+  // 테라스 몸체 아래(사선 막힘)에서 4초: 감시자의 예고가 없어야 한다
+  const hidden = await ev<{ n: number; sees: boolean }>(page, `(async () => { const s = __inkwave.session, e = s.encounters.unitActor('glass'), tl = s.preview.telegraphs, G = window.__G; const t0 = G.time; const seen = new Set();
+    while (G.time - t0 < 4) { __m.tp(12.75, 0, -12); __m.skipStory(); for (const l of tl.live) if (l.spec.attacker === e) seen.add(l.spec); await __m.frames(2); }
+    return { n: seen.size, sees: e.bot.sees }; })()`);
+  ok('T051 2-2 감시자: 지붕 몸체 뒤(사선 막힘)에서는 조준하지 않음(엄폐 관통 없음)', hidden.n === 0 && !hidden.sees, hidden);
+  // 같은 높이(테라스 위)에서 노출: 두 발과 정비를 잰다. 첫 예고가 끝나면 옆으로 옮겨 두 번째 방향이 달라지는지 본다
+  const cyc = await ev<{ specs: Array<{ t: number; yaw: number; dur: number; dmg: number }>; states: Array<[string, number]> }>(page, `(async () => { const s = __inkwave.session, e = s.encounters.unitActor('glass'), b = e.bot, tl = s.preview.telegraphs, G = window.__G;
+    const specs = [], seen = new Set(), states = []; let last = b.state; const t0 = G.time; let px = 11.2, pz = -19;
+    while (G.time - t0 < 16 && specs.length < 3) { __m.tp(px, 3, pz); __m.skipStory();
+      for (const l of tl.live) if (l.spec.attacker === e && !seen.has(l.spec)) { seen.add(l.spec); specs.push({ t: +(G.time - t0).toFixed(2), yaw: +l.spec.yaw.toFixed(3), dur: l.spec.duration, dmg: l.spec.damage }); if (specs.length === 1) { px = 14.3; pz = -20.5; } }
+      if (b.state !== last) { last = b.state; states.push([last, +(G.time - t0).toFixed(2)]); }
+      await __m.frames(1); }
+    return { specs, states }; })()`);
+  const sp = cyc.specs, gap12 = sp.length >= 2 ? sp[1].t - sp[0].t : 0, gap23 = sp.length >= 3 ? sp[2].t - sp[1].t : 99;
+  const rec = cyc.states.find((x) => x[0] === 'recover');
+  ok('T051 2-2 감시자: 1초 직선 예고 두 발(두 번째는 새 방향, 예고 중 추적 없음) 뒤 2.5초 정비 중 예고 없음', sp.length >= 2 && sp[0].dur >= 0.9 && sp[0].dmg > 0 && Math.abs(sp[1].yaw - sp[0].yaw) > 0.05 && gap12 < 2.2 && gap23 >= sp[1].dur + 2.4 && !!rec, { cyc, gap12, gap23 });
+  // 절반 이하 → 정비 뒤 북쪽 끝으로 한 번 이동, 더 맞아도 다시 옮기지 않는다
+  await ev(page, `(() => { const a = __inkwave.session.encounters.unitActor('glass'); let n = 0; while (a.hp / a.tune.hp > 0.45 && n++ < 400) a.damage(20, __m.G.local, 'weapon'); })()`);
+  const mv = await ev<{ moved: boolean; at: number[]; again: boolean }>(page, `(async () => { const s = __inkwave.session, e = s.encounters.unitActor('glass'), b = e.bot, G = window.__G; let t0 = G.time;
+    const states = []; let last = '';
+    while (G.time - t0 < 14 && !(b.moved && !b.relocating)) { __m.tp(11.2, 3, -21); __m.skipStory(); const k = b.state + (b.relocating ? '*' : '') + (s.preview.combat.isStaggered(e) ? '!' : ''); if (k !== last) { last = k; states.push(k + '@' + (G.time - t0).toFixed(1)); } await __m.frames(2); }
+    const at = [e.pos.x, e.pos.y, e.pos.z].map((v) => +v.toFixed(1)), moved = !!b.moved;
+    let n = 0; while (e.hp / e.tune.hp > 0.25 && n++ < 400) e.damage(20, __m.G.local, 'weapon');
+    let again = false; t0 = G.time; while (G.time - t0 < 8) { __m.tp(11.2, 3, -21); __m.skipStory(); if (b.relocating) again = true; await __m.frames(2); }
+    return { moved, at, again, states }; })()`);
+  ok('T051 2-2 감시자: 절반 체력에서 사격 위치 한 번 변경(반복 발동 없음)', mv.moved && Math.hypot(mv.at[0] - 12.75, mv.at[2] + 16.8) < 2 && !mv.again, mv);
+  // 지붕에서 떨어져(사망) 재도전 → 정예 앞 CP2, 감시자 처음 상태
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(page, 2200);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+  const re = await ev<{ cp: string; enc: string; pos: number[] }>(page, '(() => { const s = __inkwave.session, p = __m.G.local.pos; return { cp: s.cp.checkpointId, enc: s.encounters.state("enc-glass"), pos: [p.x, p.y, p.z].map((v) => +v.toFixed(1)) }; })()');
+  ok('T051 2-2: 정예전 사망 → 정예 앞 CP2에서 재시작(지붕 길을 처음부터 오르지 않음), 감시자 처음 상태', re.cp === 'cp2' && re.enc === 'idle' && Math.hypot(re.pos[0] - 12.75, re.pos[2] + 8) < 1.5, re);
+}
+
 try {
   // ------------------------------------------------------------------------------------------------ 1-1
   if (only.includes('1-1')) {
@@ -379,6 +866,9 @@ try {
     };
     for (const id of ['1-1', '1-2', '1-3']) {
       await start(page, id);
+      // 레벨 액션 장치(35번 R023)는 선택 경로다: 장치를 모두 치운 채로 걷는다(장치 없이 완주 가능)
+      const hadDevices = await ev<number>(page, `(() => { const s = __inkwave.session, A = s.action; if (!A) return 0; const n = A.fountains.length + A.barrels.length + A.switches.length; if (s.preview.devices === A) s.preview.devices = null; A.dispose(); s.action = null; return n; })()`);
+      if (id !== '1-3') ok(`R023 ${id} 주행: 액션 장치(${hadDevices}개)를 치운 상태로 시작`, hadDevices > 0, hadDevices);
       await ev(page, `window.__pads[0] = { b: { 0: 1 } }`); await ev(page, '__m.frames(3)'); await ev(page, `window.__pads[0] = { b: {} }`); await ev(page, '__m.frames(3)');
       const legs: Array<{ to: string; ok: boolean; secs: number; left: number }> = [];   // (실패하면 위치·특수 간선을 함께 남긴다)
       for (const to of ROUTES[id]) {
@@ -727,7 +1217,681 @@ try {
     ok('액션(1-2·1-1) 콘솔 오류 없음', errors.length === 0, errors.slice(0, 5));
     await page.close();
   }
+  // ------------------------------------------------------------------------------------------------ 35번 R005·R015·R023(색 회복·잔향 연출·액션 장치)
+  if (only.includes('r35')) await r35();
+  if (only.includes('cam')) await camCheck();
+  if (only.includes('deny')) await denyCheck();
+  if (only.includes('ch1story')) await ch1Story();
+  if (only.includes('endgame')) await endgame();
+  // ------------------------------------------------------------------------------------------------ 2장 이후 임무 공통 검수
+  for (const id of only) if (PLANS[id]) await generic(id, PLANS[id]);
 } catch (e) { ok('실행 오류', false, String((e as Error).stack || e)); }
+
+// 33번 10절 공통 검수(2장 이후): 배치(바닥·이동 그래프·도달), 기본 이동 주행, 순서 건너뛰기, 갈림길 단독 발동, 목표 순서대로
+// 경계 적 정리·가동, 목표형·도착형 CP와 저장, CP 사망 → 재도전(앞 목표 유지·현재 구간 복원), 완료 저장·다음 해금·무기 해금,
+// 종료 뒤 자원 해제. 임무 고유 검사는 plan.extra이다. 순간 이동·직접 피해는 논리 검사이며 사람의 완주(14절)를 대신하지 않는다.
+interface Plan {
+  prev: string[];                                    // 저장에 넣을 해금(앞 임무 실제 완료는 각 임무 검사가 확인)
+  walk: string[];                                    // 주행 순서(장치·CP id)
+  route?: { take: string; other: string };           // 갈림길: take 묶음 영역에 들어가면 other는 발동하지 않는다
+  before?: Record<string, (page: Page, m: MissionJson) => Promise<void>>;   // 그 목표를 처리하기 직전의 고유 검사
+  skipCrate?: boolean;                               // 선택 상자를 열지 않고 완료(미회수가 출구를 막지 않는지)
+  ownDeath?: boolean;                                // 공통 사망 검사 대신 임무 고유 검사(before)가 사망·재도전을 확인한다
+  extra?: (page: Page, m: MissionJson) => Promise<void>;
+}
+type V3 = [number, number, number];
+interface MissionJson {
+  id: string; type: string; start: { at: V3 };
+  devices: Array<{ id: string; kind: string; at: V3; radius: number; guards?: string[]; clearFirst?: string; duration?: number }>;
+  objectives: Array<{ id: string; kind: string; label: string; device?: string; target?: string; encounter?: string; requires: string[]; optional?: boolean; checkpoint?: string; comm?: string }>;
+  encounters: Array<{ id: string; area: [number, number, number, number]; waves: Array<{ units: Array<{ id: string; at: V3 }> }> }>;
+  checkpoints: Array<{ id: string; at: V3; resets: string[]; area?: [number, number, number, number]; after?: string[] }>;
+  reward: { unlocks: string[]; record?: string };
+  boss?: { unit: string; giant?: { at: V3; area: [number, number, number, number] } };
+}
+// 같은 저장(IndexedDB)을 유지한 채 새로 연다(새로고침·이어하기)
+async function openKeep(): Promise<{ page: Page; errors: string[] }> {
+  const page = await browser.newPage();
+  const errors: string[] = [];
+  page.on('console', (m) => { if (m.type() === 'error' && !/404|Failed to load resource/.test(m.text())) errors.push(m.text()); });
+  page.on('pageerror', (e) => errors.push(String((e as Error).stack || e).split(/\r?\n/).slice(0, 4).join(' | ')));
+  await page.evaluateOnNewDocument(`try { localStorage.setItem('inkwave.settings', JSON.stringify({ music: 0, sfx: 0, master: 0, quality: 'low', qualityChosen: true })); } catch {}`);
+  await page.goto(`http://localhost:${port}/?skipTitle&novc`, { waitUntil: 'load', timeout: 180000 });
+  await page.waitForFunction('window.__inkwave && __inkwave.menus && __inkwave.menus.current === "main" && __inkwave.store && __inkwave.store.current', { timeout: 180000, polling: 250 });
+  await page.evaluate(HELPERS);
+  return { page, errors };
+}
+
+// 35번 R005 색 회복·R015 잔향 출현/소멸·R023 레벨 액션 장치를 실제 1-1·1-2 세션에서 확인한다
+function r35State(): string { return `(() => { const s = __inkwave.session, c = s.color, A = s.action, fx = s.preview.cast.fx;
+  return { sat: c ? +c.worldSat.toFixed(3) : null, spheres: c ? c.spheres.map((p) => ({ r: p.r, t: +p.t.toFixed(2) })) : null,
+    rc: __inkwave.R._colorReturn ? +__inkwave.R._colorReturn.worldSat.toFixed(3) : null,
+    dev: A ? A.snapshot() : null, scraps: fx.liveScraps, decals: fx.decals.filter((d) => d.live).length, cp: s.cp.checkpointId }; })()`; }
+interface R35State { sat: number | null; spheres: Array<{ r: number; t: number }> | null; rc: number | null; dev: { barrels: Record<string, number>; switches: Record<string, boolean>; fountains: Record<string, boolean> } | null; scraps: number; decals: number; cp: string | null }
+async function r35(): Promise<void> {
+  const { page, errors } = await openFresh();
+  await ev(page, `(async () => { const { on } = await import('/src/core/ctx.js'); window.__ev35 = []; for (const k of ['color:restore', 'device:fountain']) on(k, (e) => window.__ev35.push([k, e.r ?? e.id])); })()`);
+  await start(page, '1-1');
+  const s0 = await ev<R35State>(page, r35State());
+  ok('R005 1-1 시작: 지역 채도 0.18(먹빛)·렌더러 색 회복 적용·구체 없음', s0.sat === 0.18 && s0.rc === 0.18 && s0.spheres!.length === 0, s0);
+  ok('R023 1-1: 분수 1·잉크통 2 배치(1-2와 합쳐 분수 2·잉크통 4·스위치 1)', !!s0.dev && Object.keys(s0.dev.fountains).length === 1 && Object.keys(s0.dev.barrels).length === 2, s0.dev);
+  // R015: 출현 1초 전 예고는 EchoFx.announce(바닥 다이아몬드 + 모여드는 종이 조각)
+  await ev(page, `(() => { const fx = __inkwave.session.preview.cast.fx; fx.__n = 0; const o = fx.announce.bind(fx); fx.announce = (...a) => { fx.__n++; return o(...a); }; })()`);
+  // 잉크통 b1을 CP 전에 터뜨린다(체크포인트에 파괴 상태가 남아야 한다)
+  await ev(page, `(() => { const A = __inkwave.session.action, b = A.barrels.find((x) => x.def.id === 'b1'); A._hurt(b, 999); })()`);
+  const t0 = Date.now(); let ann = { n: 0, decal: 0, live: 0 };
+  while (Date.now() - t0 < 20000) {
+    await ev(page, '(__m.tp(-12, 3, -27), __m.skipStory(), 0)'); await ev(page, '__m.frames(2)');
+    ann = await ev<{ n: number; decal: number; live: number }>(page, '(() => { const s = __inkwave.session, fx = s.preview.cast.fx; return { n: fx.__n, decal: Math.max(fx.decals.filter((d) => d.live).length, 0), live: s.encounters.liveActors().length }; })()');
+    if (ann.n > 0 && ann.decal > 0) break;
+  }
+  ok('R015 1-1: 적 출현 예고가 EchoFx.announce(바닥 다이아몬드·종이 조각)로 나온다', ann.n > 0 && ann.decal > 0, ann);
+  await clearArea(page, -12, -27, 2.5);
+  await operate(page, -12, -31, 2.8);
+  await pass(page, 2800);   // 구체가 다 퍼질 때까지(2.5초)
+  const sA = await ev<R35State>(page, r35State());
+  const evA = await ev<Array<[string, number]>>(page, 'window.__ev35.slice()');
+  const cpSave = await ev<{ color: { worldSat: number; spheres: unknown[] } | null; dev: { barrels: Record<string, number> } | null }>(page, '(() => { const p = __inkwave.store.current.inProgress; return { color: p && p.color || null, dev: p && p.actionDevices || null }; })()');
+  ok('R005 1-1 중계기 A 복구: 반지름 14 m 구체가 2.5초 동안 퍼지고 color:restore 발행', sA.cp === 'cp1' && sA.spheres!.length === 1 && sA.spheres![0].r === 14 && sA.spheres![0].t === 1 && evA.some((e) => e[0] === 'color:restore' && e[1] === 14), { sA, evA });
+  ok('R005·R023 CP1 저장: 진행 중 기록에 색 회복 구체·액션 장치 상태(b1 파괴)', !!cpSave.color && cpSave.color.spheres.length === 1 && cpSave.color.worldSat === 0.18 && !!cpSave.dev && cpSave.dev.barrels.b1 === 0 && cpSave.dev.barrels.b2 > 0, cpSave);
+  // CP 뒤 b2 파괴, 진행 중인 출현 예고·소멸 조각을 남긴 채 사망 → 재시작
+  await ev(page, `(() => { const A = __inkwave.session.action, b = A.barrels.find((x) => x.def.id === 'b2'); A._hurt(b, 999); })()`);
+  await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(page, 2000);
+  const before = await ev<{ scraps: number; decals: number }>(page, `(() => { const s = __inkwave.session, fx = s.preview.cast.fx, p = __m.G.local.pos; fx.announce(p.clone(), '#ffd23a'); fx.announce(p.clone().setX(p.x + 2), '#ffd23a'); fx.update(0.2); return { scraps: fx.liveScraps, decals: fx.decals.filter((d) => d.live).length }; })()`);
+  await ev(page, '__inkwave.session.retryCheckpoint()'); await ev(page, '__m.frames(3)');
+  const sR = await ev<R35State>(page, r35State());
+  ok('R015 체크포인트 재시작: 남은 종이 조각·바닥 데칼 0', before.scraps > 0 && before.decals > 0 && sR.scraps === 0 && sR.decals === 0, { before, sR });
+  ok('R005 체크포인트 재시작: 구간 시작의 색 회복 구체(다 퍼진 14 m)·지역 채도 복원', sR.sat === 0.18 && sR.spheres!.length === 1 && sR.spheres![0].r === 14 && sR.spheres![0].t === 1, sR);
+  ok('R023 체크포인트 재시작: CP 때 상태로(b1 파괴 유지, CP 뒤 파괴한 b2 복원)', !!sR.dev && sR.dev.barrels.b1 === 0 && sR.dev.barrels.b2 === 60, sR.dev);
+  // R015: 동시 5명 소멸의 연출 갱신 비용(세션의 실제 적 생성 경로로 사격병 5명을 세우고 한 프레임에 쓰러뜨린다)
+  const diss = await ev<{ base: number; during: number; peak: number; scraps: number; frameBase: number; frameDuring: number }>(page, `(async () => {
+    const s = __inkwave.session, G = window.__G, fx = s.preview.cast.fx, me = G.local, enc = s.mission.encounters[0];
+    const xs = [], fr = []; let last = performance.now();
+    const o = fx.update.bind(fx); fx.update = (dt) => { const t = performance.now(); o(dt); xs.push(performance.now() - t); };
+    const tick = async (n) => { for (let i = 0; i < n; i++) { await new Promise((r) => requestAnimationFrame(r)); const t = performance.now(); fr.push(t - last); last = t; } };
+    const a5 = []; for (let i = 0; i < 5; i++) a5.push(s._spawn({ id: 'r15-' + i, role: 'gunner', at: [me.pos.x + 3 + i, me.pos.y + 1, me.pos.z + 3] }, enc));
+    for (const a of a5) a.bot.update = () => { a.intent.move.set(0, 0, 0); a.intent.fire = false; };
+    await tick(30); xs.length = 0; fr.length = 0; await tick(40);
+    const base = xs.reduce((p, v) => p + v, 0) / xs.length, fb = fr.slice().sort((p, q) => p - q)[fr.length >> 1];
+    xs.length = 0; fr.length = 0;
+    for (const a of a5) a.damage(9999, me, 'weapon');
+    let peak = 0; const t0 = G.time;
+    while (G.time - t0 < 0.5) { await tick(1); peak = Math.max(peak, fx.liveScraps); }
+    const during = xs.reduce((p, v) => p + v, 0) / xs.length, fd = fr.slice().sort((p, q) => p - q)[fr.length >> 1];
+    fx.update = o; for (const a of a5) s._despawn(a);
+    return { base: +base.toFixed(4), during: +during.toFixed(4), peak: +Math.max(...xs).toFixed(3), scraps: peak, frameBase: +fb.toFixed(2), frameDuring: +fd.toFixed(2) };
+  })()`);
+  ok('R015 동시 5명 소멸: 연출 갱신 증가 0.5 ms 이하(조각 생성 확인)', diss.scraps >= 50 && diss.during - diss.base <= 0.5, diss);
+  // 새로고침·이어하기: 저장의 진행 중 기록에서 같은 색 회복·장치 상태가 돌아온다
+  await ev(page, `__inkwave.quitToMenu('workshop')`); await wait(800);
+  await page.close();
+  const k = await openKeep();
+  await ev(k.page, `(async () => { const { on } = await import('/src/core/ctx.js'); window.__ev35 = []; for (const x of ['color:restore', 'device:fountain']) on(x, (e) => window.__ev35.push([x, e.r ?? e.id])); })()`);
+  await start(k.page, '1-1', true);
+  const sC = await ev<R35State>(k.page, r35State());
+  ok('R005·R023 새로고침 뒤 이어하기: CP1의 색 회복 구체·지역 채도·잉크통 상태 복원', sC.cp === 'cp1' && sC.sat === 0.18 && sC.spheres!.length === 1 && sC.spheres![0].r === 14 && !!sC.dev && sC.dev.barrels.b1 === 0 && sC.dev.barrels.b2 === 60, sC);
+  // 1-1 완료: 지역 전체로 색이 번지고(120 m) 저장의 지역 채도 0.45
+  await operate(k.page, -6, 14, 1.5);
+  for (let i = 0; i < 4; i++) await clearArea(k.page, -6, 14, 2.5);
+  await operate(k.page, -6, 14, 2.8);
+  await operate(k.page, 0, -4.4, 1.5);
+  await pass(k.page, 1500);
+  await k.page.waitForFunction('document.querySelector(".iw-sres") && document.querySelector(".iw-sres").dataset.saved === "ok"', { timeout: 60000, polling: 200 }).catch(() => {});
+  const fin = await ev<{ ev: Array<[string, number]>; sat: number | undefined; done: string[] }>(k.page, '({ ev: window.__ev35.slice(), sat: __inkwave.store.current.colorReturn.tidewater, done: __inkwave.store.current.done })');
+  ok('R005 1-1 완료: 지역 전체 구체(120 m) 발행·저장 지역 채도 0.45', fin.done.includes('1-1') && fin.ev.some((e) => e[0] === 'color:restore' && e[1] === 120) && fin.sat === 0.45, fin);
+  // 1-2: 지역 채도 0.45로 시작, 스위치가 분수를 켜고 분수가 플레이어를 띄운다. 재시작하면 처음 상태
+  await ev(k.page, `__inkwave.quitToMenu('workshop')`); await wait(800);
+  await start(k.page, '1-2');
+  const t1 = await ev<R35State>(k.page, r35State());
+  ok('R005 1-2 시작: 저장된 지역 채도 0.45·구체 없음', t1.sat === 0.45 && t1.rc === 0.45 && t1.spheres!.length === 0, t1);
+  ok('R023 1-2: 스위치 1·분수 1(꺼짐)·잉크통 2', !!t1.dev && Object.keys(t1.dev.switches).length === 1 && t1.dev.fountains.f2 === false && Object.keys(t1.dev.barrels).length === 2, t1.dev);
+  const sw = await ev<{ at: number[] }>(k.page, `(() => { const s = __inkwave.session.action.switches[0]; return { at: [s.pos.x, s.pos.y, s.pos.z] }; })()`);
+  await ev(k.page, `__m.paintAt(${sw.at[0]}, ${sw.at[2]}, 1.6)`); await pass(k.page, 800);
+  const on1 = await ev<R35State>(k.page, r35State());
+  const f2 = await ev<number[]>(k.page, `(() => { const f = __inkwave.session.action.fountains.find((x) => x.def.id === 'f2'); return [f.pos.x, f.pos.y, f.pos.z, f.def.land[1]]; })()`);
+  const jump = await ev<{ fired: boolean; apex: number; base: number; land: number }>(k.page, `(async () => { const G = window.__G, a = G.local; a.pos.set(${f2[0]}, ${f2[1]} + 0.05, ${f2[2]}); a.vel.set(0, 0, 0); a.invuln = 999; let apex = a.pos.y; const t0 = G.time;
+    while (G.time - t0 < 1.4) { __m.skipStory(); await __m.frames(1); apex = Math.max(apex, a.pos.y); }
+    return { fired: window.__ev35.some((e) => e[0] === 'device:fountain' && e[1] === 'f2'), apex: +apex.toFixed(2), base: ${f2[1]}, land: ${f2[3]} }; })()`);
+  ok('R023 1-2: 출발점 스위치를 60% 칠하면 꺼진 분수가 켜지고, 분수가 플레이어를 화단(착지 지점) 높이 위로 띄운다', !!on1.dev && on1.dev.switches.s1 && on1.dev.fountains.f2 && jump.fired && jump.apex > jump.land + 0.5, { dev: on1.dev, jump });
+  await ev(k.page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+  await pass(k.page, 2000);
+  await ev(k.page, '__inkwave.session.retryCheckpoint()'); await ev(k.page, '__m.frames(3)');
+  const t2 = await ev<R35State>(k.page, r35State());
+  ok('R023 1-2 CP 전 재시작: 스위치·분수가 임무 시작 상태로', t2.cp === null && !!t2.dev && !t2.dev.switches.s1 && !t2.dev.fountains.f2, t2.dev);
+  // 대전·연습에는 색 회복이 없다(채도가 빠지지 않는다)
+  await ev(k.page, `__inkwave.quitToMenu('main')`); await wait(800);
+  await ev(k.page, `__inkwave.startPractice({ mapId: 'tidewater' })`); await wait(1500);
+  const prac = await ev<{ rc: unknown; color: unknown }>(k.page, '({ rc: __inkwave.R._colorReturn, color: __inkwave.colorReturn })');
+  ok('R005 캠페인 뒤 연습 경기: 색 회복 없음(전부 채색)', prac.rc === null && prac.color === null, prac);
+  ok('R35 콘솔 오류 없음', errors.length === 0 && k.errors.length === 0, [...errors, ...k.errors].slice(0, 5));
+  await k.page.close();
+}
+
+// 35번 R009 액션 카메라: 벽 가까이에서 서지(앞·옆)·처치 펀치, 보스·정예 등장 컷에서 렌즈가 벽 너머에 머물지 않는가.
+// 매 프레임 "바라보는 점(따라가기는 피벗) → 렌즈" 선분을 지형 광선으로 재서 막힌 깊이를 기록한다.
+// 따라가기 붐은 빠르게 다가오는 장애물을 몇 프레임 늦게 따라갈 수 있다(설계 한계 1.6 m, cameraRig 주석)
+// — 그래서 기준은 "0.3 m 넘게 막힌 상태가 0.25초 넘게 이어지지 않음, 최대 1.6 m"와 프로필 없는 기존 붐 대비 악화 없음이다.
+function clipJs(): string { return `window.__clip = (() => { const G = window.__G, rig = __inkwave.rig, V = G.local.pos.constructor, a = new V(), d = new V();
+  return (look) => { const cam = rig.camera.position; a.copy(look || rig.pivot); d.copy(cam).sub(a); const len = d.length(); if (len < 1e-3) return 0; d.multiplyScalar(1 / len); const h = G.physics.raycast(a.clone(), d.clone(), len, undefined, true); return h.hit ? len - h.dist : 0; }; })()`; }
+interface ClipStat { max: number; run: number; over: number; n: number }
+async function camCheck(): Promise<void> {
+  const { page, errors } = await openFresh();
+  await start(page, '1-1');
+  await ev(page, clipJs());
+  const prof = await ev<{ dist: number; shoulder: number } | null>(page, '__inkwave.rig.profile && { dist: __inkwave.rig.profile.dist, shoulder: __inkwave.rig.profile.shoulder }');
+  ok('R009 캠페인 임무에서 액션 카메라 프로필 적용(dist 4.2·어깨 0.35)', !!prof && prof.dist === 4.2 && prof.shoulder === 0.35, prof);
+  // 벽 가까운 자리: 이동 그래프 노드 중 머리 높이 수평 광선이 0.8~2.5 m 안에서 벽에 닿는 곳(시드 고정 표본)
+  const spots = await ev<Array<{ x: number; y: number; z: number; wx: number; wz: number }>>(page, `(() => { const G = window.__G, nav = G.nav, V = G.local.pos.constructor, out = []; let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const s = __inkwave.session, segs = s.mission.segments;
+    for (let k = 0; k < 4000 && out.length < 10; k++) { const n = nav.nodes[Math.floor(rnd() * nav.nodes.length)]; if (!n) continue;
+      if (!segs.some((g) => n.x >= g.bounds[0] && n.x <= g.bounds[1] && n.z >= g.bounds[2] && n.z <= g.bounds[3])) continue;
+      if (out.some((o) => Math.hypot(o.x - n.x, o.z - n.z) < 6)) continue;
+      for (let i = 0; i < 8; i++) { const an = i / 8 * Math.PI * 2, dir = new V(Math.sin(an), 0, Math.cos(an)); const h = G.physics.raycast(new V(n.x, n.y + 1.8, n.z), dir, 2.5, undefined, true);
+        if (h.hit && h.dist > 0.8 && Math.abs(h.normal.y) < 0.3) { const up = G.physics.raycast(new V(n.x, n.y + 0.3, n.z), new V(0, 1, 0), 3.2, undefined, true); if (up.hit) break; out.push({ x: n.x, y: n.y, z: n.z, wx: dir.x, wz: dir.z }); break; } } }
+    return out; })()`);
+  ok('R009 검사 자리: 1-1 구간 안 벽 앞 10곳', spots.length >= 8, spots.length);
+  // 한 자리에서: 카메라가 벽 쪽(플레이어 뒤)에 오게 서서 (1) 앞 서지 (2) 옆 서지 (3) 처치 펀치 세 번
+  const run = (profile: boolean) => ev<{ surge: ClipStat; side: ClipStat; punch: ClipStat; surges: number; why: unknown[]; revived: number }>(page, `(async () => {
+    const G = window.__G, g = __inkwave, rig = g.rig, a = G.local, s = g.session, P = s.preview, spots = ${JSON.stringify(spots)};
+    rig.setProfile(${profile ? 'window.__savedProfile' : 'null'});
+    for (const e of g.match.actors) if (e.team === 1 && e.bot) e.bot.update = () => { e.intent.move.set(0, 0, 0); e.intent.fire = false; };
+    const acc = () => ({ max: 0, run: 0, over: 0, n: 0, cur: 0 });
+    const R = { surge: acc(), side: acc(), punch: acc() }; let surges = 0; const why = [];
+    const watch = async (st, secs) => { const t0 = G.time; let last = G.time; while (G.time - t0 < secs) { a.invuln = 999; __m.skipStory(); await new Promise((r) => requestAnimationFrame(r)); const dt = G.time - last; last = G.time; const p = window.__clip(); st.n++; st.max = Math.max(st.max, p); if (p > 0.3) { st.over++; st.cur += dt; st.run = Math.max(st.run, st.cur); } else st.cur = 0; } };
+    let revived = 0;
+    const alive = async () => { if (a.alive && s.state === 'combat') return; revived++; if (s.state === 'failed') s.retryCheckpoint(); for (let i = 0; i < 30 && !(a.alive && s.state === 'combat'); i++) await new Promise((r) => requestAnimationFrame(r)); };
+    const place = async (sp) => { await alive(); a.invuln = 999; a.pos.set(sp.x, sp.y + 0.05, sp.z); a.vel.set(0, 0, 0); rig.yaw = Math.atan2(-sp.wx, -sp.wz); rig.pitch = -0.15; a.ink = 100;
+      __m.paintAt(sp.x, sp.z, 2.5); rig.follow(a, true); for (let i = 0; i < 25; i++) { a.pos.set(sp.x, sp.y + 0.05, sp.z); a.vel.set(0, 0, 0); await new Promise((r) => requestAnimationFrame(r)); }
+      for (let i = 0; i < 40 && !(a.grounded && a.groundTeam === 1); i++) await new Promise((r) => requestAnimationFrame(r)); };
+    const surge = (side) => { P.combat.surgeCd = 0; a.ink = 100; if (side) a.intent.move.set(Math.cos(rig.yaw), 0, -Math.sin(rig.yaw)); const n0 = P.combat.surge; P.combat.tap.reset(); P.combat.squidPressed(a); P.combat.squidPressed(a); if (P.combat.surge && P.combat.surge !== n0) surges++; else if (why.length < 4) why.push({ g: a.grounded, gt: a.groundTeam, form: a.form, climb: a.climbing, ink: a.ink, cd: P.combat.surgeCd, alive: a.alive, pl: P.combat.player === a, s: !!P.combat.surge }); };
+    for (const sp of spots) {
+      await place(sp); surge(false); await watch(R.surge, 1.0);
+      await place(sp); surge(true); await watch(R.side, 1.0);
+      await place(sp); for (let i = 0; i < 3; i++) { rig.punch(i === 2 ? 'elite' : 'kill'); await watch(R.punch, 0.25); }
+    }
+    for (const k of Object.keys(R)) { R[k].max = +R[k].max.toFixed(2); R[k].run = +R[k].run.toFixed(3); delete R[k].cur; }
+    return { ...R, surges, why, revived };
+  })()`);
+  await ev(page, 'window.__savedProfile = __inkwave.rig.profile');
+  const withP = await run(true);
+  const base = await run(false);
+  await ev(page, '__inkwave.rig.setProfile(window.__savedProfile)');
+  const good = (c: ClipStat, b: ClipStat) => c.run <= 0.25 && c.max <= 1.6 && c.over <= b.over + Math.max(3, b.over * 0.25);
+  ok('R009 벽 앞 서지(앞·옆): 렌즈가 0.3 m 넘게 벽 너머에 0.25초 넘게 머물지 않고 기존 붐보다 나빠지지 않음', withP.surges >= spots.length * 2 - 2 && good(withP.surge, base.surge) && good(withP.side, base.side), { withP, base });
+  ok('R009 벽 앞 처치 펀치(처치·정예): 같은 기준', good(withP.punch, base.punch) && withP.punch.max <= 0.6, { punch: withP.punch, base: base.punch });
+  // reduceMotion이면 킥·펀치 0
+  const calm = await ev<{ trauma: number; kick: number; fovKick: number }>(page, `(async () => { const G = window.__G, rig = __inkwave.rig; G.settings.reduceMotion = true; rig.trauma = 0; rig._traumaIn = 0; rig.kickS.reset(0); rig.punch('elite'); rig.kickSurge(0.3); await __m.frames(3); const r = { trauma: rig.trauma + rig._traumaIn, kick: Math.abs(rig.kickS.x), fovKick: rig.surgeKickT }; G.settings.reduceMotion = false; return r; })()`);
+  ok('R009 움직임 줄이기: 펀치·서지 킥 0', calm.trauma === 0 && calm.kick === 0 && calm.fovKick === 0, calm);
+  await ev(page, `__inkwave.quitToMenu('workshop')`); await wait(600);
+  if (process.env.CAM_QUICK) { await page.close(); return; }
+  // 보스·정예 등장 컷: 임무마다 보스 앞 체크포인트와 그 둘레 세 자리를 기준점으로 컷을 실제 재생하며 잰다
+  await ev(page, `__inkwave.store.commit((s) => ({ ...s, unlocked: ${JSON.stringify(['1-1', '1-2', '1-3', '2-1', '2-2', '2-3', '3-1', '3-2', '3-3', '4-1', '4-2', '4-3', '5-1', '5-2', '5-3', '6-1', '6-2', '6-3', '7-1', '7-2', '7-3'])} }))`);
+  const cuts: Record<string, unknown> = {}; let worst = 0, worstRun = 0, raw = 0;
+  for (const id of ['1-2', '1-3', '2-2', '2-3', '3-2', '3-3', '4-2', '4-3', '5-2', '5-3', '6-2', '6-3', '7-2', '7-3']) {
+    await start(page, id);
+    await ev(page, clipJs());
+    const r = await ev<{ pid: string | null; max: number; run: number; raw: number; n: number }>(page, `(async () => {
+      const G = window.__G, g = __inkwave, s = g.session, a = G.local, rig = g.rig, m = s.mission;
+      const panels = s.host.storyPanels(m.id), pid = panels.bossIntro ?? panels.midBoss; if (!pid) return { pid: null, max: 0, run: 0, raw: 0, n: 0 };
+      for (const e of g.match.actors) if (e.team === 1 && e.bot) e.bot.update = () => { e.intent.move.set(0, 0, 0); e.intent.fire = false; };
+      const cp = m.checkpoints[m.checkpoints.length - 1], c = s._ground(cp.at);
+      const V = a.pos.constructor, anchors = [[c.x, c.z, cp.yaw]];
+      for (let i = 0; i < 3; i++) { const an = cp.yaw + (i - 1) * 1.2, x = c.x + Math.sin(an) * 6, z = c.z + Math.cos(an) * 6; const n = G.nav.nearest(new V(x, c.y, z), 3); if (n >= 0) { const q = G.nav.nodes[n]; anchors.push([q.x, q.z, an]); } }
+      let max = 0, run = 0, raw = 0, n = 0;
+      // 가드 전 깊이(raw): 바라보는 점 → 컷이 요청한 렌즈 위치
+      const pth = () => rig.path;
+      for (const [x, z, yaw] of anchors) {
+        const gy = s._ground([x, 3, z]).y; a.pos.set(x, gy + 0.05, z); a.vel.set(0, 0, 0); a.yaw = yaw; await __m.frames(2);
+        g.story.playPanels(pid); let cur = 0, last = G.time;
+        while (g.story.panels.playing) { await new Promise((r) => requestAnimationFrame(r)); const p = pth(); if (!p || rig.mode !== 'path') continue;
+          const k = Math.min(1, p.t / p.dur), e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+          const look = new V().lerpVectors(p.lookFrom, p.lookTo, e), want = new V().lerpVectors(p.from, p.to, e); want.y += Math.sin(e * Math.PI) * p.arc;
+          const d = want.clone().sub(look), L = d.length(); if (L > 1e-3) { const h = G.physics.raycast(look.clone(), d.multiplyScalar(1 / L), L, undefined, true); if (h.hit) raw = Math.max(raw, L - h.dist); }
+          const pen = window.__clip(look), dt = G.time - last; last = G.time; n++; max = Math.max(max, pen); if (pen > 0.3) { cur += Math.max(dt, 1 / 60); run = Math.max(run, cur); } else cur = 0; }
+      }
+      return { pid, max: +max.toFixed(2), run: +run.toFixed(3), raw: +raw.toFixed(2), n };
+    })()`);
+    cuts[id] = r; worst = Math.max(worst, r.max); worstRun = Math.max(worstRun, r.run); raw = Math.max(raw, r.raw);
+    await ev(page, `__inkwave.quitToMenu('workshop')`); await wait(500);
+  }
+  ok('R009 보스·정예 등장 컷(14개 임무 × 기준점 4곳): 렌즈가 벽 너머에 머물지 않음(가드 후 막힘 0.3 m 이하)', worst <= 0.3, { worst, worstRun, rawBeforeGuard: raw, cuts });
+  ok('R009 카메라 검사 콘솔 오류 없음', errors.length === 0, errors.slice(0, 5));
+  await page.close();
+}
+
+// 1-1을 A → B → 출구로 끝낸다(상자·사망 없이)
+async function finish11(page: Page): Promise<void> {
+  await clearArea(page, -12, -27, 2.5);
+  await operate(page, -12, -31, 2.8);
+  await operate(page, -6, 14, 1.5);
+  for (let i = 0; i < 4; i++) await clearArea(page, -6, 14, 2.5);
+  await operate(page, -6, 14, 2.8);
+  await operate(page, 0, -4.4, 1.5);
+  await pass(page, 1500);
+}
+// 35번 R030: 저장소가 쓰기를 거부하면(IndexedDB put이 QuotaExceededError로 실패해 트랜잭션이 중단) 결과 화면의 보상이
+// 미확정으로 남고 저장은 바뀌지 않는다. 쓰기가 돌아온 뒤 "다시 저장"을 누르면 한 번만 확정된다. 반복 완료는 첫 완료 연출이 없다.
+async function denyCheck(): Promise<void> {
+  const { page, errors } = await openFresh();
+  await ev(page, `(() => { const put = IDBObjectStore.prototype.put; window.__deny = false; IDBObjectStore.prototype.put = function (...a) { if (window.__deny) throw new DOMException('저장 공간 거부(검사)', 'QuotaExceededError'); return put.apply(this, a); }; })()`);
+  await start(page, '1-1');
+  await ev(page, 'window.__deny = true');
+  await finish11(page);
+  await page.waitForFunction('document.querySelector(".iw-sres") && document.querySelector(".iw-sres").dataset.saved === "fail"', { timeout: 90000, polling: 200 }).catch(() => {});
+  const failed = await ev<{ saved: string | null; retry: boolean; first: boolean; focus: boolean; done: string[]; xp: number; rev: number }>(page, `(() => { const el = document.querySelector('.iw-sres'), r = el && el.querySelector('.iw-sres__retry'), s = __inkwave.store.current;
+    return { saved: el && el.dataset.saved, retry: !!r && !r.classList.contains('is-off'), first: !!el && el.classList.contains('is-first'), focus: document.activeElement === r || (__inkwave.menus._focus === r), done: s.done, xp: s.xp, rev: s.revision }; })()`);
+  await page.screenshot({ path: 'shots/mission/deny-unconfirmed.png' });
+  ok('R030 저장 쓰기 거부: 보상 미확정·다시 저장 버튼(포커스)·저장 그대로(완료·경험치 없음)', failed.saved === 'fail' && failed.retry && failed.first && !failed.done.includes('1-1') && failed.xp === 0, failed);
+  // 거부 중 다시 저장 → 여전히 미확정
+  await ev(page, `document.querySelector('.iw-sres__retry').click()`); await wait(800);
+  const still = await ev<{ saved: string | null; xp: number }>(page, `({ saved: document.querySelector('.iw-sres').dataset.saved, xp: __inkwave.store.current.xp })`);
+  ok('R030 거부가 계속되면 다시 저장해도 미확정', still.saved === 'fail' && still.xp === 0, still);
+  // 쓰기 복구 → 다시 저장 → 확정(한 번만)
+  await ev(page, 'window.__deny = false');
+  await ev(page, `document.querySelector('.iw-sres__retry').click()`);
+  await page.waitForFunction('document.querySelector(".iw-sres").dataset.saved === "ok"', { timeout: 30000, polling: 200 }).catch(() => {});
+  const okd = await ev<{ saved: string | null; retry: boolean; done: string[]; xp: number; parts: number }>(page, `(() => { const el = document.querySelector('.iw-sres'), s = __inkwave.store.current; return { saved: el.dataset.saved, retry: !el.querySelector('.iw-sres__retry').classList.contains('is-off'), done: s.done, xp: s.xp, parts: s.inventory.parts }; })()`);
+  await page.screenshot({ path: 'shots/mission/deny-confirmed.png' });
+  ok('R030 쓰기 복구 뒤 다시 저장 → 확정(완료·경험치 600 한 번)·버튼 사라짐', okd.saved === 'ok' && !okd.retry && okd.done.includes('1-1') && okd.xp === 600, okd);
+  await page.close();
+  // 새로고침해도 확정이 남는다
+  const k = await openKeep();
+  const kept = await ev<{ done: string[]; xp: number }>(k.page, '({ done: __inkwave.store.current.done, xp: __inkwave.store.current.xp })');
+  ok('R030 새로고침 뒤에도 확정 유지(중복 지급 없음)', kept.done.includes('1-1') && kept.xp === 600, kept);
+  // 반복 완료: 첫 완료 연출(색 회복·첫 완료 표시) 없음, 첫 보상 재지급 없음
+  await start(k.page, '1-1');
+  await finish11(k.page);
+  await k.page.waitForFunction('document.querySelector(".iw-sres") && document.querySelector(".iw-sres").dataset.saved === "ok"', { timeout: 90000, polling: 200 }).catch(() => {});
+  const rep = await ev<{ first: boolean; xp: number; recFirst: boolean; mods: number; clears: number }>(k.page, `(() => { const el = document.querySelector('.iw-sres'), s = __inkwave.store.current, r = s.processed[s.lastResult]; return { first: el.classList.contains('is-first'), xp: s.xp, recFirst: r.first, mods: r.modules.length, clears: s.clears['1-1'] }; })()`);
+  ok('R030 반복 완료: 첫 완료 연출 없음·두 번째 완료로 저장(첫 세트 대신 무작위 모듈 1개)', !rep.first && rep.clears === 2 && !rep.recFirst && rep.mods === 1 && rep.xp > 600, rep);
+  const real = [...errors, ...k.errors].filter((e) => !/QuotaExceeded|저장 공간 거부/.test(e));
+  ok('R030 콘솔 오류 없음(검사가 일부러 낸 저장 거부 예외 제외)', real.length === 0, real.slice(0, 5));
+  await k.page.close();
+}
+
+// 35번 R031: 1장 세 임무를 진행하며 대사·패널·통신·기록이 의도한 사건에 나오는지(순서) 본다. 대본은 건너뛰기(skip)로
+// 넘기되 큐를 비우지 않는다(통신이 사라지지 않게). 기록 2개는 완료 보상으로 저장된다. 마지막에 모든 1장 대본을 다시 읽고 건너뛴다.
+async function ch1Story(): Promise<void> {
+  const { page, errors } = await openFresh();
+  const NEXT = `(() => { const st = __inkwave.story; if (!st) return; if (st.panels.playing) { st.panels.skip(); return; } if (st.layer.runner.cur) st.layer.runner.skip(); })`;
+  const hook = async (): Promise<void> => { await page.evaluate(HELPERS); await ev(page, `(window.__m.skipStory = ${NEXT}, 0)`); };
+  await ev(page, `(async () => { const { on } = await import('/src/core/ctx.js'); window.__sq = [];
+    on('story:line', (e) => { if (e.index === 0) window.__sq.push('L:' + e.scriptId); });
+    on('story:panel', (e) => { const k = 'P:' + e.sceneId; if (window.__sq[window.__sq.length - 1] !== k) window.__sq.push(k); }); })()`);
+  const seq = (): Promise<string[]> => ev<string[]>(page, 'window.__sq.slice()');
+  const mark = async (): Promise<number> => (await seq()).length;
+  const since = async (n: number): Promise<string[]> => (await seq()).slice(n);
+  const begin = async (id: string): Promise<void> => {
+    await page.evaluate(`__inkwave.startCampaign('${id}', { prologue: false })`);
+    await page.waitForFunction('__inkwave.session && __inkwave.session.state === "combat" && __inkwave.match && __inkwave.match.state === "playing"', { timeout: 180000, polling: 200 });
+    await hook(); await pass(page, 1500);
+  };
+  const die = async (): Promise<void> => { await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`); await pass(page, 2200); await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 800); };
+  const results = async (): Promise<void> => { await page.waitForFunction('document.querySelector(".iw-sres") && document.querySelector(".iw-sres").dataset.saved === "ok"', { timeout: 120000, polling: 300 }).catch(() => {}); };
+  const waitBoss = async (unit: string, x: number, z: number): Promise<void> => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < 20000 && !(await ev<boolean>(page, `!!__inkwave.session.encounters.unitActor('${unit}')`))) { await ev(page, `(__m.tp(${x}, 3, ${z}), 0)`); await pass(page, 300); }
+  };
+  // ---- 1-1
+  let n = await mark();
+  await begin('1-1');
+  const a0 = await since(n);
+  ok('R031 1-1 시작: 시작 대본(통신 15초)', a0[0] === 'L:1-1.intro', a0);
+  n = await mark();
+  const t0 = Date.now(); let kill = false;
+  while (Date.now() - t0 < 20000 && !kill) { await ev(page, '(__m.tp(-12, 3, -27), 0)'); await pass(page, 300); kill = await ev<boolean>(page, `(() => { const e = __inkwave.session.encounters.liveActors().find((x) => x.alive); if (!e) return false; e.damage(9999, __m.G.local, 'weapon'); return true; })()`); }
+  await pass(page, 1200);
+  const a1 = await since(n);
+  ok('R031 1-1 첫 처치 → 퐁·틸 통신(잔향 설명)', a1.includes('L:1-1.firstKill') && !a1.includes('L:1-1.relayA'), a1);
+  n = await mark();
+  await clearArea(page, -12, -27, 2.5); await operate(page, -12, -31, 2.8); await pass(page, 1200);
+  const a2 = await since(n);
+  ok('R031 1-1 중계기 A 복구 → 통신(색이 돌아온다)', a2.includes('L:1-1.relayA'), a2);
+  const openCrate = async (): Promise<void> => { const c = await ev<number[]>(page, '(() => { const d = __inkwave.session.mission.devices.find((x) => x.kind === "crate"); return [d.at[0] + 0.8, d.at[2]]; })()'); await clearArea(page, c[0], c[1], 3); await operate(page, c[0], c[1], 2.8); await pass(page, 600); };   // 원 안쪽 0.8 m(정확한 상자 자리는 지형에 걸려 밀려난다)
+  await openCrate();   // 선택 상자: 이 장의 기록이 들어 있다(8.5절, 선택 수집)
+  n = await mark();
+  await die();
+  const a3 = await since(n);
+  ok('R031 1-1 첫 사망 → 사망 대본', a3[0] === 'L:1-1.death', a3);
+  n = await mark();
+  await operate(page, -6, 14, 1.5); for (let i = 0; i < 4; i++) await clearArea(page, -6, 14, 2.5); await operate(page, -6, 14, 2.8); await pass(page, 1200);
+  const a4 = await since(n);
+  ok('R031 1-1 중계기 B 복구 → 통신(명령이 하나 더)', a4.includes('L:1-1.relayB'), a4);
+  n = await mark();
+  await operate(page, 0, -4.4, 1.5); await pass(page, 1500); await results();
+  const a5 = await since(n);
+  const rec1 = await ev<string[]>(page, '__inkwave.store.current.records.slice()');
+  ok('R031 1-1 완료 → 완료 대본, 기록 「광장의 첫 방송」 저장', a5.includes('L:1-1.outro') && rec1.includes('rec.tidewater.1'), { a5, rec1 });
+  // ---- 1-2
+  await ev(page, `__inkwave.quitToMenu('workshop')`); await wait(800);
+  n = await mark();
+  await begin('1-2');
+  const b0 = await since(n);
+  ok('R031 1-2 시작 대본', b0[0] === 'L:1-2.intro', b0);
+  n = await mark();
+  await clearArea(page, -4.5, -15, 3); await operate(page, -4.5, -15, 2.8); await pass(page, 1200);
+  const b1 = await since(n);
+  ok('R031 1-2 기록 1 회수 → 퐁 대사', b1.includes('L:1-2.record1'), b1);
+  await openCrate();
+  const crate2 = await ev<{ opened: boolean; done: string[]; pos: number[] }>(page, '({ opened: __inkwave.session.crateOpened, done: __inkwave.session.objectives.snapshot(), pos: [__m.G.local.pos.x, __m.G.local.pos.y, __m.G.local.pos.z] })');
+  n = await mark();
+  await clearArea(page, 18, -20, 2); await clearArea(page, 20.6, -27, 3); await operate(page, 20.6, -27, 2.8); await pass(page, 1200);
+  const b2 = await since(n);
+  ok('R031 1-2 기록 2 회수 → 틸 대사', b2.includes('L:1-2.record2'), b2);
+  n = await mark();
+  await waitBoss('elite', 12, 6); await pass(page, 1500);
+  const b3 = await since(n);
+  ok('R031 1-2 청소반장 등장 → 패널 1컷', b3.includes('P:1-2.cleaner'), b3);
+  n = await mark();
+  await clearArea(page, 12, 10, 4); await pass(page, 1200);
+  const b4 = await since(n);
+  ok('R031 1-2 청소반장 처치 → 통신(다음이 진짜야)', b4.includes('L:1-2.cleanerDown'), b4);
+  n = await mark();
+  await operate(page, 9, 17, 2.8); await pass(page, 1500); await results();
+  const b5 = await since(n);
+  const rec2 = await ev<string[]>(page, '__inkwave.store.current.records.slice()');
+  ok('R031 1-2 완료 → 완료 대본, 기록 「돌아온 사람들의 명단」 저장', b5.includes('L:1-2.outro') && rec2.includes('rec.tidewater.2'), { b5, rec2, crate2 });
+  // ---- 1-3
+  await ev(page, `__inkwave.quitToMenu('workshop')`); await wait(800);
+  n = await mark();
+  await begin('1-3');
+  const c0 = await since(n);
+  ok('R031 1-3 입장 통신', c0[0] === 'L:1-3.entry', c0);
+  n = await mark();
+  await clearArea(page, 0, -26, 4); await waitBoss('bari', 0, -16); await pass(page, 1500);
+  const c1 = await since(n);
+  ok('R031 1-3 보스 등장 → 패널 3컷 + 보코더 한마디', c1.includes('P:1-3.bossIntro') && c1.includes('L:1-3.boss'), c1);
+  n = await mark();
+  await ev(page, `(() => { const a = __inkwave.session.encounters.unitActor('bari'); let k = 0; while (a.alive && a.hp / a.tune.hp > 0.45 && k++ < 400) a.damage(20, __m.G.local, 'weapon'); })()`); await pass(page, 1500);
+  const c2 = await since(n);
+  ok('R031 1-3 체력 50% 페이즈 → 통신', c2.includes('L:1-3.phase'), c2);
+  n = await mark();
+  await ev(page, `__inkwave.session.encounters.unitActor('bari').bot.setState('open')`); await pass(page, 1000);
+  const c3 = await since(n);
+  // 약점 통신은 대장이 처음 방패를 열 때 한 번(페이즈 구간에서 스스로 열었으면 그때 나온다)
+  const opened = await ev<boolean>(page, `__inkwave.session.once.has('weak')`);
+  ok('R031 1-3 방패 발사 뒤 약점 노출 → 퐁 "등이 열렸어"(한 번)', opened && [...c2, ...c3].filter((x) => x === 'L:1-3.weak').length === 1, { c2, c3 });
+  n = await mark();
+  await die();
+  const c4 = await since(n);
+  ok('R031 1-3 첫 사망 → 사망 대본', c4[0] === 'L:1-3.death', c4);
+  n = await mark();
+  await waitBoss('bari', 0, -16); await clearArea(page, 0, -16, 4); await operate(page, 0, -4.4, 2.8); await pass(page, 1500); await results();
+  const c5 = await since(n);
+  ok('R031 1-3 첫 완료 → 1장 에필로그 패널 4컷 → 완료 대본', c5.includes('P:ch1.epilogue') && c5.includes('L:1-3.outro') && c5.indexOf('P:ch1.epilogue') < c5.indexOf('L:1-3.outro'), c5);
+  // ---- 모든 1장 대본: 다시 읽기(기록판) → 건너뛰기 → 읽은 기록
+  const all = await ev<{ ids: string[]; bad: string[]; read: string[] }>(page, `(async () => { const { CH1 } = await import('/src/campaign/story/scripts/ch1.js'); const st = __inkwave.story, bad = [];
+    for (const s of CH1.scripts) { st.layer.runner.clear(); if (!st.replay(s.id)) { bad.push(s.id + ' 재생'); continue; } await new Promise((r) => setTimeout(r, 50)); if (!st.layer.runner.cur || st.layer.runner.cur.script.id !== s.id) { bad.push(s.id + ' 시작'); continue; } st.layer.runner.skip(); if (st.layer.runner.cur && st.layer.runner.cur.script.id === s.id) bad.push(s.id + ' 건너뛰기'); }
+    await __inkwave.store.busy; await new Promise((r) => setTimeout(r, 300)); await __inkwave.store.busy;
+    return { ids: CH1.scripts.map((s) => s.id), bad, read: __inkwave.api.storyRead() }; })()`);
+  ok('R031 1장 대본 전부(다시 읽기·건너뛰기·읽은 기록)', all.bad.length === 0 && all.ids.every((id) => all.read.includes(id)), { bad: all.bad, missing: all.ids.filter((id) => !all.read.includes(id)) });
+  ok('R031 콘솔 오류 없음', errors.length === 0, errors.slice(0, 5));
+  await page.close();
+}
+
+// 33번 T068·T067: 7-3 첫 완료 → 엔딩(패널 5컷·아카이브, 건너뛰기) → SG07·엔딩 해금 한 번만 저장 → 새로고침 뒤 유지 →
+// 반복 완료에 엔딩·첫 보상 없음 → 엔딩 다시 보기(지도 색 회복) → 도전 출전(변형 적용·완료 보상) → 완료 임무 재진입 → 기록 14개·공략 기록.
+// 7-3의 실제 결전 진행은 generic 7-3이 검사하고, 여기서는 세션 완료(_finish)부터의 이야기·저장 흐름을 본다.
+async function endgame(): Promise<void> {
+  const all = ['1-1', '1-2', '1-3', '2-1', '2-2', '2-3', '3-1', '3-2', '3-3', '4-1', '4-2', '4-3', '5-1', '5-2', '5-3', '6-1', '6-2', '6-3', '7-1', '7-2', '7-3'];
+  const { page, errors } = await openFresh();
+  await ev(page, `__inkwave.store.newGame(Date.now(), 'normal')`);
+  await ev(page, `__inkwave.store.commit((s) => ({ ...s, unlocked: ${JSON.stringify(all)}, done: ${JSON.stringify(all.slice(0, 20))} }))`);
+  await ev(page, `(async () => { const { on } = await import('/src/core/ctx.js'); window.__sq = [];
+    on('story:line', (e) => { if (e.index === 0) window.__sq.push('L:' + e.scriptId); });
+    on('story:panel', (e) => { const k = 'P:' + e.sceneId; if (window.__sq[window.__sq.length - 1] !== k) window.__sq.push(k); }); })()`);
+  const NEXT = `(window.__m.skipStory = () => { const st = __inkwave.story; if (!st) return; if (st.panels.playing) { st.panels.skip(); return; } if (st.layer.runner.cur) st.layer.runner.skip(); }, 0)`;
+  const finishNow = async (p: Page): Promise<void> => {
+    await ev(p, '__inkwave.session._finish()');
+    const t0 = Date.now();
+    while (Date.now() - t0 < 90000 && !(await ev<boolean>(p, '!!(document.querySelector(".iw-sres") && document.querySelector(".iw-sres").dataset.saved === "ok")'))) { await ev(p, '(window.__m && window.__m.skipStory(), 0)'); await wait(400); }
+  };
+  const sg = `(() => { const s = __inkwave.store.current; return [...s.inventory.cards, ...s.inventory.pending].filter((c) => c.defId === 'SG07').length; })()`;
+  await start(page, '7-3'); await ev(page, NEXT); await ev(page, 'window.__sq = []');
+  await finishNow(page);
+  const sq1 = await ev<string[]>(page, 'window.__sq.slice()');
+  const sv1 = await ev<{ done: boolean; seen: boolean; sg: number; sigs: string[] }>(page, `({ done: __inkwave.store.current.done.includes('7-3'), seen: __inkwave.store.current.endingSeen, sg: ${sg}, sigs: __inkwave.store.current.signatures })`);
+  ok('T068 7-3 첫 완료 → 완료 대본 → 엔딩 패널(5컷, 건너뛰기) → 아카이브 "귀환 확인"', sq1.includes('L:7-3.outro') && sq1.includes('P:ending.return') && sq1.includes('L:ending.archive') && sq1.indexOf('P:ending.return') < sq1.indexOf('L:ending.archive'), sq1);
+  ok('T067·T068 7-3 첫 완료 저장: SG07 1개·엔딩 해금(7-3 완료)·엔딩 본 표시', sv1.done && sv1.seen && sv1.sg === 1 && sv1.sigs.includes('SG07'), sv1);
+  await page.close();
+  // 새로고침: 엔딩·도전 해금 유지
+  const k = await openKeep();
+  const ex = await ev<{ ending: boolean; challenges: Array<{ id: string; locked: boolean }>; weapons: unknown[] } | null>(k.page, '__inkwave.api.campaignExtras()');
+  ok('T068 새로고침 뒤 엔딩·도전 해금 유지(무기 12종 공략 기록 목록)', !!ex && ex.ending && ex.challenges.length === 7 && ex.challenges.every((c) => !c.locked) && ex.weapons.length === 12, ex && { ending: ex.ending, n: ex.challenges.length, w: ex.weapons.length });
+  // 반복 완료: 엔딩·첫 보상 다시 없음
+  await ev(k.page, `(async () => { const { on } = await import('/src/core/ctx.js'); window.__sq = []; on('story:line', (e) => { if (e.index === 0) window.__sq.push('L:' + e.scriptId); }); on('story:panel', (e) => { const q = 'P:' + e.sceneId; if (window.__sq[window.__sq.length - 1] !== q) window.__sq.push(q); }); })()`);
+  await start(k.page, '7-3'); await ev(k.page, NEXT); await ev(k.page, 'window.__sq = []');
+  await finishNow(k.page);
+  const sq2 = await ev<string[]>(k.page, 'window.__sq.slice()');
+  // 반복 완료의 무작위 추첨은 특제(= 지역 서명 SG07)가 나올 수 있다(설계된 재획득). 확정 서명(source 'signature')·첫 보상은 다시 없어야 한다
+  const sv2 = await ev<{ sg: number; clears: number; first: boolean; recFirst: boolean; guaranteed: number; sources: string[] }>(k.page, `(() => { const s = __inkwave.store.current, r = s.processed[s.lastResult]; return { sg: ${sg}, clears: s.clears['7-3'], first: document.querySelector('.iw-sres').classList.contains('is-first'), recFirst: r.first, guaranteed: r.modules.filter((m) => m.source === 'signature').length, sources: r.modules.map((m) => m.source + ':' + m.defId) }; })()`);
+  ok('T067·T068 7-3 반복 완료: 엔딩 다시 안 나옴·확정 SG07·첫 보상 재지급 없음·첫 완료 연출 없음', !sq2.includes('P:ending.return') && sv2.guaranteed === 0 && !sv2.recFirst && sv2.clears === 2 && !sv2.first, { sq2, sv2 });
+  // 엔딩 다시 보기: 지도에서 7개 지역이 차례로 색을 되찾고 아카이브 통신
+  await ev(k.page, 'window.__sq = []');
+  await ev(k.page, '__inkwave.api.replayEnding()');
+  await k.page.waitForFunction('document.querySelector(".iw-harbor") && document.querySelector(".iw-harbor").dataset.revealed === "1"', { timeout: 20000, polling: 200 }).catch(() => {});
+  await wait(600);
+  const rv = await ev<{ revealed: boolean; sats: string[]; sq: string[] }>(k.page, `({ revealed: document.querySelector('.iw-harbor')?.dataset.revealed === '1', sats: [...document.querySelectorAll('.iw-harbor__card')].map((c) => c.style.getPropertyValue('--sat')), sq: window.__sq.slice() })`);
+  await k.page.screenshot({ path: 'shots/mission/ending-map.png' });
+  ok('T068 엔딩 다시 보기: 7개 지역 색 회복(채도 1) + 아카이브 통신', rv.revealed && rv.sats.length === 7 && rv.sats.every((v) => v === '1.00') && rv.sq.includes('L:ending.archive'), rv);
+  await ev(k.page, '__inkwave.story.layer.runner.clear()');
+  // 도전 출전(1-1 거꾸로 도는 시계: B → A, 도색병 추가): 실제 진행
+  await ev(k.page, `__inkwave.api.startChallenge('ch.1-1')`);
+  await waitCombat(k.page);
+  const ch0 = await ev<{ ch: string | null; first: string | null; crate: boolean; units: number; xp: number; parts: number }>(k.page, `(() => { const s = __inkwave.session; return { ch: s.challenge, first: s.objectives.current() && s.objectives.current().id, crate: s.mission.objectives.some((o) => o.kind === 'crate'), units: s.mission.encounters.find((e) => e.id === 'enc-a').waves[0].units.length, xp: __inkwave.store.current.xp, parts: __inkwave.store.current.inventory.parts }; })()`);
+  ok('T068 도전 1-1: 변형 적용(첫 목표 B·도색병 추가·상자 없음)', ch0.ch === 'ch.1-1' && ch0.first === 'o-b' && !ch0.crate && ch0.units === 2, ch0);
+  await operate(k.page, -6, 14, 1.5); for (let i = 0; i < 4; i++) await clearArea(k.page, -6, 14, 2.5); await operate(k.page, -6, 14, 2.8);
+  await clearArea(k.page, -12, -27, 2.5); await operate(k.page, -12, -31, 2.8);
+  await operate(k.page, 0, -4.4, 1.5); await pass(k.page, 1500);
+  await k.page.waitForFunction('document.querySelector(".iw-sres") && document.querySelector(".iw-sres").dataset.saved === "ok"', { timeout: 60000, polling: 200 }).catch(() => {});
+  const ch1 = await ev<{ rec: { clears: number; bestMs: number } | null; marks: string[]; xp: number; parts: number; inProg: unknown; log: Record<string, string[]> }>(k.page, `(() => { const s = __inkwave.store.current; return { rec: s.challenges['ch.1-1'] || null, marks: s.marks, xp: s.xp, parts: s.inventory.parts, inProg: s.inProgress, log: s.weaponLog }; })()`);
+  ok('T068 도전 완료: 부품 +40·외형 표식·개인 기록, 경험치 그대로, 진행 중 기록 없음', !!ch1.rec && ch1.rec.clears === 1 && ch1.rec.bestMs > 0 && ch1.marks.includes('mark.clock') && ch1.xp === ch0.xp && ch1.parts === ch0.parts + 40 && !ch1.inProg && Object.values(ch1.log).some((l) => l.includes('1-1')), ch1);
+  // 완료 임무 재진입(일반)
+  await ev(k.page, `__inkwave.quitToMenu('workshop')`); await wait(600);
+  await start(k.page, '2-1');
+  const re = await ev<{ st: string; ch: string | null }>(k.page, '({ st: __inkwave.session.state, ch: __inkwave.session.challenge })');
+  ok('T068 완료 임무 재진입(2-1, 일반)', re.st === 'combat' && re.ch === null, re);
+  await ev(k.page, `__inkwave.quitToMenu('workshop')`); await wait(600);
+  // 기록 14개 수집 목록·미수집 기록은 미완료(테스트 저장은 상자 기록 없음)
+  const recs = await ev<{ n: number; found: number }>(k.page, '(() => { const r = __inkwave.api.storyRecords(); return { n: r.length, found: r.filter((x) => x.found).length }; })()');
+  ok('T068 선택 기록 14개 목록, 상자를 열지 않은 기록은 미수집으로 남음', recs.n === 14 && recs.found === 0, recs);
+  ok('T068 콘솔 오류 없음', errors.length === 0 && k.errors.length === 0, [...errors, ...k.errors].slice(0, 5));
+  await k.page.close();
+}
+
+async function generic(id: string, plan: Plan): Promise<void> {
+  const { page, errors } = await openFresh();
+  await ev(page, `__inkwave.store.newGame(Date.now(), 'normal')`);
+  await ev(page, `__inkwave.store.commit((s) => ({ ...s, unlocked: ${JSON.stringify(['1-1', ...plan.prev])} }))`);
+  const m = await ev<MissionJson>(page, `import('/src/campaign/definitions.js').then((d) => JSON.parse(JSON.stringify(d.getMission('${id}'))))`);
+  const dev = (k: string) => m.devices.find((d) => d.id === k)!;
+  const unitAt = (u: string): V3 => { for (const e of m.encounters) for (const w of e.waves) for (const x of w.units) if (x.id === u) return x.at; return m.start.at; };
+  // 1) 배치
+  const lay = await ev<{ bad: string[] }>(page, `(async () => {
+    const THREE = await import('three');
+    const g = __inkwave, G = window.__G, m = ${JSON.stringify(m)};
+    await g.startPractice({ mapId: (await import('/src/campaign/definitions.js')).getMission('${id}').mapId });
+    const nav = G.nav, bad = [];
+    const ground = (p) => { const h = G.physics.raycast(new THREE.Vector3(p[0], p[1] + 2.5, p[2]), new THREE.Vector3(0, -1, 0), 12); return h.hit ? p[1] + 2.5 - h.dist : null; };
+    const pts = [['start', m.start.at], ...m.devices.map((d) => ['dev:' + d.id, d.at]), ...m.checkpoints.map((c) => ['cp:' + c.id, c.at]), ...m.encounters.flatMap((e) => e.waves.flatMap((w) => w.units.map((u) => ['unit:' + u.id, u.at])))];
+    const s0 = nav.nearest(new THREE.Vector3(m.start.at[0], ground(m.start.at) ?? m.start.at[1], m.start.at[2]), 1.5);
+    for (const [name, p] of pts) {
+      const y = ground(p);
+      if (y === null || Math.abs(y - p[1]) > 1.2) { bad.push(name + ' 바닥 ' + y); continue; }
+      const n = nav.nearest(new THREE.Vector3(p[0], y, p[2]), 1.5);
+      if (n < 0) { bad.push(name + ' 이동 그래프 밖'); continue; }
+      if (!name.startsWith('unit:') && !nav.path(s0, n, 0, 20000)) bad.push(name + ' 시작점에서 도달 불가');
+    }
+    return { bad };
+  })()`);
+  ok(`${id} 배치: 모든 지점이 바닥 위·이동 그래프 안·시작점에서 도달 가능`, lay.bad.length === 0, lay);
+  await ev(page, `__inkwave.quitToMenu('workshop')`); await wait(500);
+  // 2) 주행(가짜 표준 패드, 걷기·점프만): 모든 목표·선택 상자·CP에 실제로 닿는다
+  await page.evaluate(`window.__pads = []; Object.defineProperty(navigator, 'getGamepads', { configurable: true, value: () => window.__pads.map((q, i) => q && ({ index: i, id: 'Xbox 360 Controller (STANDARD GAMEPAD)', mapping: 'standard', connected: true, axes: q.ax || [0, 0, 0, 0], buttons: Array.from({ length: 17 }, (_, k) => ({ pressed: !!(q.b && q.b[k]), value: q.b && q.b[k] ? 1 : 0 })) })) })`);
+  await start(page, id);
+  await ev(page, `window.__pads[0] = { b: { 0: 1 } }`); await ev(page, '__m.frames(3)'); await ev(page, `window.__pads[0] = { b: {} }`); await ev(page, '__m.frames(3)');
+  const legs: Array<Record<string, unknown>> = [];
+  for (const to of plan.walk) {
+    const r = await ev<{ ok: boolean }>(page, `(async () => {
+      const g = __inkwave, G = window.__G, s = g.session, m = s.mission, a = G.local, nav = G.nav;
+      const units = m.encounters.flatMap((e) => e.waves.flatMap((w) => w.units));
+      const d = m.devices.find((x) => x.id === '${to}') || m.checkpoints.find((x) => x.id === '${to}') || units.find((u) => 'unit:' + u.id === '${to}');
+      const tgt = s._ground(d.at), rad = (d.radius || 1.5) * 0.8;
+      const t0 = G.time; let path = null, pi = 1, replan = 0, lastP = a.pos.clone(), stuckT = 0, jumpT = 0;
+      while (G.time - t0 < 60) {
+        a.invuln = 999; window.__m.skipStory();
+        for (const e of g.match.actors) if (e.team === 1 && e.bot && !e.__frozen) { e.__frozen = 1; e.bot.update = () => { e.intent.move.set(0, 0, 0); e.intent.fire = false; }; }
+        if (G.boss && !G.boss.__frozen) { G.boss.__frozen = 1; G.boss.brain.update = () => {}; G.boss.visible = false; }   // 주행 검사: 거대 보스는 멈추고 몸으로 밀지 않는다
+        if (Math.hypot(a.pos.x - tgt.x, a.pos.z - tgt.z) < rad && Math.abs(a.pos.y - tgt.y) < 1) { window.__pads[0] = { b: {} }; return { ok: true, secs: +(G.time - t0).toFixed(1) }; }
+        replan -= 1 / 60;
+        if (!path || replan <= 0) { const s0 = nav.nearest(a.pos, 1.2), g0 = nav.nearest(tgt, 1.5); path = nav.path(s0, g0, 0, 20000, true); pi = 1; replan = 1.5; }
+        let wx = tgt.x, wz = tgt.z, wy = tgt.y;
+        if (path) { while (pi < path.length && Math.hypot(nav.nodes[path[pi]].x - a.pos.x, nav.nodes[path[pi]].z - a.pos.z) < 0.6) pi++; if (pi < path.length) { const n = nav.nodes[path[pi]]; wx = n.x; wz = n.z; wy = n.y; } }
+        const dx = wx - a.pos.x, dz = wz - a.pos.z, L = Math.hypot(dx, dz) || 1;
+        const yaw = g.rig.yaw, sy = Math.sin(yaw), cy = Math.cos(yaw);
+        const ux = dx / L, uz = dz / L, mz = ux * sy + uz * cy, mx = -ux * cy + uz * sy;
+        if (a.pos.distanceTo(lastP) < 0.02) stuckT += 1 / 60; else stuckT = 0;
+        lastP.copy(a.pos);
+        const jump = (wy > a.pos.y + 0.35 || stuckT > 0.4) && jumpT <= 0;
+        if (jump) jumpT = 0.6; jumpT -= 1 / 60;
+        window.__pads[0] = { ax: [mx, -mz, 0, 0], b: jump ? { 0: 1 } : {} };
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      window.__pads[0] = { b: {} };
+      return { ok: false, left: +Math.hypot(a.pos.x - tgt.x, a.pos.z - tgt.z).toFixed(2), at: [a.pos.x, a.pos.y, a.pos.z].map((v) => +v.toFixed(1)) };
+    })()`);
+    legs.push({ to, ...r });
+    if (!r.ok) break;
+    await ev(page, '__m.frames(10)');
+  }
+  ok(`${id} 주행: 기본 이동(걷기·점프)만으로 모든 목표·선택 상자·CP에 실제로 닿는다`, legs.length === plan.walk.length && legs.every((l) => l.ok), legs);
+  await page.screenshot({ path: `shots/mission/walk-${id}.png` });
+  await ev(page, `__inkwave.quitToMenu('workshop')`); await wait(500);
+  // 3) 논리 진행 — 이야기 사건(35번 R032)도 기록한다: 대본은 건너뛰기(skip)로 넘기되 큐는 비우지 않는다(통신이 사라지지 않게)
+  await ev(page, `(async () => { if (window.__sqOn) return; window.__sqOn = 1; const { on } = await import('/src/core/ctx.js'); window.__sq = [];
+    on('story:line', (e) => { if (e.index === 0) window.__sq.push('L:' + e.scriptId); });
+    on('story:panel', (e) => { const k = 'P:' + e.sceneId; if (window.__sq[window.__sq.length - 1] !== k) window.__sq.push(k); }); })()`);
+  await ev(page, 'window.__sq = []');
+  await start(page, id);
+  await ev(page, `(window.__m.skipStory = () => { const st = __inkwave.story; if (!st) return; if (st.panels.playing) { st.panels.skip(); return; } if (st.layer.runner.cur) st.layer.runner.skip(); }, 0)`);
+  const req = m.objectives.filter((o) => !o.optional);
+  const s0 = await st(page);
+  ok(`${id} 시작: 전투·첫 목표 ${req[0].id}·HUD 목표`, s0.st === 'combat' && s0.cur === req[0].id && String(s0.hud).length > 0, s0);
+  const last = [...req].reverse().find((o) => o.device);
+  if (last && last !== req[0]) { const d = dev(last.device!); await operate(page, d.at[0], d.at[2], 2.6); const sk = await st(page); ok(`${id} 순서: ${last.id}를 먼저 가동해도 완료 안 됨`, !sk.done.includes(last.id), sk); }
+  const deadAll = (ids: string[]) => ev<boolean>(page, `${JSON.stringify(ids)}.every((u) => __inkwave.session.encounters.dead.has(u))`);
+  let diedOnce = false, routeDone = false;
+  const crate = plan.skipCrate ? undefined : m.objectives.find((o) => o.kind === 'crate');
+  for (const o of req) {
+    // 도착형 CP
+    for (const c of m.checkpoints) {
+      const cur = await st(page);
+      if (!c.area || !(c.after ?? []).every((x) => cur.done.includes(x)) || cur.cp === c.id || m.checkpoints.findIndex((x) => x.id === cur.cp) >= m.checkpoints.indexOf(c)) continue;
+      await ev(page, `__m.tp(${c.at[0]}, 3, ${c.at[2]})`); await pass(page, 900);
+      const r = await st(page);
+      const saved = await ev<string | null>(page, '__inkwave.store.current.inProgress && __inkwave.store.current.inProgress.checkpointId');
+      ok(`${id} 도착형 ${c.id}: 영역에 들어가면 켜지고 저장된다`, r.cp === c.id && saved === c.id, { r, saved });
+    }
+    // 갈림길: 고른 경로만 발동
+    if (plan.route && !routeDone) {
+      const take = m.encounters.find((e) => e.id === plan.route!.take)!;
+      const reqs = (take as unknown as { requires?: string[] }).requires ?? [];
+      const cur = await st(page);
+      if (reqs.every((x) => cur.done.includes(x))) {
+        routeDone = true;
+        const cx = (take.area[0] + take.area[1]) / 2, cz = (take.area[2] + take.area[3]) / 2;
+        await ev(page, `__m.tp(${cx}, 3, ${cz})`); await pass(page, 1500);
+        const r = await st(page);
+        ok(`${id} 갈림길: ${plan.route.take} 경로만 발동(${plan.route.other} 대기)`, r.enc[plan.route.take] !== 'idle' && r.enc[plan.route.other] === 'idle', r);
+        await clearEncounter(page, cx, cz, plan.route.take, 30);
+      }
+    }
+    if (plan.before?.[o.id]) await plan.before[o.id](page, m);
+    if (o.kind === 'defeat' && m.boss?.giant && o.target === m.boss.unit) {
+      // 거대 보스: 전투장에 들어가 나타나게 한 뒤 실제 피해 경로(applyDamage)로 쓰러뜨린다(포효 중 무적은 기다린다)
+      const g = m.boss.giant, t0 = Date.now();
+      while (Date.now() - t0 < 30000 && !(await ev<boolean>(page, '!!(window.__G.boss && window.__G.boss.visible)'))) { await ev(page, `(__m.tp(${g.at[0]}, 3, ${g.at[2] - 6}), __m.skipStory(), 0)`); await ev(page, '__m.frames(4)'); }
+      const t1 = Date.now();
+      while (Date.now() - t1 < 90000 && !(await ev<boolean>(page, '!window.__G.boss || window.__G.boss.dead'))) { await ev(page, `(() => { const b = window.__G.boss; __m.tp(${g.at[0]}, 3, ${g.at[2] - 7}); __m.skipStory(); b.applyDamage(__m.G.local, 900, false, null); return 0; })()`); await ev(page, '__m.frames(6)'); }
+    } else if (o.kind === 'defeat') {
+      const at = unitAt(o.target!);
+      const t0 = Date.now();
+      while (Date.now() - t0 < 15000 && !(await ev<boolean>(page, `!!__inkwave.session.encounters.unitActor('${o.target}')`))) { await ev(page, `(__m.tp(${at[0]}, 3, ${at[2]}), __m.skipStory(), 0)`); await ev(page, '__m.frames(4)'); }
+      await clearArea(page, at[0], at[2], 3);
+    } else if (o.kind === 'clear') {
+      const e = m.encounters.find((x) => x.id === o.encounter)!;
+      await clearEncounter(page, (e.area[0] + e.area[1]) / 2, (e.area[2] + e.area[3]) / 2, e.id, 40);
+    } else {
+      const d = dev(o.device!);
+      if (d.guards?.length) { const t0 = Date.now(); while (Date.now() - t0 < 40000 && !(await deadAll(d.guards))) await clearArea(page, d.at[0], d.at[2], 0.6); }
+      if (d.clearFirst) { await operate(page, d.at[0], d.at[2], 1.2); await clearEncounter(page, d.at[0], d.at[2], d.clearFirst, 40); }
+      if (d.kind === 'stabilize') {
+        // 안정화: 원 안에 머물며(칠한 뒤) 다가오는 적을 정리한다 — 누적이 끝날 때까지(게임 시간)
+        await ev(page, `__m.paintAt(${d.at[0]}, ${d.at[2]}, 3)`);
+        const t0 = Date.now();
+        while (Date.now() - t0 < 240000 && !(await ev<boolean>(page, `!!(__inkwave.session && __inkwave.session.devices.get('${d.id}').complete)`))) { await ev(page, `(__inkwave.session && (__m.tp(${d.at[0]}, 3, ${d.at[2]}), __m.killAll(), __m.skipStory()), 0)`); await ev(page, '__m.frames(4)'); }
+      } else await operate(page, d.at[0], d.at[2], 2.8);
+    }
+    await pass(page, 400);
+    const r = await st(page);
+    if (!r || r.st !== 'combat') { ok(`${id} ${o.id} 완료 → 결과`, (r && r.st === 'results') || (await ev<string>(page, '__inkwave.menus.current')) === 'storyResults', r); break; }
+    ok(`${id} ${o.id} 완료(${o.label})`, r.done.includes(o.id), r);
+    if (o.checkpoint) {
+      const saved = await ev<string | null>(page, '__inkwave.store.current.inProgress && __inkwave.store.current.inProgress.checkpointId');
+      ok(`${id} ${o.id} → ${o.checkpoint} 저장`, r.cp === o.checkpoint && saved === o.checkpoint, { r, saved });
+    }
+    if (crate && o === req[0]) {
+      const d = dev(crate.device!);
+      await clearArea(page, d.at[0], d.at[2], 1.5); await operate(page, d.at[0], d.at[2], 2.6);
+      const c = await st(page);
+      ok(`${id} 선택 상자 회수(필수 진행과 별개)`, c.done.includes(crate.id), c);
+    }
+    // 첫 CP 뒤 한 번: 사망 → 실패 패널 → CP 재도전(앞 목표·상자 유지, 플레이어 생존, 남은 예고 없음)
+    if (r.cp && !diedOnce && !plan.ownDeath) {
+      diedOnce = true;
+      await ev(page, `(() => { const a = __m.G.local; a.invuln = 0; a.splat(null, 'weapon'); })()`);
+      await pass(page, 2200);
+      const failed = await ev<{ st: string; panel: boolean }>(page, '({ st: __inkwave.session.state, panel: !!document.querySelector(".iw-camp__fail") })');
+      await ev(page, '__inkwave.session.retryCheckpoint()'); await pass(page, 600);
+      const re = await st(page);
+      const tel = await ev<number>(page, '__inkwave.campaignPreview.telegraphs.live.length');
+      const resets = m.checkpoints.find((c) => c.id === r.cp)!.resets;
+      ok(`${id} ${r.cp} 사망 → 실패 패널 → 재도전(앞 목표 유지·생존·남은 예고 없음·지나지 않은 구간 적 미발동)`, failed.st === 'failed' && failed.panel && re.st === 'combat' && r.done.every((x) => re.done.includes(x)) && re.cp === r.cp && re.alive && tel === 0 && resets.every((e) => re.enc[e] === 'idle'), { failed, re, tel });
+      if (plan.route) routeDone = false;   // 재도전으로 갈림길 묶음이 처음 상태다
+    }
+  }
+  if (plan.extra) await plan.extra(page, m);
+  await pass(page, 1500);
+  await page.waitForFunction('document.querySelector(".iw-sres") && document.querySelector(".iw-sres").dataset.saved === "ok"', { timeout: 60000, polling: 200 }).catch(() => {});
+  await page.screenshot({ path: `shots/mission/${id}-results.png` });
+  // 이야기 사건(35번 R032): 시작 대본이 처음, 목표 통신은 그 목표 뒤, 사망 대본(죽었으면), 정예·보스 등장 패널, 완료 대본(첫 완료면 장 에필로그 뒤)
+  {
+    const sq = await ev<string[]>(page, 'window.__sq.slice()');
+    const ms = await ev<{ intro: string; outro: string; death: string; comms: Record<string, string>; panels: Record<string, string> } | null>(page, `import('/src/campaign/story/scripts/index.js').then((x) => { const v = x.missionStory('${id}'); return v && JSON.parse(JSON.stringify({ ...v, comms: v.comms || {}, panels: v.panels || {} })); })`);
+    const miss: string[] = [];
+    if (!ms) miss.push('이야기 없음');
+    else {
+      if (sq[0] !== 'L:' + ms.intro) miss.push('처음이 시작 대본이 아님: ' + sq[0]);
+      for (const o of m.objectives) if (o.comm && !o.optional && !sq.includes('L:' + ms.comms[o.comm])) miss.push(`목표 ${o.id} 통신 ${ms.comms[o.comm]}`);
+      if (diedOnce && !sq.includes('L:' + ms.death)) miss.push('사망 대본');
+      const pid = ms.panels.bossIntro ?? ms.panels.midBoss;
+      if (pid && !sq.includes('P:' + pid)) miss.push('등장 패널 ' + pid);
+      if (!sq.includes('L:' + ms.outro)) miss.push('완료 대본');
+    }
+    ok(`R032 ${id} 이야기 사건: 시작·목표 통신·사망·등장 패널·완료 대본이 실제 진행 중에 나온다`, miss.length === 0, { miss, sq });
+  }
+  const save = await ev<{ xp: number; done: string[]; unlocked: string[]; records: string[]; inProgress: unknown; weapons: string[]; want: string[]; sigs: string[]; tier: number; wantTier: number }>(page, `(async () => { const s = __inkwave.store.current; const c = await import('/src/campaign/craft.js'); const e = await import('/src/campaign/data/economy.js'); return { xp: s.xp, done: s.done, unlocked: s.unlocked, records: s.records, inProgress: s.inProgress, weapons: c.unlockedWeapons(s), want: e.WEAPON_UNLOCK['${id}'] || [], sigs: s.signatures, tier: c.upgradeTier({ ...s, done: [...new Set([...s.done, ...e.UPGRADE_UNLOCK_MISSION.slice(0, Math.max(0, e.UPGRADE_UNLOCK_MISSION.indexOf('${id}')))])] }), wantTier: e.UPGRADE_UNLOCK_MISSION.indexOf('${id}') + 1 }; })()`);
+  // 강화 단계: 검사 저장은 앞 임무를 해금만 했으므로 앞 장 보스 완료(실제 진행에 있는 것)를 더해 계산한다
+  const sig = (m.reward as { signature?: string }).signature;
+  ok(`${id} 첫 완료 저장: 완료·다음 해금(${m.reward.unlocks.join(',')})·선택 기록·무기 해금·서명·강화 단계·진행 중 기록 비움`, save.xp > 0 && save.done.includes(id) && m.reward.unlocks.every((u) => save.unlocked.includes(u)) && (!m.reward.record || plan.skipCrate || save.records.includes(m.reward.record)) && save.want.every((w) => save.weapons.includes(w)) && (!sig || save.sigs.includes(sig)) && save.tier >= save.wantTier && !save.inProgress, save);
+  await ev(page, `__inkwave.quitToMenu('workshop')`); await wait(800);
+  // 작업장 배경 경기(attract)의 봇은 캠페인 적이 아니다: 캠페인 적(EnemyBrain의 unit)이 남았는지 센다
+  const rel = await ev<{ session: boolean; preview: boolean; foes: number; boss: boolean }>(page, '({ session: !!__inkwave.session, preview: !!__inkwave.campaignPreview, foes: __inkwave.match ? __inkwave.match.actors.filter((a) => a.bot && a.bot.unit).length : 0, boss: !!window.__G.boss })');
+  ok(`${id} 종료 뒤 자원 해제(세션·미리보기·캠페인 적·거대 보스 없음)`, !rel.session && !rel.preview && rel.foes === 0 && !rel.boss, rel);
+  ok(`${id} 콘솔 오류 없음`, errors.length === 0, errors.slice(0, 5));
+  await page.close();
+}
 await browser.close().catch(() => {});
 console.log(JSON.stringify(results, null, 2));
 console.log(`mission-check: ${Object.keys(results).length - fail} passed, ${fail} failed`);

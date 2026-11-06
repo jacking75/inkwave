@@ -40,6 +40,12 @@ export const M_1_1: MissionDefinition = {
     { id: 'cp1', at: [-8, -0.2, -35], yaw: N, resets: ['enc-front', 'enc-side', 'enc-b'] },
   ],
   reward: { kind: 'normal', firstSet: ['AD01', 'TK01', 'BD01'], record: 'rec.tidewater.1', unlocks: ['1-2'] },
+  // 선택 경로 장치(35번 R023): 화단 위로 올리는 분수, 정면 방패병 뒤 잉크통 둘
+  actionDevices: [
+    { kind: 'fountain', id: 'f1', at: [-12, -0.2, -15.5], land: [-12, 1.0, -12.5] },
+    { kind: 'barrel', id: 'b1', at: [3, -0.2, -13] },
+    { kind: 'barrel', id: 'b2', at: [-3, -0.2, -13] },
+  ],
   hints: {
     'o-a': '바닥을 칠하고 잠수(Shift·LT·잠수 버튼)로 빠르게 이동한다 · 중계기 둘레를 60% 칠한 뒤 원 안에 2초 머문다',
     'o-b': '옆 벽을 칠하면 잠수로 오를 수 있다 · 방패병은 옆이나 뒤로 돌아간다',
@@ -82,6 +88,13 @@ export const M_1_2: MissionDefinition = {
     { id: 'cp2', at: [14, -0.2, -9], yaw: N, resets: ['enc-elite'] },
   ],
   reward: { kind: 'normal', record: 'rec.tidewater.2', unlocks: ['1-3'] },
+  // 선택 경로 장치(35번 R023): 출발점 스위치가 화단 분수를 켜고, 청소반장 구역에 잉크통 둘
+  actionDevices: [
+    { kind: 'switch', id: 's1', at: [-11, -0.2, -31], enables: ['f2'] },
+    { kind: 'fountain', id: 'f2', at: [-9.5, -0.2, -28], land: [-8.5, 1.0, -25.5], startsOff: true },
+    { kind: 'barrel', id: 'b3', at: [15, -0.2, 16] },
+    { kind: 'barrel', id: 'b4', at: [9, -0.2, 20] },
+  ],
 };
 
 // ---- 1-3 광장의 통행금지: 진입 사격병 2 정리 → CP(보스 앞) → 통행대장 바리 → 중앙 단말

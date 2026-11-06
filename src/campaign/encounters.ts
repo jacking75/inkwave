@@ -112,6 +112,7 @@ export class Encounters<A> {
     }
   }
   // 묶음에 남은 적을 모두 거둔다(보스 처치 뒤 지원 중지, 세션 종료)
-  stop(id: string): void { const r = this.runs.get(id); if (!r) return; for (const a of r.live.values()) this.host.despawn(a); r.live.clear(); r.pending = []; if (r.state === 'active') r.state = 'cleared'; }
+  // 정예·보스가 쓰러져 묶음을 멈춘다: 남은 지원·적을 치우고 정리 완료로 알린다(정리형 목표도 완료된다, 6-2)
+  stop(id: string): void { const r = this.runs.get(id); if (!r) return; for (const a of r.live.values()) this.host.despawn(a); r.live.clear(); r.pending = []; if (r.state === 'active') { r.state = 'cleared'; this.onCleared?.(id); } }
   disposeAll(): void { for (const r of this.runs.values()) { for (const a of r.live.values()) this.host.despawn(a); r.live.clear(); r.pending = []; } }
 }

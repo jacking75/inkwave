@@ -11,12 +11,14 @@ import { applyXp } from './growth.js';
 import { addCards, makeCard, type ModuleCard } from './inventory.js';
 import { basicCard, newAttempt, pityAfter, rollSource, signatureCard, type AttemptLoot, type RolledModule } from './loot.js';
 import { PROCESSED_KEEP, type CampaignSave, type CompletionRecord } from './save.js';
+import { logWeapon } from './challenge.js';
 
 export interface CompletionInput {
   completionId: string;     // 완료 회차의 처리 ID(같은 결과 재시도는 같은 ID)
   runId: string;
   mission: MissionDefinition;
   crateOpened: boolean;     // 이번 시도에서 선택 상자를 회수했다
+  weapon?: string | null;   // 출전 무기(무기별 공략 기록, 33번 T068)
 }
 export type CompletionOutcome = { save: CampaignSave; record: CompletionRecord; repeated: boolean } | { reject: 'rejected'; reason: string };
 
@@ -78,6 +80,7 @@ export function completeMission(save: CampaignSave, inp: CompletionInput): Compl
     clears: { ...save.clears, [m.id]: clear },
     unlocked: [...save.unlocked, ...unlocks],
     records: record ? [...save.records, record] : save.records,
+    weaponLog: logWeapon(save.weaponLog, inp.weapon, m.id),
     attempts, inProgress: null, processed, lastResult: inp.completionId,
   };
   return { save: next, record: rec, repeated: false };

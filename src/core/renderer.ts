@@ -9,7 +9,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
-import { DEFAULT_SETTINGS, rendererQuality } from '../config.js';
+import { DEFAULT_SETTINGS, rendererQuality, effectivePixelRatio } from '../config.js';
 import { G } from './ctx.js';
 import { isTouchDevice } from './touch.js';   // 성능 분류(기기)이다. 가상 키 표시와 무관하다(33번 T007)
 import { resolveLook, type LookProfile } from '../style/lookProfile.js';
@@ -113,7 +113,7 @@ export class Renderer {
   declare samples: number;
   declare renderPass: RenderPass;
   declare gtao: GTAOPass | null;
-  declare bloom: UnrealBloomPass;
+  declare bloom: UnrealBloomPass | null;   // 꺼져 있으면 만들지 않는다(34번 F04: 큰 밉 타깃을 미리 잡지 않는다)
   declare grade: ShaderPass;
   declare _gradeSrc: ThemeGrade | null;
   declare extraPass: ShaderPass | undefined;
@@ -166,12 +166,17 @@ export class Renderer {
   // setScene() 뒤에만 불린다(applySettings·setExtraPass도 장면이 있을 때만 다시 만든다).
   _buildComposer(): void {
     const r = this.renderer, q = this.q, scene = this.scene!, camera = this.camera!;
-    if (this.composer) { this.composer.renderTarget1.dispose(); this.composer.renderTarget2.dispose(); }
-    this.style?.dispose();
+    // 34번 F04: 컴포저가 소유한 패스(GTAO·StylePass·bloom·grade·출력·SMAA)의 내부 타깃·재질을 정확히 한 번 해제한다.
+    // 외부가 소유한 extraPass(screenFX)는 재사용하므로 해제하지 않는다.
+    if (this.composer) {
+      for (const p of this.composer.passes) if (p !== this.extraPass) p.dispose();
+      this.composer.renderTarget1.dispose(); this.composer.renderTarget2.dispose();
+      this.style = null; this.bloom = null; this.gtao = null;
+    }
     this.dynScale = this.dynScale || 1;
-    const pr = Math.min(window.devicePixelRatio || 1, q.pixelRatio) * this.dynScale;
-    r.setPixelRatio(pr);
     const w = window.innerWidth, h = window.innerHeight;
+    const pr = effectivePixelRatio(window.devicePixelRatio || 1, q, w, h) * this.dynScale;
+    r.setPixelRatio(pr);
     r.setSize(w, h);
     // MSAA is skipped where it costs the most. On Apple GPUs a multisampled half-float target is brutally slow; on a
     // touch device it is the most bandwidth-hungry object in the frame and a phone has the least bandwidth to give.
@@ -210,9 +215,8 @@ export class Renderer {
       sp.setColorReturn(this._colorReturn);
       comp.addPass(sp);
     }
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), ...BLOOM);
-    this.bloom.enabled = !!(q.bloom && this.settings.bloom);
-    comp.addPass(this.bloom);
+    this.bloom = null;
+    if (q.bloom && this.settings.bloom) { this.bloom = new UnrealBloomPass(new THREE.Vector2(w, h), ...BLOOM); comp.addPass(this.bloom); }
     this.grade = new ShaderPass(GradeShader);
     this._gradeSrc = null;   // (re)apply the theme grade + bloom to the new passes
     comp.addPass(this.grade);
@@ -286,7 +290,8 @@ export class Renderer {
       this._buildComposer();
       this.scene?.traverse((o) => { const mat = (o as THREE.Mesh).material; if (mat) { const m = Array.isArray(mat) ? mat : [mat]; m.forEach((mm) => (mm.needsUpdate = true)); } });
     }
-    if (this.bloom) this.bloom.enabled = !!(this.q.bloom && settings.bloom);
+    // 블룸 켜기·끄기: 꺼지면 패스를 없애고(타깃 해제), 켜지면 그때 만든다
+    if (!!this.bloom !== !!(this.q.bloom && settings.bloom) && this.scene) { this._buildComposer(); this._gradeSrc = null; }
   }
 
   // Lowest dynamic scale: never below 0.75 of CSS-pixel density, so Retina screens (preset density > 1) can give
@@ -298,7 +303,7 @@ export class Renderer {
   // whole image.
   dynFloor(): number {
     if (this.touch) return 1;
-    const base = Math.min(window.devicePixelRatio || 1, this.q.pixelRatio);
+    const base = effectivePixelRatio(window.devicePixelRatio || 1, this.q, window.innerWidth, window.innerHeight);
     return Math.max(0.5, Math.min(0.75, 0.75 / base));
   }
 
@@ -307,16 +312,23 @@ export class Renderer {
     s = Math.max(this.dynFloor(), Math.min(1, s));
     if (Math.abs(s - this.dynScale) < 0.01) return;
     this.dynScale = s;
-    const pr = Math.min(window.devicePixelRatio || 1, this.q.pixelRatio) * s;
+    this._applyPixelRatio();
+  }
+
+  // 밀도 = 실효 상한(DPR·프리셋·픽셀 총량) × 동적 배율. 창 크기가 바뀌면 총량 상한도 다시 계산한다
+  _applyPixelRatio(): void {
+    const pr = effectivePixelRatio(window.devicePixelRatio || 1, this.q, window.innerWidth, window.innerHeight) * this.dynScale;
+    if (Math.abs(pr - this.renderer.getPixelRatio()) < 1e-3) return;
     this.renderer.setPixelRatio(pr);
     this.composer.setPixelRatio(pr);
-    this.composer.setSize(this._w, this._h);
+    this.composer.setSize(this._w || window.innerWidth, this._h || window.innerHeight);
   }
 
   resize(): void {
     const w = window.innerWidth, h = window.innerHeight;
     if (w === this._w && h === this._h) return;
     this._w = w; this._h = h;
+    this._applyPixelRatio();
     this.renderer.setSize(w, h);
     this.composer.setSize(w, h);
     this.gtao?.setSize(w, h);
@@ -336,7 +348,7 @@ export class Renderer {
       u.uHighTint.value.set(...(gr.uHighTint || [1.025, 1.0, 0.972]));
       // bloom per theme: [strength, radius, threshold] — dusk lets lamps / lit windows bloom, daylight keeps it to the sun
       const bl = gr.bloom || BLOOM;
-      this.bloom.strength = bl[0]; this.bloom.radius = bl[1]; this.bloom.threshold = bl[2];
+      if (this.bloom) { this.bloom.strength = bl[0]; this.bloom.radius = bl[1]; this.bloom.threshold = bl[2]; }
     }
     // 그림책 룩은 환경광(PMREM)을 낮춘다: 반사가 툰 음영을 흐리게 하므로. 테마가 정한 값은 그대로 두고 이 렌더에만 곱한다
     const scene = this.scene, envScale = this.look.toon.envScale;

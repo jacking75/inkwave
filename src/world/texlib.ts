@@ -208,7 +208,12 @@ void main() {
 const PREP_SIG = 'vec2 uv, vec2 P, inout Req f[4], inout WReq w[2]';
 const SURF_SIG = 'vec2 uv, vec2 P, float n[4], vec4 c[2], inout S s';
 
-const MATERIALS = [
+// 재질 한 층의 정의(prep·surf는 GLSL 조각). group = 함께 컴파일하는 묶음, mask = 두 부분 알베도, stair = 계단 패턴
+interface TexMaterial {
+  name: string; detail: number; scale: number; tint: boolean; alpha: boolean; mode: number; sym: number; hr: [number, number]; ao: number;
+  prep: string; surf: string; group?: number; mask?: boolean; stair?: unknown;
+}
+const MATERIALS: TexMaterial[] = [
   {
     name: 'concrete', detail: 1.0, scale: 4.0, tint: true, alpha: false, mode: GRID, sym: 7, hr: [-0.004, 0.0008], ao: 0.5,
     prep: `f[0] = FB(uv, ivec2(3), 5, 0.55, 11u); f[1] = FB(uv, ivec2(8), 3, 0.5, 19u); f[2] = FB(uv, ivec2(24), 3, 0.5, 23u);
@@ -1329,10 +1334,27 @@ float texlibCoverage(float a, vec2 uv, float texSize) {
 // Library construction
 // ---------------------------------------------------------------------------------------------------------------
 
-export async function createTextureLibrary(renderer, { size = 512 } = {}) {
+export interface TextureLibraryMeta { scale: number; tint: boolean; mask: boolean; stair: unknown; alpha: boolean; mode: number; sym: number; detail: number; depth: number }
+export interface TextureLibrary {
+  albedo: THREE.Texture; normal: THREE.Texture; orm: THREE.Texture;
+  layers: Record<string, number>; meta: Record<string, TextureLibraryMeta>; names: string[]; size: number;
+  stats: { ms: number; compileMs: number; size: number };
+  dispose(): void;
+}
+// 준비 작업 분할(34번 F03): 층을 batch개씩 그린 뒤 다음 프레임으로 양보하고, signal이 취소되면 만든 자원을 모두 풀고 던진다.
+// 렌더 타깃·autoClear·XR 상태는 성공·실패·취소 모두 finally에서 되돌린다. 제품 경로는 GPU 완료를 동기로 기다리지 않는다
+// (예전의 시간 측정용 1화소 읽기를 지웠다 — stats.ms는 명령 제출까지의 시간이다).
+export interface TextureLibraryOptions { size?: number; batch?: number; signal?: AbortSignal; onProgress?: (done: number, total: number) => void }
+// 바꿔 끼운 부착 텍스처(1·2번)는 타깃이 직접 만든 것이 아니라서 따로 해제한다(34번 F04 실측: 라이브러리마다 2개가 남았다)
+function disposeTarget(out: THREE.WebGLArrayRenderTarget): void { for (const tx of out.textures) tx.dispose(); out.dispose(); }
+const nextFrame = (): Promise<void> => new Promise((r) => (typeof requestAnimationFrame === 'function' ? requestAnimationFrame(() => r()) : setTimeout(r, 0)));
+const aborted = (s?: AbortSignal): void => { if (s?.aborted) throw new DOMException('텍스처 라이브러리 생성 취소', 'AbortError'); };
+
+export async function createTextureLibrary(renderer: THREE.WebGLRenderer, { size = 512, batch = 4, signal, onProgress }: TextureLibraryOptions = {}): Promise<TextureLibrary> {
   const t0 = performance.now();
   const L = MATERIALS.length;
   const aniso = Math.min(16, renderer.capabilities.getMaxAnisotropy());
+  aborted(signal);
 
   // one array target with three colour attachments (albedo sRGB, normal + orm linear), written in one MRT pass
   const out = new THREE.WebGLArrayRenderTarget(size, size, L, {
@@ -1343,11 +1365,12 @@ export async function createTextureLibrary(renderer, { size = 512 } = {}) {
   });
   for (let k = 1; k < 3; k++) {   // three only makes attachment 0 an array texture; swap the others in
     const t = new THREE.DataArrayTexture(null, size, size, L);
-    const t0 = out.texture;
-    for (const k2 of ['format', 'type', 'wrapS', 'wrapT', 'magFilter', 'minFilter', 'anisotropy', 'generateMipmaps', 'flipY', 'internalFormat']) t[k2] = t0[k2];
+    const src = out.texture;
+    t.format = src.format; t.type = src.type; t.wrapS = src.wrapS; t.wrapT = src.wrapT; t.magFilter = src.magFilter; t.minFilter = src.minFilter;
+    t.anisotropy = src.anisotropy; t.generateMipmaps = src.generateMipmaps; t.flipY = src.flipY; t.internalFormat = src.internalFormat;
     t.colorSpace = THREE.NoColorSpace;
     t.isRenderTargetTexture = true;
-    t.renderTarget = out;
+    (t as THREE.DataArrayTexture & { renderTarget: THREE.WebGLArrayRenderTarget }).renderTarget = out;
     out.textures[k] = t;
   }
   out.textures[0].name = 'texlib.albedo'; out.textures[1].name = 'texlib.normal'; out.textures[2].name = 'texlib.orm';
@@ -1355,7 +1378,7 @@ export async function createTextureLibrary(renderer, { size = 512 } = {}) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
   const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  const raw = (fs, uniforms) => new THREE.RawShaderMaterial({
+  const raw = (fs: string, uniforms: Record<string, THREE.IUniform>): THREE.RawShaderMaterial => new THREE.RawShaderMaterial({
     glslVersion: THREE.GLSL3, vertexShader: GEN_VS, fragmentShader: fs, uniforms, depthTest: false, depthWrite: false,
   });
   // one uber-program per material group (the original layers / the marina set): one driver compile + pipeline per
@@ -1364,47 +1387,59 @@ export async function createTextureLibrary(renderer, { size = 512 } = {}) {
     uRes: { value: new THREE.Vector2(size, size) }, uScale: { value: 1 }, uMat: { value: 0 }, uOne: { value: 1 },
     uHRange: { value: new THREE.Vector2() }, uAO: { value: 0.5 },
   };
-  const groups = [...new Set(MATERIALS.map((m) => m.group || 0))].sort((a, b) => a - b).map((g) => MATERIALS.map((m, i) => [m, i]).filter(([m]) => (m.group || 0) === g)).filter((l) => l.length);
+  type Entry = readonly [TexMaterial, number];
+  const entries: Entry[] = MATERIALS.map((m, i) => [m, i] as const);
+  const groups = [...new Set(MATERIALS.map((m) => m.group || 0))].sort((a, b) => a - b).map((g) => entries.filter(([m]) => (m.group || 0) === g)).filter((l) => l.length);
   const progs = groups.map((list) => {
     const fns = list.map(([m, i]) => `void prep${i}(${PREP_SIG}) {\n  ${m.prep}\n}\nvoid surf${i}(${SURF_SIG}) {${m.surf}\n}`).join('\n');
-    const sw = (fn, args) => list.map(([, i], k) => `${k ? 'else ' : ''}if (uMat == ${i}) ${fn}${i}(${args});`).join('\n  ');
+    const sw = (fn: string, args: string): string => list.map(([, i], k) => `${k ? 'else ' : ''}if (uMat == ${i}) ${fn}${i}(${args});`).join('\n  ');
     return raw(GEN_COMMON + fns + GEN_MAIN.replace('PREP_SWITCH', sw('prep', 'uv, P, f, w')).replace('SURF_SWITCH', sw('surf', 'uv, P, n, c, s')), uniforms);
   });
   const scene = new THREE.Scene();
   const quads = progs.map((p) => { const q = new THREE.Mesh(geo, p); q.frustumCulled = false; scene.add(q); return q; });
-  const groupOf = new Map(groups.flatMap((list, k) => list.map(([, i]) => [i, k])));
-  await renderer.compileAsync(scene, cam);   // async (and parallel) where KHR_parallel_shader_compile exists
-  const tCompiled = performance.now();
+  const groupOf = new Map(groups.flatMap((list, k) => list.map(([, i]) => [i, k] as const)));
+  const cleanupTemp = (): void => { progs.forEach((p) => p.dispose()); geo.dispose(); };
 
+  let tCompiled = t0;
   const prevRT = renderer.getRenderTarget();
   const prevAutoClear = renderer.autoClear;
   const prevXR = renderer.xr.enabled;
-  renderer.autoClear = false;
-  renderer.xr.enabled = false;
-  renderer.initRenderTarget(out);
-  for (const t of out.textures) t.generateMipmaps = false;   // build the mip chain once, after the last layer
-
-  for (let i = 0; i < L; i++) {
-    const m = MATERIALS[i];
-    quads.forEach((q, k) => { q.visible = k === groupOf.get(i); });
-    uniforms.uMat.value = i;
-    uniforms.uScale.value = m.scale;
-    uniforms.uHRange.value.set(m.hr[0], m.hr[1]);
-    uniforms.uAO.value = m.ao;
-    if (i === L - 1) for (const t of out.textures) t.generateMipmaps = true;
-    renderer.setRenderTarget(out, i);
-    renderer.render(scene, cam);
+  let ok = false;
+  try {
+    await renderer.compileAsync(scene, cam);   // async (and parallel) where KHR_parallel_shader_compile exists
+    tCompiled = performance.now();
+    aborted(signal);
+    renderer.initRenderTarget(out);
+    for (const t of out.textures) t.generateMipmaps = false;   // build the mip chain once, after the last layer
+    for (let i = 0; i < L; i++) {
+      // 상태는 층마다 다시 건다(양보한 사이에 다른 렌더가 바꿨을 수 있다)
+      renderer.autoClear = false; renderer.xr.enabled = false;
+      const m = MATERIALS[i];
+      quads.forEach((q, k) => { q.visible = k === groupOf.get(i); });
+      uniforms.uMat.value = i;
+      uniforms.uScale.value = m.scale;
+      uniforms.uHRange.value.set(m.hr[0], m.hr[1]);
+      uniforms.uAO.value = m.ao;
+      if (i === L - 1) for (const t of out.textures) t.generateMipmaps = true;
+      renderer.setRenderTarget(out, i);
+      renderer.render(scene, cam);
+      onProgress?.(i + 1, L);
+      if ((i + 1) % batch === 0 && i < L - 1) {
+        renderer.setRenderTarget(prevRT); renderer.autoClear = prevAutoClear; renderer.xr.enabled = prevXR;
+        await nextFrame();
+        aborted(signal);
+      }
+    }
+    ok = true;
+  } finally {
+    renderer.setRenderTarget(prevRT);
+    renderer.autoClear = prevAutoClear;
+    renderer.xr.enabled = prevXR;
+    cleanupTemp();
+    if (!ok) disposeTarget(out);   // 실패·취소: 만든 배열 타깃까지 회수
   }
-  // wait for the GPU so the reported time is honest (one-pixel readback)
-  renderer.readRenderTargetPixels(out, 0, 0, 1, 1, new Uint8Array(4), undefined, 2);
 
-  renderer.setRenderTarget(prevRT);
-  renderer.autoClear = prevAutoClear;
-  renderer.xr.enabled = prevXR;
-  progs.forEach((p) => p.dispose());
-  geo.dispose();
-
-  const layers = {}, meta = {};
+  const layers: Record<string, number> = {}, meta: Record<string, TextureLibraryMeta> = {};
   MATERIALS.forEach((m, i) => {
     layers[m.name] = i;
     meta[m.name] = { scale: m.scale, tint: m.tint, mask: !!m.mask, stair: m.stair || null, alpha: m.alpha, mode: m.mode, sym: m.sym, detail: m.detail, depth: +(m.hr[1] - m.hr[0]).toFixed(4) };
@@ -1419,6 +1454,6 @@ export async function createTextureLibrary(renderer, { size = 512 } = {}) {
     names: MATERIALS.map((m) => m.name),
     size,
     stats: { ms: +(t1 - t0).toFixed(1), compileMs: +(tCompiled - t0).toFixed(1), size },
-    dispose() { out.dispose(); },
+    dispose() { disposeTarget(out); },
   };
 }

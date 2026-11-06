@@ -25,6 +25,12 @@ export function missionStory(missionId: string) {
   return null;
 }
 
+// 장의 마지막 임무(n-3)를 처음 끝낼 때 재생할 장 에필로그 패널(없으면 null)
+export function chapterEpilogue(missionId: string): string | null {
+  for (const c of CHAPTERS) if (c.missions[missionId] && missionId === `${c.chapter}-3`) return c.epilogue ?? null;
+  return null;
+}
+
 // 연결 검사: 장면 순서가 가리키는 id가 모두 있는지(대본 줄 길이는 validateScripts)
 export function validateLinks(): string[] {
   const errs: string[] = [];

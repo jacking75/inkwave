@@ -30,7 +30,7 @@ export interface PortraitSource {
 
 const anim = (): AnimLike => ({ time: 0, speed: 0, localMove: { x: 0, z: 0 }, grounded: true, vy: 0, aimPitch: 0, firing: false, charge: 0, rolling: false, form: 'kid', wallNormal: new THREE.Vector3(0, 0, 1), ink: 1, lowInk: false, special: 0, invuln: false });
 
-const _vp = new THREE.Vector4(), _sc = new THREE.Vector4();
+const _vp = new THREE.Vector4(), _sc = new THREE.Vector4(), _size = new THREE.Vector2();
 interface FrameRect { x: number; y: number; w: number; h: number; cw: number; ch: number }
 
 export class PortraitView {
@@ -131,19 +131,23 @@ export class PortraitView {
   }
 
   // 틀 위치(CSS px, 캔버스 왼쪽 아래 기준). 창 크기가 바뀔 때만 다시 잰다.
-  _rect(canvas: HTMLCanvasElement): FrameRect {
-    const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  // 크기 비교는 렌더러가 기억하는 크기로 한다: clientWidth를 매 프레임 읽으면 자막 타이핑으로 바뀐 DOM의
+  // 강제 레이아웃이 일어나 초상 비용이 약 3배가 됐다(35번 R026 실측).
+  _rect(r: THREE.WebGLRenderer): FrameRect {
+    r.getSize(_size);
+    const cw = _size.x, ch = _size.y;
     if (this.rect && this.rect.cw === cw && this.rect.ch === ch) return this.rect;
+    const canvas = r.domElement;
     const cr = canvas.getBoundingClientRect(), fr = this.frame.getBoundingClientRect();
-    const r = { x: fr.left - cr.left + 6, y: cr.bottom - fr.bottom + 6, w: fr.width - 12, h: fr.height - 12, cw, ch };
-    this.rect = r;
-    return r;
+    const rect = { x: fr.left - cr.left + 6, y: cr.bottom - fr.bottom + 6, w: fr.width - 12, h: fr.height - 12, cw, ch };
+    this.rect = rect;
+    return rect;
   }
 
   render(r: THREE.WebGLRenderer): void {
     if (!this.visible || !this.cur) return;
     const t0 = performance.now();
-    const rc = this._rect(r.domElement);
+    const rc = this._rect(r);
     if (rc.w <= 4) return;
     const prevAuto = r.autoClear, prevTarget = r.getRenderTarget();
     r.getViewport(_vp); r.getScissor(_sc);
@@ -163,9 +167,9 @@ export class PortraitView {
       r.setRenderTarget(this.rt);
       r.setScissorTest(false);
       r.clear(true, true, false);
-      const sh = r.shadowMap.enabled; r.shadowMap.enabled = false;
+      // 그림자 맵 설정은 건드리지 않는다: 초상 조명은 그림자를 드리우지 않아 그림자 패스가 바로 끝난다.
+      // (shadowMap.enabled를 껐다 켜면 장면 전체의 재질 상태가 매 프레임 다시 검사돼 CPU 비용이 두 배 이상 늘었다)
       r.render(this.scene, this.camera);
-      r.shadowMap.enabled = sh;
     }
     // 매 프레임: 화면 좌하단 시저 영역에 붙인다
     r.setRenderTarget(null);

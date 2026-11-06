@@ -11,7 +11,9 @@ export const CH3 = buildChapter({
       intro: [['teal', '컨테이너 사이 중계기 셋이야. 다 지킬 필요는 없어.', 'focus'], ['pong', '화물에 목적지가 없어…', 'worry']],
       outro: [['teal', '운송장 목적지가 전부 "회수"야. 사람이 쓴 게 아니야.', 'worry'], ['mora', '블래스터랑 활, 버킷도 정비해 뒀어.', 'smile']],
       death: [['teal', '컨테이너 위 포격이야. 예고 원을 보고 옆으로.', 'worry'], ['pong', '노란 동그라미! 피하자!', 'determined']],
-      comms: { relay2: [['teal', '둘째 중계기 연결. 앞만 보면 돼.', 'smile']] } },
+      comms: { relay2: [['teal', '둘째 중계기 연결. 앞만 보면 돼.', 'smile']],
+        // 거대 보스의 배경 예고(3-1에서는 공격하지 않는다)
+        tease: [['teal', '바다 쪽 큰 그림자 봤어? 아직은 지나가기만 해.', 'worry'], ['pong', '껍데기가 집채만 해…', 'surprise']] } },
     { id: '3-2',
       intro: [['teal', '안전 통로를 칠해 두고 낙하 구역 기록을 가져와.', 'focus'], ['pong', '아래가 바다야. 조심!', 'worry']],
       outro: [['teal', '정화 대상 목록에 생물이 있어. 소라게야.', 'worry'], ['mora', '…그 껍질 장비, 어디서 본 것 같아.', 'worry']],

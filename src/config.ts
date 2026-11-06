@@ -628,6 +628,10 @@ export const DEFAULT_SETTINGS = {
   mascot: true,             // 잉크 방울 마스코트 「퐁」
   reduceMotion: false,      // 시간 정지·카메라 킥·펀치를 끈다(멀미 대응)
   koreanVoice: true,        // 절차 합성 "찍찍 목소리"
+  // 메뉴 배경(34번 F02): 'static' = 자동 전투·로비 선행 로딩 없이 정적 배경(기본), 'live' = 기존 자동 전투 배경
+  menuScene: 'static' as 'static' | 'live',
+  // 언어(34번 F06): 'ko'(기본) | 'en'. 없거나 깨진 값은 'ko'로 복구한다(ui/i18n.ts normalizeLocale)
+  locale: 'ko' as 'ko' | 'en',
 };
 export type LookId = 'storybook' | 'classic';
 export type OutlineWidth = 0.8 | 1 | 1.3;
@@ -637,6 +641,13 @@ export type OutlineWidth = 0.8 | 1 | 1.3;
 // monitor: pixelRatio 0.75 and msaa 0 together render the scene at three-quarters of CSS resolution with no
 // anti-aliasing at all, which on a 3x phone screen is a field of jaggies. Sharpen those two knobs only; the
 // storage-related fields (paintAtlas, shadowSize, particles) stay exactly as the tier defines them.
+// 실제 렌더 밀도(34번 F02): 기기 DPR·프리셋 상한·픽셀 총량 상한 중 가장 낮은 값(동적 해상도 배율은 그 위에 곱한다)
+export function effectivePixelRatio(dpr: number, q: Pick<QualityPreset, 'pixelRatio' | 'maxPixels'>, w: number, h: number): number {
+  const byCap = Math.min(dpr > 0 ? dpr : 1, q.pixelRatio);
+  const area = Math.max(1, w) * Math.max(1, h);
+  return Math.max(0.25, Math.min(byCap, Math.sqrt(q.maxPixels / area)));
+}
+
 export function rendererQuality(settings: { quality?: string } | null | undefined, touch: boolean): QualityPreset {
   const q: QualityPreset = QUALITY[settings?.quality as QualityId] || QUALITY.high;   // 모르는 값이면 high이다
   if (!touch) return q;
@@ -646,11 +657,12 @@ export function rendererQuality(settings: { quality?: string } | null | undefine
 // Quality presets consumed by the renderer + fx.
 export type QualityId = 'low' | 'medium' | 'high' | 'ultra';
 // lines·halftone: 그림책 룩의 외곽선·하프톤을 이 등급에서 그릴지이다(src/style/lookProfile.ts).
-export interface QualityPreset { pixelRatio: number; shadowSize: number; msaa: number; bloom: boolean; ao: boolean; paintAtlas: number; particles: number; lines: boolean; halftone: boolean }
+export interface QualityPreset { pixelRatio: number; shadowSize: number; msaa: number; bloom: boolean; ao: boolean; paintAtlas: number; particles: number; lines: boolean; halftone: boolean; maxPixels: number }
 export const QUALITY: Record<QualityId, QualityPreset> = {
   // pixelRatio = cap on devicePixelRatio (Retina screens render at up to this density)
-  low:    { pixelRatio: 0.75, shadowSize: 1024, msaa: 0, bloom: false, ao: false, paintAtlas: 2048, particles: 0.4, lines: true, halftone: false },
-  medium: { pixelRatio: 1.0,  shadowSize: 2048, msaa: 2, bloom: true,  ao: false, paintAtlas: 2048, particles: 0.7, lines: true, halftone: true },
-  high:   { pixelRatio: 1.5,  shadowSize: 4096, msaa: 4, bloom: true,  ao: true,  paintAtlas: 4096, particles: 1.0, lines: true, halftone: true },
-  ultra:  { pixelRatio: 2.0,  shadowSize: 4096, msaa: 4, bloom: true,  ao: true,  paintAtlas: 4096, particles: 1.0, lines: true, halftone: true },
+  // maxPixels = 렌더 픽셀 총량 상한(34번 F02): DPR만 막으면 4K 창을 그대로 그린다. 창이 크면 밀도를 낮춰 이 수를 넘지 않는다
+  low:    { pixelRatio: 0.75, shadowSize: 1024, msaa: 0, bloom: false, ao: false, paintAtlas: 2048, particles: 0.4, lines: true, halftone: false, maxPixels: 1280 * 720 },
+  medium: { pixelRatio: 1.0,  shadowSize: 2048, msaa: 2, bloom: true,  ao: false, paintAtlas: 2048, particles: 0.7, lines: true, halftone: true, maxPixels: 1920 * 1080 },
+  high:   { pixelRatio: 1.5,  shadowSize: 4096, msaa: 4, bloom: true,  ao: true,  paintAtlas: 4096, particles: 1.0, lines: true, halftone: true, maxPixels: 2560 * 1440 },
+  ultra:  { pixelRatio: 2.0,  shadowSize: 4096, msaa: 4, bloom: true,  ao: true,  paintAtlas: 4096, particles: 1.0, lines: true, halftone: true, maxPixels: 3840 * 2160 },
 };

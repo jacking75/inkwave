@@ -63,6 +63,22 @@ const DIO_PITCH = 1.1, DIO_FOV = 30;
 const _gpT = new THREE.Vector3(), _bT = new THREE.Vector3(), _gF = new THREE.Vector3();
 const _probe = { hard: 0, soft: 0, floor: false };
 const _hit = new Hit();
+const _lensHit = new Hit(), _lensDir = new THREE.Vector3();
+// 바라보는 점(look)에서 렌즈(lens)까지 지형이 막으면 렌즈를 막힌 곳 0.3 m 앞(최소 바라보는 점에서 0.5 m)으로 옮긴다.
+// 반환: 옮긴 거리(m). 막히지 않으면 0.
+export function guardLens(look: THREE.Vector3, lens: THREE.Vector3, pad = 0.3): number {
+  const ph = G.physics;
+  if (!ph) return 0;
+  _lensDir.copy(lens).sub(look);
+  const len = _lensDir.length();
+  if (len < 1e-3) return 0;
+  _lensDir.multiplyScalar(1 / len);
+  ph.raycast(look, _lensDir, len, _lensHit, true);
+  if (!_lensHit.hit) return 0;
+  const keep = Math.min(len, Math.max(0.5, _lensHit.dist - pad));
+  lens.copy(look).addScaledVector(_lensDir, keep);
+  return len - keep;
+}
 
 // Critically-damped spring (exact integration — stable and frame-rate independent).
 class Spring {
@@ -104,7 +120,7 @@ export class CameraRig {
   declare shakeScale: number;
   declare target: CameraFollowTarget | null;
   declare spectate: CameraSpectate | null;
-  declare path: CameraPath | null;
+  declare path: CameraPath | null; declare _pathLook: THREE.Vector3;
   declare orbitP: CameraOrbit | undefined;
   declare lookAt: THREE.Vector3;
   declare baseFov: number;
@@ -161,6 +177,7 @@ export class CameraRig {
     this.target = null;           // actor followed
     this.spectate = null;
     this.path = null;             // cinematic path { from, to, lookFrom, lookTo, t, dur, ease }
+    this._pathLook = new THREE.Vector3();
     this.lookAt = new THREE.Vector3();
     this.baseFov = 70;
     this.zoom = 0;
@@ -291,6 +308,8 @@ export class CameraRig {
     this.spectateT = 0;
     if (next === 'overview') this._ovFresh = true;
     if (G.match?.attract || !prev) return;                   // attract mode cuts between shots on purpose
+    // 컷(시네마틱)은 바로 끊는다: 남은 자세 보간이 이전 자리에서 새 컷 자리로 벽을 지나 미끄러지지 않게(R009)
+    if (next === 'path' && this.blend) this.blend.active = false;
     let dur = 0;
     if (next === 'spectate') dur = 0.55;                     // splatted → death cam
     else if (next === 'follow' && prev === 'spectate') dur = 0.7;   // respawn
@@ -333,6 +352,8 @@ export class CameraRig {
       _q.copy(cam.quaternion); cam.quaternion.slerpQuaternions(b.quat, _q, k);
       fov = lerp(b.fov, fov, k);
       if (k >= 1) b.active = false;
+      // 캠페인(액션 프로필): 보간 중인 렌즈도 바라보는 점에서 막히지 않게(컷 → 따라가기 0.6초 등)
+      if (this.profile) guardLens(this.mode === 'path' ? this._pathLook : this.pivot, cam.position);
     }
     // trauma shake: smooth low-frequency noise (≤ ~4.5 Hz), rotation-led with a touch of translation; eased in, eased out
     if (this._traumaIn > 0) { const m = Math.min(this._traumaIn, dt * 14); this.trauma = Math.min(1, this.trauma + m); this._traumaIn -= m; }
@@ -540,6 +561,12 @@ export class CameraRig {
     if (shT > 0.01 && G.physics) {
       const hr = G.physics.raycast(cam.position, _right, shT + 0.25, _hit, true);
       if (hr.hit) shT = Math.max(0, hr.dist - 0.25);
+      // 비킨 렌즈에서도 피벗(머리)이 보여야 한다: 피벗 → 비킨 자리 선이 벽 모서리에 막히면 반, 그래도 막히면 0(R009)
+      for (let k = 0; k < 2 && shT > 0.01; k++) {
+        _v3.copy(cam.position).addScaledVector(_right, shT);
+        if (!G.physics.segment(this.pivot, _v3, _hit, true).hit) break;
+        shT = k === 0 ? shT * 0.5 : 0;
+      }
     }
     this.shoulder = damp(this.shoulder || 0, shT, 8, dt);
     if (this.shoulder > 1e-3) cam.position.addScaledVector(_right, this.shoulder);
@@ -587,6 +614,10 @@ export class CameraRig {
     cam.position.lerpVectors(p.from, p.to, e);
     cam.position.y += Math.sin(e * Math.PI) * p.arc;
     _v.lerpVectors(p.lookFrom, p.lookTo, e);
+    // 캠페인 컷(액션 프로필, R009·R027): 컷 위치는 플레이어 자리 기준이라 벽 너머에 놓일 수 있다. 바라보는 점에서
+    // 렌즈까지 막히면 막힌 곳 앞으로 당긴다(따라가기 붐과 같은 0.3 m 여유). 캠페인 밖 시네마틱은 기존대로이다.
+    this._pathLook.copy(_v);
+    if (this.profile) guardLens(_v, cam.position);
     cam.up.set(0, 1, 0);
     cam.lookAt(_v);
     this.fovKick = 0; this.zoom = 0;

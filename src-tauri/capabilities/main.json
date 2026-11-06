@@ -1,12 +1,28 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "게임 창의 전체 화면 상태와 이벤트만 허용한다.",
+  "description": "게임 창의 전체 화면·크기·위치·최대화 상태와 이벤트, 허용 목록의 외부 링크 열기만 허용한다(34번 F01-C).",
   "windows": ["main"],
   "permissions": [
     "core:window:allow-is-fullscreen",
     "core:window:allow-set-fullscreen",
+    "core:window:allow-inner-size",
+    "core:window:allow-outer-position",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:window:allow-is-maximized",
+    "core:window:allow-maximize",
+    "core:window:allow-is-minimized",
+    "core:window:allow-current-monitor",
+    "core:window:allow-scale-factor",
     "core:event:allow-listen",
-    "core:event:allow-unlisten"
+    "core:event:allow-unlisten",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/jaydendavisnc/inkwave*" },
+        { "url": "https://inkwave-aah.pages.dev*" }
+      ]
+    }
   ]
 }

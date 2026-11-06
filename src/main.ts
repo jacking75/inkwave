@@ -50,6 +50,11 @@ import { CampaignSession } from './campaign/session.js';
 import { CampaignStore } from './campaign/store.js';
 import { getMission, isImplemented, MISSIONS } from './campaign/definitions.js';
 import { completeMission } from './campaign/completion.js';
+import { t, setLocale, normalizeLocale, applyLocaleToDocument, onLocale } from './ui/i18n.js';
+import { exportPrefs, parsePrefs } from './platform/prefsTransfer.js';
+import { ENEMY_ROLES } from './campaign/data/enemies.js';
+import { START_WEAPONS, WEAPON_UNLOCK } from './campaign/data/economy.js';
+import { CHALLENGES, applyChallenge, completeChallenge, endingUnlocked, getChallenge, ENDING_MISSION } from './campaign/challenge.js';
 import { unlockedWeapons, weaponSource } from './campaign/craft.js';
 import { MODULES } from './campaign/data/modules.js';
 import { LEVEL_XP } from './campaign/growth.js';
@@ -63,7 +68,7 @@ import { Voice } from './game/cast/voice.js';
 import { registerCampaignSongs } from './audio/campaignMusic.js';
 import { registerStoryThemes, isStoryTheme } from './world/themes-story.js';
 import { ACTION_CAMERA } from './game/cameraRig.js';
-import { ColorReturn } from './campaign/colorReturn.js';
+import { ColorReturn, districtSatAfter } from './campaign/colorReturn.js';
 import type { MapDef } from './config.js';
 import type { Actor } from './game/actor.js';
 import type { Character } from './game/character.js';
@@ -122,6 +127,8 @@ function loadJSON<T extends object>(key: string, def: T): T { try { const v = JS
 // 이 키로 전투를 시작하면 PC는 포인터 잠금(키보드·마우스 조작)으로 넘어간다
 const LOCK_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'ShiftLeft', 'ShiftRight']);
 function saveJSON(key: string, v: unknown) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* private mode */ } }
+// 저장 성공 여부를 돌려준다(설정 저장 실패를 성공으로 숨기지 않는다, 34번 F02·F06)
+function saveJSONChecked(key: string, v: unknown): boolean { try { localStorage.setItem(key, JSON.stringify(v)); return true; } catch { return false; } }
 // 저장된 대전 프로필(localStorage 'inkwave.profile')이다. style·sub·special은 로드아웃·로커에서 고른 값이다.
 interface Profile {
   name: string; level: number; xp: number; wins: number; matches: number; totalTurf: number; weapon: string;
@@ -215,6 +222,11 @@ interface MenuApi {
   storyRecords(): Array<{ id: string; title: string; body: string; note?: string; found: boolean; district: string }>;
   storyRead(): string[];
   replayStory(id: string): boolean;
+  campaignExtras(): ReturnType<Game['_campaignExtras']>;
+  exportPrefs(): string | null;
+  importPrefs(json: string): { dropped: number } | { error: string };
+  replayEnding(): void;
+  startChallenge(id: string): void;
 }
 type LoopHandle = ReturnType<AudioEngine['loop']> & { _v?: number };
 // startMatch()가 정한 대전 조건이다(재대전은 이 값을 그대로 다시 쓴다).
@@ -274,7 +286,7 @@ class Game {
   declare _storyMatch: boolean;                      // 다음 startMatch가 이야기 임무 경기(캠페인 미리보기를 켠다)
   declare session: CampaignSession | null;           // 진행 중인 캠페인 임무(33번 T022)
   declare store: CampaignStore;                      // 캠페인 전용 저장(IndexedDB, 33번 T029)
-  declare _campaignStart: { missionId: string; prologue: boolean; resume: boolean } | null;
+  declare _campaignStart: { missionId: string; prologue: boolean; resume: boolean; challenge?: string | null } | null;
   declare fxHooks?: ReturnType<typeof initFxHooks> | null;
   declare screenfx?: ScreenFX | null;
   declare showcase: Showcase;
@@ -290,6 +302,7 @@ class Game {
   declare debug: DebugHooks;
   declare frozen?: boolean;
   declare _skipRender?: boolean;
+  declare _still?: boolean;   // 정적 메뉴 배경 중(3D를 그리지 않는다, 34번 F02)
   declare worldKey?: string;
   declare mapDef: MapDef;
   declare _building: boolean;
@@ -349,6 +362,9 @@ class Game {
     for (const m of MAPS) { try { m.thumb = layoutThumbSVG((MAP_LAYOUTS as Lookup<typeof MAP_LAYOUTS>)[m.layout || m.id], m.theme); } catch (e) { console.warn('thumb', m.id, e); } }
     this.settings = G.settings = loadJSON('inkwave.settings', DEFAULT_SETTINGS);
     applyLookToDocument(this.settings);
+    // 언어(34번 F06): 설정이 없거나 깨졌으면 한국어. 다른 설정 값은 보존한다
+    this.settings.locale = normalizeLocale(this.settings.locale);
+    setLocale(this.settings.locale); applyLocaleToDocument(this.settings.locale);
     // The RAW stored blob, read before anything below can save the merged defaults back. The fov migration two lines
     // down persists the whole object, so afterwards "the player never chose a value" and "we just wrote the default"
     // are indistinguishable — which is exactly how the touch quality tier below silently failed to apply.
@@ -397,6 +413,14 @@ class Game {
     // built, and an Android GPU process that runs out of memory is killed outright — every WebGL context dies with it
     // and the browser reloads the tab, which the app only sees as a bare context loss with no error and no stack.
     this.memK = this.hwMobile ? 0.5 : 1;   // read by _buildWorldNow too, hence an instance field
+    // 첫 실행 안전 기본값(34번 F02): 사람이 고른 적 없는 화질은 낮음, 저장된 상한이 없으면 플레이 60fps. GPU 할당 전에 적용한다.
+    // 고른 값(qualityChosen)은 그대로 두고, DOM 타이틀에서 3D 시작 전에 바꿀 수 있다.
+    {
+      let changed = false;
+      if (storedRaw?.qualityChosen !== true && this.settings.quality !== 'low') { this.settings.quality = 'low'; changed = true; }
+      if (!storedRaw || typeof storedRaw.fpsCap !== 'number') { if (this.settings.fpsCap !== 60) { this.settings.fpsCap = 60; changed = true; } }
+      if (changed) saveJSON('inkwave.settings', this.settings);
+    }
     // ?quality=low|medium|high|ultra — an explicit override for device testing. Beats localStorage, so a tier can be
     // pinned from the URL without clearing site data on a phone you cannot reach with a console.
     const qOverride = params.get('quality');
@@ -419,10 +443,37 @@ class Game {
     // map diorama pins/finish live inside the HUD layer (under every other HUD element)
     try { const { DioramaOverlay } = await import('./ui/diorama.js'); this.diorama = new DioramaOverlay(this.hud ? this.hud.el : this.uiRoot); } catch (e) { console.error('[inkwave] diorama', e); this.diorama = null; }
     this.hud?.setVisible(false);
+    // 가벼운 시작 화면(34번 F02): 렌더러·월드·봇 없이 DOM 타이틀(화질·입력 상태·시작)을 먼저 띄운다
+    let litePassed = false;
+    if (this.menus && !params.has('skipTitle') && !params.has('autostart')) {
+      document.body.classList.add('iw-boot-lite');
+      await new Promise<void>((resolve) => {
+        this.menus!.titleGate = () => { this.menus!.titleGate = null; resolve(); };
+        this.menus!.liteSettings = {
+          quality: () => this.settings.quality,
+          setQuality: (q: string) => { if (!(QUALITY as Lookup<typeof QUALITY>)[q]) return false; this.settings.quality = q; this.settings.qualityChosen = true; return saveJSONChecked('inkwave.settings', this.settings); },
+          setLocale: (l: 'ko' | 'en') => { this.settings.locale = normalizeLocale(l); saveJSONChecked('inkwave.settings', this.settings); applyLocaleToDocument(this.settings.locale); setLocale(this.settings.locale); },
+        };
+        this.menus!.show('title', { force: true });   // (메뉴가 이미 타이틀을 열었으면 다시 그려야 시작 패널이 붙는다)
+        // 패드: 3D 루프 전이라 여기서 직접 살핀다(중립을 본 뒤 버튼 하나 = 시작)
+        let neutral = false;
+        const poll = (): void => {
+          if (!this.menus!.titleGate) return;
+          const pads = (navigator.getGamepads?.() ?? []).filter((p): p is Gamepad => !!p && p.connected);
+          this.menus!.setLitePads?.(pads.map((p) => ({ id: p.id, standard: p.mapping === 'standard' })));
+          const any = pads.some((p) => p.buttons.some((b) => b.pressed));
+          if (!any) neutral = true; else if (neutral) { this.menus!.titleGate?.(); return; }
+          requestAnimationFrame(poll);
+        };
+        requestAnimationFrame(poll);
+      });
+      litePassed = true;
+      document.body.classList.remove('iw-boot-lite');
+    }
     this.menus?.show('loading');
     this.bootMarks = [];
     const progress = async (p: number, label: string) => { this.bootMarks.push([label, Math.round(performance.now() - t0)]); this.menus?.setLoading(p, label); await nextFrame(); };
-    await progress(0.05, 'Mixing ink…');
+    await progress(0.05, t('잉크를 섞는 중…'));
 
     // renderer / scene
     this.R = new Renderer(app, this.settings);
@@ -446,7 +497,8 @@ class Game {
       }));
     } catch (e) { window.__beacon?.('gpu-probe-failed', (e as Error).message); }
     // A lost context is the likeliest explanation for createShader() returning null, and it is silent otherwise.
-    this.R.renderer.domElement.addEventListener('webglcontextlost', (e) => { window.__beacon?.('context-lost', 'webglcontextlost fired'); }, false);
+    this.R.renderer.domElement.addEventListener('webglcontextlost', () => { window.__beacon?.('context-lost', 'webglcontextlost fired'); this._contextLost(true); }, false);
+    this.R.renderer.domElement.addEventListener('webglcontextrestored', () => this._contextLost(false), false);
     // ?proglog records every shader program in creation order. Attached here — the moment the renderer exists and
     // before anything renders — so the list is complete; a device that dies partway through compilation can then be
     // told apart from a healthy one by where its list stops.
@@ -524,7 +576,7 @@ class Game {
     if (envMod.Environment?.THEMES) registerStoryThemes(envMod.Environment.THEMES);
     try { this.PropKit = (await import('./world/props.js')).PropKit; } catch (e) { console.error('[inkwave] prop kit failed to load', e); this.PropKit = null; }
     G.audio = audioMod.audio; G.music = musicMod.music;
-    await progress(0.15, 'Building the plaza…');
+    await progress(0.15, t('광장을 짓는 중…'));
 
     // world
     // (old ?map=sunset links = Tidewater at dusk)
@@ -537,18 +589,18 @@ class Game {
     this.murals = await createMuralTexture();
     try {
       const { createTextureLibrary } = await import('./world/texlib.js');
-      this.texlib = desktopPerformance?.proceduralTextures === false ? null : await createTextureLibrary(G.renderer, { size: (q.paintAtlas >= 4096 ? 512 : 256) * this.memK });
+      this.texlib = desktopPerformance?.proceduralTextures === false ? null : await createTextureLibrary(G.renderer, { size: (q.paintAtlas >= 4096 ? 512 : 256) * this.memK, onProgress: (d, n) => this.menus?.setLoading(0.06 + 0.24 * d / n, t('잉크를 섞는 중…')) });
     } catch (e) { console.error('[inkwave] texture library failed — procedural fallback', e); this.texlib = null; }
     await this._buildWorld(map);
     this.zoneMarks = new ZoneMarks(scene);   // Zone Control ground markings: build / clear themselves on 'match:state'
-    await progress(0.4, 'Filling the harbor…');
+    await progress(0.4, t('항구에 물을 채우는 중…'));
     const B = G.level!.bounds;
     G.env = new envMod.Environment(G.renderer, scene, { bounds: B, theme: this.theme, shadowSize: q.shadowSize, footprint: this._footprint(G.level!), forceDeckField: this.hwMobile });
     if (G.env.envMap) scene.environment = G.env.envMap;
     // sky-fill balance (scene.environmentIntensity, hemisphere) + per-theme exposure are the environment theme's job
     // (Environment.setTheme), so a stage/time looks the same booted into or switched to mid-session
     G.renderer.toneMappingExposure = 0.94;
-    await progress(0.55, 'Teaching squids to swim…');
+    await progress(0.55, t('오징어에게 헤엄을 가르치는 중…'));
     G.projectiles = new Projectiles(scene);
     G.subs = new SubSystem(scene);
     G.specials = new SpecialSystem(scene);
@@ -593,6 +645,20 @@ class Game {
         startMissionMatch: async (mapId) => { const d = HARBOR.find((x) => x.id === mapId); await self.startCampaign(d?.missions[0].id ?? '1-1', { prologue: false }); },
       });
     }
+    // 읽은 대본의 원본은 캠페인 저장(dialogueLog)이다(35번 R026). 임시 기록(inkwave.storylog)은 저장이 있으면 한 번 옮긴다
+    if (this.story) {
+      const st = this.store;
+      const addRead = (ids: readonly string[]) => {
+        const cur = st.current;
+        if (!cur || ids.every((id) => cur.dialogueLog.includes(id))) return;
+        void st.commit((s) => ({ ...s, dialogueLog: [...new Set([...s.dialogueLog, ...ids])] }));
+      };
+      this.story.log.sink = (id) => addRead([id]);
+      addRead(this.story.log.data.read);
+      // 저장이 새로 생기거나(새 게임·가져오기) 바뀌면 두 기록을 합친다(저장 전에 읽은 대본도 dialogueLog로 옮긴다)
+      st.on((s) => { if (!s || !this.story) return; for (const id of s.dialogueLog) if (!this.story.log.has(id)) this.story.log.data.read.push(id); addRead(this.story.log.data.read); });
+      if (st.current) for (const id of st.current.dialogueLog) if (!this.story.log.has(id)) this.story.log.data.read.push(id);
+    }
     // 색 회복(R005): 캠페인 세션이 소유한다. ?colorreturn은 세션 전 확인용으로 현재 경기에 색 잃은 상태를 건다.
     this.colorReturn = null;
     if (params.has('colorreturn')) {
@@ -608,13 +674,13 @@ class Game {
     // online session (G.net) — the menus' online screens and startNetMatch/netMatchGo/netMatchEnd below drive it
     try { (await import('./net/session.js')).installNet(); } catch (e) { console.error('[inkwave] net', e); }
     G.net?.on?.('lobby', ({ lobby }: { lobby: LobbyPalette | null }) => this._roomPalette(lobby));
-    await progress(0.7, 'Tuning the tentacles…');
+    await progress(0.7, t('촉수를 조율하는 중…'));
 
     this._setPalette(this._pickPalette());
     this._bindEvents();
-    if (desktopPerformance?.menuAttract !== false) this._startAttract();
+    this._startAttract();   // 메뉴 배경이 'live'가 아니면 경기 없이 정적 배경(34번 F02)
     // warm up: compile every shader now so the first shot/splat never hitches
-    await progress(0.85, 'Warming up…');
+    await progress(0.85, t('준비 운동 중…'));
     if (desktopPerformance?.warmupAll !== false) this._warmup();
     // Shader compile. three.js's compileAsync calls compile() SYNCHRONOUSLY as its first statement — the extension
     // only lets the driver do the work in the background while the main thread carries on. Without
@@ -626,15 +692,16 @@ class Game {
     // the extension, so it can still be exercised without a phone.
     const parallelCompile = !!G.renderer.getContext().getExtension('KHR_parallel_shader_compile');
     if (parallelCompile && !params.has('lazycompile') && desktopPerformance?.warmupAll !== false) {
-      try { await G.renderer.compileAsync(scene, camera); } catch { G.renderer.compile(scene, camera); }
+      // 실패해도 같은 전체 컴파일을 동기로 바로 다시 하지 않는다(34번 F03: GPU 오류 뒤의 무거운 재시도) — 각 재질은 처음 그릴 때 만든다
+      try { await G.renderer.compileAsync(scene, camera); } catch (e) { console.warn('[inkwave] shader warm-up failed, compiling lazily', e); }
     } else {
       console.info('[inkwave] compiling shaders lazily (no KHR_parallel_shader_compile)');
     }
     for (const m of this._warmMeshes || []) { G.scene.remove(m); }
     this._warmMeshes?.[0]?.geometry.dispose(); this._warmMeshes = null;
-    await progress(0.93, 'Warming up…');
+    await progress(0.93, t('준비 운동 중…'));
     for (let i = 0; i < 3; i++) { this._frame(1 / 60); await nextFrame(); }
-    await progress(1, 'Ready!');
+    await progress(1, t('준비 완료!'));
     await new Promise((r) => setTimeout(r, 250));
 
     this.timer = new THREE.Timer(); this.timer.connect?.(document);
@@ -648,9 +715,10 @@ class Game {
       else { this._lastTs = undefined; this.timer.update(); }
     });
     G.mode = 'menu';
-    this.menus?.show(params.has('skipTitle') ? 'main' : 'title');
+    this.menus?.show(params.has('skipTitle') || litePassed ? 'main' : 'title');
     // the online hub / lobby set loads in the background once the menus are idle (no arena flash on the first visit)
-    if (!params.has('autostart') && desktopPerformance?.preloadLobby !== false) setTimeout(() => { if (G.mode === 'menu') this.showcase.preloadLobby?.(); }, 2500);
+    // — 메뉴 배경이 'live'일 때만(34번 F02: 로비 선행 로딩은 선택 기능)
+    if (!params.has('autostart') && desktopPerformance?.preloadLobby !== false && this._menuLive()) setTimeout(() => { if (G.mode === 'menu') this.showcase.preloadLobby?.(); }, 2500);
     this._applyAudioVolumes();
     requestAnimationFrame((t) => this._loop(t));
     if (params.has('autostart')) {
@@ -694,8 +762,19 @@ class Game {
   }
   async _buildWorldNow(map: MapDef, scene: THREE.Scene, layoutId: string, mode = 'turf', worldKey = layoutId) {
     this.zoneMarks?.clear();   // zone markings belong to the old stage's faces
-    if (this.levelMesh) { scene.remove(this.levelMesh, this.grateMesh); this.levelMesh.geometry.dispose(); this.grateMesh?.geometry.dispose(); this.levelMat.dispose(); this.grateMat?.dispose(); }
-    if (this.decor) { scene.remove(this.decor.group); }
+    if (this.levelMesh) {
+      scene.remove(this.levelMesh, this.grateMesh); this.levelMesh.geometry.dispose(); this.grateMesh?.geometry.dispose();
+      // 34번 F04: 재질이 가진 텍스처(레벨별 표 uTLTex, 이 스테이지의 라이트맵 uLight)도 해제한다. 도색 아틀라스·벽화·텍스처 라이브러리는
+      // 다른 소유자(PaintSystem·murals·texlib)의 것이므로 여기서 해제하지 않는다
+      const own = new Set<THREE.Texture>();
+      for (const mat of [this.levelMat, this.grateMat]) {
+        const u = (mat?.userData as { uniforms?: Record<string, { value: unknown }> } | undefined)?.uniforms;
+        for (const k of ['uTLTex', 'uLight']) { const v = u?.[k]?.value as THREE.Texture | null | undefined; if (v?.isTexture) own.add(v); }
+      }
+      for (const tx of own) tx.dispose();
+      this.levelMat.dispose(); this.grateMat?.dispose();
+    }
+    if (this.decor) { this.decor.dispose(); }   // 34번 F04: 장면에서 빼는 것만으로는 GPU 자원이 남는다
     if (this.props) { this.props.dispose?.(); this.props = null; }
     G.paint?.dispose();
     this.layoutId = layoutId; this.worldKey = worldKey;
@@ -712,7 +791,7 @@ class Game {
           if (r && r.colliders) colliders.push(...r.colliders);
         }
         this.props.build();
-      } catch (e) { console.error('[inkwave] props failed', e); this.props = null; }
+      } catch (e) { console.error('[inkwave] props failed', e); try { this.props?.dispose?.(); } catch { /* 반쯤 만든 소품 회수 실패는 무시 */ } this.props = null; }   // 34번 F04: 실패한 소품도 회수
     }
     const level = (G.level = new Level(layoutFor((MAP_LAYOUTS as Lookup<typeof MAP_LAYOUTS>)[layoutId], mode), colliders));
     G.physics = new Physics(level);
@@ -805,7 +884,7 @@ class Game {
     // warm/low light mutes saturated ink: give it more self-glow at dusk so team colours stay the loudest thing on screen
     // ink self-light: more at dusk, a touch more in golden hour's long shadows
     this.levelMat.userData.uniforms.uInkGlow.value = { sunset: 0.2, golden: 0.1 }[this.theme] ?? 0.07;
-    this.decor.setTeamColors(G.teamColors);
+    this.decor.setTeamColors(G.teamColors as [THREE.Color, THREE.Color]);   // (바로 위에서 두 팀 색을 채웠다)
     this.props?.setTeamColors?.(G.teamColors[0], G.teamColors[1]);
     G.projectiles!.refreshColors();
     for (const a of G.actors) a.character.setColor(G.teamColors[a.team]);
@@ -867,9 +946,21 @@ class Game {
       startStoryMission: (id) => self.startCampaign(id, { prologue: false, resume: self.store.current?.inProgress?.missionId === id }),
       hasStorySave: () => { if (self.store.current) return true; let st: Storage | null = null; try { st = window.localStorage; } catch { st = null; } return hasStorySave(st); },
       storyProgress: () => self._harborProgress(),
-      storyRecords: () => ALL_RECORDS.map((r) => ({ id: r.id, title: r.title, body: r.body, note: r.note, district: r.district, found: self.story!.log.data.records.includes(r.id) })),
-      storyRead: () => self.story!.log.data.read.slice(),
+      storyRecords: () => ALL_RECORDS.map((r) => ({ id: r.id, title: r.title, body: r.body, note: r.note, district: r.district, found: !!self.store.current?.records.includes(r.id) || self.story!.log.data.records.includes(r.id) })),
+      storyRead: () => [...new Set([...(self.store.current?.dialogueLog ?? []), ...self.story!.log.data.read])],
       replayStory: (id) => self.story!.replay(id),
+      campaignExtras: () => self._campaignExtras(),
+      // 설정·프로필 옮기기(34번 F01-D): 검증된 값만 받고, 가져온 뒤에는 다시 시작해야 모두 적용된다
+      exportPrefs: () => exportPrefs(self.settings as unknown as Record<string, unknown>, self.profile as unknown as Record<string, unknown>, new Date()),
+      importPrefs: (json) => {
+        const r = parsePrefs(json, DEFAULT_SETTINGS as unknown as Record<string, unknown>, DEFAULT_PROFILE as unknown as Record<string, unknown>);
+        if ('error' in r) return { error: t(r.error) };
+        const settings = { ...self.settings, ...r.settings }, profile = { ...self.profile, ...r.profile };
+        if (!saveJSONChecked('inkwave.settings', settings) || !saveJSONChecked('inkwave.profile', profile)) return { error: t('저장소에 쓸 수 없다') };
+        return { dropped: r.dropped.length };
+      },
+      replayEnding: () => self.replayEnding(),
+      startChallenge: (id) => { void self.startChallenge(id); },
     });
     return api;
   }
@@ -885,7 +976,9 @@ class Game {
     // quality says nothing about whether the player wants shadows.
     if ('quality' in partial) this.settings.qualityChosen = true;
     if ('shadows' in partial) this.settings.shadowsChosen = true;
-    saveJSON('inkwave.settings', this.settings);
+    // 저장 실패는 성공으로 숨기지 않는다(34번 F06): 이번 실행에는 적용되지만 다음 실행에 남지 않음을 알린다
+    if (!saveJSONChecked('inkwave.settings', this.settings)) this.menus?.toast?.(t('설정을 저장하지 못했다 — 이번 실행에만 적용된다. 저장 공간을 확인한 뒤 다시 바꿔 본다'), { kind: 'error', ms: 5000 });
+    if ('locale' in partial) { this.settings.locale = normalizeLocale(this.settings.locale); setLocale(this.settings.locale); applyLocaleToDocument(this.settings.locale); }
     if ('quality' in partial || 'shadows' in partial || 'bloom' in partial || LOOK_KEYS.some((k) => k in partial)) this.R?.applySettings(this.settings);
     if ('look' in partial) applyLookToDocument(this.settings);
     if ('fullscreen' in partial && window.inkwaveNative) window.inkwaveNative.setFullScreen(!!partial.fullscreen);
@@ -1014,6 +1107,8 @@ class Game {
         this.hud?.feed({ text: `${attacker.name} splatted ${victim.name}`, color: G.teamHex[attacker.team], kind: 'ally' });
       }
     });
+    // 캠페인 체크포인트 재도전은 respawn 사건 없이 플레이어를 되살린다: 사망 카드를 함께 내린다
+    on('campaign:retry', () => { this.hud?.hideSplatted(); });
     on('respawn', ({ actor }) => {
       if (!this.match || this.match.attract) return;
       if (actor.isLocal) {
@@ -1100,7 +1195,7 @@ class Game {
     if (this.match) { this._stopCampaignPreview(); this.match.dispose(); }
     this.rig.dioFlip = false;
     G.projectiles!.clear(); G.subs!.clear(); G.specials!.clear(); G.fx!.clear?.(); G.paint!.clear(); this._clearDeathMarks();
-    if (window.inkwaveNative?.performance?.menuAttract === false) {
+    if (window.inkwaveNative?.performance?.menuAttract === false || !this._menuLive()) {
       this.match = G.match = null;
       return;
     }
@@ -1208,13 +1303,16 @@ class Game {
     if (this._storyMatch && this.CharacterClass) addPreviewEchoes(m, this.CharacterClass);   // (개발용 미리보기 경로)
     const cs = this._campaignStart;
     if (TUNE_CAMPAIGN || this._storyMatch || cs) this.campaignPreview = new CampaignPreview(m, G.scene!, this.uiRoot, cs ? {} : { drill: params.has('drill'), devices: params.has('devices') });
+    // 액션 카메라(35번 R009): 캠페인 전투(이야기 임무·체험)에서만 켜고, 캠페인 밖은 기존 수치(null)
+    this.rig.setProfile(TUNE_CAMPAIGN || this._storyMatch || cs ? ACTION_CAMERA : null);
     // 캠페인 임무: 세션을 만들고(정의 검증) 적 셰이더를 예열한다
     let warm: Actor[] = [];
     if (cs) {
-      const mission = getMission(cs.missionId)!;
+      const ch = cs.challenge ? getChallenge(cs.challenge) : null;
+      const mission = ch ? applyChallenge(getMission(cs.missionId)!, ch) : getMission(cs.missionId)!;
       const save = this.store.current;
-      const resume = cs.resume && save?.inProgress?.missionId === mission.id ? save.inProgress : null;
-      this.session = new CampaignSession(this._sessionHost(), mission, { difficulty: save?.difficulty ?? 'normal', resume });
+      const resume = !ch && cs.resume && save?.inProgress?.missionId === mission.id ? save.inProgress : null;
+      this.session = new CampaignSession(this._sessionHost(), mission, { difficulty: save?.difficulty ?? 'normal', resume, challenge: ch?.id ?? null });
       warm = this._campaignWarm(m, mission);
     }
     window.inkwaveNative?.performance?.mark('actors:setup:end');
@@ -1229,6 +1327,7 @@ class Game {
     m.start();
     if (this.session && cs && this.campaignPreview) {
       this.session.begin(m, this.campaignPreview);
+      this.colorReturn = this.session.color;   // 렌더러의 색 회복 분기(35번 R005)
       (this.hud as unknown as { el?: HTMLElement } | null)?.el?.classList.add('is-campaign');
       this.story?.beginMission(cs.missionId, cs.prologue, !this.session.cp.checkpointId);
       this.hud?.setVisible(true);
@@ -1240,11 +1339,22 @@ class Game {
     this._fade(0, 500);
   }
 
-  _stopCampaignPreview() { this.session?.dispose(); this.session = null; (this.hud as unknown as { el?: HTMLElement } | null)?.el?.classList.remove('is-campaign'); this.story?.endMission(); this.campaignPreview?.stop(); this.campaignPreview = null; }
+  _stopCampaignPreview() {
+    if (this.session && this.colorReturn === this.session.color) { this.colorReturn = null; this.R.setColorReturn(null); }
+    if (this.campaignPreview && !TUNE_CAMPAIGN) this.rig.setProfile(null);
+    this.session?.dispose(); this.session = null; (this.hud as unknown as { el?: HTMLElement } | null)?.el?.classList.remove('is-campaign'); this.story?.endMission(); this.campaignPreview?.stop(); this.campaignPreview = null; }
 
   // ---- 캠페인(33번 T022·T029·T030) -------------------------------------------------------------------------------
   // 임무 시작: 저장(없으면 새 게임)·해금·구현 범위를 확인하고 연습형 경기 위에 세션을 연다
-  async startCampaign(missionId: string, o: { prologue?: boolean; resume?: boolean } = {}) {
+  // 도전 임무(33번 T068): 엔딩 뒤, 완료한 임무에 변형을 적용해 연다
+  async startChallenge(id: string) {
+    const c = getChallenge(id), s = this.store.current;
+    if (!c) return;
+    if (!endingUnlocked(s) || !s!.done.includes(c.mission)) { this.menus?.toast?.('7-3 「되찾는 물결」을 마치면 열린다', { kind: 'info', ms: 3600 }); return; }
+    await this.startCampaign(c.mission, { challenge: c.id });
+  }
+
+  async startCampaign(missionId: string, o: { prologue?: boolean; resume?: boolean; challenge?: string | null } = {}) {
     const back = (msg: string) => { this.menus?.show('harbor'); this.menus?.toast?.(msg, { kind: 'info', ms: 4200 }); };
     if (!isImplemented(missionId)) { back(`${missionId}은 아직 제작 범위 밖이다 — 현재 플레이 가능: ${MISSIONS.map((x) => x.id).join(" · ")}`); return; }
     if (!this.store.current) {
@@ -1254,7 +1364,7 @@ class Game {
     }
     if (!this.store.current!.unlocked.includes(missionId)) { back('앞 임무를 마치면 열린다'); return; }
     const mission = getMission(missionId)!;
-    this._campaignStart = { missionId, prologue: !!o.prologue, resume: !!o.resume };
+    this._campaignStart = { missionId, prologue: !!o.prologue && !o.challenge, resume: !!o.resume && !o.challenge, challenge: o.challenge ?? null };
     try { await this.startMatch({ mapId: mission.mapId, practice: true, time: mission.timeOfDay }); }
     catch (e) { console.error(e); this.menus?.toast?.(`임무를 열지 못했다: ${(e as Error).message}`, { kind: 'error' }); }
     finally { this._campaignStart = null; }
@@ -1298,6 +1408,7 @@ class Game {
       onFailOpen: () => { this.input.releaseAll('campaign-fail'); this.input.exitLock(); },
       quitToWorkshop: () => { void this.quitToMenu('workshop'); },
       openGear: () => { this.menus?.show('campGear', { quick: true }); },
+      colorConfig: () => resolveLook(this.settings, this.hwMobile).colorReturn,
     };
   }
 
@@ -1329,17 +1440,22 @@ class Game {
     const s = this.store.current;
     if (!s) return this.story ? this.story.progress() : { done: [], colorReturn: {}, records: [] };
     const colorReturn: Record<string, number> = {};
-    for (const d of HARBOR) { const n = d.missions.filter((x) => s.done.includes(x.id)).length; if (n) colorReturn[d.id] = 0.18 + 0.82 * n / 3; }
+    for (const d of HARBOR) { const n = d.missions.filter((x) => s.done.includes(x.id)).length; const v = s.colorReturn[d.id] ?? (n ? districtSatAfter(n) : undefined); if (v !== undefined) colorReturn[d.id] = v; }
     return { done: s.done, colorReturn, records: s.records };
   }
 
   // 임무 완료 → 완료 대사 → 결과 화면(저장 확정은 결과 화면의 commit, 같은 완료 ID로 재시도)
   async _campaignResults(s: CampaignSession) {
+    if (s.challenge) { await this._challengeResults(s); return; }
     const mission = s.mission, completionId = `${s.runId}:complete`, crate = s.crateOpened;
+    const weapon = s.player?.weapon?.id ?? null;
     const before = this.store.current;
-    await new Promise<void>((r) => (this.story ? this.story.outro(r) : r()));
+    const firstClear = !!before && !before.done.includes(mission.id);
+    await new Promise<void>((r) => (this.story ? this.story.outro(r, firstClear) : r()));
+    // 7-3 첫 완료: 엔딩(작업장 귀환 패널 5컷 → 아카이브 통신). 건너뛰어도 본 것으로 남긴다. 해금은 done의 7-3에서 파생한다
+    if (firstClear && mission.id === ENDING_MISSION && this.story) await new Promise<void>((r) => this.story!.playEnding(r));
     const commit = async (): Promise<boolean> => {
-      const r = await this.store.commit((cur) => { const o = completeMission(cur, { completionId, runId: s.runId, mission, crateOpened: crate }); return 'save' in o ? o.save : { reject: o.reject, reason: o.reason }; });
+      const r = await this.store.commit((cur) => { const o = completeMission(cur, { completionId, runId: s.runId, mission, crateOpened: crate, weapon }); if (!('save' in o)) return { reject: o.reject, reason: o.reason }; return o.save.done.includes(ENDING_MISSION) && mission.id === ENDING_MISSION && !o.save.endingSeen ? { ...o.save, endingSeen: true } : o.save; });
       if (r.ok) return true;
       this.menus?.toast?.(STORE_ERROR_TEXT[r.error], { kind: 'error', ms: 5000 });
       return false;
@@ -1371,7 +1487,66 @@ class Game {
     });
   }
 
+  // 도전 완료(33번 T068): 재료·외형 표식·개인 기록만. 첫 완료 보상·해금·기록은 주지 않는다
+  async _challengeResults(s: CampaignSession) {
+    const c = getChallenge(s.challenge!)!, mission = s.mission, completionId = `${s.runId}:challenge`;
+    const ms = s.elapsed * 1000, weapon = s.player?.weapon?.id ?? null;
+    let res: ReturnType<typeof completeChallenge> | null = null;
+    const commit = async (): Promise<boolean> => {
+      const r = await this.store.commit((cur) => { const o = completeChallenge(cur, { completionId, challenge: c, ms, weapon }); res = o; return 'save' in o ? o.save : { reject: o.reject, reason: o.reason }; });
+      if (r.ok) return true;
+      this.menus?.toast?.(STORE_ERROR_TEXT[r.error], { kind: 'error', ms: 5000 });
+      return false;
+    };
+    const pre = this.store.current ? completeChallenge(this.store.current, { completionId, challenge: c, ms, weapon }) : null;
+    const rec = pre && 'result' in pre ? pre.result : null;
+    await this.quitToMenu('workshop');
+    const dist = HARBOR.find((d) => d.missions.some((x) => x.id === mission.id))!;
+    const rewards = [{ kind: '부품', name: `+${c.parts}` }, { kind: '기록', name: `${(ms / 1000).toFixed(1)}초${rec && rec.best === Math.round(ms) ? ' (최고)' : ''}` }, ...(rec?.mark ? [{ kind: '외형 표식', name: rec.mark }] : [])];
+    void res;
+    this.menus?.showStoryResults?.({
+      mission: mission.id, title: `도전 · ${c.title}`, district: dist.id, firstClear: false, rewards,
+      xp: { from: this.store.current?.xp ?? 0, to: this.store.current?.xp ?? 0, max: 12350 },
+      line: { speaker: 'mora', text: '같은 길도 다른 손으로 칠하면 다르게 보여.' },
+      next: null, commit,
+    });
+  }
+
+  // 엔딩 다시 보기(작업장 기록판): 지도 색 회복 → 아카이브 통신
+  replayEnding() {
+    if (!endingUnlocked(this.store.current)) return;
+    this.menus?.showHarborReveal?.(() => { this.story?.replay('ending.archive'); });
+  }
+
+  // 엔딩·도전·무기별 공략 기록(기록판)
+  _campaignExtras() {
+    const s = this.store.current;
+    if (!s) return null;
+    const open = endingUnlocked(s);
+    const vt = (v: (typeof CHALLENGES)[number]['variants'][number]) => (v.kind === 'reorder' ? `목표 순서 ${v.order.join(' → ')}` : `${ENEMY_ROLES[v.role].name} 추가`);
+    return {
+      ending: open,
+      challenges: CHALLENGES.map((c) => ({ id: c.id, mission: c.mission, title: c.title, variants: c.variants.map(vt).join(' · '), parts: c.parts, clears: s.challenges[c.id]?.clears ?? 0, bestMs: s.challenges[c.id]?.bestMs ?? 0, hasMark: s.marks.includes(c.mark), locked: !open })),
+      // 캠페인 주 무기 12종(시작 3 + 2·3·4장 해금 9)
+      weapons: [...START_WEAPONS, ...Object.values(WEAPON_UNLOCK).flat()].map((id) => ({ id, name: (WEAPONS as Lookup<typeof WEAPONS>)[id]?.name ?? id, missions: s.weaponLog[id] ?? [] })),
+    };
+  }
+
   _inPractice() { return !!(this.match && this.match.practice && G.mode === 'match' && !this.session); }
+
+  // 메뉴 배경(34번 F02): 'live'만 자동 전투·로비 선행 로딩. ?attract는 확인용으로 켠다
+  _menuLive(): boolean { return this.settings.menuScene === 'live' || params.has('attract'); }
+
+  // WebGL 컨텍스트 손실(34번 F02): 자동 재시작을 반복하지 않고 DOM 안내와 다시 불러오기를 보인다. 복구되면 닫는다
+  _contextLost(lost: boolean) {
+    let el = document.getElementById('iw-ctxlost');
+    if (!lost) { el?.remove(); return; }
+    if (el) return;
+    el = document.createElement('div'); el.id = 'iw-ctxlost'; el.className = 'iw-ctxlost'; el.setAttribute('role', 'alert');
+    const msg = document.createElement('p'); msg.textContent = t('그래픽 장치가 응답하지 않아 화면을 멈췄다. 진행은 마지막 체크포인트까지 저장돼 있다.');
+    const b = document.createElement('button'); b.className = 'iw-btn iw-btn--menu'; b.textContent = t('다시 불러오기'); b.onclick = () => location.reload();
+    el.append(msg, b); document.body.appendChild(el); b.focus();
+  }
 
   // a random stage (a different one from the current, when there's a choice)
   startPractice(o: { mapId?: string } = {}) {
@@ -1711,7 +1886,7 @@ class Game {
     requestAnimationFrame((t) => this._loop(t));
     this._trackVsync(ts);
     const requestedCap = this.settings.fpsCap || 0;
-    const cap = window.inkwaveNative?.performance?.frameCap(requestedCap, G.mode === 'menu') ?? requestedCap;
+    const cap = window.inkwaveNative?.performance?.frameCap(requestedCap, G.mode === 'menu') ?? (G.mode === 'menu' ? Math.min(requestedCap || 30, 30) : requestedCap);
     if (cap && ts !== undefined && this._lastTs !== undefined && ts - this._lastTs < 1000 / cap - 2) return;
     this._lastTs = ts;
     this.timer.update(ts); let dt = Math.max(0, this.timer.getDelta());
@@ -1863,8 +2038,10 @@ class Game {
     sm.autoUpdate = false;
     this._frameN = (this._frameN || 0) + 1;
     if (this.settings.quality !== 'low' || (this._frameN & 1)) sm.needsUpdate = true;
+    const still = G.mode === 'menu' && !m && !this.showcase.mode && !setUp;
+    if (still !== this._still) { this._still = still; document.body.classList.toggle('iw-static-menu', still); }
     if (!this._skipRender) {
-      if (!setUp) this.R.render();
+      if (!setUp && !still) this.R.render();
       if (this.showcase.mode) sm.needsUpdate = true;
       this.showcase.render();
     }

@@ -121,6 +121,67 @@ try {
     await page.screenshot({ path: 'shots/workshop/harbor-info.png' });
     await page.close();
   }
+  if (only.has('hub')) {
+    // 로딩 시간: 새 페이지에서 로비 세트(온라인 허브)와 작업장(같은 세트 + 모라·틸)이 화면에 다 들어오기까지
+    const loadTime = async (screen: 'online' | 'workshop'): Promise<number> => {
+      const page = await open('{}');
+      const ms = await ev<number>(page, `(async () => {
+        const g = __inkwave, t0 = performance.now();
+        g.menus.show(${JSON.stringify(screen)});
+        const ready = () => { const L = g.showcase.lob; if (!L || !L.set || L.k < 0.99) return false; if (${JSON.stringify(screen)} !== 'workshop') return true; const W = g.showcase._ws; return !!W && W.chars.size === 2 && [...W.chars.values()].every((c) => c.root.visible); };
+        while (!ready()) { if (performance.now() - t0 > 60000) return -1; await new Promise((r) => requestAnimationFrame(r)); }
+        return performance.now() - t0;
+      })()`);
+      await page.close();
+      return ms;
+    };
+    const tLobby = await loadTime('online'), tWs = await loadTime('workshop');
+    ok('R028 작업장 로딩 ≤ 로비 세트 + 1초', tWs > 0 && tLobby > 0 && tWs <= tLobby + 1000, { lobbyMs: Math.round(tLobby), workshopMs: Math.round(tWs) });
+    // 글라이드: 장비(모라) → 임무(틸)로 포커스를 옮기면 시선이 그 인물 쪽으로 옮겨 가고 카메라 몸체는 제자리이다
+    const page = await open(`{ done: ['1-1'], unlocked: ['1-1', '1-2'] }`);
+    await page.evaluate('__inkwave.menus.show("workshop")');
+    await page.waitForFunction('__inkwave.showcase._ws && __inkwave.showcase._ws.chars.size === 2', { timeout: 60000, polling: 200 });
+    const aim = async (id: string): Promise<{ who: string; fk: number; dMora: number; dTeal: number; camPos: number[] }> => {
+      await page.evaluate(`__inkwave.menus._setFocus(document.querySelector('[data-id="${id}"]'))`);
+      await wait(1600);
+      return ev(page, `(() => { const sc = __inkwave.showcase, L = sc.lob, W = sc._ws, cam = L.cam, V = cam.position.constructor;
+        const dir = new V(0, 0, -1).applyQuaternion(cam.quaternion);
+        const off = (c) => { const p = c.root.position.clone(); p.y += 0.9; const v = p.sub(cam.position); const along = v.dot(dir); return Math.sqrt(Math.max(0, v.lengthSq() - along * along)); };
+        return { who: W.focus, fk: +W.fk.toFixed(3), dMora: +off(W.chars.get('mora')).toFixed(3), dTeal: +off(W.chars.get('teal')).toFixed(3), camPos: cam.position.toArray().map((x) => +x.toFixed(3)) }; })()`);
+    };
+    const gMora = await aim('modules'), gTeal = await aim('mission');
+    ok('R028 포커스 인물 쪽으로 글라이드(시선 축과 인물 거리 감소)', gMora.who === 'mora' && gTeal.who === 'teal' && gMora.fk > 0.9 && gMora.dMora < gTeal.dMora && gTeal.dTeal < gMora.dTeal, { gMora, gTeal });
+    ok('R028 카메라 몸체는 세트 자리 그대로', JSON.stringify(gMora.camPos) === JSON.stringify(gTeal.camPos), [gMora.camPos, gTeal.camPos]);
+    await page.screenshot({ path: 'shots/workshop/hub-teal.png' });
+    // 진입: 임무·장비·특성·기록
+    const go = async (id: string): Promise<string> => { await page.evaluate('__inkwave.menus.show("workshop")'); await wait(500); await page.evaluate(`document.querySelector('[data-id="${id}"]').click()`); await wait(700); return ev<string>(page, '__inkwave.menus.current'); };
+    const dest = { mission: await go('mission'), modules: await go('modules'), perks: await go('perks'), records: await go('records'), craft: await go('craft') };
+    ok('R028 임무·장비·특성·기록·제작 진입', JSON.stringify(dest) === JSON.stringify({ mission: 'harbor', modules: 'campGear', perks: 'campTraits', records: 'records', craft: 'campCraft' }), dest);
+    await page.close();
+  }
+
+  if (only.has('results')) {
+    // 실제 저장소 쓰기 거부: IndexedDB put이 한 번 QuotaExceededError를 던진다 → 미확정·재시도 → 확정, 보상은 한 번만
+    const page = await open(`{}`);
+    await page.evaluate(`(() => { const put = IDBObjectStore.prototype.put; let n = 0; window.__failPut = 1;
+      IDBObjectStore.prototype.put = function (...a) { if (window.__failPut > 0 && a[1] === 'save') { window.__failPut--; n++; throw new DOMException('quota', 'QuotaExceededError'); } return put.apply(this, a); }; })()`);
+    const before = await ev<{ xp: number; parts: number; rev: number }>(page, '({ xp: __inkwave.store.current.xp, parts: __inkwave.store.current.inventory.parts, rev: __inkwave.store.current.revision })');
+    await page.evaluate(`(async () => { const g = __inkwave, defs = await import('/src/campaign/definitions.js');
+      g.store.current.inProgress = null;
+      void g._campaignResults({ mission: defs.getMission('1-1'), runId: 'wscheck-run', crateOpened: false }); })()`);
+    await page.waitForFunction('__inkwave.menus.current === "storyResults" && document.querySelector(".iw-sres") && document.querySelector(".iw-sres").dataset.saved === "fail"', { timeout: 60000, polling: 200 });
+    const s1 = await ev<{ saved: string; retry: boolean; xp: number }>(page, '({ saved: document.querySelector(".iw-sres").dataset.saved, retry: !document.querySelector(".iw-sres__retry").classList.contains("is-off"), xp: __inkwave.store.current.xp })');
+    ok('R030 실제 저장 실패 → 미확정·재시도·저장 변화 없음', s1.saved === 'fail' && s1.retry && s1.xp === before.xp, s1);
+    await page.screenshot({ path: 'shots/workshop/results-fail.png' });
+    await page.evaluate('document.querySelector(".iw-sres__retry").click()');
+    await page.waitForFunction('document.querySelector(".iw-sres").dataset.saved === "ok"', { timeout: 30000, polling: 200 });
+    await page.evaluate('document.querySelector(".iw-sres__retry").click()');   // 숨은 버튼을 한 번 더 눌러도(연타) 두 번 지급하지 않는다
+    await wait(800);
+    const s2 = await ev<{ xp: number; parts: number; rev: number; done: string[] }>(page, '({ xp: __inkwave.store.current.xp, parts: __inkwave.store.current.inventory.parts, rev: __inkwave.store.current.revision, done: __inkwave.store.current.done })');
+    ok('R030 재시도 → 확정, 보상 한 번(경험치 +600·부품 +60)', s2.xp === before.xp + 600 && s2.parts === before.parts + 60 && s2.done.includes('1-1'), { before, s2 });
+    await page.screenshot({ path: 'shots/workshop/results-ok.png' });
+    await page.close();
+  }
 } catch (e) {
   ok('예외 없음', false, String((e as Error).stack || e));
 }

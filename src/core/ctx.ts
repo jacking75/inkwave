@@ -71,6 +71,8 @@ export function on(name: string, fn: Listener): () => boolean | undefined {
   listeners.get(name)!.add(fn);
   return () => listeners.get(name)?.delete(fn);
 }
+// 현재 구독 수(자원·구독 누수 검사용, 33번 T073)
+export function listenerCount(): number { let n = 0; for (const s of listeners.values()) n += s.size; return n; }
 export function emit(name: string, payload?: unknown): void {
   const set = listeners.get(name);
   if (!set) return;

@@ -171,6 +171,14 @@ const OVERLAY = new Set<string | null>(['loadout', 'locker', 'results']); // stu
 const SET_MODES = new Set<string | null>(['hub', 'lobby']);
 const SET_FADE = 0.45;        // set ⇄ world / pedestal / podium cross-dissolve (s)
 const GLIDE = 1.7;            // hub ⇄ room camera glide (s)
+// 작업장 인물 자리(세트 spots 번호)와 평소 포즈(35번 R028)
+const WS_SLOTS: ReadonlyArray<readonly ['mora' | 'teal', number, StoryPose]> = [['mora', 1, 'work'], ['teal', 2, 'listen']];
+// 작업장 소품(35번 R028): 기록판(틸 책상 옆)·장비대(모라 작업대 옆). 메뉴 항목이 고른 소품으로 시선이 옮겨 간다.
+export type WorkshopProp = 'board' | 'rack';
+export type WorkshopFocus = 'mora' | 'teal' | WorkshopProp;
+const WS_PROPS: ReadonlyArray<readonly [WorkshopProp, number, number, number]> = [['board', 2.75, -0.75, -0.5], ['rack', -1.75, -0.7, 0.45]];   // id, x, z, yaw
+// 작업장 색: 세트 둘레(작업장 안)는 언제나 채색이고, 그 밖은 광장(tidewater)의 색 회복 상태를 따른다(1-1 전에는 작업장만 색)
+export const WORKSHOP_COLOR = { center: [0.6, 0, 0.2] as const, radius: 6.5 } as const;
 const HUB_ID = '__hub';       // your kid while you are not in a room
 let PLATE_H = 1.64;           // nameplate anchor above the feet (m): just over a kid's head (그림책 룩 1.70: 35번 R010)
 // squid travel: cruise speed, acceleration, braking, root lift over the asphalt (the swim pose sinks into the ink),
@@ -1077,7 +1085,7 @@ export class Showcase {
   declare t: number; declare fadeIn: number; declare _out: number; declare _outDur: number; declare _lastMode: ShowMode | null;
   declare lob: LobbyState | null; declare _ffFrame: boolean;
   // 작업장(35번 R028): 로비 세트 hub 화면에 선 모라·틸. showWorkshop이 켜고 showHub(온라인)는 끈다
-  declare _ws: { on: boolean; cast: boolean; vignette: boolean; vt: number; chars: Map<'mora' | 'teal', Character>; focus: 'mora' | 'teal' | null; anim: AnimState; pong: Pong | null; pongActor: PongActor | null } | undefined;
+  declare _ws: { on: boolean; cast: boolean; vignette: boolean; vt: number; chars: Map<'mora' | 'teal', Character>; props: Map<WorkshopProp, THREE.Group>; focus: WorkshopFocus | null; anim: AnimState; pong: Pong | null; pongActor: PongActor | null; fk: number; fp: THREE.Vector3; sat: number; colorOn: boolean } | undefined;
   declare spin: number; declare spinVel: number; declare sinceDrag: number; declare drag: { x: number; t: number } | null;
   declare weapon: string | null; declare hopT: number; declare hopWeapon: string | null; declare pop: THREE.Object3D | null;
   declare ui: UIState;
@@ -1832,6 +1840,9 @@ export class Showcase {
       const C = set.camera;
       this._placeLook(L.cam, C.pos, C.target, C.fov, innerWidth / 2, innerHeight / 2, innerWidth, innerHeight);
       this._lobEnv(L);
+      // 모라·틸·작업장 소품도 언제나 같은 예열에 넣는다(타이틀·온라인 허브로 세트를 먼저 띄운 뒤 작업장에 들어가도 바로 보이게,
+      // 세트가 뜬 뒤에 따로 만들고 컴파일하면 약 1.3초 늦었다 — 35번 R028 실측). 작업장이 아니면 _wsUpdate가 숨긴다.
+      this._wsState(); this._wsEnsureChars(L);
       try { if (this.r.compileAsync) await this.r.compileAsync(L.scene, L.cam); else this.r.compile(L.scene, L.cam); } catch (e) { console.warn('[showcase] lobby set warm-up', e); }
       L.kids.remove(warm.root); warm.dispose?.();
       if (this.lob !== L) return;
@@ -1890,34 +1901,33 @@ export class Showcase {
   /** Online hub (menus.js 'online'): your kid on the set's hub spot, framed right of the create / join cards. */
   /** 작업장(R028): 온라인 hub와 같은 세트·구도에 모라(작업대 'work')·틸(통신 'listen')을 세운다. focus는 고른 메뉴의 인물 */
   //  opts.cast false: 모라·틸 없이(타이틀 비네트), opts.vignette: 퐁을 태우고 색이 천천히 돌아오는 10초 루프(R025)
-  showWorkshop(style: LookStyle | null | undefined, color: ColorArg | null | undefined, weapon?: string | null, opts: { cast?: boolean; vignette?: boolean } = {}) {
+  //  opts.sat: 광장(tidewater)의 색 회복 채도(작업장 밖), 없으면 직전 값
+  showWorkshop(style: LookStyle | null | undefined, color: ColorArg | null | undefined, weapon?: string | null, opts: { cast?: boolean; vignette?: boolean; sat?: number } = {}) {
     this.showHub(style, color, weapon);
-    const W = this._ws || (this._ws = { on: false, cast: true, vignette: false, vt: 0, chars: new Map(), focus: null, anim: this._anim(), pong: null, pongActor: null });
+    const W = this._wsState();
     W.on = true; W.cast = opts.cast !== false; W.vignette = !!opts.vignette; W.vt = 0;
+    if (typeof opts.sat === 'number') W.sat = Math.max(0, Math.min(1, opts.sat));
   }
-  workshopFocus(who: 'mora' | 'teal' | null) { if (this._ws) this._ws.focus = who; }
+  workshopFocus(who: WorkshopFocus | null) { if (this._ws) this._ws.focus = who; }
+  _wsState() { return this._ws || (this._ws = { on: false, cast: true, vignette: false, vt: 0, chars: new Map(), props: new Map(), focus: null, anim: this._anim(), pong: null, pongActor: null, fk: 0, fp: new THREE.Vector3(), sat: 0.18, colorOn: false }); }
 
   _wsUpdate(L: LobbyState, dt: number) {
     const W = this._ws;
     if (!W) return;
     const show = W.on && this.mode === 'hub' && !!L.set;
     for (const [id, c] of W.chars) c.root.visible = show && W.cast && L.k > 0.02 && !!id;
+    for (const g of W.props.values()) g.visible = show && W.cast && L.k > 0.02;
     this._wsVignette(L, dt, show && W.vignette);
+    // 허브의 색 회복(작업장 안 채색, 밖은 광장 상태). 비네트가 켜져 있으면 비네트가 맡는다
+    const color = show && W.cast && !W.vignette;
+    if (color) { const c = WORKSHOP_COLOR.center; G.post?.setOverlayColorReturn?.({ worldSat: W.sat, spheres: W.sat < 0.999 ? [{ x: c[0], y: c[1] + 1, z: c[2], r: WORKSHOP_COLOR.radius, t: 1 }] : [] }); W.colorOn = true; }
+    else if (W.colorOn && !W.vignette) { G.post?.setOverlayColorReturn?.(null); W.colorOn = false; }
     if (!show || !W.cast) return;
     const S = L.set!;
-    const slots: Array<['mora' | 'teal', number, StoryPose]> = [['mora', 1, 'work'], ['teal', 2, 'listen']];
     W.anim.time += dt;
-    for (const [id, slot, pose] of slots) {
-      let c = W.chars.get(id);
-      if (!c) {
-        const lk = CAST_LOOKS[id];
-        c = new this.CharacterClass({ color: new THREE.Color(lk.color), weapon: 'shooter', style: { ...lk.style }, name: 'ws-' + id, isLocal: false });
-        setCast(c, id);
-        c.setDance('menu_idle');
-        (c as unknown as { weaponHidden: boolean }).weaponHidden = true;
-        L.kids.add(c.root);
-        W.chars.set(id, c);
-      }
+    this._wsEnsureChars(L);
+    for (const [id, slot, pose] of WS_SLOTS) {
+      const c = W.chars.get(id)!;
       const sp = S.spots[slot];
       c.root.position.copy(sp.pos);
       // 고른 인물은 카메라를 본다(메뉴 시선 처리와 같은 뜻), 나머지는 자기 일을 한다
@@ -1927,6 +1937,30 @@ export class Showcase {
       setStoryPose(c, look ? (id === 'mora' ? 'wave' : 'idle') : pose);
       c.root.visible = true;
       c.update(dt, W.anim);
+    }
+  }
+
+  // 모라·틸을 한 번만 만든다(세트 예열 때 또는 첫 갱신 때)
+  _wsEnsureChars(L: LobbyState) {
+    const W = this._ws!;
+    for (const [id, slot] of WS_SLOTS) {
+      if (W.chars.has(id)) continue;
+      const lk = CAST_LOOKS[id];
+      const c = new this.CharacterClass({ color: new THREE.Color(lk.color), weapon: 'shooter', style: { ...lk.style }, name: 'ws-' + id, isLocal: false });
+      setCast(c, id);
+      c.setDance('menu_idle');
+      (c as unknown as { weaponHidden: boolean }).weaponHidden = true;
+      if (L.set) c.root.position.copy(L.set.spots[slot].pos);
+      c.update(1 / 30, W.anim);
+      L.kids.add(c.root);
+      W.chars.set(id, c);
+    }
+    for (const [id, x, z, yaw] of WS_PROPS) {
+      if (W.props.has(id)) continue;
+      const g = id === 'board' ? recordBoard() : gearRack();
+      g.position.set(x, 0, z); g.rotation.y = yaw; g.name = 'ws-' + id;
+      L.kids.add(g);
+      W.props.set(id, g);
     }
   }
 
@@ -2876,10 +2910,20 @@ export class Showcase {
     const cs = L.cs || (L.cs = { fov: A.fov, sx: A.sx, sy: A.sy });
     const kk = gliding ? 1 : 1 - Math.exp(-7 * (this._fdt || 1 / 60));
     cs.fov += (A.fov - cs.fov) * kk; cs.sx += (A.sx - cs.sx) * kk; cs.sy += (A.sy - cs.sy) * kk;
+    // 작업장(35번 R028): 고른 메뉴의 인물 쪽으로 시선을 옮기며 조금 당긴다. 카메라 몸체는 세트 자리 그대로이다(벽을 뚫지 않는다)
+    const ws = this._ws;
+    let wsZoom = 1;
+    if (ws && ws.on && ws.cast && L.shot === 'hub') {
+      const f = ws.focus;
+      const c = f === 'mora' || f === 'teal' ? ws.chars.get(f)?.root ?? null : f ? ws.props.get(f) ?? null : null;
+      if (c) ws.fp.set(c.position.x, c.position.y + 0.9, c.position.z);
+      ws.fk += ((c ? 1 : 0) - ws.fk) * (L.reduced ? 1 : 1 - Math.exp(-4 * (this._fdt || 1 / 60)));
+      if (ws.fk > 0.001) { A.tgt.lerp(ws.fp, 0.55 * ws.fk); wsZoom = 1 - 0.2 * ws.fk; }
+    } else if (ws) ws.fk = 0;
     // the camera body never moves off the set's mark (the rivals' marks sit in the on-screen gaps between front heads
     // by bearing from it): breathing is a slow drift of the aim plus a whisper of zoom; the countdown leans in with the
     // lens, the launch tilts up after the jumpers
-    let fov = cs.fov;
+    let fov = cs.fov * wsZoom;
     if (!L.reduced) {
       A.tgt.x += 0.05 * Math.sin(t * 0.21) + 0.015 * Math.sin(t * 0.53 + 1);
       A.tgt.y += 0.028 * Math.sin(t * 0.17 + 2);
@@ -3394,4 +3438,27 @@ function copyCanvas(src: HTMLCanvasElement) {
   d.width = src.width; d.height = src.height;
   d.getContext('2d')!.drawImage(src, 0, 0);
   return d;
+}
+
+// ---- 작업장 소품(35번 R028): 절차 생성, 삼각형 수백 개. 재질은 무광(툰 램프)이다.
+function workshopMat(color: string): THREE.MeshStandardMaterial { return new THREE.MeshStandardMaterial({ color, roughness: 0.9, metalness: 0 }); }
+// 기록판: 다리 둘 + 코르크 판 + 종이 쪽지 다섯 장
+function recordBoard(): THREE.Group {
+  const g = new THREE.Group();
+  const wood = workshopMat('#7a5a3c'), cork = workshopMat('#b98a5a'), paper = workshopMat('#efe7d6');
+  for (const x of [-0.55, 0.55]) { const leg = new THREE.Mesh(new THREE.BoxGeometry(0.06, 1.5, 0.06), wood); leg.position.set(x, 0.75, 0); g.add(leg); }
+  const board = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.8, 0.05), cork); board.position.set(0, 1.15, 0.03); g.add(board);
+  const notes: Array<[number, number, number]> = [[-0.35, 1.3, 0.12], [0.05, 1.32, -0.08], [0.38, 1.25, 0.06], [-0.2, 1.0, -0.1], [0.25, 0.98, 0.1]];
+  for (const [x, y, r] of notes) { const n = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 0.17), paper); n.position.set(x, y, 0.06); n.rotation.z = r; g.add(n); }
+  return g;
+}
+// 장비대: 선반 두 단 + 탱크 둘 + 붓 하나
+function gearRack(): THREE.Group {
+  const g = new THREE.Group();
+  const metal = workshopMat('#5d6470'), tank = workshopMat('#c9cdd4'), ink = workshopMat('#e0732a');
+  for (const x of [-0.5, 0.5]) { const post = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.3, 0.05), metal); post.position.set(x, 0.65, 0); g.add(post); }
+  for (const y of [0.45, 0.95]) { const shelf = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.04, 0.35), metal); shelf.position.set(0, y, 0); g.add(shelf); }
+  for (const x of [-0.25, 0.2]) { const t = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.36, 12), tank); t.position.set(x, 1.15, 0); g.add(t); const c = new THREE.Mesh(new THREE.CylinderGeometry(0.115, 0.115, 0.08, 12), ink); c.position.set(x, 1.15, 0); g.add(c); }
+  const brush = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.7, 8), metal); brush.rotation.z = Math.PI / 2; brush.position.set(0, 0.52, 0.05); g.add(brush);
+  return g;
 }
