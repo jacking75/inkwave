@@ -13,23 +13,54 @@
 // Ink stays ink: flying droplets that land leave a speck in the paint atlas (fx.onSpeck → paint.speck) and every
 // splash / footstep / dive ripples the ink surface itself (fx.onRipple → paint.ripple) instead of drawing decals.
 import * as THREE from 'three';
-import { on } from '../core/ctx.js';
+import { type GameContext, on } from '../core/ctx.js';
+import type { Actor } from '../game/actor.js';
+import type { Projectiles, Shot, Bomb, Cloud } from '../game/weapons.js';
+import type { FX } from './fx.js';
 import { PLAYER, SUB, SPECIALS, WEAPONS } from '../config.js';
 import { Hit } from '../game/physics.js';
 
-export function initFxHooks(G) { return new FxHooks(G); }
+export function initFxHooks(G: GameContext) { return new FxHooks(G); }
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _dir = new THREE.Vector3();
 const _n = new THREE.Vector3(), _c = new THREE.Color();
 const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0), ZAX = new THREE.Vector3(0, 0, 1);
 const TAU = Math.PI * 2;
 const rand = Math.random;
-const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
-const FIRE_KEY = { shooter: 'fire:shooter', blaster: 'fire:blaster', charger: 'fire:charger', roller: 'fire:roller' };
-const IMPACT_KEY = { shot: 'impact:shot', blast: 'impact:blast', drop: 'impact:drop', charger: 'impact:charger', roll: 'impact:roll' };
+const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
+const FIRE_KEY: Record<string, string> = { shooter: 'fire:shooter', blaster: 'fire:blaster', charger: 'fire:charger', roller: 'fire:roller' };
+const IMPACT_KEY: Record<string, string> = { shot: 'impact:shot', blast: 'impact:blast', drop: 'impact:drop', charger: 'impact:charger', roll: 'impact:roll' };
+
+/** 이 모듈이 받는 게임 사건 페이로드(사건마다 쓰는 필드만 채워진다; docs/EVENTS.md) */
+interface FxEvent {
+  actor: Actor; pos?: THREE.Vector3; surface?: number; speed?: number; swim?: boolean; form?: string; on?: boolean; id?: string;
+  radius?: number; phase?: string; team?: number; kind?: string; normal?: THREE.Vector3; dir?: THREE.Vector3; muzzle?: THREE.Vector3;
+  weapon?: { kind?: string } | string; victim?: Actor; attacker?: Actor; damage?: number; killed?: boolean; cause?: string;
+}
+/** 배우별 효과 상태 */
+type ActorFx = ReturnType<typeof newActorFx>;
+function newActorFx(a: Actor) {
+  return { init: false, born: -9, grounded: true, vy: 0, form: 'kid', sub: false, climb: false, alive: a.alive, onEnemy: false,
+    stepAcc: 0, foot: 0, dripT: 0, sparkT: 0, sizzleT: 0, climbT: 0, bubbleT: 0, full: false, sj: null as string | null, sp: null as string | null, spT: 0,
+    sjLand: -9, hitT: -9, dryT: -9, climbEnd: -9, slamPending: false, lastSJTo: new THREE.Vector3(), vis: new THREE.Vector3(),
+    swimYaw: null as number | null, carveT: 0, emergeT: -9, wetT: 0, spinFull: false, dodging: false, dodgeDir: new THREE.Vector3(0, 0, 1) };
+}
+/** 물결 머리 마지막 관측 */
+interface Head { x: number; y: number; z: number; vx: number; vz: number; t: number; color: THREE.Color | null; born: number; stamp?: number }
+/** 폭탄 관측 */
+interface BombFx { gp: THREE.Vector3; gn: THREE.Vector3; ground: boolean; beepT: number; vy: number; stamp: number; armed: boolean }
+/** 물 위 방울 맞은 자리 */
+interface DropHit { x: number; y: number; z: number; nx: number; ny: number; nz: number; t: number }
 
 class FxHooks {
-  constructor(G) {
+  declare G: GameContext;
+  declare seen: Record<string, boolean>; declare st: Map<Actor, ActorFx>; declare bombs: Map<Bomb, BombFx>; declare clouds: Map<Cloud, { stamp: number; puddleT: number; flashT: number }>;
+  declare seenBeams: WeakSet<object>; declare hit: Hit; declare hit2: Hit; declare time: number; declare stamp: number; declare count: Record<string, number>;
+  declare edges: Array<{ x: number; z: number; nx: number; nz: number }>; declare edgeLevel: unknown; declare sprayT: number; declare featherT: number;
+  declare flickT: Map<Actor, number>; declare enabled: boolean; declare _sp: THREE.Vector3; declare heads: Map<Shot, Head>; declare dropHits: DropHit[];
+  declare _headFn: ((h: Head, p: Shot) => void) | undefined; declare _bombGC: ((r: BombFx, b: Bomb) => void) | undefined;
+  declare _cloudGC: ((r: { stamp: number }, c: Cloud) => void) | undefined; declare _sightFn: ((s: THREE.Mesh, a: Actor) => void) | undefined;
+  constructor(G: GameContext) {
     this.G = G;
     this.seen = Object.create(null);     // events that actually fired → their polling fallbacks switch off
     this.st = new Map();                 // actor → per-actor state
@@ -54,69 +85,67 @@ class FxHooks {
       };
       G.fx.onRipple = (p, amp, wl, speed, life) => this.G.paint?.ripple?.(p, amp, wl, speed, life);
     }
-    const sub = (name, fn) => on(name, (e) => { this.seen[name] = true; if (!this.enabled || !G.fx || !e) return; try { fn(e); } catch (err) { console.warn('[fxHooks]', name, err); } });
-    sub('actor:footstep', (e) => this._footstep(e.actor, e.pos, e.surface, e.speed));
-    sub('actor:land', (e) => this._land(e.actor, e.pos || e.actor.pos, e.speed, e.surface));
-    sub('actor:jump', (e) => this._jump(e.actor, e.surface, e.swim));
-    sub('actor:form', (e) => this._form(e.actor, e.form, e.surface));
-    sub('actor:dive', (e) => this._dive(e.actor, e.pos || e.actor.pos, e.speed || 0));
-    sub('actor:emerge', (e) => this._emerge(e.actor, e.pos || e.actor.pos, e.speed || 0));
-    sub('actor:climb', (e) => this._climb(e.actor, e.on));
-    sub('actor:enemyInk', (e) => this._enemyInk(e.actor, e.on));
-    sub('hit', (e) => this._hit(e));
-    sub('splatted', (e) => this._splatted(e));
-    sub('respawn', (e) => this._respawn(e.actor));
-    sub('special:ready', (e) => this._specialReady(e.actor));
-    sub('special:use', (e) => this._specialUse(e.actor, e.id));
-    sub('special:slam', (e) => this._slam(e.actor, e.pos || e.actor.pos, e.radius));
-    sub('superjump', (e) => this._superjump(e.actor, e.phase));
-    sub('superjump:land', (e) => this._sjLand(e.actor, e.pos || e.actor.pos));
-    sub('lowink', (e) => this._dryFire(e.actor));
-    sub('weapon:fire', (e) => this._weaponFire(e));
-    sub('weapon:impact', (e) => this._impact(e));
-    sub('weapon:dodge', (e) => this._dodge(e));
-    sub('storm:start', (e) => this._stormStart(e.pos, e.team));
+    const sub = (name: string, fn: (e: FxEvent) => void) => on(name, (e) => { this.seen[name] = true; if (!this.enabled || !G.fx || !e) return; try { fn(e); } catch (err) { console.warn('[fxHooks]', name, err); } });
+    sub('actor:footstep', (e: FxEvent) => this._footstep(e.actor, e.pos!, e.surface, e.speed ?? 0));
+    sub('actor:land', (e: FxEvent) => this._land(e.actor, e.pos || e.actor.pos, e.speed, e.surface));
+    sub('actor:jump', (e: FxEvent) => this._jump(e.actor, e.surface, e.swim));
+    sub('actor:form', (e: FxEvent) => this._form(e.actor, e.form!, e.surface));
+    sub('actor:dive', (e: FxEvent) => this._dive(e.actor, e.pos || e.actor.pos, e.speed || 0));
+    sub('actor:emerge', (e: FxEvent) => this._emerge(e.actor, e.pos || e.actor.pos, e.speed || 0));
+    sub('actor:climb', (e: FxEvent) => this._climb(e.actor, !!e.on));
+    sub('actor:enemyInk', (e: FxEvent) => this._enemyInk(e.actor, e.on));
+    sub('hit', (e: FxEvent) => this._hit(e));
+    sub('splatted', (e: FxEvent) => this._splatted(e));
+    sub('respawn', (e: FxEvent) => this._respawn(e.actor));
+    sub('special:ready', (e: FxEvent) => this._specialReady(e.actor));
+    sub('special:use', (e: FxEvent) => this._specialUse(e.actor, e.id!));
+    sub('special:slam', (e: FxEvent) => this._slam(e.actor, e.pos || e.actor.pos, e.radius));
+    sub('superjump', (e: FxEvent) => this._superjump(e.actor, e.phase!));
+    sub('superjump:land', (e: FxEvent) => this._sjLand(e.actor, e.pos || e.actor.pos));
+    sub('lowink', (e: FxEvent) => this._dryFire(e.actor));
+    sub('weapon:fire', (e: FxEvent) => this._weaponFire(e));
+    sub('weapon:impact', (e: FxEvent) => this._impact(e));
+    sub('weapon:dodge', (e: FxEvent) => this._dodge(e));
+    sub('storm:start', (e: FxEvent) => this._stormStart(e.pos, e.team));
     sub('bomb:explode', () => {});   // explosion() is drawn by weapons.js; polling handles danger rings + beeps
   }
 
   // ------------------------------------------------------------------ helpers
-  get fx() { return this.G.fx; }
-  _bump(k) { this.count[k] = (this.count[k] || 0) + 1; }
-  _near(p, d) { const c = this.G.camera; return !!c && c.position.distanceToSquared(p) < d * d; }
-  _state(a) {
+  get fx(): FX { return this.G.fx!; }   // (update·사건 처리는 G.fx가 있을 때만 돈다)
+  _bump(k: string) { this.count[k] = (this.count[k] || 0) + 1; }
+  _near(p: THREE.Vector3, d: number) { const c = this.G.camera; return !!c && c.position.distanceToSquared(p) < d * d; }
+  _state(a: Actor) {
     let s = this.st.get(a);
     if (!s) {
-      s = { init: false, born: -9, grounded: true, vy: 0, form: 'kid', sub: false, climb: false, alive: a.alive, onEnemy: false,
-        stepAcc: 0, foot: 0, dripT: 0, sparkT: 0, sizzleT: 0, climbT: 0, bubbleT: 0, full: false, sj: null, sp: null, spT: 0,
-        sjLand: -9, hitT: -9, dryT: -9, climbEnd: -9, slamPending: false, lastSJTo: new THREE.Vector3(), vis: new THREE.Vector3(),
-        swimYaw: null, carveT: 0, emergeT: -9, wetT: 0, spinFull: false, dodging: false, dodgeDir: new THREE.Vector3(0, 0, 1) };
+      s = newActorFx(a);
       this.st.set(a, s);
     }
     return s;
   }
-  _visual(a, out) { return a.visualPos ? a.visualPos(out) : out.copy(a.pos); }
-  _heading(a, out) {
+
+  _visual(a: Actor, out: THREE.Vector3) { return a.visualPos ? a.visualPos(out) : out.copy(a.pos); }
+  _heading(a: Actor, out: THREE.Vector3) {
     const hs = Math.hypot(a.vel.x, a.vel.z);
     if (hs > 0.2) return out.set(a.vel.x / hs, 0, a.vel.z / hs);
     return out.set(Math.sin(a.yaw), 0, Math.cos(a.yaw));
   }
-  _inkColor(a, surface) { return surface === 2 ? this.G.teamColors[a.enemyTeam] : a.color; }
-  _teamOf(c) {
+  _inkColor(a: Actor, surface: number) { return surface === 2 ? this.G.teamColors[a.enemyTeam] : a.color; }
+  _teamOf(c: THREE.Color | null | undefined) {
     const T = this.G.teamColors;
     if (!T || !c) return -1;
     for (let t = 0; t < 2; t++) { const k = T[t]; if (k && Math.abs(k.r - c.r) + Math.abs(k.g - c.g) + Math.abs(k.b - c.b) < 0.05) return t; }
     return -1;
   }
-  _fresh(a) { const s = this._state(a); return this.time - s.born < 0.35 || !s.init; }
+  _fresh(a: Actor) { const s = this._state(a); return this.time - s.born < 0.35 || !s.init; }
 
   // ------------------------------------------------------------------ discrete moments
-  _footstep(a, pos, surface = 0, speed) {
+  _footstep(a: Actor, pos: THREE.Vector3, surface = 0, speed: number) {
     if (!a || !a.alive || !pos || !this._near(pos, surface ? 28 : 18)) return;
     const hs = speed ?? Math.hypot(a.vel.x, a.vel.z);
     this.fx.footstep?.(pos, this._inkColor(a, surface), surface, this._heading(a, _dir), hs);
     this._bump('footstep');
   }
-  _land(a, pos, speed = 8, surface = 0) {
+  _land(a: Actor, pos: THREE.Vector3, speed = 8, surface = 0) {
     if (!a || !a.alive || speed < 3.5) return;
     const s = this._state(a);
     if (a.specialActive || a.superJumpState || this.time - s.sjLand < 0.3 || !this._near(pos, 38)) return;
@@ -124,25 +153,25 @@ class FxHooks {
     this.fx.land?.(pos, this._inkColor(a, surface), surface, speed);
     this._bump('land');
   }
-  _jump(a, surface = 0, swim = false) {
+  _jump(a: Actor, surface = 0, swim = false) {
     if (!a || swim || a.superJumpState || !this._near(a.pos, 30)) return;   // swim jumps: actor:emerge splashes
     this.fx.jumpOff?.(this._visual(a, _v), this._inkColor(a, surface), surface, false);
     this._bump('jump');
   }
-  _form(a, form, surface = 0) {
+  _form(a: Actor, form: string, surface = 0) {
     if (!a || !a.alive || this._fresh(a) || a.superJumpState || a.specialActive) return;
     if (surface === 1) return;                                 // in own ink the dive / emerge splash covers it
     if (!this._near(a.pos, 26)) return;
     this.fx.formPop?.(this._visual(a, _v), a.color, form === 'squid', false);
     this._bump('form');
   }
-  _dive(a, pos, speed) {
+  _dive(a: Actor, pos: THREE.Vector3, speed: number) {
     if (!a || !a.alive || this._fresh(a) || !this._near(pos, 30)) return;
     if (a.climbing) { this._climb(a, true); return; }
     this.fx.dive?.(pos, a.color, speed);
     this._bump('dive');
   }
-  _emerge(a, pos, speed) {
+  _emerge(a: Actor, pos: THREE.Vector3, speed: number) {
     if (!a || !a.alive || this._fresh(a) || a.superJumpState || !this._near(pos, 30)) return;
     const s = this._state(a);
     if (s.climb || this.time - s.climbEnd < 0.25) { this.fx.climbPop?.(pos, this._heading(a, _dir), a.color); this._bump('climbPop'); return; }
@@ -150,7 +179,7 @@ class FxHooks {
     s.emergeT = this.time;   // the kid comes up wet: a few drips run off for half a second
     this._bump('emerge');
   }
-  _climb(a, onWall) {
+  _climb(a: Actor, onWall: boolean) {
     const s = this._state(a);
     if (!onWall && s.climb) s.climbEnd = this.time;
     s.climb = !!onWall;
@@ -162,15 +191,15 @@ class FxHooks {
     this.fx.ring?.(_v2.copy(_v).addScaledVector(n, 0.03), n, a.color, { radius: 0.55, life: 0.3, style: 0, alpha: 0.9 });
     this._bump('climbStart');
   }
-  _enemyInk(a, onInk) {
+  _enemyInk(a: Actor, onInk: boolean | undefined) {
     this._state(a).onEnemy = !!onInk;
     if (!onInk || !a.alive || this._fresh(a) || !this._near(a.pos, 22)) return;
     const col = this.G.teamColors[a.enemyTeam];
     this.fx.footstep?.(a.pos, col, 2, this._heading(a, _dir), 4);
     this._bump('enemyInk');
   }
-  _hit({ attacker, victim, damage, killed }) {
-    if (!attacker || !victim || killed || damage <= 0 || !victim.alive) return;
+  _hit({ attacker, victim, damage, killed }: FxEvent) {
+    if (!attacker || !victim || killed || (damage ?? 0) <= 0 || !victim.alive) return;
     const s = this._state(victim);
     if (this.time - s.hitT < 0.05 || !this._near(victim.pos, 40)) return;
     s.hitT = this.time;
@@ -181,51 +210,51 @@ class FxHooks {
     this.fx.hitSplash?.(_v, _dir, attacker.color, damage, false);
     this._bump('hit');
   }
-  _splatted({ victim, cause }) {
+  _splatted({ victim, cause }: FxEvent) {
     if (!victim) return;
     if (cause === 'water') { this.fx.waterSplash?.(victim.pos, 1.1); this._bump('seaSplat'); }
     this.fx.ghost?.(_v.copy(victim.pos).setY(Math.max(victim.pos.y, PLAYER.waterY + 0.2)), victim.color);
     this._bump('ghost');
   }
-  _respawn(a) {
+  _respawn(a: Actor) {
     const s = this._state(a);
     s.born = this.time; s.init = true; s.full = false; s.sj = null; s.sp = null;
-    this.G.game?.decor?.pulse?.(a.team, 1);
+    (this.G.game as { decor?: { pulse?(team: number, k: number): void } } | null | undefined)?.decor?.pulse?.(a.team, 1);
     this._bump('respawn');
   }
-  _specialReady(a) {
+  _specialReady(a: Actor) {
     if (!a || !a.alive || !this._near(a.pos, 40)) return;
     this._visual(a, _v);
     for (let i = 0; i < 10; i++) this.fx.specialSparkle?.(_v, a.color, a.form === 'squid' ? 0.6 : 1.6);
     this.fx.ring?.(_v2.copy(_v).setY(_v.y + 0.03), UP, a.color, { radius: 1.3, life: 0.45, style: 7, alpha: 0.8 });
     this._bump('specialReady');
   }
-  _specialUse(a, id) {
+  _specialUse(a: Actor, id: string) {
     const s = this._state(a);
     s.sp = id; s.spT = 0;
     if (id === 'slam') { this.fx.slamLaunch?.(a.pos, a.color); this._bump('slamLaunch'); }
   }
-  _slam(a, pos, radius) {
+  _slam(a: Actor, pos: THREE.Vector3, radius: number | undefined) {
     if (!a) return;
     const s = this._state(a);
     s.sp = null; s.slamPending = false;
     this.fx.slamWave?.(pos, a.color, radius || SPECIALS.slam.radius);
     this._bump('slamWave');
   }
-  _superjump(a, phase) {
+  _superjump(a: Actor, phase: string) {
     const s = this._state(a);
     s.sj = phase;
     if (phase === 'flight') { this.fx.superJumpLaunch?.(a.pos, a.color); this._bump('sjLaunch'); }
   }
-  _sjLand(a, pos) {
+  _sjLand(a: Actor, pos: THREE.Vector3) {
     const s = this._state(a);
     s.sj = null; s.sjLand = this.time;
     this.fx.superJumpLand?.(pos, a.color);
     const pad = this.G.level?.spawnPads?.[a.team];
-    if (pad && Math.hypot(pos.x - pad.x, pos.z - pad.z) < 3.5) this.G.game?.decor?.pulse?.(a.team, 0.8);
+    if (pad && Math.hypot(pos.x - pad.x, pos.z - pad.z) < 3.5) (this.G.game as { decor?: { pulse?(team: number, k: number): void } } | null | undefined)?.decor?.pulse?.(a.team, 0.8);
     this._bump('sjLand');
   }
-  _dryFire(a) {
+  _dryFire(a: Actor) {
     if (!a || !a.alive || a.form === 'squid') return;
     const s = this._state(a);
     if (this.time - s.dryT < 0.4) return;
@@ -235,18 +264,18 @@ class FxHooks {
     this.fx.dryFire?.(_v, a.aimDir || _dir.set(0, 0, 1));
     this._bump('dryFire');
   }
-  _weaponFire(e) {
+  _weaponFire(e: FxEvent) {
     const a = e.actor; if (!a || !e.muzzle) return;
-    const kind = (e.weapon && (e.weapon.kind || e.weapon)) || a.weapon?.kind;
+    const kind = (e.weapon && (typeof e.weapon === 'string' ? e.weapon : e.weapon.kind)) || a.weapon?.kind || '';
     const dir = e.dir || a.aimDir;
     if (kind === 'blaster') this.fx.muzzle?.(e.muzzle, dir, a.color, 'blaster');
     else if (kind === 'charger') this.fx.muzzle?.(e.muzzle, dir, a.color, 'charger');
     else if (kind === 'roller' || kind === 'bucket' || kind === 'brush') this._flick(a);
     this._bump(FIRE_KEY[kind] || 'fire:other');
   }
-  _impact(e) {
+  _impact(e: FxEvent) {
     if (!e.pos || !this._near(e.pos, 32)) return;
-    const col = this.G.teamColors[e.team] || _c.set(0xffffff);
+    const col = this.G.teamColors[e.team ?? -1] || _c.set(0xffffff);
     const n = e.normal || UP;
     // shots / flick drops: weapons.js already bursts the splash (fx.burst) and the paint system ripples the ink —
     // nothing is stacked on top here (no decal blots)
@@ -256,14 +285,14 @@ class FxHooks {
       if (H.length >= 24) H.shift();
       H.push({ x: e.pos.x, y: e.pos.y, z: e.pos.z, nx: n.x, ny: n.y, nz: n.z, t: this.time });
     }
-    this._bump(IMPACT_KEY[e.kind] || 'impact:other');
+    this._bump(IMPACT_KEY[e.kind ?? ''] || 'impact:other');
   }
-  _stormStart(pos, team) {
+  _stormStart(pos: THREE.Vector3 | undefined, team: number | undefined) {
     if (!pos) return;
-    this.fx.stormStart?.(pos, this.G.teamColors[team] || _c.set(0xffffff), SPECIALS.storm.radius);
+    this.fx.stormStart?.(pos, this.G.teamColors[team ?? -1] || _c.set(0xffffff), SPECIALS.storm.radius);
     this._bump('stormStart');
   }
-  _flick(a) {
+  _flick(a: Actor) {
     const last = this.flickT.get(a) || -9;
     if (this.time - last < 0.25) return;
     this.flickT.set(a, this.time);
@@ -275,7 +304,7 @@ class FxHooks {
   }
 
   // dualies dodge roll: push-off splash (the skid + plant are driven per frame from the runner's dodge state)
-  _dodge(e) {
+  _dodge(e: FxEvent) {
     const a = e.actor;
     if (!a || !a.alive || !e.pos || !e.dir) return;
     const s = this._state(a);
@@ -288,7 +317,7 @@ class FxHooks {
   }
 
   // ------------------------------------------------------------------ per frame
-  update(dt) {
+  update(dt: number) {
     const G = this.G, fx = G.fx;
     if (!fx || !this.enabled || !(dt > 0)) return;
     this.time += dt; this.stamp++;
@@ -304,7 +333,7 @@ class FxHooks {
     this._ambient(dt);
   }
 
-  _actor(a, dt) {
+  _actor(a: Actor, dt: number) {
     const fx = this.fx, s = this._state(a);
     const an = a.anim || {};
     if (!a.alive) { s.alive = false; s.stepAcc = 0; s.full = false; return; }
@@ -331,7 +360,7 @@ class FxHooks {
       if (s.stepAcc >= stride) {
         s.stepAcc -= stride;
         s.foot ^= 1;
-        const bone = a.character?.bones?.[s.foot ? 'footR' : 'footL'];
+        const bone = (a.character?.bones as Record<string, THREE.Bone> | undefined)?.[s.foot ? 'footR' : 'footL'];
         if (bone) { bone.getWorldPosition(_v2); _v2.y = pos.y; } else _v2.copy(pos);
         if (Number.isFinite(_v2.x)) this._footstep(a, _v2, a.groundTeam, hs);
       }
@@ -458,7 +487,8 @@ class FxHooks {
       if (sj.phase === 'charge') {
         fx.superJumpCharge?.(pos, a.color, clamp(sj.t / 0.75, 0, 1));
         const tg = sj.target;
-        const tp = tg && tg.pos && tg.pos.isVector3 ? (tg.jumpAnchor ? tg.jumpAnchor() : tg.pos) : tg && tg.isVector3 ? tg : null;
+        const ta = tg && 'pos' in tg ? (tg as Actor & { jumpAnchor?(): THREE.Vector3 }) : null;
+      const tp = ta && ta.pos && ta.pos.isVector3 ? (ta.jumpAnchor ? ta.jumpAnchor() : ta.pos) : tg && (tg as THREE.Vector3).isVector3 ? (tg as THREE.Vector3) : null;
         if (tp && !sj.home) fx.jumpMarker?.(tp, a.color, sj.t);   // (home jumps: the return beacon marks it)
       } else if (sj.phase === 'flight') {
         fx.superJumpTrail?.(pos, a.vel, a.color);
@@ -472,7 +502,7 @@ class FxHooks {
   }
 
   // shots: mist trails, muzzle extras for new projectiles (until weapon:fire exists), plops into the sea
-  _projectiles(P, dt) {
+  _projectiles(P: Projectiles, dt: number) {
     const list = P.list;
     if (!list) return;
     const fx = this.fx, wy = PLAYER.waterY;
@@ -491,7 +521,7 @@ class FxHooks {
       }
       p._fxAge = p.age;
       const sp = Math.hypot(p.vel.x, p.vel.y, p.vel.z);
-      p._fxD += sp * dt;
+      p._fxD = (p._fxD ?? 0) + sp * dt;
       const slosh = p.type === 'slosh';
       if (slosh && p.head) {
         let h = this.heads.get(p);
@@ -499,14 +529,14 @@ class FxHooks {
         h.x = p.pos.x; h.y = p.pos.y; h.z = p.pos.z; h.vx = p.vel.x; h.vz = p.vel.z; h.t = this.time; h.color = p.owner.color; h.stamp = this.stamp;
       }
       const step = p.type === 'blast' ? 0.55 : p.type === 'drop' ? 1.1 : slosh ? (p.head ? 0.45 : 1.0) : 0.8;
-      if (p._fxD >= step) {
+      if (p._fxD! >= step) {
         p._fxD = 0;
         if (budget > 0 && p.age > 0.03 && (p.delay === undefined || p.age > p.delay) && this._near(p.pos, 30)) {
           budget--;
           if (slosh) fx.sloshTrail?.(p.pos, p.vel, p.owner.color, !!p.head); else fx.shotTrail?.(p.pos, p.vel, p.owner.color, p.type === 'blast');
         }
       }
-      if (p._fxY >= wy + 0.05 && p.pos.y < wy + 0.05 && this.G.level && this.G.level.groundHeight(p.pos.x, p.pos.z, p.pos.y + 3) === -Infinity) {
+      if (p._fxY! >= wy + 0.05 && p.pos.y < wy + 0.05 && this.G.level && this.G.level.groundHeight(p.pos.x, p.pos.z, p.pos.y + 3) === -Infinity) {
         if (this._near(p.pos, 45)) { fx.waterPlop?.(p.pos, p.type === 'blast' ? 0.6 : 0.3); this._bump('plop'); }
       }
       p._fxY = p.pos.y;
@@ -535,7 +565,7 @@ class FxHooks {
   }
 
   // bombs: flight drips, bounce splashes, danger zone under an armed bomb, a pulse on every beep
-  _bombs(P, dt) {
+  _bombs(P: Projectiles, dt: number) {
     const bombs = P.bombs;
     if (!bombs) return;
     const fx = this.fx, st = this.stamp;
@@ -569,7 +599,7 @@ class FxHooks {
   }
 
   // Ink Tempest clouds: start puff, puddle ripples + splash crowns under the rain, flickers inside
-  _clouds(P, dt) {
+  _clouds(P: Projectiles, dt: number) {
     const clouds = P.clouds;
     if (!clouds) return;
     const fx = this.fx, st = this.stamp, R = SPECIALS.storm.radius;
@@ -603,7 +633,7 @@ class FxHooks {
   }
 
   // charger: laser-sight dot on surfaces while charging, beam trail + impact when a shot is fired
-  _beams(P) {
+  _beams(P: Projectiles) {
     const fx = this.fx;
     if (P.sights) P.sights.forEach(this._sightFn || (this._sightFn = (s, a) => {
       if (!s.visible || !a.alive || !this._near(s.position, 50)) return;
@@ -639,7 +669,7 @@ class FxHooks {
   }
 
   // ------------------------------------------------------------------ ambient life
-  _ambient(dt) {
+  _ambient(dt: number) {
     const G = this.G, fx = this.fx, cam = G.camera;
     if (!cam) return;
     if (G.level !== this.edgeLevel) this._buildEdges();
@@ -685,15 +715,20 @@ class FxHooks {
     this.edges = [];
     // the environment knows the real deck edges (turned slabs included): spray only where a deck meets open water
     if (G.env && typeof G.env.deckEdges === 'function') { const e = G.env.deckEdges(1.6); if (e.length) { this.edges = e; return; } }
-    const rects = (G.env && G.env.footprint && G.env.footprint.length ? G.env.footprint : null) || (G.level ? [G.level.bounds] : []);
+    const rects: Rect[] = (G.env && G.env.footprint && G.env.footprint.length ? G.env.footprint : null) || (G.level ? [G.level.bounds] : []);
     // (turned slabs — env.footprint rects with aligned === false: Cargo Terminal — use their own edges, not the AABB)
-    const inR = (r, x, z) => (r.aligned !== false ? x > r.minX && x < r.maxX && z > r.minZ && z < r.maxZ
-      : Math.abs((x - r.cx) * r.ax + (z - r.cz) * r.az) < r.hx && Math.abs((z - r.cz) * r.ax - (x - r.cx) * r.az) < r.hz);
-    const inside = (x, z) => rects.some((r) => inR(r, x, z));
-    const P = (r, u, v) => [r.cx + u * r.ax - v * r.az, r.cz + u * r.az + v * r.ax];
+    // 갑판 사각형: 축 정렬(min/max) 또는 돌린 사각형(aligned === false: 중심·반폭·축) — 돌린 쪽은 c·h·a 값이 늘 있다
+    type Rect = { minX: number; maxX: number; minZ: number; maxZ: number } & Partial<{ cx: number; cz: number; hx: number; hz: number; ax: number; az: number; aligned: boolean }>;
+    type Turned = Required<Rect>;
+    const turnedIn = (r: Turned, x: number, z: number) => Math.abs((x - r.cx) * r.ax + (z - r.cz) * r.az) < r.hx && Math.abs((z - r.cz) * r.ax - (x - r.cx) * r.az) < r.hz;
+    const inR = (r: Rect, x: number, z: number) => (r.aligned !== false ? x > r.minX && x < r.maxX && z > r.minZ && z < r.maxZ
+      : turnedIn(r as Turned, x, z));
+    const inside = (x: number, z: number) => rects.some((r) => inR(r, x, z));
+    const P = (r: Turned, u: number, v: number) => [r.cx + u * r.ax - v * r.az, r.cz + u * r.az + v * r.ax];
     for (const r of rects) {
-      const q = r.aligned === false ? [P(r, -r.hx, -r.hz), P(r, r.hx, -r.hz), P(r, r.hx, r.hz), P(r, -r.hx, r.hz)] : null;
-      const sides = q ? q.map((a, i) => { const c = q[(i + 1) & 3], n = [[r.az, -r.ax], [r.ax, r.az], [-r.az, r.ax], [-r.ax, -r.az]][i]; return [a[0], a[1], c[0], c[1], n[0], n[1]]; }) : [
+      const t = r as Turned;
+      const q = r.aligned === false ? [P(t, -t.hx, -t.hz), P(t, t.hx, -t.hz), P(t, t.hx, t.hz), P(t, -t.hx, t.hz)] : null;
+      const sides: number[][] = q ? q.map((a, i) => { const c = q[(i + 1) & 3], n = [[t.az, -t.ax], [t.ax, t.az], [-t.az, t.ax], [-t.ax, -t.az]][i]; return [a[0], a[1], c[0], c[1], n[0], n[1]]; }) : [
         [r.minX, r.minZ, r.maxX, r.minZ, 0, -1], [r.maxX, r.minZ, r.maxX, r.maxZ, 1, 0],
         [r.maxX, r.maxZ, r.minX, r.maxZ, 0, 1], [r.minX, r.maxZ, r.minX, r.minZ, -1, 0],
       ];

@@ -25,6 +25,15 @@
 import * as THREE from 'three';
 import { G, on } from '../core/ctx.js';
 import { ZONES } from '../config.js';
+import type { Match } from '../game/match.js';
+import type { ZoneControl, Zone, ZoneDef } from '../game/zones.js';
+import type { Face } from '../world/level.js';
+import type { LoopHandle } from '../audio/audio.js';
+
+type Pt = number[];
+/** 구역 하나의 표시 상태 */
+interface ZoneVis { zone: Zone; col: THREE.Color; act: number; sweep: number; reach: number; flash: number; vis: number; held: number; active: boolean; warn?: number }
+type ZoneMesh = THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
 
 const MAXZ = 8;                 // zones per match (centre 1–2 + two sides; headroom for multi-zone layouts)
 const RING = 2.2;               // metres of edge band geometry (border + glow); the core fill carries d = RING
@@ -34,7 +43,7 @@ const LIFT = 0.02;              // floor overlay offset (m)
 // colour-blind Sun), so a neutral zone never reads as held. The dark stripes carry the contrast either way.
 const NEUTRAL_YELLOW = new THREE.Color(1.0, 0.8, 0.3), NEUTRAL_CREAM = new THREE.Color(1.0, 0.93, 0.78);
 const NEUTRAL = NEUTRAL_YELLOW.clone();
-function yellowish(hex) {
+function yellowish(hex: string) {
   const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''));
   if (!m) return false;
   const n = parseInt(m[1], 16), r = (n >> 16) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
@@ -153,10 +162,10 @@ void main() {
 }`;
 
 // ---------------------------------------------------------------------------------------------------- 2D helpers
-const partsOf = (def) => def.polys || [def.poly];
-function area(p) { let a = 0; for (let i = 0, j = p.length - 1; i < p.length; j = i++) a += p[j][0] * p[i][1] - p[i][0] * p[j][1]; return a / 2; }
+const partsOf = (def: ZoneDef): Pt[][] => def.polys || [def.poly!];
+function area(p: Pt[]) { let a = 0; for (let i = 0, j = p.length - 1; i < p.length; j = i++) a += p[j][0] * p[i][1] - p[i][0] * p[j][1]; return a / 2; }
 // Sutherland–Hodgman against one affine half-plane f(x, z) = a·x + b·z + c ≥ 0
-function clipHalf(poly, a, b, c) {
+function clipHalf(poly: Pt[], a: number, b: number, c: number) {
   const out = [];
   const n = poly.length;
   for (let i = 0; i < n; i++) {
@@ -167,9 +176,9 @@ function clipHalf(poly, a, b, c) {
   }
   return out;
 }
-function clip(poly, planes) { let p = poly; for (const [a, b, c] of planes) { if (p.length < 3) return p; p = clipHalf(p, a, b, c); } return p; }
+function clip(poly: Pt[], planes: number[][]) { let p = poly; for (const [a, b, c] of planes) { if (p.length < 3) return p; p = clipHalf(p, a, b, c); } return p; }
 // segment [P, Q] against half-planes → [t0, t1] or null
-function clipSeg(P, Q, planes) {
+function clipSeg(P: Pt, Q: Pt, planes: number[][]) {
   let t0 = 0, t1 = 1;
   for (const [a, b, c] of planes) {
     const fp = a * P[0] + b * P[1] + c, fq = a * Q[0] + b * Q[1] + c;
@@ -180,7 +189,7 @@ function clipSeg(P, Q, planes) {
   return t1 - t0 > 1e-4 ? [t0, t1] : null;
 }
 // inset of a polygon (CCW in x/z with inward normals) by d, mitred
-function inset(poly, nrm, d) {
+function inset(poly: Pt[], nrm: number[][], d: number) {
   const n = poly.length, out = [];
   for (let i = 0; i < n; i++) {
     const h = (i + n - 1) % n;
@@ -192,7 +201,7 @@ function inset(poly, nrm, d) {
   return out;
 }
 // the largest inset (≤ want) that keeps the polygon from folding over: a fraction of its narrowest width
-function safeInset(poly, nrm, want) {
+function safeInset(poly: Pt[], nrm: number[][], want: number) {
   let minW = Infinity;
   for (let i = 0; i < poly.length; i++) {
     let far = 0;
@@ -203,7 +212,9 @@ function safeInset(poly, nrm, want) {
 }
 
 export class ZoneMarks {
-  constructor(scene) {
+  declare scene: THREE.Scene; declare mesh: ZoneMesh | null; declare match: Match | null; declare Z: ZoneControl | null;
+  declare state: ZoneVis[]; declare _t: number | null; declare sounds: ZoneSounds; declare _unsubs: Array<() => void>;
+  constructor(scene: THREE.Scene) {
     this.scene = scene;
     this.mesh = null; this.match = null; this.Z = null;
     this.state = [];
@@ -233,13 +244,13 @@ export class ZoneMarks {
 
   dispose() { this.clear(); this._unsubs.forEach((u) => u()); }
 
-  build(match) {
+  build(match: Match) {
     this.clear();
     const Z = match.zones;
     if (!Z || !G.paint || !G.level) return;
     this.match = match; this.Z = Z;
     NEUTRAL.copy((G.teamHex || []).some(yellowish) ? NEUTRAL_CREAM : NEUTRAL_YELLOW);
-    const pos = [], info = [], idx = [];
+    const pos: number[] = [], info: number[] = [], idx: number[] = [];
     const faces = this._faceList();
     Z.zones.slice(0, MAXZ).forEach((zone, zi) => this._buildZone(zone, zi, faces, pos, info, idx));
     const geo = new THREE.BufferGeometry();
@@ -275,7 +286,7 @@ export class ZoneMarks {
     this.mesh = mesh;
     this.scene.add(mesh);
     // per-zone animation state
-    this.state = Z.zones.slice(0, MAXZ).map((zone, i) => {
+    this.state = Z.zones.slice(0, MAXZ).map((zone, i: number): ZoneVis => {
       let reach = 0;
       for (const p of partsOf(zone.def)) for (const [x, z] of p) reach = Math.max(reach, Math.hypot(x - zone.center[0], z - zone.center[2]));
       uniforms.uCen.value[i].set(zone.center[0], zone.center[2], reach + 1.5, 0);
@@ -287,10 +298,10 @@ export class ZoneMarks {
 
   // paint faces sorted by their first grid cell (paint.js assigns grids in paintFaces order)
   _faceList() {
-    return G.paint.paintFaces.filter((f) => f.grid >= 0);
+    return G.paint!.paintFaces.filter((f) => f.grid >= 0);
   }
-  _facesOf(zone, faces) {
-    const set = new Set();
+  _facesOf(zone: Zone, faces: Face[]) {
+    const set = new Set<Face>();
     const c = zone.cells;
     let lo = 0;
     for (let k = 0; k < c.length; k++) {
@@ -306,7 +317,7 @@ export class ZoneMarks {
     return [...set];
   }
 
-  _buildZone(zone, zi, faces, pos, info, idx) {
+  _buildZone(zone: Zone, zi: number, faces: Face[], pos: number[], info: number[], idx: number[]) {
     const def = zone.def;
     const y0 = (def.y0 ?? -2) - 0.05, y1 = (def.y1 ?? 6) + 0.05;
     const zf = this._facesOf(zone, faces);
@@ -332,14 +343,15 @@ export class ZoneMarks {
       }
       let bx0 = Infinity, bx1 = -Infinity, bz0 = Infinity, bz1 = -Infinity;
       for (const [x, z] of C) { bx0 = Math.min(bx0, x); bx1 = Math.max(bx1, x); bz0 = Math.min(bz0, z); bz1 = Math.max(bz1, z); }
-      return { planes, cut, y: (x, z) => ky * x + kz * z + k0, box: [bx0, bx1, bz0, bz1] };
+      return { planes, cut, y: (x: number, z: number) => ky * x + kz * z + k0, box: [bx0, bx1, bz0, bz1] };
     });
-    const overlaps = (R, pts) => {
+    type Region = (typeof regions)[number];
+    const overlaps = (R: Region, pts: Pt[]) => {
       let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
       for (const [x, z] of pts) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
       return !(x1 < R.box[0] || x0 > R.box[1] || z1 < R.box[2] || z0 > R.box[3]);
     };
-    const emitPoly = (R, poly, attr, fan) => {
+    const emitPoly = (R: Region, poly: Pt[], attr: (x: number, z: number) => number[], fan: boolean) => {
       if (poly.length < 3) return;
       const base = pos.length / 3;
       for (const [x, z] of poly) { pos.push(x, R.y(x, z) + LIFT, z); const [d, s] = attr(x, z); info.push(zi, 0, d, s); }
@@ -348,12 +360,12 @@ export class ZoneMarks {
       for (const t of tris) idx.push(base + t[0], base + t[1], base + t[2]);
     };
     // a CCW outline with its edge frames, perimeter coordinate and ring inset
-    const outline = (poly) => {
-      const P = [];
+    const outline = (poly: Pt[]) => {
+      const P: Pt[] = [];
       for (const p of poly) { const q = P[P.length - 1]; if (!q || Math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-4) P.push(p); }
       while (P.length > 2 && Math.hypot(P[0][0] - P[P.length - 1][0], P[0][1] - P[P.length - 1][1]) <= 1e-4) P.pop();
       if (P.length < 3) return null;
-      const n = P.length, nrm = [], tan = [], len = [], S = [];
+      const n = P.length, nrm: number[][] = [], tan: number[][] = [], len: number[] = [], S: number[] = [];
       let acc = 0;
       for (let i = 0; i < n; i++) {
         const A = P[i], B = P[(i + 1) % n];
@@ -379,7 +391,7 @@ export class ZoneMarks {
           const trap = [poly[i], poly[j], Q[j], Q[i]];
           if (!overlaps(R, trap)) continue;
           const A = poly[i], nn = nrm[i], tt = tan[i], s0 = S[i];
-          emitPoly(R, clip(trap, R.planes), (x, z) => [Math.max(0, (x - A[0]) * nn[0] + (z - A[1]) * nn[1]), s0 + (x - A[0]) * tt[0] + (z - A[1]) * tt[1]], true);
+          emitPoly(R, clip(trap, R.planes), (x: number, z: number) => [Math.max(0, (x - A[0]) * nn[0] + (z - A[1]) * nn[1]), s0 + (x - A[0]) * tt[0] + (z - A[1]) * tt[1]], true);
         }
         // core fill
         if (overlaps(R, Q)) emitPoly(R, clip(Q, R.planes), () => [D, 0], false);
@@ -403,7 +415,7 @@ export class ZoneMarks {
     }
   }
 
-  _syncActive(animate) {
+  _syncActive(animate: boolean) {
     const Z = this.Z;
     if (!Z) return;
     const act = new Set(Z.active.zones);
@@ -440,7 +452,7 @@ export class ZoneMarks {
       const cz = s.active && z.owner >= 0 ? Math.min(1, Math.max(0, (z.share[1 - z.owner] - warnS) / (ZONES.contest - warnS))) : 0;
       s.warn = (s.warn || 0) + (cz - (s.warn || 0)) * (1 - Math.exp(-dt * 6));
       F.z = s.warn; if (z.owner >= 0) F.w = 1 - z.owner;
-      const target = z.owner >= 0 && tc && tc[z.owner] ? tc[z.owner] : NEUTRAL;
+      const target = (z.owner >= 0 && tc && tc[z.owner]) || NEUTRAL;
       const k = 1 - Math.exp(-dt * 9);
       s.col.lerp(target, k);
       s.act += ((s.active ? 1 : 0) - s.act) * (1 - Math.exp(-dt * (s.active ? 14 : 6)));
@@ -463,23 +475,26 @@ export class ZoneMarks {
 // plus the flood / wipe surges at the zone and the contested warnings (2D, rate-limited). The control cues themselves
 // (WE / THEY took it, WE / THEY lost it) are the HUD's, with its call-outs.
 const HUM_DT = 1 / 6;            // hum control updates (s)
-const zonePos = (z) => ({ x: z.center[0], y: z.center[1] + 1, z: z.center[2] });
+const zonePos = (z: Zone) => ({ x: z.center[0], y: z.center[1] + 1, z: z.center[2] });
 class ZoneSounds {
+  declare warnT: number;
+  declare acc: number;
+  declare hums: Map<Zone, { handle: LoopHandle; k: number }>;
   constructor() { this.hums = new Map(); this.acc = 0; this.warnT = -99; }
-  _me(match) { const a = match?.local; return a && (a.team === 0 || a.team === 1) ? a.team : 0; }
-  _live(match) { return !!(match && !match.attract && G.mode === 'match' && G.audio && match.state === 'playing'); }
+  _me(match: Match | null) { const a = match?.local; return a && (a.team === 0 || a.team === 1) ? a.team : 0; }
+  _live(match: Match | null): boolean { return !!(match && !match.attract && G.mode === 'match' && G.audio && match.state === 'playing'); }
 
-  update(Z, match, dt) {
+  update(Z: ZoneControl, match: Match | null, dt: number) {
     this.acc += dt;
     if (this.acc < HUM_DT) return;
     const step = Math.min(1, this.acc); this.acc = 0;
-    const on = this._live(match) && !match.paused && Z.winner == null;
+    const on = this._live(match) && !match!.paused && Z.winner == null;
     const act = on ? Z.active.zones : [];
     const me = this._me(match);
     for (const z of act) {
       let h = this.hums.get(z);
       if (!h || !h.handle.playing) {
-        const handle = G.audio.loop('zone_hum', { pos: zonePos(z), volume: 0 });
+        const handle = G.audio!.loop('zone_hum', { pos: zonePos(z), volume: 0 });
         if (!handle || !handle.playing) continue;          // audio not started yet: try again next update
         h = { handle, k: 0 };
         this.hums.set(z, h);
@@ -493,24 +508,24 @@ class ZoneSounds {
   }
 
   // a zone was taken: the ink surge rolls out from it (a little brighter when it's ours)
-  flipped(match, zone, owner) {
+  flipped(match: Match | null, zone: Zone | undefined, owner: number) {
     if (!this._live(match) || !zone || !(owner === 0 || owner === 1)) return;
-    G.audio.play('zone_flood', { pos: zonePos(zone), pitch: owner === this._me(match) ? 1.06 : 0.9 });
+    G.audio!.play('zone_flood', { pos: zonePos(zone), pitch: owner === this._me(match) ? 1.06 : 0.9 });
   }
 
   // a new objective: its old ink drains away as it's revealed
-  shifted(Z, match, e) {
+  shifted(Z: ZoneControl, match: Match | null, e: { moved?: boolean } | null) {
     if (!this._live(match) || !e || e.moved === false) return;
-    for (const z of Z.active.zones) G.audio.play('zone_wipe', { pos: zonePos(z) });
+    for (const z of Z.active.zones) G.audio!.play('zone_wipe', { pos: zonePos(z) });
   }
 
   // contested: our hold is being inked back → the alarm; theirs is nearly broken → the go-go chirps
-  contested(match, zone, holder) {
+  contested(match: Match | null, zone: Zone | undefined, holder: number) {
     if (!this._live(match) || !zone || !(holder === 0 || holder === 1)) return;
     const now = G.time ?? 0;
     if (now - this.warnT < 2.5) return;
     this.warnT = now;
-    G.audio.play(holder === this._me(match) ? 'zone_warn' : 'zone_chance');
+    G.audio!.play(holder === this._me(match) ? 'zone_warn' : 'zone_chance');
   }
 
   stop() { for (const h of this.hums.values()) h.handle.stop(0.3); this.hums.clear(); this.acc = 0; }

@@ -35,13 +35,14 @@
 // 336/beam — a heavy moment (bomb + slam + 8 players fighting) stays ≈ 10–16k triangles.
 import * as THREE from 'three';
 import { QUALITY, PLAYER } from '../config.js';
+import type { QualityId } from '../config.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const TAU = Math.PI * 2;
 const rand = Math.random;
-const EMPTY = Object.freeze({});
-const easeOut = (t) => 1 - (1 - t) * (1 - t) * (1 - t);
-const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const EMPTY: Readonly<FxOpts> = Object.freeze({});
+const easeOut = (t: number) => 1 - (1 - t) * (1 - t) * (1 - t);
+const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
 
 // droplet flags
 const F_PAINT = 1, F_RING = 2, F_NOCOL = 4, F_QUIET = 8, F_MATTE = 16;
@@ -589,7 +590,7 @@ const WATER = new THREE.Color('#bfe9ff');
 const FEATHER = new THREE.Color('#f3f0e8');
 
 // Random unit vector in a cone of half-angle maxAngle around axis n (n must be normalised).
-function coneDir(n, maxAngle, out) {
+function coneDir(n: THREE.Vector3, maxAngle: number, out: THREE.Vector3) {
   const cosMax = Math.cos(maxAngle);
   const z = 1 - rand() * (1 - cosMax);
   const r = Math.sqrt(Math.max(0, 1 - z * z));
@@ -599,18 +600,18 @@ function coneDir(n, maxAngle, out) {
   _tB.copy(n).cross(_tA);
   return out.copy(n).multiplyScalar(z).addScaledVector(_tA, r * Math.cos(phi)).addScaledVector(_tB, r * Math.sin(phi));
 }
-function randSphere(out) {
+function randSphere(out: THREE.Vector3) {
   const z = rand() * 2 - 1, r = Math.sqrt(1 - z * z), p = rand() * TAU;
   return out.set(r * Math.cos(p), z, r * Math.sin(p));
 }
 // two unit vectors perpendicular to n
-function basis(n, outT, outB) {
+function basis(n: THREE.Vector3, outT: THREE.Vector3, outB: THREE.Vector3) {
   if (Math.abs(n.y) < 0.95) outT.set(0, 1, 0); else outT.set(1, 0, 0);
   outT.cross(n).normalize();
   outB.copy(n).cross(outT);
 }
 
-function makeQuadGeo(cap, attrs) {
+function makeQuadGeo(cap: number, attrs: Array<[string, number]>) {
   const g = new THREE.InstancedBufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0], 3));
   g.setIndex([0, 1, 2, 0, 2, 3]);
@@ -625,7 +626,7 @@ function makeQuadGeo(cap, attrs) {
   g.userData.dyn = list;
   return g;
 }
-function withInstanceAttrs(base, cap, attrs) {
+function withInstanceAttrs(base: THREE.IcosahedronGeometry | THREE.CylinderGeometry, cap: number, attrs: Array<[string, number]>) {
   const g = new THREE.InstancedBufferGeometry();
   g.index = base.index;
   g.setAttribute('position', base.attributes.position);
@@ -642,7 +643,7 @@ function withInstanceAttrs(base, cap, attrs) {
   return g;
 }
 // Upload only the live part of every dynamic attribute. Reuses one range object per attribute (no per-frame garbage).
-function markUpdated(geo, count) {
+function markUpdated(geo: THREE.InstancedBufferGeometry, count: number) {
   const list = geo.userData.dyn;
   for (let i = 0; i < list.length; i++) {
     const a = list[i];
@@ -660,11 +661,74 @@ const OP_RING = 1, OP_CROWN = 2, OP_DUSTRING = 3;
 // ---------------------------------------------------------------------------------------------------------------
 // FX
 // ---------------------------------------------------------------------------------------------------------------
+/** 효과 선택(효과마다 쓰는 것만 읽는다) */
+export interface FxOpts {
+  count?: number; speed?: number; size?: number; spread?: number; gravity?: number; paint?: boolean; sheet?: boolean; ring?: boolean;
+  mist?: boolean; life?: number; stretch?: number; noCollide?: boolean; snap?: boolean; radius?: number; style?: number; alpha?: number;
+  thickness?: number; quiet?: boolean; cloud?: boolean;
+}
+/** 조명 동기화 입력(env.getSkyColors): 해 방향·색·세기, 하늘(천정·지평)·땅 색 */
+export interface FxLighting { sunDir?: THREE.Vector3; sun?: THREE.Color; sunColor?: THREE.Color; sunIntensity?: number; sky?: THREE.Color; zenith?: THREE.Color; horizon?: THREE.Color; ground?: THREE.Color }
+/** FX 생성 선택: 품질(배수·프리셋 이름·프리셋), 물 높이, 중력 */
+export interface FxInit { quality?: number | string | { particles: number } | null; waterY?: number; gravity?: number }
+/** 색 입력: THREE 색 표현 또는 {r,g,b}(없으면 흰색) */
+export type ColorIn = THREE.ColorRepresentation | { r: number; g: number; b: number } | null | undefined;
+/** 선분 충돌 판정: 맞으면 점·법선 */
+export type FxCollider = (from: THREE.Vector3, to: THREE.Vector3) => { point: THREE.Vector3; normal: THREE.Vector3 } | null | undefined | false;
+/** 입자 묶음(인스턴스 사각형): 용량, 개수, 형상·메시, 위치·속도·색·보조 배열 */
+interface Pool { cap: number; n: number; geo: THREE.InstancedBufferGeometry; mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.ShaderMaterial>; P: Float32Array; V: Float32Array; C: Float32Array; X: Float32Array; N?: Float32Array; A?: Float32Array }
+
 export class FX {
-  constructor(scene, opts = {}) {
+  declare motes: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.ShaderMaterial, THREE.Object3DEventMap>;
+  declare _moteU: { uTime: { value: number; }; uCam: { value: THREE.Vector3; }; uBox: { value: number; }; uWind: { value: THREE.Vector3; }; uSunDir: { value: THREE.Vector3 | THREE.Color }; uCol: { value: THREE.Color; }; };
+  declare pillars: { cap: number; n: number; P: Float32Array<ArrayBuffer>; C: Float32Array<ArrayBuffer>; X: Float32Array<ArrayBuffer>; };
+  declare beams: { cap: number; n: number; geo: THREE.InstancedBufferGeometry; mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.ShaderMaterial, THREE.Object3DEventMap>; P: Float32Array<ArrayBuffer>; C: Float32Array<ArrayBuffer>; X: Float32Array<ArrayBuffer>; };
+  declare _beamU: { uTime: { value: number; }; };
+  declare shells: { cap: number; n: number; geo: THREE.InstancedBufferGeometry; mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.ShaderMaterial, THREE.Object3DEventMap>; P: Float32Array<ArrayBuffer>; V: Float32Array<ArrayBuffer>; C: Float32Array<ArrayBuffer>; X: Float32Array<ArrayBuffer>; A: Float32Array<ArrayBuffer>; };
+  declare _shellUniforms: { uTime: { value: number; }; uSunDir: { value: THREE.Vector3 | THREE.Color }; uSunCol: { value: THREE.Vector3 | THREE.Color }; uSkyCol: { value: THREE.Vector3 | THREE.Color }; };
+  declare marks: { cap: number; n: number; P: Float32Array<ArrayBuffer>; N: Float32Array<ArrayBuffer>; C: Float32Array<ArrayBuffer>; X: Float32Array<ArrayBuffer>; };
+  declare rings: { cap: number; n: number; geo: THREE.InstancedBufferGeometry; mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.ShaderMaterial, THREE.Object3DEventMap>; P: Float32Array<ArrayBuffer>; V: Float32Array<ArrayBuffer>; N: Float32Array<ArrayBuffer>; C: Float32Array<ArrayBuffer>; X: Float32Array<ArrayBuffer>; };
+  declare _ringU: { uTime: { value: number; }; };
+  declare glows: Pool;
+  declare puffs: Pool;
+  declare dMesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.ShaderMaterial, THREE.Object3DEventMap>;
+  declare dGeo: THREE.InstancedBufferGeometry;
+  declare _dropU: { uSunDirV: { value: THREE.Vector3; }; uUpV: { value: THREE.Vector3; }; uSunCol: { value: THREE.Vector3 | THREE.Color }; uSkyCol: { value: THREE.Vector3 | THREE.Color }; uGroundCol: { value: THREE.Vector3 | THREE.Color }; };
+  declare dA: Float32Array<ArrayBuffer>;
+  declare dK: Float32Array<ArrayBuffer>;
+  declare dC: Float32Array<ArrayBuffer>;
+  declare dV: Float32Array<ArrayBuffer>;
+  declare dP: Float32Array<ArrayBuffer>;
+  declare dN: number;
+  declare dCap: number;
+  declare _sqN: number;
+  declare _sq: Float32Array<ArrayBuffer>;
+  declare root: THREE.Group<THREE.Object3DEventMap>;
+  declare sunDir: THREE.Vector3;
+  declare _light: { sunDir: THREE.Vector3; sunCol: THREE.Color; sky: THREE.Color; ground: THREE.Color; };
+  declare _camDir: THREE.Vector3;
+  declare _camPos: THREE.Vector3;
+  declare _colB: THREE.Color;
+  declare _col: THREE.Color;
+  declare _colCache: Map<string, THREE.Color>;
+  declare _recycle: number;
+  declare _time: number;
+  declare _dt: number;
+  declare _checks: number;
+  declare maxChecks: number;
+  declare paintEffects: boolean;
+  declare onRipple: ((pos: THREE.Vector3, amp: number, wavelength: number, speed: number, life: number) => void) | null;
+  declare onSpeck: ((point: THREE.Vector3, normal: THREE.Vector3, color: THREE.Color, size: number) => void) | null;
+  declare onDropletLand: ((point: THREE.Vector3, normal: THREE.Vector3, color: THREE.Color, size: number) => void) | null;
+  declare collider: FxCollider | null;
+  declare gravity: number;
+  declare waterY: number;
+  declare q: number;
+  declare scene: THREE.Scene;
+  constructor(scene: THREE.Scene, opts: FxInit = {}) {
     this.scene = scene;
     const q = opts.quality;
-    this.q = typeof q === 'number' ? q : (typeof q === 'object' && q ? q.particles : (QUALITY[q] || QUALITY.high).particles) ?? 1;
+    this.q = typeof q === 'number' ? q : (typeof q === 'object' && q ? q.particles : ((q ? QUALITY[q as QualityId] : undefined) || QUALITY.high).particles) ?? 1;
     this.q = Math.max(0.25, this.q);
     this.waterY = opts.waterY ?? PLAYER.waterY;
     this.gravity = opts.gravity ?? 17;
@@ -706,24 +770,24 @@ export class FX {
     this._sq = new Float32Array(96 * 14); this._sqN = 0;
   }
 
-  setCollider(fn) { this.collider = fn; }
+  setCollider(fn: FxCollider | null) { this.collider = fn; }
 
   // ------------------------------------------------------------------ colour input → linear THREE.Color (no alloc after first use of a string)
-  _color(c, out) {
-    if (c && c.isColor) return out.copy(c);
+  _color(c: ColorIn, out: THREE.Color) {
+    if (c instanceof THREE.Color) return out.copy(c);
     if (typeof c === 'number') return out.setHex(c);
     if (typeof c === 'string') {
       let k = this._colCache.get(c);
       if (!k) { k = new THREE.Color(c); this._colCache.set(c, k); }
       return out.copy(k);
     }
-    if (c && c.r !== undefined) return out.setRGB(c.r, c.g, c.b);
+    if (c && typeof c === 'object' && 'r' in c) return out.setRGB(c.r, c.g, c.b);
     return out.set(0xffffff);
   }
-  _near(pos, d) { return this._camPos.distanceToSquared(pos) < d * d; }
+  _near(pos: THREE.Vector3, d: number) { return this._camPos.distanceToSquared(pos) < d * d; }
 
   // ------------------------------------------------------------------ droplets (velocity-stretched glossy sphere impostors, 2 tris each)
-  _initDrops(cap) {
+  _initDrops(cap: number) {
     this.dCap = cap;
     this.dN = 0;
     this.dP = new Float32Array(cap * 3);   // position
@@ -744,7 +808,7 @@ export class FX {
   }
 
   // flags: 1 paint, 2 ripple ring on land, 4 no-collide, 8 quiet landing (no blot / beads), 16 matte (dust grain)
-  _spawnDrop(px, py, pz, vx, vy, vz, col, size, life, grav, stretch, flags) {
+  _spawnDrop(px: number, py: number, pz: number, vx: number, vy: number, vz: number, col: THREE.Color, size: number, life: number, grav: number, stretch: number, flags: number) {
     let i;
     if (this.dN < this.dCap) i = this.dN++;
     else { i = this._recycle % this.dCap; this._recycle += 7; }
@@ -757,7 +821,7 @@ export class FX {
     A[i8] = size; A[i8 + 1] = 0; A[i8 + 2] = life; A[i8 + 3] = grav; A[i8 + 4] = stretch; A[i8 + 5] = rand(); A[i8 + 6] = 0; A[i8 + 7] = flags;
     return i;
   }
-  _killDrop(i) {
+  _killDrop(i: number) {
     const last = --this.dN;
     if (i !== last) {
       this.dP.copyWithin(i * 3, last * 3, last * 3 + 3);
@@ -769,13 +833,13 @@ export class FX {
   }
   // Ripple through the ink surface (the level shader draws it — fxHooks wires onRipple to paint.ripple); without a
   // paint system (labs) a soft ring decal stands in.
-  _ripple(pos, amp, wavelength, speed, life, normal = UP, col = null) {
+  _ripple(pos: THREE.Vector3, amp: number, wavelength: number, speed: number, life: number, normal = UP, col: THREE.Color | null = null) {
     if (this.onRipple) { this.onRipple(pos, amp, wavelength, speed, life); return; }
     if (col) this._ringRaw(pos, normal, col, speed * life * 0.8 + 0.1, life * 0.7, R_RIPPLE, 0.45, 1);
   }
   // Droplet hit something. Ink stays where it lands: paint droplets become real splats (onDropletLand), the rest
   // leave a speck of ink (onSpeck, GPU-only micro splat) and a ripple; heavy drops kick up a couple of beads.
-  _landDrop(i, px, py, pz, nx, ny, nz, water) {
+  _landDrop(i: number, px: number, py: number, pz: number, nx: number, ny: number, nz: number, water: boolean) {
     const i3 = i * 3, i8 = i * 8, A = this.dA;
     const size = A[i8], flags = A[i8 + 7];
     _cbC.setRGB(this.dC[i3], this.dC[i3 + 1], this.dC[i3 + 2]);
@@ -809,7 +873,7 @@ export class FX {
     }
   }
 
-  _updateDrops(dt) {
+  _updateDrops(dt: number) {
     const P = this.dP, Vv = this.dV, A = this.dA, K = this.dK;
     const g = this.gravity, wy = this.waterY;
     const col = this.collider;
@@ -863,9 +927,9 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ sprites (puffs = alpha, glows = additive)
-  _initSprites(capPuff, capGlow) {
-    const attrs = [['aPosSize', 4], ['aColA', 4], ['aMisc', 4]];
-    const mkPool = (cap, frag, blending, order, name) => {
+  _initSprites(capPuff: number, capGlow: number) {
+    const attrs: Array<[string, number]> = [['aPosSize', 4], ['aColA', 4], ['aMisc', 4]];
+    const mkPool = (cap: number, frag: string, blending: THREE.Blending, order: number, name: string) => {
       const geo = makeQuadGeo(cap, attrs);
       const mat = new THREE.ShaderMaterial({ vertexShader: SPRITE_VERT, fragmentShader: frag, transparent: true, depthWrite: false, blending, fog: false });
       const mesh = new THREE.Mesh(geo, mat);
@@ -881,7 +945,7 @@ export class FX {
     this.puffs = mkPool(capPuff, PUFF_FRAG, THREE.NormalBlending, 12, 'FX_Puffs');
     this.glows = mkPool(capGlow, GLOW_FRAG, THREE.AdditiveBlending, 20, 'FX_Glows');
   }
-  _sprite(pool, px, py, pz, vx, vy, vz, col, size0, size1, life, alpha, drag = 2.2, buoy = 0, kind = 0, fadeIn = 0.08, spin = 1.2, wobble = 0, fadeOut = 0) {
+  _sprite(pool: Pool, px: number, py: number, pz: number, vx: number, vy: number, vz: number, col: THREE.Color, size0: number, size1: number, life: number, alpha: number, drag = 2.2, buoy = 0, kind = 0, fadeIn = 0.08, spin = 1.2, wobble = 0, fadeOut = 0) {
     let i;
     if (pool.n < pool.cap) i = pool.n++; else i = Math.floor(rand() * pool.cap);
     const i3 = i * 3, x = i * 14;
@@ -894,7 +958,7 @@ export class FX {
     X[x + 9] = kind; X[x + 10] = fadeIn; X[x + 11] = rand(); X[x + 12] = wobble; X[x + 13] = fadeOut;
     return i;
   }
-  _updateSprites(pool, dt, additive) {
+  _updateSprites(pool: Pool, dt: number, additive: boolean) {
     const P = pool.P, Vv = pool.V, C = pool.C, X = pool.X;
     const aPS = pool.geo.attributes.aPosSize.array, aC = pool.geo.attributes.aColA.array, aM = pool.geo.attributes.aMisc.array;
     for (let i = 0; i < pool.n; i++) {
@@ -934,7 +998,7 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ rings (+ immediate-mode marks appended each frame)
-  _initRings(cap) {
+  _initRings(cap: number) {
     const mCap = 48;
     const geo = makeQuadGeo(cap + mCap, [['aPosR', 4], ['aNrmT', 4], ['aColA', 4], ['aMisc', 4]]);
     geo.attributes.position.array.forEach((v, i, a) => { a[i] = v * 2; }); // quad −1..1
@@ -948,7 +1012,7 @@ export class FX {
     // immediate marks: P, N, C, X: radius, t, alpha, style, thick, seed
     this.marks = { cap: mCap, n: 0, P: new Float32Array(mCap * 3), N: new Float32Array(mCap * 3), C: new Float32Array(mCap * 3), X: new Float32Array(mCap * 6) };
   }
-  _ringRaw(pos, normal, col, radius, life, style, alpha, thick, vx = 0, vy = 0, vz = 0) {
+  _ringRaw(pos: THREE.Vector3, normal: THREE.Vector3, col: THREE.Color, radius: number, life: number, style: number, alpha: number, thick: number, vx = 0, vy = 0, vz = 0) {
     const R = this.rings;
     let i;
     if (R.n < R.cap) i = R.n++; else i = Math.floor(rand() * R.cap);
@@ -963,7 +1027,7 @@ export class FX {
     return i;
   }
   // Immediate-mode decal for this frame only (drawn next frame, then discarded).
-  mark(pos, normal, color, radius, style = R_TARGET, alpha = 1, t = 0, thick = 1, seed = 0.5) {
+  mark(pos: THREE.Vector3, normal: THREE.Vector3, color: ColorIn, radius: number, style = R_TARGET, alpha = 1, t = 0, thick = 1, seed = 0.5) {
     const M = this.marks;
     if (M.n >= M.cap) return;
     const i = M.n++, i3 = i * 3, x = i * 6;
@@ -974,7 +1038,7 @@ export class FX {
     M.C[i3] = col.r; M.C[i3 + 1] = col.g; M.C[i3 + 2] = col.b;
     M.X[x] = radius; M.X[x + 1] = t; M.X[x + 2] = alpha; M.X[x + 3] = style; M.X[x + 4] = thick; M.X[x + 5] = seed;
   }
-  _updateRings(dt) {
+  _updateRings(dt: number) {
     const R = this.rings, X = R.X;
     const aP = R.geo.attributes.aPosR.array, aN = R.geo.attributes.aNrmT.array, aC = R.geo.attributes.aColA.array, aM = R.geo.attributes.aMisc.array;
     for (let i = 0; i < R.n; i++) {
@@ -1017,7 +1081,7 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ shells
-  _initShells(cap) {
+  _initShells(cap: number) {
     const base = new THREE.IcosahedronGeometry(1, 3);
     const geo = withInstanceAttrs(base, cap, [['aPosR', 4], ['aColA', 4], ['aMisc', 4], ['aAxis', 4]]);
     const L = this._light;
@@ -1030,7 +1094,7 @@ export class FX {
     this.shells = { cap, n: 0, geo, mesh, P: new Float32Array(cap * 3), V: new Float32Array(cap * 3), C: new Float32Array(cap * 3), X: new Float32Array(cap * 9), A: new Float32Array(cap * 4) };
   }
   // axis/crown: a crown splash opening along the surface normal (crown 1) instead of a free burst (0)
-  _shell(pos, col, r0, r1, expand, life, alpha, kind, vy = 0, wobble = 0.08, axis = null, crown = 0) {
+  _shell(pos: THREE.Vector3, col: THREE.Color, r0: number, r1: number, expand: number, life: number, alpha: number, kind: number, vy = 0, wobble = 0.08, axis: THREE.Vector3 | null = null, crown = 0) {
     const S = this.shells;
     let i;
     if (S.n < S.cap) i = S.n++; else i = Math.floor(rand() * S.cap);
@@ -1043,7 +1107,7 @@ export class FX {
     if (axis) { S.A[i4] = axis.x; S.A[i4 + 1] = axis.y; S.A[i4 + 2] = axis.z; S.A[i4 + 3] = crown; }
     else { S.A[i4] = 0; S.A[i4 + 1] = 1; S.A[i4 + 2] = 0; S.A[i4 + 3] = 0; }
   }
-  _updateShells(dt) {
+  _updateShells(dt: number) {
     const S = this.shells, X = S.X;
     const aP = S.geo.attributes.aPosR.array, aC = S.geo.attributes.aColA.array, aM = S.geo.attributes.aMisc.array, aA = S.geo.attributes.aAxis.array;
     for (let i = 0; i < S.n; i++) {
@@ -1073,7 +1137,7 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ beams (+ immediate pillars)
-  _initBeams(cap) {
+  _initBeams(cap: number) {
     const pCap = 8;
     const base = new THREE.CylinderGeometry(1, 1, 1, 24, 7, true);
     base.translate(0, 0.5, 0);
@@ -1086,7 +1150,7 @@ export class FX {
     this.beams = { cap, n: 0, geo, mesh, P: new Float32Array(cap * 3), C: new Float32Array(cap * 3), X: new Float32Array(cap * 5) }; // radius, height, age, life, seed
     this.pillars = { cap: pCap, n: 0, P: new Float32Array(pCap * 3), C: new Float32Array(pCap * 4), X: new Float32Array(pCap * 3) }; // radius, height, seed
   }
-  _beam(pos, col, radius, height, life) {
+  _beam(pos: THREE.Vector3, col: THREE.Color, radius: number, height: number, life: number) {
     const B = this.beams;
     let i;
     if (B.n < B.cap) i = B.n++; else i = 0;
@@ -1095,7 +1159,7 @@ export class FX {
     B.X[i * 5] = radius; B.X[i * 5 + 1] = height; B.X[i * 5 + 2] = 0; B.X[i * 5 + 3] = life; B.X[i * 5 + 4] = rand();
   }
   // Immediate-mode light pillar (this frame only).
-  pillar(pos, color, radius = 0.5, height = 8, alpha = 0.6, seed = 0.3) {
+  pillar(pos: THREE.Vector3, color: THREE.Color, radius = 0.5, height = 8, alpha = 0.6, seed = 0.3) {
     const Pl = this.pillars;
     if (Pl.n >= Pl.cap) return;
     const i = Pl.n++;
@@ -1104,7 +1168,7 @@ export class FX {
     Pl.C[i * 4] = col.r; Pl.C[i * 4 + 1] = col.g; Pl.C[i * 4 + 2] = col.b; Pl.C[i * 4 + 3] = alpha;
     Pl.X[i * 3] = radius; Pl.X[i * 3 + 1] = height; Pl.X[i * 3 + 2] = seed;
   }
-  _updateBeams(dt) {
+  _updateBeams(dt: number) {
     const B = this.beams, X = B.X;
     const aP = B.geo.attributes.aPosR.array, aC = B.geo.attributes.aColA.array, aM = B.geo.attributes.aMisc.array;
     for (let i = 0; i < B.n; i++) {
@@ -1139,7 +1203,7 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ motes (GPU)
-  _initMotes(count) {
+  _initMotes(count: number) {
     const g = new THREE.InstancedBufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0], 3));
     g.setIndex([0, 1, 2, 0, 2, 3]);
@@ -1160,7 +1224,7 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ scheduler (delayed stages; allocation-free)
-  _after(delay, op, pos, normal, col, a0 = 0, a1 = 0, a2 = 0) {
+  _after(delay: number, op: number, pos: THREE.Vector3, normal: THREE.Vector3, col: THREE.Color, a0 = 0, a1 = 0, a2 = 0) {
     if (this._sqN >= 96) return;
     const o = this._sqN++ * 14, S = this._sq;
     S[o] = delay; S[o + 1] = op;
@@ -1169,7 +1233,7 @@ export class FX {
     S[o + 8] = col.r; S[o + 9] = col.g; S[o + 10] = col.b;
     S[o + 11] = a0; S[o + 12] = a1; S[o + 13] = a2;
   }
-  _runSchedule(dt) {
+  _runSchedule(dt: number) {
     const S = this._sq;
     for (let i = 0; i < this._sqN; i++) {
       const o = i * 14;
@@ -1188,7 +1252,7 @@ export class FX {
   }
 
   // ------------------------------------------------------------------ ground probe (for rings under explosions)
-  _probeDown(pos, depth, outP, outN) {
+  _probeDown(pos: THREE.Vector3, depth: number, outP: THREE.Vector3, outN: THREE.Vector3) {
     if (this.collider) {
       _from.copy(pos); _to.copy(pos); _to.y -= depth;
       const h = this.collider(_from, _to);
@@ -1200,7 +1264,7 @@ export class FX {
 
   // ------------------------------------------------------------------ internal building blocks
   // radial splash crown on a surface: droplets thrown outward + upward along the normal
-  _crown(pos, normal, col, n, speed, size, flags = 0) {
+  _crown(pos: THREE.Vector3, normal: THREE.Vector3, col: THREE.Color, n: number, speed: number, size: number, flags = 0) {
     basis(normal, _tA, _v4);
     const count = Math.max(1, Math.round(n * this.q));
     const a0 = rand() * TAU;
@@ -1215,7 +1279,7 @@ export class FX {
     }
   }
   // puffs of dust thrown radially along the ground
-  _dustRing(pos, col, n, speed) {
+  _dustRing(pos: THREE.Vector3, col: THREE.Color, n: number, speed: number) {
     const count = Math.max(2, Math.round(n * this.q));
     const a0 = rand() * TAU;
     for (let i = 0; i < count; i++) {
@@ -1224,7 +1288,7 @@ export class FX {
         col, 0.16 + rand() * 0.1, 0.5 + rand() * 0.35, 0.55 + rand() * 0.35, 0.3, 3.2, 0.25, P_DUST, 0.05, 1.2);
     }
   }
-  _grains(pos, dir, n, speed) {
+  _grains(pos: THREE.Vector3, dir: THREE.Vector3, n: number, speed: number) {
     const count = Math.max(1, Math.round(n * this.q));
     for (let i = 0; i < count; i++) {
       coneDir(dir, 0.9, _v1);
@@ -1232,13 +1296,13 @@ export class FX {
       this._spawnDrop(pos.x, pos.y + 0.03, pos.z, _v1.x * sp, _v1.y * sp, _v1.z * sp, GRAIN, 0.01 + rand() * 0.012, 0.3 + rand() * 0.2, 1.1, 1, F_NOCOL | F_MATTE);
     }
   }
-  _toCam(pos, out) { return out.copy(this._camPos).sub(pos).normalize(); }
+  _toCam(pos: THREE.Vector3, out: THREE.Vector3) { return out.copy(this._camPos).sub(pos).normalize(); }
 
   // =================================================================== contract API
   // Impact splash: a small sheet of ink pops off the surface and tears (count ≥ 5 near the camera), droplets fly out in a
   // crown — most low along the surface, a few higher — and a ripple runs through the wet ink. Ring decal / mist are
   // opt-in (opts.ring / opts.mist === true).
-  burst(pos, normal, color, opts = EMPTY) {
+  burst(pos: THREE.Vector3, normal: THREE.Vector3 | undefined, color: ColorIn, opts = EMPTY) {
     const col = this._color(color, this._col);
     const count = Math.max(1, Math.round((opts.count ?? 12) * this.q));
     const speed = opts.speed ?? 4, size = opts.size ?? 0.1, spread = opts.spread ?? 0.9, grav = opts.gravity ?? 1;
@@ -1268,14 +1332,14 @@ export class FX {
     }
   }
 
-  drop(pos, vel, color, opts = EMPTY) {
+  drop(pos: THREE.Vector3, vel: THREE.Vector3, color: ColorIn, opts = EMPTY) {
     const col = this._color(color, this._col);
     this._spawnDrop(pos.x, pos.y, pos.z, vel.x, vel.y, vel.z, col, opts.size ?? 0.1, opts.life ?? 1.2, opts.gravity ?? 1, opts.stretch ?? 1, (opts.paint ? F_PAINT : 0) | (opts.ring ? F_RING : 0) | (opts.quiet ? F_QUIET : 0) | (opts.noCollide ? F_NOCOL : 0));
   }
 
   // A ring decal on a surface. Snapped onto the surface behind `pos` along the normal; skipped when there is none (a
   // splash ring handed a point in mid-air — e.g. a body hit — would float).
-  ring(pos, normal, color, opts = EMPTY) {
+  ring(pos: THREE.Vector3, normal: THREE.Vector3, color: ColorIn, opts = EMPTY) {
     const col = this._color(color, this._col);
     const n = normal || UP;
     let p = pos;
@@ -1292,7 +1356,7 @@ export class FX {
   // ribbons, ligaments flung off it, heavy gloops that paint satellite splats, fine spray, a fast ink wave over the
   // ground and a ripple through the wet ink. Volumetric parts (flash, sheet, mist) are capped so a big blast (e.g.
   // Tidal Slam) never swallows the camera; the ground wave + droplets still show the full radius.
-  explosion(pos, color, radius = 3) {
+  explosion(pos: THREE.Vector3, color: ColorIn, radius = 3) {
     const col = this._color(color, this._col);
     const q = this.q, R = radius;
     const Rv = Math.min(R, 2.4);
@@ -1316,7 +1380,7 @@ export class FX {
     }
   }
   // droplets of a burst: nl ligaments (fast, streaked, some paint), ng heavy gloops (slow arcs, all paint), nf fine spray
-  _burstDrops(pos, col, Rv, spd, paint, nl, ng, nf) {
+  _burstDrops(pos: THREE.Vector3, col: THREE.Color, Rv: number, spd: number, paint: number, nl: number, ng: number, nf: number) {
     const q = this.q;
     let n = Math.round(nl * q);
     for (let i = 0; i < n; i++) {
@@ -1339,7 +1403,7 @@ export class FX {
   }
 
   // A character bursting into ink: flash, a sheet of ink tearing open around the body, droplets, ground wave.
-  splatted(pos, color) {
+  splatted(pos: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     const q = this.q;
     const paint = this.paintEffects ? F_PAINT : 0;
@@ -1358,7 +1422,7 @@ export class FX {
   // Swimming wake: called ~every 0.05 s by the actor while submerged (dir = unit horizontal heading). The ripples and
   // the mound live in the ink surface itself (swimWake.js → level shader); this adds what leaves the surface — a thin
   // rooster tail of glossy drops kicked up off the tail (heavier the faster you swim) and bubbles popping in the trail.
-  wake(pos, dir, color, speed = 8, normal = UP) {
+  wake(pos: THREE.Vector3, dir: THREE.Vector3, color: ColorIn, speed = 8, normal = UP) {
     if (!this._near(pos, 45)) return;
     const col = this._color(color, this._col);
     const k = Math.min(1, speed / 11.8);
@@ -1378,7 +1442,7 @@ export class FX {
   }
 
   // Carving a hard turn while submerged: a fan of ink thrown off the outside of the turn. out = unit outward vector.
-  swimCarve(pos, dir, out, color, k = 1) {
+  swimCarve(pos: THREE.Vector3, dir: THREE.Vector3, out: THREE.Vector3, color: ColorIn, k = 1) {
     if (!this._near(pos, 32)) return;
     const col = this._color(color, this._col);
     let n = Math.max(1, Math.round((1 + 2.5 * k) * this.q));
@@ -1388,7 +1452,7 @@ export class FX {
     }
   }
 
-  muzzle(pos, dir, color, kind = 'shooter') {
+  muzzle(pos: THREE.Vector3, dir: THREE.Vector3, color: ColorIn, kind = 'shooter') {
     const col = this._color(color, this._col);
     _v3.copy(dir).normalize();
     if (kind === 'blaster') {
@@ -1434,7 +1498,7 @@ export class FX {
     this._sprite(this.puffs, pos.x + _v3.x * 0.15, pos.y + _v3.y * 0.15, pos.z + _v3.z * 0.15, _v3.x * 2.5, _v3.y * 2.5 + 0.3, _v3.z * 2.5, this._colB, 0.12, 0.38, 0.28, 0.3, 6);
   }
 
-  spawnFlash(pos, color) {
+  spawnFlash(pos: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     const q = this.q;
     this._colB.copy(col).multiplyScalar(1.25);
@@ -1463,7 +1527,7 @@ export class FX {
     }
   }
 
-  rain(pos, radius = 3.4, color, dt = this._dt, opts = EMPTY) {
+  rain(pos: THREE.Vector3, radius = 3.4, color: ColorIn, dt = this._dt, opts = EMPTY) {
     const col = this._color(color, this._col);
     const area = radius * radius;
     let n = Math.floor(area * 8.5 * this.q * dt + rand());
@@ -1486,7 +1550,7 @@ export class FX {
   // =================================================================== VFX-stream recipes
   // Foot plant. surface: 0 dry, 1 own ink, 2 enemy ink (color = the ink under the foot). dir: unit horizontal heading.
   // In ink the foot squelches: a few droplets kicked back and a ripple through the ink surface (no decals).
-  footstep(pos, color, surface = 0, dir = null, speed = 5) {
+  footstep(pos: THREE.Vector3, color: ColorIn, surface = 0, dir: THREE.Vector3 | null = null, speed = 5) {
     const col = this._color(color, this._col);
     const dx = dir ? dir.x : 0, dz = dir ? dir.z : 0;
     if (surface === 0) {
@@ -1522,7 +1586,7 @@ export class FX {
     }
   }
 
-  land(pos, color, surface = 0, speed = 8) {
+  land(pos: THREE.Vector3, color: ColorIn, surface = 0, speed = 8) {
     const col = this._color(color, this._col);
     const k = clamp((speed - 3) / 12, 0, 1);
     _v2.set(pos.x, pos.y + 0.01, pos.z);
@@ -1545,7 +1609,7 @@ export class FX {
     this._ripple(_v2, 0.007 + 0.006 * k, 0.16, 1.6 + k, 0.8, UP, this._colB);
   }
 
-  jumpOff(pos, color, surface = 0, swim = false) {
+  jumpOff(pos: THREE.Vector3, color: ColorIn, surface = 0, swim = false) {
     const col = this._color(color, this._col);
     _v2.set(pos.x, pos.y + 0.01, pos.z);
     if (swim || surface === 1) {
@@ -1568,7 +1632,7 @@ export class FX {
   }
 
   // kid ⇄ squid transform pop
-  formPop(pos, color, toSquid = true, inInk = false) {
+  formPop(pos: THREE.Vector3, color: ColorIn, toSquid = true, inInk = false) {
     const col = this._color(color, this._col);
     const y = pos.y + (toSquid ? 0.35 : 0.55);
     this._colB.copy(col).lerp(_white, 0.35);
@@ -1585,7 +1649,7 @@ export class FX {
   }
 
   // squid slips into its own ink (from the air or from kid form): a crown, a slapped-up sheet, two ripples
-  dive(pos, color, speed = 4) {
+  dive(pos: THREE.Vector3, color: ColorIn, speed = 4) {
     const col = this._color(color, this._col);
     _v2.set(pos.x, pos.y + 0.01, pos.z);
     this._crown(_v2, UP, col, 10 + speed * 0.6, 2.2 + Math.min(2.5, speed * 0.18), 0.036);
@@ -1594,7 +1658,7 @@ export class FX {
     this._ripple(_v2, 0.008 + Math.min(0.006, speed * 0.0006), 0.15, 1.5, 0.85, UP, this._colB);
     this.bubbles(pos, col, 3);
   }
-  emerge(pos, color, speed = 4) {
+  emerge(pos: THREE.Vector3, color: ColorIn, speed = 4) {
     const col = this._color(color, this._col);
     _v2.set(pos.x, pos.y + 0.01, pos.z);
     const n = Math.max(2, Math.round(8 * this.q));
@@ -1606,7 +1670,7 @@ export class FX {
     this._colB.copy(col).lerp(_white, 0.2);
     this._ripple(_v2, 0.007, 0.14, 1.3, 0.75, UP, this._colB);
   }
-  bubbles(pos, color, n = 3) {
+  bubbles(pos: THREE.Vector3, color: ColorIn, n = 3) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.55).multiplyScalar(1.1);
     const c = Math.max(1, Math.round(n * this.q));
@@ -1617,7 +1681,7 @@ export class FX {
   }
 
   // squid wall-climb: a drip sliding down the wall + a ripple through the ink on the wall
-  climbDrip(pos, normal, color) {
+  climbDrip(pos: THREE.Vector3, normal: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     this._spawnDrop(pos.x + normal.x * 0.06 + (rand() - 0.5) * 0.2, pos.y + (rand() - 0.5) * 0.2, pos.z + normal.z * 0.06 + (rand() - 0.5) * 0.2,
       normal.x * 0.25 + (rand() - 0.5) * 0.2, -0.4 - rand() * 0.6, normal.z * 0.25 + (rand() - 0.5) * 0.2, col, 0.024 + rand() * 0.022, 1.4, 0.5, 1.3, 0);
@@ -1626,7 +1690,7 @@ export class FX {
     if (rand() < 0.5) this._ripple(_v2, 0.004, 0.12, 0.9, 0.55, normal, this._colB);
   }
   // squid pops over the top of a wall: spray flung up and forward
-  climbPop(pos, dir, color) {
+  climbPop(pos: THREE.Vector3, dir: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     _v3.set(dir.x * 0.5, 1, dir.z * 0.5).normalize();
     const n = Math.max(3, Math.round(10 * this.q));
@@ -1639,14 +1703,14 @@ export class FX {
     this._sprite(this.puffs, pos.x, pos.y + 0.3, pos.z, dir.x, 1.2, dir.z, this._colB, 0.15, 0.5, 0.35, 0.3, 4);
   }
   // enemy-ink drip falling off a damaged character
-  hurtDrip(pos, color, size = 0.035) {
+  hurtDrip(pos: THREE.Vector3, color: ColorIn, size = 0.035) {
     const col = this._color(color, this._col);
     this._spawnDrop(pos.x, pos.y, pos.z, (rand() - 0.5) * 0.5, -0.2 - rand() * 0.4, (rand() - 0.5) * 0.5, col, size * (0.7 + rand() * 0.6), 1.6, 1, 1.3, 0);
   }
   // ink hitting a body: a small sheet of ink bursts off the body and tears, most of the spray carries on through with
   // the shot's momentum and some splashes back toward the shooter; a quick flash so the hit registers at range.
   // dir = shot direction.
-  hitSplash(pos, dir, color, amount = 30, killed = false) {
+  hitSplash(pos: THREE.Vector3, dir: THREE.Vector3, color: ColorIn, amount = 30, killed = false) {
     const col = this._color(color, this._col);
     const k = clamp(amount / 60, 0.3, 1.5);
     _v3.copy(dir); _v3.y *= 0.5; if (_v3.lengthSq() < 1e-6) _v3.set(0, 0, 1); _v3.normalize();
@@ -1669,13 +1733,13 @@ export class FX {
     }
   }
   // one mist puff (shot trails, spray)
-  mist(pos, vel, color, size = 0.2, alpha = 0.25) {
+  mist(pos: THREE.Vector3, vel: THREE.Vector3, color: THREE.Color, size = 0.2, alpha = 0.25) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.4);
     this._sprite(this.puffs, pos.x, pos.y, pos.z, vel ? vel.x : 0, vel ? vel.y : 0, vel ? vel.z : 0, this._colB, size * 0.45, size * 1.4, 0.3 + rand() * 0.12, alpha, 4.5, 0.2);
   }
   // shot in flight: faint mist + an occasional shed micro-droplet
-  shotTrail(pos, vel, color, big = false) {
+  shotTrail(pos: THREE.Vector3, vel: THREE.Vector3, color: ColorIn, big = false) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.42);
     const s = big ? 0.3 : 0.14;
@@ -1683,12 +1747,12 @@ export class FX {
     if (rand() < (big ? 0.8 : 0.35)) this._spawnDrop(pos.x, pos.y, pos.z, vel.x * 0.25 + (rand() - 0.5), vel.y * 0.25, vel.z * 0.25 + (rand() - 0.5), col, big ? 0.03 + rand() * 0.02 : 0.016 + rand() * 0.012, 0.8, 1, 1.4, F_QUIET);
   }
   // empty tank: a dry wisp from the muzzle
-  dryFire(pos, dir) {
+  dryFire(pos: THREE.Vector3, dir: THREE.Vector3) {
     this._sprite(this.puffs, pos.x, pos.y, pos.z, dir.x * 0.8, dir.y * 0.8 + 0.3, dir.z * 0.8, DUST, 0.05, 0.22, 0.35, 0.35, 5, 0.3, P_DUST, 0.02, 1);
   }
 
   // ---- charger
-  chargeGlow(pos, color, k) {
+  chargeGlow(pos: THREE.Vector3, color: ColorIn, k: number) {
     const col = this._color(color, this._col);
     const flick = 0.85 + 0.15 * Math.sin(this._time * 40);
     this._colB.copy(col).lerp(_white, 0.2 + 0.4 * k).multiplyScalar(1.5 + 2.5 * k);
@@ -1702,7 +1766,7 @@ export class FX {
       this._sprite(this.glows, pos.x + _v1.x * r, pos.y + _v1.y * r, pos.z + _v1.z * r, -_v1.x * r / 0.17, -_v1.y * r / 0.17, -_v1.z * r / 0.17, this._colB, 0.05, 0.02, 0.17, 1, 0, 0, G_SOFT + 1, 0.03, 0);
     }
   }
-  chargeFull(pos, color) {
+  chargeFull(pos: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.5).multiplyScalar(3.2);
     this._sprite(this.glows, pos.x, pos.y, pos.z, 0, 0, 0, this._colB, 1.0, 0.5, 0.32, 1, 0, 0, G_STAR + 3, 0, 0.6);
@@ -1716,7 +1780,7 @@ export class FX {
     }
   }
   // charger laser sight hitting a surface (immediate)
-  laserDot(pos, normal, color, k = 0.5) {
+  laserDot(pos: THREE.Vector3, normal: THREE.Vector3, color: ColorIn, k = 0.5) {
     const col = this._color(color, this._col);
     const pulse = 0.8 + 0.2 * Math.sin(this._time * 22);
     this._colB.copy(col).lerp(_white, 0.35).multiplyScalar(2 + 2 * k);
@@ -1724,7 +1788,7 @@ export class FX {
     this._sprite(this.glows, _v2.x, _v2.y, _v2.z, 0, 0, 0, this._colB, (0.08 + 0.1 * k) * pulse, (0.08 + 0.1 * k) * pulse, Math.max(0.03, this._dt * 1.6), 1, 0, 0, G_STAR + 1 + 2 * k, 0, 0);
     this.mark(_v2, normal, col, 0.12 + 0.12 * k, R_BLOT, 0.5, 0, 1, 0.3);
   }
-  beamImpact(pos, normal, color, charge = 1) {
+  beamImpact(pos: THREE.Vector3, normal: THREE.Vector3, color: ColorIn, charge = 1) {
     const col = this._color(color, this._col);
     const c = clamp(charge, 0, 1);
     this._colB.copy(col).multiplyScalar(4);
@@ -1742,7 +1806,7 @@ export class FX {
     }
   }
   // mist + drizzle along a fired charger beam
-  beamTrail(from, to, color, charge = 1) {
+  beamTrail(from: THREE.Vector3, to: THREE.Vector3, color: ColorIn, charge = 1) {
     const col = this._color(color, this._col);
     _v3.copy(to).sub(from);
     const len = _v3.length();
@@ -1759,7 +1823,7 @@ export class FX {
   }
 
   // ---- roller: wet spray flung off the drum front while rolling (call per frame; k = speed / roll speed)
-  rollerSpray(pos, fwd, width, color, k = 1) {
+  rollerSpray(pos: THREE.Vector3, fwd: THREE.Vector3, width: number, color: ColorIn, k = 1) {
     const col = this._color(color, this._col);
     const rx = fwd.z, rz = -fwd.x;
     let n = Math.floor((30 * k) * this.q * this._dt + rand());
@@ -1776,7 +1840,7 @@ export class FX {
     }
   }
   // roller flick: a wide curtain of spray (droplets that paint where they land)
-  flickCurtain(pos, dir, color, spreadDeg = 50) {
+  flickCurtain(pos: THREE.Vector3, dir: THREE.Vector3, color: ColorIn, spreadDeg = 50) {
     const col = this._color(color, this._col);
     const paint = this.paintEffects ? F_PAINT : 0;
     const yaw = Math.atan2(dir.x, dir.z), spread = spreadDeg * Math.PI / 180;
@@ -1797,19 +1861,19 @@ export class FX {
   }
 
   // ---- bombs
-  dangerRing(pos, normal, color, radius = 3.1, k = 0) { this.mark(pos, normal, color, radius, R_DANGER, 0.95, k, 1, 0.37); }
-  beepPulse(bombPos, groundPos, normal, color, radius = 3.1, k = 0) {
+  dangerRing(pos: THREE.Vector3, normal: THREE.Vector3, color: ColorIn, radius = 3.1, k = 0) { this.mark(pos, normal, color, radius, R_DANGER, 0.95, k, 1, 0.37); }
+  beepPulse(bombPos: THREE.Vector3, groundPos: THREE.Vector3 | null, normal: THREE.Vector3 | null, color: ColorIn, radius = 3.1, k = 0) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.3).multiplyScalar(3 + 3 * k);
     this._sprite(this.glows, bombPos.x, bombPos.y, bombPos.z, 0, 0, 0, this._colB, 0.35, 0.8 + 0.4 * k, 0.14, 1, 0, 0, G_SOFT + 2 + 3 * k, 0);
     if (groundPos) this._ringRaw(groundPos, normal || UP, col, radius, 0.32, R_THIN, 0.55 + 0.35 * k, 1.2);
   }
-  bombTrail(pos, vel, color) {
+  bombTrail(pos: THREE.Vector3, vel: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     if (rand() < 0.5 * this.q + 0.2) this._spawnDrop(pos.x, pos.y, pos.z, vel.x * 0.1 + (rand() - 0.5) * 0.6, vel.y * 0.1, vel.z * 0.1 + (rand() - 0.5) * 0.6, col, 0.02 + rand() * 0.02, 0.8, 1, 1.2, 0);
     if (rand() < 0.35) { this._colB.copy(col).lerp(_white, 0.45); this._sprite(this.puffs, pos.x, pos.y, pos.z, 0, 0.2, 0, this._colB, 0.06, 0.2, 0.25, 0.22, 4); }
   }
-  bounceSplash(pos, normal, color) {
+  bounceSplash(pos: THREE.Vector3, normal: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     this._crown(pos, normal, col, 6, 2, 0.03);
     _v2.copy(pos).addScaledVector(normal, 0.01);
@@ -1820,7 +1884,7 @@ export class FX {
   // Spin-up / stream (call every frame; k = spin 0..1): a hot glow in the barrel mouth that grows and whitens with the
   // spin, and ink slung off the spinning barrel cluster — droplets leave tangentially (the barrels turn about the aim
   // axis), more and faster as it winds up; while streaming they peel off steadily and carry forward with the stream.
-  spinUp(pos, dir, color, k = 0.5, streaming = false) {
+  spinUp(pos: THREE.Vector3, dir: THREE.Vector3, color: ColorIn, k = 0.5, streaming = false) {
     const col = this._color(color, this._col);
     const kk = clamp(k, 0, 1);
     _v3.copy(dir); if (_v3.lengthSq() < 1e-6) _v3.set(0, 0, 1); _v3.normalize();
@@ -1843,7 +1907,7 @@ export class FX {
   }
   // Spun up to full: one crisp cue — a hot flash, a thin ring snapping out around the barrel axis and a crown of ink
   // flicked off the barrels all at once.
-  spinFull(pos, dir, color) {
+  spinFull(pos: THREE.Vector3, dir: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     _v3.copy(dir); if (_v3.lengthSq() < 1e-6) _v3.set(0, 0, 1); _v3.normalize();
     this._colB.copy(col).lerp(_white, 0.55).multiplyScalar(3.2);
@@ -1865,7 +1929,7 @@ export class FX {
   // ---- dualies dodge roll
   // Push-off (once, at the start): ink slapped back against the roll and out to the sides, a low crown sheet at the
   // feet, a ripple through the ink. The runner paints the trail stripe under the roll; this is only what flies.
-  dodgeSplash(pos, dir, color) {
+  dodgeSplash(pos: THREE.Vector3, dir: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     _v2.set(pos.x, pos.y + 0.03, pos.z);
     _v3.set(-dir.x * 0.8, 0.9, -dir.z * 0.8).normalize();
@@ -1880,7 +1944,7 @@ export class FX {
   }
   // Mid-roll (every frame, k = roll progress 0..1): a low skid spray fanned off the leading edge along the roll and
   // ink flung off the tumbling body — both fading as the roll slows.
-  dodgeSkid(pos, dir, color, k = 0) {
+  dodgeSkid(pos: THREE.Vector3, dir: THREE.Vector3, color: ColorIn, k = 0) {
     const col = this._color(color, this._col);
     const f = 1 - clamp(k, 0, 1);
     const rx = dir.z, rz = -dir.x;
@@ -1898,7 +1962,7 @@ export class FX {
     }
   }
   // Roll ends, the kid plants into the turret stance: a squelch — ink carried on by the momentum and a ripple.
-  dodgePlant(pos, dir, color) {
+  dodgePlant(pos: THREE.Vector3, dir: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     _v3.set(dir.x * 0.7, 1, dir.z * 0.7).normalize();
     const n = Math.max(3, Math.round(9 * this.q));
@@ -1913,7 +1977,7 @@ export class FX {
 
   // ---- slosher
   // A wave glob in flight sheds glossy drops (no mist: it is a heavy pour, not a spray). Call every ~0.5 m.
-  sloshTrail(pos, vel, color, head = false) {
+  sloshTrail(pos: THREE.Vector3, vel: THREE.Vector3, color: ColorIn, head = false) {
     const col = this._color(color, this._col);
     let n = head ? 2 : (rand() < 0.6 ? 1 : 0);
     while (n-- > 0) {
@@ -1924,7 +1988,7 @@ export class FX {
   // The head of a slosh wave slapping down: a wide crown sheet thrown up and forward, a surge of ink carried on by the
   // wave's momentum along `dir`, heavy gloops that paint satellite splats, and a deep ripple. (Layered on the burst +
   // ring weapons.js draws there — this is the weight.)
-  sloshImpact(pos, normal, dir, color) {
+  sloshImpact(pos: THREE.Vector3, normal: THREE.Vector3, dir: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     const n0 = normal || UP;
     _v2.copy(pos).addScaledVector(n0, 0.03);
@@ -1947,7 +2011,7 @@ export class FX {
   }
 
   // ---- Tidal Slam
-  slamLaunch(pos, color) {
+  slamLaunch(pos: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     _v2.set(pos.x, pos.y + 0.02, pos.z);
     this._ringRaw(_v2, UP, col, 1.5, 0.4, R_WAVE, 0.9, 1.1);
@@ -1963,7 +2027,7 @@ export class FX {
     for (let i = 0; i < 3; i++) this._sprite(this.puffs, pos.x, pos.y + 0.3, pos.z, (rand() - 0.5) * 2, 1.5 + rand(), (rand() - 0.5) * 2, this._colB, 0.3, 0.9, 0.5, 0.32, 3);
   }
   // hovering at the apex: energy gathering around the body (per frame, k 0..1)
-  slamCharge(pos, color, k = 0.5) {
+  slamCharge(pos: THREE.Vector3, color: ColorIn, k = 0.5) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.25).multiplyScalar(1.6 + 2 * k);
     this._sprite(this.glows, pos.x, pos.y, pos.z, 0, 0, 0, this._colB, 0.9 + 0.6 * k, 0.9 + 0.6 * k, Math.max(0.03, this._dt * 1.6), 0.8, 0, 0, G_SOFT + 1 + 2 * k, 0, 0);
@@ -1976,7 +2040,7 @@ export class FX {
     }
   }
   // plummeting: speed streaks trailing above the body (per frame)
-  slamFall(pos, color) {
+  slamFall(pos: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.45);
     let n = Math.max(1, Math.round(3 * this.q));
@@ -1986,7 +2050,7 @@ export class FX {
     }
   }
   // extra impact layers on top of explosion(): staggered ground waves, a dust ring, heavy painting gloops, a short geyser
-  slamWave(pos, color, radius = 5.2) {
+  slamWave(pos: THREE.Vector3, color: ColorIn, radius = 5.2) {
     const col = this._color(color, this._col);
     const R = radius;
     if (!this._probeDown(_v2.set(pos.x, pos.y + 0.5, pos.z), 2.5, _v5, _v6)) { _v5.copy(pos); _v6.copy(UP); }
@@ -2007,7 +2071,7 @@ export class FX {
   }
 
   // ---- Ink Tempest
-  stormStart(pos, color, radius = 3.4) {
+  stormStart(pos: THREE.Vector3, color: ColorIn, radius = 3.4) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.2);
     for (let i = 0; i < Math.round(10 * this.q) + 2; i++) {
@@ -2020,7 +2084,7 @@ export class FX {
     this._ringRaw(pos, _v4, col, radius * 1.4, 0.3, R_THIN, 0.8, 1.3);
   }
   // extra long, bright rain streaks under a storm cloud so the downpour reads from across the map (call per frame)
-  rainSheet(pos, radius, color, dt = this._dt) {
+  rainSheet(pos: THREE.Vector3, radius: number, color: ColorIn, dt = this._dt) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.35);
     let n = Math.floor(radius * radius * 3.2 * this.q * dt + rand());
@@ -2029,7 +2093,7 @@ export class FX {
       this._spawnDrop(pos.x + Math.cos(a) * r, pos.y - 0.4 - rand() * 0.5, pos.z + Math.sin(a) * r, 0.35, -19 - rand() * 4, 0.12, this._colB, 0.022 + rand() * 0.012, 1.0, 1, 5.5, F_QUIET);
     }
   }
-  stormPuddle(pos, normal, color) {
+  stormPuddle(pos: THREE.Vector3, normal: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     _v2.copy(pos).addScaledVector(normal || UP, 0.01);
     this._colB.copy(col).lerp(_white, 0.15);
@@ -2037,14 +2101,14 @@ export class FX {
     if (rand() < 0.35) this._crown(_v2, normal || UP, col, 2, 1.4, 0.02, F_QUIET);
   }
   // a flicker inside the cloud
-  stormFlash(pos, color, radius = 3.4) {
+  stormFlash(pos: THREE.Vector3, color: ColorIn, radius = 3.4) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.5).multiplyScalar(2.5);
     this._sprite(this.glows, pos.x + (rand() - 0.5) * radius, pos.y + (rand() - 0.3) * 0.8, pos.z + (rand() - 0.5) * radius, 0, 0, 0, this._colB, radius * 0.4, radius * 0.7, 0.12, 1, 0, 0, G_SOFT + 1, 0);
   }
 
   // ---- super jump
-  superJumpCharge(pos, color, k = 0.5) {
+  superJumpCharge(pos: THREE.Vector3, color: ColorIn, k = 0.5) {
     const col = this._color(color, this._col);
     const q = Math.max(0.5, this.q);
     // rising spiral of sparkles + droplets
@@ -2064,7 +2128,7 @@ export class FX {
     this._sprite(this.glows, pos.x, pos.y + 0.45, pos.z, 0, 0, 0, this._colB, 0.7 + 0.5 * k, 0.7 + 0.5 * k, Math.max(0.03, this._dt * 1.6), 0.7, 0, 0, G_SOFT + 2 * k, 0, 0);
     if (rand() < 5 * this._dt) this._ringRaw(_v2.set(pos.x, pos.y + 0.02, pos.z), UP, col, 1.1 + 0.4 * k, 0.35, R_THIN, 0.7, 1);
   }
-  superJumpLaunch(pos, color) {
+  superJumpLaunch(pos: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     this._colB.copy(col).multiplyScalar(1.3);
     this._beam(pos, this._colB, 0.9, 12, 0.8);
@@ -2085,7 +2149,7 @@ export class FX {
     this._colB.copy(col).multiplyScalar(4);
     this._sprite(this.glows, pos.x, pos.y + 0.6, pos.z, 0, 0, 0, this._colB, 1.2, 2.4, 0.22, 1, 0, 0, G_SOFT + 4, 0);
   }
-  superJumpTrail(pos, vel, color) {
+  superJumpTrail(pos: THREE.Vector3, vel: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     let n = Math.max(1, Math.round(2 * this.q));
     while (n-- > 0) this._spawnDrop(pos.x + (rand() - 0.5) * 0.3, pos.y + (rand() - 0.5) * 0.3, pos.z + (rand() - 0.5) * 0.3, vel.x * 0.15 + (rand() - 0.5), vel.y * 0.15, vel.z * 0.15 + (rand() - 0.5), col, 0.03 + rand() * 0.035, 1.1, 1, 1.4, 0);
@@ -2094,14 +2158,14 @@ export class FX {
     if (rand() < 0.5) { this._colB.copy(col).lerp(_white, 0.35); this._sprite(this.puffs, pos.x, pos.y, pos.z, 0, 0.2, 0, this._colB, 0.2, 0.55, 0.45, 0.3, 3); }
   }
   // landing target seen by everyone (immediate): ground reticle + light pillar
-  jumpMarker(pos, color, t = 0) {
+  jumpMarker(pos: THREE.Vector3, color: ColorIn, t = 0) {
     const col = this._color(color, this._col);
     _v2.set(pos.x, pos.y + 0.03, pos.z);
     this.mark(_v2, UP, col, 1.5, R_TARGET, 1, t, 1, 0.5);
     this._colB.copy(col).multiplyScalar(1.5);
     this.pillar(_v2, this._colB, 0.5, 9, 0.55 + 0.15 * Math.sin(this._time * 6), 0.4);
   }
-  superJumpLand(pos, color) {
+  superJumpLand(pos: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     _v2.set(pos.x, pos.y + 0.02, pos.z);
     this._ringRaw(_v2, UP, col, 2.4, 0.45, R_WAVE, 0.95, 1.2);
@@ -2117,13 +2181,13 @@ export class FX {
   }
 
   // the victim's squid ghost floating up out of the splat
-  ghost(pos, color) {
+  ghost(pos: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.3);
     this._sprite(this.puffs, pos.x, pos.y + 0.35, pos.z, 0, 0.5, 0, this._colB, 0.55, 0.85, 1.5, 0.8, 1.2, 0.9, P_GHOST, 0.18, 0, 0.35, 0.6);
   }
   // falling into the sea
-  waterSplash(pos, size = 1) {
+  waterSplash(pos: THREE.Vector3, size = 1) {
     _v2.set(pos.x, this.waterY + 0.02, pos.z);
     this._crown(_v2, UP, WATER, 22 * size, 4 + 2 * size, 0.06);
     this._ringRaw(_v2, UP, FOAM, 1.2 * size, 0.6, R_RIPPLE, 0.8, 1);
@@ -2138,14 +2202,14 @@ export class FX {
     }
   }
   // something small hitting the sea (shots, bombs)
-  waterPlop(pos, size = 0.3) {
+  waterPlop(pos: THREE.Vector3, size = 0.3) {
     _v2.set(pos.x, this.waterY + 0.02, pos.z);
     this._ringRaw(_v2, UP, FOAM, 0.35 + size, 0.5, R_RIPPLE, 0.7, 1);
     this._crown(_v2, UP, WATER, 4 + size * 8, 1.8 + size * 2, 0.03, F_NOCOL);
   }
 
   // special gauge full: glints swirling around the character (call at ~10–14 Hz per character)
-  specialSparkle(pos, color, height = 1.5) {
+  specialSparkle(pos: THREE.Vector3, color: ColorIn, height = 1.5) {
     const col = this._color(color, this._col);
     const a = rand() * TAU, r = 0.38 + rand() * 0.18, y = 0.2 + rand() * height;
     this._colB.copy(col).lerp(_white, 0.35).multiplyScalar(2.4);
@@ -2156,7 +2220,7 @@ export class FX {
     }
   }
   // standing in enemy ink: sticky bubbles popping at the feet
-  enemyInkSizzle(pos, color) {
+  enemyInkSizzle(pos: THREE.Vector3, color: ColorIn) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.35).multiplyScalar(1.3);
     const n = 1 + (rand() < 0.5 ? 1 : 0);
@@ -2170,7 +2234,7 @@ export class FX {
   // ---- ambient
   // a wave slapping the deck edge. pos: on the wall at the waterline; outward: unit horizontal normal pointing out to sea.
   // The sheet of spray has to clear the deck edge (1.6 m) and the railing (+1.05 m) to be seen from the deck.
-  seaSpray(pos, outward, strength = 1) {
+  seaSpray(pos: THREE.Vector3, outward: THREE.Vector3, strength = 1) {
     const s = clamp(strength, 0.3, 1.6);
     const ax = -outward.z, az = outward.x;   // along the edge
     const n = Math.max(6, Math.round((16 + 20 * s) * this.q));
@@ -2192,18 +2256,18 @@ export class FX {
     this._ringRaw(_v2, UP, FOAM, 0.9 * s, 0.55, R_DISC, 0.5, 1);
     this._after(0.18, OP_RING, _v2, UP, FOAM, 2.4 * s + 0.6, 0.9, R_RIPPLE);
   }
-  feather(pos) {
+  feather(pos: THREE.Vector3) {
     this._sprite(this.puffs, pos.x, pos.y, pos.z, (rand() - 0.5) * 0.4, -0.25, (rand() - 0.5) * 0.4, FEATHER, 0.24, 0.24, 11 + rand() * 4, 0.97, 1.6, -0.7, P_FEATHER, 0.5, 1.8, 0.9, 1.5);
   }
   // sun glint on wet ink (or any glossy surface)
-  glint(pos, color, size = 0.12) {
+  glint(pos: THREE.Vector3, color: ColorIn, size = 0.12) {
     const col = this._color(color, this._col);
     this._colB.copy(col).lerp(_white, 0.6).multiplyScalar(2.6);
     this._sprite(this.glows, pos.x, pos.y, pos.z, 0, 0, 0, this._colB, size * 0.4, size, 0.35 + rand() * 0.2, 1, 0, 0, G_STAR + 2, 0.12, 0.8);
   }
 
   // =================================================================== frame
-  update(dt, camera) {
+  update(dt: number, camera: THREE.PerspectiveCamera | null) {
     dt = Math.min(dt || 0, 0.05);
     this._dt = dt > 0 ? dt : this._dt;
     this._time += dt;
@@ -2237,7 +2301,7 @@ export class FX {
 
   // Sync the droplet/shell lighting with the environment: fx.setLighting(env.getSkyColors()).
   // Accepts { sunDir, sun|sunColor, sunIntensity, zenith|sky, ground }.
-  setLighting(o = EMPTY) {
+  setLighting(o: FxLighting = {}) {
     const L = this._light;
     if (o.sunDir) L.sunDir.copy(o.sunDir).normalize();
     const sc = o.sunColor || o.sun;
@@ -2247,14 +2311,14 @@ export class FX {
     if (o.ground) L.ground.copy(o.ground);
     if (sc) this._moteU.uCol.value.copy(sc).lerp(_white, 0.35).multiplyScalar(0.9);
   }
-  setSunDir(v) { this._light.sunDir.copy(v).normalize(); }
+  setSunDir(v: THREE.Vector3) { this._light.sunDir.copy(v).normalize(); }
 
   stats() {
     return { drops: this.dN, puffs: this.puffs.n, glows: this.glows.n, rings: this.rings.n, shells: this.shells.n, beams: this.beams.n, checks: this._checks, sched: this._sqN, caps: { drops: this.dCap, puffs: this.puffs.cap, glows: this.glows.cap, rings: this.rings.cap } };
   }
   // Triangles currently submitted by the FX meshes (for budget audits).
   triangles() {
-    const per = (g) => (g.index ? g.index.count : g.attributes.position.count) / 3;
+    const per = (g: THREE.InstancedBufferGeometry) => (g.index ? g.index.count : g.attributes.position.count) / 3;
     return (this.dGeo.instanceCount + this.puffs.geo.instanceCount + this.glows.geo.instanceCount + this.rings.geo.instanceCount) * 2
       + this.shells.geo.instanceCount * per(this.shells.geo) + this.beams.geo.instanceCount * per(this.beams.geo)
       + (this.motes.visible ? this.motes.geometry.instanceCount * 2 : 0);
@@ -2262,6 +2326,6 @@ export class FX {
 
   dispose() {
     this.scene.remove(this.root);
-    this.root.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+    this.root.traverse((o) => { const m = o as THREE.Mesh<THREE.BufferGeometry, THREE.Material>; if (m.geometry) m.geometry.dispose(); if (m.material) m.material.dispose(); });
   }
 }

@@ -14,8 +14,31 @@
 // Respects settings.cameraShake + prefers-reduced-motion for the intense ones (blur, chroma, punch, streaks, flash).
 import * as THREE from 'three';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { on, G as CTX, clamp, damp, lerp } from '../core/ctx.js';
+import { on, G as CTX, clamp, damp, lerp, type GameContext } from '../core/ctx.js';
 import { QUALITY } from '../config.js';
+import type { QualityId } from '../config.js';
+import type { Renderer } from '../core/renderer.js';
+import type { Actor } from '../game/actor.js';
+import type { Match } from '../game/match.js';
+
+/** 화면 잉크 방울 하나(렌즈): 종류(drop·arm·sat·trail), 채널, 위치·반지름·타원, 세기, 수명, 미끄러짐 상태 */
+interface LensPart {
+  kind: string; ch: number; x: number; y: number; r: number; rx: number; ry: number; rot: number; I: number; I0: number;
+  life: number; stick: number; pop: number; grow: number; age: number; vx: number; vy: number; slide: boolean; trailT: number;
+  hold: number; seed: number; mass?: number;
+}
+/** 화면 효과 상태(모든 감쇠·스프링은 시뮬레이션 시계로 돈다) */
+interface FxState {
+  speed: number; stretch: number; punch: number; punchV: number; blast: number; blastT: number; chroma: number;
+  edgeInk: number; aura: number; auraPulse: number; heart: number; heartPh: number; hurt: number; urg: number; urgBase: number; swim: number; focus: number; chargePulse: number;
+  shimmer: number; kill: number; flash: number; desat: number; sat: number; satPop: number;
+  flood: number; floodDrip: number; hole: number; floodMode: string | null; floodT: number; holeT: number;
+  jump: { phase: string; t: number } | null; jumpCharge: number; wasJump: boolean; stepT: number; rainT: number; emergeT: number; lastForm: string;
+  dmgAcc: number; dmgT: number; dmgAng: number | null; dmgAtk: Actor | null; lastBlast: { t: number; x: number; y: number; z: number };
+  _fullCharge?: boolean;
+}
+/** 실험실 시험 선택(test()) */
+interface FxTest { hold?: number; angle?: number; inset?: number; x?: number; y?: number; size?: number; life?: number; amount?: number; attacker?: Actor | null; t?: number; beat?: number; [k: string]: unknown }
 
 const TAU = Math.PI * 2;
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
@@ -23,9 +46,9 @@ const _c = new THREE.Color(), _cc = new THREE.Color();
 const SEA = new THREE.Color(0.06, 0.34, 0.62);
 const HOT = new THREE.Color(1.0, 0.16, 0.05);
 const WHITE = new THREE.Color(1, 1, 1);
-const easeOut = (t) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
-const easeInOut = (t) => { t = clamp(t, 0, 1); return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; };
-const rnd = (a, b) => a + Math.random() * (b - a);
+const easeOut = (t: number) => 1 - Math.pow(1 - clamp(t, 0, 1), 3);
+const easeInOut = (t: number) => { t = clamp(t, 0, 1); return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2; };
+const rnd = (a: number, b: number) => a + Math.random() * (b - a);
 const RM_Q = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
 const reducedMotion = () => !!(RM_Q && RM_Q.matches);
 
@@ -359,7 +382,20 @@ const MAXS = 220;       // sprite capacity (drops + trails)
 const CH_ENEMY = 0, CH_OWN = 1, CH_WATER = 2;
 
 class LensInk {
-  constructor(renderer) {
+  declare dirty: boolean;
+  declare scale: number;
+  declare texel: THREE.Vector2;
+  declare rt: THREE.WebGLRenderTarget<THREE.Texture<unknown, THREE.TextureEventMap>>;
+  declare cam: THREE.Camera;
+  declare scene: THREE.Scene<THREE.Object3DEventMap>;
+  declare mat: THREE.ShaderMaterial;
+  declare geo: THREE.InstancedBufferGeometry;
+  declare aB: THREE.InstancedBufferAttribute;
+  declare aA: THREE.InstancedBufferAttribute;
+  declare pool: LensPart[];
+  declare parts: LensPart[];
+  declare r: THREE.WebGLRenderer;
+  constructor(renderer: THREE.WebGLRenderer) {
     this.r = renderer;
     this.parts = [];
     this.pool = [];
@@ -390,7 +426,7 @@ class LensInk {
     this.dirty = false;
   }
 
-  resize(w, h, scale) {
+  resize(w: number, h: number, scale: number) {
     const W = Math.max(64, Math.round(w * scale)), H = Math.max(36, Math.round(h * scale));
     if (this.rt.width !== W || this.rt.height !== H) { this.rt.setSize(W, H); this.texel.set(1 / W, 1 / H); this.dirty = true; }
   }
@@ -402,13 +438,13 @@ class LensInk {
       for (let i = 0; i < this.parts.length; i++) { const p = this.parts[i]; const s = p.kind === 'trail' ? p.I : p.I + 10; if (s < best) { best = s; k = i; } }
       const p = this.parts[k]; this.parts.splice(k, 1); this.pool.push(p);
     }
-    const p = this.pool.pop() || {};
+    const p = this.pool.pop() || ({} as LensPart);   // (아래와 add가 모든 필드를 채운다)
     p.vx = 0; p.vy = 0; p.rot = 0; p.age = 0; p.slide = false; p.trailT = 0; p.hold = 0; p.pop = 1; p.grow = 0; p.seed = Math.random() * 100;
     this.parts.push(p);
     return p;
   }
 
-  add(kind, ch, x, y, r, { rx = r, ry = r, rot = 0, I = 1, life = 1.5, stick = 99, pop = 0.09 } = {}) {
+  add(kind: string, ch: number, x: number, y: number, r: number, { rx = r, ry = r, rot = 0, I = 1, life = 1.5, stick = 99, pop = 0.09 } = {}) {
     const p = this._new();
     p.kind = kind; p.ch = ch; p.x = x; p.y = y; p.r = r; p.rx = rx; p.ry = ry; p.rot = rot; p.I0 = p.I = I;
     p.life = life; p.stick = stick; p.pop = pop; p.grow = pop > 0 ? 0 : 1;
@@ -417,9 +453,9 @@ class LensInk {
 
   // One ink splat: a lumpy core, a few fat bulb-tipped arms of uneven length, flung satellite droplets. The heavy parts
   // slide down after a moment and leave a thin film trail; everything soaks away (shrinks through the iso-threshold).
-  splat(ch, cx, cy, size, aspect, { arms = 6, sats = 6, life = 2.1 } = {}) {
+  splat(ch: number, cx: number, cy: number, size: number, aspect: number, { arms = 6, sats = 6, life = 2.1 } = {}) {
     const rot0 = Math.random() * TAU;
-    const P = (x, y, a, d) => [x + (Math.cos(a) * d) / aspect, y + Math.sin(a) * d];
+    const P = (x: number, y: number, a: number, d: number) => [x + (Math.cos(a) * d) / aspect, y + Math.sin(a) * d];
     const core = this.add('drop', ch, cx, cy, size * 0.92, { I: 1.4, life: life * rnd(0.95, 1.15), stick: rnd(0.25, 0.55) });
     core.mass = 1;
     // lumps make the core silhouette irregular
@@ -453,16 +489,16 @@ class LensInk {
   }
 
   // small single droplet (rain, stepping splashes, emerging from ink)
-  droplet(ch, x, y, r, { slide = 0.25, life = 1.1 } = {}) {
+  droplet(ch: number, x: number, y: number, r: number, { slide = 0.25, life = 1.1 } = {}) {
     const d = this.add('drop', ch, x, y, r, { I: 1.3, life, stick: slide, pop: 0.05 });
     d.mass = 0.3;
     this.dirty = true;
     return d;
   }
 
-  clear() { while (this.parts.length) this.pool.push(this.parts.pop()); this.dirty = true; }
+  clear() { while (this.parts.length) this.pool.push(this.parts.pop()!); this.dirty = true; }
 
-  update(dt, aspect) {
+  update(dt: number, aspect: number) {
     const P = this.parts;
     for (let i = P.length - 1; i >= 0; i--) {
       const p = P[i];
@@ -502,7 +538,7 @@ class LensInk {
     this.dirty = true;
   }
 
-  render(aspect) {
+  render(aspect: number) {
     const P = this.parts, n = Math.min(P.length, MAXS);
     const A = this.aA.array, B = this.aB.array;
     for (let i = 0; i < n; i++) {
@@ -531,7 +567,27 @@ class LensInk {
 
 // ------------------------------------------------------------------------------------------------ ScreenFX
 export class ScreenFX {
-  constructor(R, Gctx) {
+  declare force: Partial<FxState> | null;
+  declare _landT: number;
+  declare _size: THREE.Vector2;
+  declare stats: { lensParts: number; enabled: boolean; };
+  declare debugHold: number;
+  declare _local: Actor | null;
+  declare _inMatch: boolean;
+  declare _h: number;
+  declare _w: number;
+  declare _aspect: number;
+  declare s: FxState;
+  declare pass: ShaderPass;
+  declare U: Record<string, THREE.IUniform>;
+  declare mat: THREE.ShaderMaterial;
+  declare taps: number;
+  declare lens: LensInk;
+  declare time: number;
+  declare renderer: THREE.WebGLRenderer;
+  declare G: GameContext;
+  declare R: Renderer;
+  constructor(R: Renderer, Gctx: GameContext) {
     this.R = R;
     this.G = Gctx || CTX;
     this.renderer = R.renderer;
@@ -591,7 +647,7 @@ export class ScreenFX {
     const G = this.G;
     // only react to gameplay while a round is actually running (not over the judge / results screens)
     const live = () => { const m = G.match; return !!(m && !m.attract && G.mode === 'match' && (m.state === 'playing' || m.state === 'intro' || m.state === 'finish')); };
-    const isLocal = (a) => !!(a && a.isLocal && live());
+    const isLocal = (a: Actor | null | undefined) => !!(a && a.isLocal && live());
     on('damage', ({ victim, attacker, amount, source }) => {
       if (!isLocal(victim) || amount <= 0) return;
       const s = this.s;
@@ -624,7 +680,7 @@ export class ScreenFX {
       if (id === 'storm') this.s.aura = Math.max(this.s.aura, 0.9);
     });
     // explosions: typed events when stream 4 emits them, otherwise the positional 'shake' requests (bombs, slams)
-    const blast = (pos, amount, color) => {
+    const blast = (pos: THREE.Vector3, amount: number, color: THREE.Color | null | undefined) => {
       if (!pos || !live()) return;
       const lb = this.s.lastBlast;
       const same = this.time - lb.t < 0.05 && Math.abs(lb.x - pos.x) + Math.abs(lb.y - pos.y) + Math.abs(lb.z - pos.z) < 0.8;
@@ -666,9 +722,9 @@ export class ScreenFX {
     });
   }
 
-  _kickPunch(v) { this.s.punchV += v * 22; }
+  _kickPunch(v: number) { this.s.punchV += v * 22; }
 
-  _blast(pos, amount, color) {
+  _blast(pos: THREE.Vector3, amount: number, color: THREE.Color | null | undefined) {
     const G = this.G, cam = G.camera;
     if (!cam) return;
     const d = cam.position.distanceTo(pos);
@@ -688,9 +744,9 @@ export class ScreenFX {
     this._kickPunch(0.02 * k);
   }
 
-  _teamColor(team) { const c = this.G.teamColors?.[team]; return c || WHITE; }
+  _teamColor(team: number) { const c = this.G.teamColors?.[team]; return c || WHITE; }
 
-  _startFlood(attacker, cause) {
+  _startFlood(attacker: Actor | null | undefined, cause: string) {
     const s = this.s, U = this.U;
     const col = cause === 'water' ? SEA : attacker ? this._teamColor(attacker.team) : this._teamColor(this._local ? this._local.enemyTeam : 1);
     U.uFlood.value.set(col.r, col.g, col.b, s.flood);
@@ -706,7 +762,7 @@ export class ScreenFX {
     }
   }
 
-  _startReveal(actor) {
+  _startReveal(actor: Actor) {
     const s = this.s, U = this.U;
     const col = this._teamColor(actor.team);
     U.uFlood.value.set(col.r, col.g, col.b, 1);
@@ -719,7 +775,7 @@ export class ScreenFX {
     s.shimmer = 1;
   }
 
-  _land(actor) {
+  _land(actor: Actor) {
     const s = this.s;
     if (this.time - (this._landT ?? -9) < 0.3) return;   // typed event + state-transition fallback can both fire
     this._landT = this.time;
@@ -734,7 +790,7 @@ export class ScreenFX {
   }
 
   // lens splat for a damage burst, placed on the screen edge toward the attacker (never over the player character)
-  _damageSplat(amount, attacker) {
+  _damageSplat(amount: number, attacker: Actor | null | undefined) {
     const G = this.G, cam = G.camera, a = this._aspect;
     const k = clamp(amount / 70, 0.18, 1.2);
     let ang = null;
@@ -758,7 +814,7 @@ export class ScreenFX {
 
   // point on the screen border along a direction from the centre (uv, y up), pulled `inset` (height units) inward,
   // kept off the player character (bottom centre) and away from the crosshair
-  _edgePoint(ang, inset) {
+  _edgePoint(ang: number, inset: number) {
     const a = this._aspect;
     const cx = Math.cos(ang), cy = Math.sin(ang);
     const t = Math.min((a / 2) / Math.max(1e-3, Math.abs(cx)), 0.5 / Math.max(1e-3, Math.abs(cy)));
@@ -777,7 +833,7 @@ export class ScreenFX {
   }
 
   // ---------------------------------------------------------------------------------------------- per frame
-  update(dt, game) {
+  update(dt: number, game?: { match?: Match | null; _skipRender?: boolean } | null) {
     const G = this.G, s = this.s, U = this.U;
     const m = game?.match || G.match;
     const inMatch = !!(m && !m.attract && G.mode === 'match');
@@ -797,7 +853,7 @@ export class ScreenFX {
     if (W !== this._w || H !== this._h) { this._w = W; this._h = H; U.uRes.value.set(W, H); }
     this._aspect = W / Math.max(1, H);
     U.uAspect.value = this._aspect;
-    const q = QUALITY[G.settings?.quality] || QUALITY.high;
+    const q = QUALITY[G.settings?.quality as QualityId] || QUALITY.high;
     const taps = q.particles >= 1 ? 8 : q.particles >= 0.7 ? 6 : 5;
     if (taps !== this.taps) { this.taps = taps; this.mat.defines.TAPS = taps; this.mat.needsUpdate = true; }
     this.lens.resize(W, H, q.particles >= 1 ? 1 / 3 : 1 / 4);
@@ -867,10 +923,10 @@ export class ScreenFX {
     this.stats.enabled = any;
   }
 
-  _decayAll(dt) {
+  _decayAll(dt: number) {
     const s = this.s;
     const k = Math.exp(-dt * 6);
-    for (const key of ['speed', 'stretch', 'blast', 'chroma', 'edgeInk', 'aura', 'auraPulse', 'heart', 'hurt', 'urg', 'swim', 'focus', 'chargePulse', 'shimmer', 'kill', 'flash', 'desat', 'satPop', 'flood']) {
+    for (const key of (['speed', 'stretch', 'blast', 'chroma', 'edgeInk', 'aura', 'auraPulse', 'heart', 'hurt', 'urg', 'swim', 'focus', 'chargePulse', 'shimmer', 'kill', 'flash', 'desat', 'satPop', 'flood'] as const)) {
       s[key] *= k; if (s[key] < 0.001) s[key] = 0;
     }
     s.punch *= k; s.punchV = 0; s.sat = damp(s.sat, 1, 6, dt); s.hole = 0; s.floodMode = null;
@@ -878,7 +934,7 @@ export class ScreenFX {
     if (this.lens.parts.length && dt > 0) { /* keep evaporating */ }
   }
 
-  _sim(dt, m, a) {
+  _sim(dt: number, m: Match | null | undefined, a: Actor | null | undefined) {
     const G = this.G, s = this.s;
     const alive = !!(a && a.alive);
     const state = m ? m.state : 'playing';
@@ -1007,7 +1063,7 @@ export class ScreenFX {
     this.lens.update(dt, this._aspect);
   }
 
-  _simFlood(dt) {
+  _simFlood(dt: number) {
     const s = this.s;
     if (!s.floodMode) { s.flood = Math.max(0, s.flood - dt * 2); s.hole = 0; return; }
     s.floodT += dt;
@@ -1033,7 +1089,7 @@ export class ScreenFX {
 
   // ---------------------------------------------------------------------------------------------- debug / audit
   // __inkwave.screenfx.test('splat') etc. Works in a match; outside one it keeps effects alive for ~8 s.
-  test(name, o = {}) {
+  test(name: string, o: FxTest = {}) {
     const s = this.s, a = this._local || this.G.match?.local || null;
     this.debugHold = o.hold ?? 8;
     const team = a ? a.team : 0;
