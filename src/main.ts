@@ -440,7 +440,7 @@ class Game {
     this.menus = G.menus = menusMod.Menus ? new menusMod.Menus(this.uiRoot, this._menuApi()) : null;
     this.hud = G.hud = hudMod.HUD ? new hudMod.HUD(this.uiRoot, { playSound: (n: string, o?: object) => G.audio?.play(n, o as PlayOpts | undefined) }) : null;
     // map diorama pins/finish live inside the HUD layer (under every other HUD element)
-    try { const { DioramaOverlay } = await import('./ui/diorama.js'); this.diorama = new DioramaOverlay(this.hud ? this.hud.el : this.uiRoot); } catch (e) { console.error('[inkwave] diorama', e); this.diorama = null; }
+    try { const { DioramaOverlay } = await import('./ui/diorama.js'); this.diorama = new DioramaOverlay((this.hud ? this.hud.el : this.uiRoot)!); } catch (e) { console.error('[inkwave] diorama', e); this.diorama = null; }
     this.hud?.setVisible(false);
     // 가벼운 시작 화면(34번 F02): 렌더러·월드·봇 없이 DOM 타이틀(화질·입력 상태·시작)을 먼저 띄운다
     let litePassed = false;

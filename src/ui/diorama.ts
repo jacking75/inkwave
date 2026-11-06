@@ -18,11 +18,32 @@ import { DEATH_MARK_SVG } from './hud.js';
 import { G } from '../core/ctx.js';
 import { superJumpInfo } from '../game/minimap.js';
 import * as THREE from 'three';
+import type { Actor } from '../game/actor.js';
+import type { SubItem } from '../game/subs.js';
+import type { MapDef } from '../config.js';
+
+/** 지도 핀: 요소·아이콘·이름·상태, 화면 위치, 보임, 열쇠, 무기, 목표(동료·비콘), 뛸 수 있음, 예약됨, 예약 표시·변환 기억 */
+interface Pin {
+  el: HTMLDivElement; icon: HTMLSpanElement; name: HTMLSpanElement; state: HTMLSpanElement; x: number; y: number; vis: boolean; key: string;
+  weapon: string | null; target: Actor | SubItem | null; ok: boolean; queued: boolean; _q?: boolean; tr?: string;
+}
+/** 진행 중 슈퍼 점프 선: 묶음, 고리·외곽·점·안 경로, 켜짐, 열쇠, 점 열쇠, 클래스, 핀 위치 */
+interface JumpLine { g: SVGGElement; r: SVGPathElement; o: SVGPathElement; d: SVGPathElement; i: SVGPathElement; on: boolean; key: string; dk: string; cls: string; x: number; y: number }
+/** 구역 이름표 */
+interface ZoneTag { el: HTMLDivElement; icon: HTMLElement; label: HTMLElement; vis: boolean; key: string }
+/** 바뀐 때만 DOM을 쓰려고 기억하는 마지막 값 */
+interface DioLast { a?: number; col?: string; plan?: string | null; planN?: string; hc?: boolean; arc?: boolean; d?: string; mv?: number }
+/** 디오라마가 읽는 G.game 부분 */
+type DioGameView = { mapDef?: MapDef; time?: string } | null | undefined;
+/** 예약한 점프(player.ts JumpPlan) */
+/** main.ts의 사망 표시 기록 중 읽는 부분 */
+interface DeathMarkView { on: boolean; id: number; x: number; y: number; z: number; team: number; k: number }
+type JumpPlanView = { kind: string; target: unknown; name: string } | null;
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
 // the super-jump lob on screen: a quadratic from (x0,y0) to (x1,y1) bowed out to the side facing up-screen (a straight
 // up/down jump bows sideways instead of folding back). Shared by the planned-jump preview and the live travel line.
-function lobCtl(x0, y0, x1, y1, out) {
+function lobCtl(x0: number, y0: number, x1: number, y1: number, out: { x: number; y: number }) {
   const len = Math.hypot(x1 - x0, y1 - y0) || 1;
   let nx = -(y1 - y0) / len, ny = (x1 - x0) / len;
   if (ny > 0 || (ny === 0 && nx < 0)) { nx = -nx; ny = -ny; }
@@ -30,17 +51,17 @@ function lobCtl(x0, y0, x1, y1, out) {
   out.x = (x0 + x1) / 2 + nx * lift; out.y = (y0 + y1) / 2 + ny * lift - lift * 0.25;
   return out;
 }
-const qAt = (a, c, b, u) => (1 - u) * (1 - u) * a + 2 * u * (1 - u) * c + u * u * b;
-const f1 = (n) => n.toFixed(1);
+const qAt = (a: number, c: number, b: number, u: number) => (1 - u) * (1 - u) * a + 2 * u * (1 - u) * c + u * u * b;
+const f1 = (n: number) => n.toFixed(1);
 // the quadratic's piece [u0, u1] as its own quadratic (De Casteljau), as an SVG path
-function qPiece(x0, y0, cx, cy, x1, y1, u0, u1) {
+function qPiece(x0: number, y0: number, cx: number, cy: number, x1: number, y1: number, u0: number, u1: number) {
   const ax = qAt(x0, cx, x1, u0), ay = qAt(y0, cy, y1, u0), bx = qAt(x0, cx, x1, u1), by = qAt(y0, cy, y1, u1);
   // control of the sub-curve: the tangent lines at both ends meet there
   const tx0 = (1 - u0) * cx + u0 * x1 - ((1 - u0) * x0 + u0 * cx), ty0 = (1 - u0) * cy + u0 * y1 - ((1 - u0) * y0 + u0 * cy);
   const k = (u1 - u0);
   return `M${f1(ax)} ${f1(ay)} Q${f1(ax + tx0 * k)} ${f1(ay + ty0 * k)} ${f1(bx)} ${f1(by)}`;
 }
-function qLen(x0, y0, cx, cy, x1, y1, u0, u1) {
+function qLen(x0: number, y0: number, cx: number, cy: number, x1: number, y1: number, u0: number, u1: number) {
   let L = 0, px = qAt(x0, cx, x1, u0), py = qAt(y0, cy, y1, u0);
   for (let i = 1; i <= 8; i++) { const u = u0 + ((u1 - u0) * i) / 8, x = qAt(x0, cx, x1, u), y = qAt(y0, cy, y1, u); L += Math.hypot(x - px, y - py); px = x; py = y; }
   return L;
@@ -50,21 +71,47 @@ const NJ = 4;             // live super-jump lines: you + three teammates
 const K = '#15121c';
 const HOME_ICON = `<svg viewBox="0 0 64 64" aria-hidden="true"><ellipse cx="32" cy="46" rx="22" ry="8.5" fill="none" stroke="${K}" stroke-width="8"/><ellipse cx="32" cy="46" rx="22" ry="8.5" fill="none" stroke="#fff" stroke-width="4"/><path d="M32 8 L32 34 M21 24 L32 36 L43 24" fill="none" stroke="${K}" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/><path d="M32 8 L32 34 M21 24 L32 36 L43 24" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 const ARROW = `<svg viewBox="-16 -16 32 32" aria-hidden="true"><path d="M0 -12 L10 10 L0 5 L-10 10 Z" fill="${K}" stroke="${K}" stroke-width="5" stroke-linejoin="round"/><path d="M0 -12 L10 10 L0 5 L-10 10 Z" fill="#fff"/></svg>`;
-const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const smooth = (a: number, b: number, x: number) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 // Zone Control tag icon (the HUD's zone box): fill = currentColor
 const ZONE_ICON = `<svg viewBox="0 0 32 32" aria-hidden="true"><rect x="7" y="7" width="18" height="18" rx="3.5" fill="currentColor" stroke="${K}" stroke-width="3"/><path d="M3.5 11 V6 a2.5 2.5 0 0 1 2.5 -2.5 H11 M21 3.5 H26 a2.5 2.5 0 0 1 2.5 2.5 V11 M28.5 21 V26 a2.5 2.5 0 0 1 -2.5 2.5 H21 M11 28.5 H6 a2.5 2.5 0 0 1 -2.5 -2.5 V21" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/></svg>`;
 const NPIN = 11;          // 0–2 allies, 3 base, 4 you, 5–10 team Hop Beacons
-const beaconsOf = (team) => (G.subs ? G.subs.beaconsFor(team).sort((x, y) => x.born - y.born) : []);
+const beaconsOf = (team: number) => (G.subs ? G.subs.beaconsFor(team).sort((x, y) => x.born - y.born) : []);
 
 export class DioramaOverlay {
-  constructor(root) {
+  declare _jclk: number;
+  declare _planning: boolean;
+  declare ztags: ZoneTag[];
+  declare _last: DioLast;
+  declare hasCursor: boolean;
+  declare hover: number;
+  declare cy: number;
+  declare cx: number;
+  declare on: boolean;
+  declare k: number;
+  declare zLayer: HTMLDivElement;
+  declare el: HTMLDivElement;
+  declare plan: HTMLDivElement;
+  declare planS: HTMLElement;
+  declare planT: HTMLElement;
+  declare planN: HTMLElement;
+  declare dms: { el: HTMLElement; on: boolean; id: number; }[];
+  declare foot: HTMLDivElement;
+  declare when: HTMLElement;
+  declare title: HTMLElement;
+  declare cursor: HTMLDivElement;
+  declare jpos: Map<Actor, { x: number; y: number }>;
+  declare jumps: JumpLine[];
+  declare arc: SVGSVGElement;
+  declare arcWrap: HTMLDivElement;
+  declare pins: Pin[];
+  constructor(root: HTMLElement) {
     this.pins = Array.from({ length: NPIN }, (_, i) => this._pin(i));
     // (parsed as markup so the <svg> + paths get the SVG namespace — an h('svg') element is an HTML element and never drew)
     this.arcWrap = h('div', { class: 'iw-dio__arcw', html: '<svg class="iw-dio__arc" aria-hidden="true"><path class="o"/><path class="i"/></svg>'
       + `<svg class="iw-dio__jumps" aria-hidden="true">${'<g class="iw-dio-j"><path class="r"/><path class="o"/><path class="d"/><path class="i"/></g>'.repeat(NJ)}</svg>` });
-    this.arc = this.arcWrap.firstChild;
+    this.arc = this.arcWrap.firstChild as SVGSVGElement;
     // super jumps in progress on your team (yours + teammates'): the planned arc's lob, travelled live
-    this.jumps = [...this.arcWrap.lastChild.children].map((g) => { g.style.display = 'none'; return { g, r: g.children[0], o: g.children[1], d: g.children[2], i: g.children[3], on: false, key: '', dk: '', cls: '', x: 0, y: 0 }; });
+    this.jumps = [...(this.arcWrap.lastChild as SVGSVGElement).children as HTMLCollectionOf<SVGGElement>].map((g) => { g.style.display = 'none'; const c = g.children as HTMLCollectionOf<SVGPathElement>; return { g, r: c[0], o: c[1], d: c[2], i: c[3], on: false, key: '', dk: '', cls: '', x: 0, y: 0 }; });
     this.jpos = new Map();   // actor → { x, y } where its pin rides its travel line
     this.cursor = h('div', { class: 'iw-dio__cur' }, h('i'));
     this.title = h('b', { class: 'iw-dio__name iw-display' }, '');
@@ -98,7 +145,7 @@ export class DioramaOverlay {
     this.ztags = [];
   }
 
-  _pin(i) {
+  _pin(i: number): Pin {
     const self = i === 4, home = i === 3, beacon = i >= 5;
     const icon = h('span', { class: 'iw-pin__icon', html: self ? ARROW : home ? HOME_ICON : beacon ? (SUB_ICONS.beacon || '') : '' });
     const name = h('span', { class: 'iw-pin__name' }, self ? 'YOU' : home ? 'BASE' : beacon ? 'BEACON' : '');
@@ -112,7 +159,7 @@ export class DioramaOverlay {
     return { el, icon, name, state, x: 0, y: 0, vis: false, key: '', weapon: null, target: null, ok: false, queued: false };
   }
 
-  update(dt, k) {
+  update(dt: number, k: number) {
     const was = this.on;
     this.k = k;
     this.on = k > 0.002;
@@ -134,15 +181,15 @@ export class DioramaOverlay {
     const canJump = !!(me.alive && me.canSuperJump && me.canSuperJump());
     // splatted in a live round: picks plan the respawn's Super Jump instead (player.js queueJump)
     const ctl = G.match?.controller;
-    const planning = !!(ctl && ctl.queueJump && !me.alive && G.match.state === 'playing');
-    const q = planning ? ctl.jumpQueue : null;
+    const planning = !!(ctl && (ctl as { queueJump?: unknown }).queueJump && !me.alive && G.match!.state === 'playing');
+    const q: JumpPlanView = planning ? ctl!.jumpQueue : null;
     if (planning !== this._planning) { this._planning = planning; this.el.classList.toggle('is-planning', planning); this._head(); this._last.plan = null; }
     const beacons = beaconsOf(me.team);
     this._liveJumps(dt, me, cam, W, H);
     // ---- pins
     for (let i = 0; i < NPIN; i++) {
       const p = this.pins[i];
-      let tgt = null, ok = false, label = '', st = '', dead = false, weapon = null;
+      let tgt: { x: number; y: number; z: number } | null = null, ok = false, label = '', st = '', dead = false, weapon: string | null = null;
       if (i >= 5) {
         const b = beacons[i - 5];
         if (b) { tgt = b.pos; ok = true; label = 'BEACON'; st = b.uses > 1 ? '×' + b.uses : ''; }
@@ -186,7 +233,7 @@ export class DioramaOverlay {
         p.key = key;
         if (i < 3) {
           p.name.textContent = label;
-          if (weapon !== p.weapon) { p.weapon = weapon; p.icon.innerHTML = weaponIcon(weapon); }
+          if (weapon !== p.weapon) { p.weapon = weapon; p.icon.innerHTML = weaponIcon(weapon as string); }
         }
         p.state.textContent = st;
         p.el.classList.toggle('is-dead', dead);
@@ -247,7 +294,7 @@ export class DioramaOverlay {
     if (showArc !== this._last.arc) { this._last.arc = showArc; this.arc.classList.toggle('is-on', showArc); }
     if (showArc) {
       // a lob bowed out to the side facing up-screen (lobCtl) — the live travel line keeps this shape once you jump
-      const x0 = sp.x, y0 = sp.y, x1 = hp.x, y1 = hp.y;
+      const x0 = sp.x, y0 = sp.y, x1 = hp!.x, y1 = hp!.y;   // (showArc면 hp가 있다)
       const { x: cx, y: cy } = lobCtl(x0, y0, x1, y1, _ctl);
       const d = `M${x0.toFixed(1)} ${y0.toFixed(1)} Q${cx.toFixed(1)} ${cy.toFixed(1)} ${x1.toFixed(1)} ${y1.toFixed(1)}`;
       if (d !== this._last.d) { this._last.d = d; for (const path of this.arc.children) path.setAttribute('d', d); }
@@ -259,7 +306,7 @@ export class DioramaOverlay {
   // off to where it lands, with a landing ring on the floor. Charging, the line draws out to the landing and the ring
   // closes in on it; in flight the flown part fades to a thin trail, ink dots stream on ahead (anchored to the line, not
   // to its moving start) and the jumper's pin rides the line (this.jpos → the pins loop).
-  _liveJumps(dt, me, cam, W, H) {
+  _liveJumps(dt: number, me: Actor, cam: THREE.Camera, W: number, H: number) {
     this.jpos.clear();
     this._jclk = (this._jclk || 0) + dt;
     const t = this._jclk;
@@ -310,7 +357,7 @@ export class DioramaOverlay {
   // Zone Control: a tag over every zone — the operational objective's in its holder's ink (light grey while neutral) with
   // its name, the others small and faint so the next rotation isn't a surprise. The zones themselves are drawn on the
   // stage floor (src/fx/zoneMarks.js), which the map view is looking straight down at.
-  _zones(cam, W, H, me) {
+  _zones(cam: THREE.Camera, W: number, H: number, me: Actor) {
     const Z = G.match && !G.match.attract ? G.match.zones : null;
     const n = Z ? Z.zones.length : 0;
     while (this.ztags.length < n) {
@@ -320,16 +367,16 @@ export class DioramaOverlay {
       this.ztags.push({ el, icon, label, vis: true, key: '' });
     }
     for (let i = 0; i < this.ztags.length; i++) {
-      const tg = this.ztags[i], z = i < n ? Z.zones[i] : null;
+      const tg = this.ztags[i], z = i < n ? Z!.zones[i] : null;   // (n > 0이면 Z가 있다)
       if (z) _v.set(z.center[0], z.center[1] + 0.3, z.center[2]).project(cam);
       if (!z || _v.z > 1) { if (tg.vis) { tg.vis = false; tg.el.style.display = 'none'; } continue; }
       if (!tg.vis) { tg.vis = true; tg.el.style.display = ''; }
       tg.el.style.transform = `translate3d(${((_v.x * 0.5 + 0.5) * W).toFixed(1)}px,${((0.5 - _v.y * 0.5) * H).toFixed(1)}px,0)`;
-      const active = Z.active.zones.includes(z);
+      const active = Z!.active.zones.includes(z);
       const held = z.owner === 0 || z.owner === 1;
       const col = active && held ? (G.teamHex?.[z.owner] || '#fff') : '#dcd7e6';
       // a two-zone centre: one label (on its first zone), the other zone just its icon
-      const first = z.kind !== 'center' || Z.zones.find((q) => q.kind === 'center') === z;
+      const first = z.kind !== 'center' || Z!.zones.find((q) => q.kind === 'center') === z;
       const label = !first ? '' : z.kind === 'center' ? 'CENTRE' : z.home === me.team ? 'YOUR SIDE' : 'ENEMY SIDE';
       const key = `${active ? 1 : 0}|${col}|${label}`;
       if (key === tg.key) continue;
@@ -342,32 +389,32 @@ export class DioramaOverlay {
     }
   }
 
-  _jump(i, me) {
+  _jump(i: number, me: Actor) {
     const p = this.pins[i];
     // splatted: plan (queue) the jump for the respawn — never a jump now (player.js queueJump plays the cue)
     const ctl = G.match?.controller;
-    if (me && !me.alive && ctl?.queueJump && G.match.state === 'playing') {
+    if (me && !me.alive && ctl?.queueJump && G.match!.state === 'playing') {
       if (i !== 4) { ctl.queueJump(i === 3 ? 'base' : i >= 5 ? 'beacon' : 'ally', i === 3 ? null : p.target); this._flash(i); }
       return;
     }
     if (!me || !me.canSuperJump || !me.canSuperJump()) { G.audio?.play?.('ui_error', { volume: 0.5 }); return; }
     let ok = false;
     if (i === 3) { const pad = G.level?.spawnPads?.[me.team]; ok = pad ? me.superJump(pad.clone()) : false; }
-    else if (i >= 5) ok = !!(p.target && G.subs && G.subs.jumpToBeacon(me, p.target));
-    else if (p.target && p.target.alive && !p.target.superJumpState) ok = me.superJump(p.target);
+    else if (i >= 5) ok = !!(p.target && G.subs && G.subs.jumpToBeacon(me, p.target as SubItem));
+    else if (p.target && (p.target as Actor).alive && !(p.target as Actor).superJumpState) ok = me.superJump(p.target as Actor);
     this._flash(i);
     G.audio?.play?.(ok ? 'ui_confirm' : 'ui_error', { volume: 0.55 });
   }
 
-  _flash(i) {
+  _flash(i: number) {
     const el = this.pins[i]?.el; if (!el) return;
     el.classList.remove('is-press'); void el.offsetWidth; el.classList.add('is-press');
   }
 
   _head() {
-    const m = G.game?.mapDef;
+    const gm = G.game as DioGameView, m = gm?.mapDef;
     this.title.textContent = (m?.name || 'Stage').toUpperCase();
-    this.when.textContent = G.game?.time === 'dusk' ? 'DUSK' : 'DAY';
+    this.when.textContent = gm?.time === 'dusk' ? 'DUSK' : 'DAY';
     const pad = G.input?.lastDevice === 'pad';
     const plan = !!this._planning;
     this.foot.innerHTML = pad
@@ -378,26 +425,26 @@ export class DioramaOverlay {
   }
 
   // death markers: a squid-skull in the victim's ink on the spot, fading with the record (main.js G.deathMarks)
-  _deathMarks(cam, W, H) {
-    const list = G.deathMarks;
+  _deathMarks(cam: THREE.Camera, W: number, H: number) {
+    const list = G.deathMarks as DeathMarkView[] | undefined;
     for (let i = 0; i < this.dms.length; i++) {
       const e = this.dms[i], d = list && list[i];
       let show = !!(d && d.on);
-      if (show) { _v.set(d.x, d.y + 0.05, d.z).project(cam); show = _v.z < 1; }
+      if (show) { _v.set(d!.x, d!.y + 0.05, d!.z).project(cam); show = _v.z < 1; }
       if (!show) { if (e.on) { e.on = false; e.el.style.display = 'none'; } continue; }
       if (!e.on) { e.on = true; e.el.style.display = 'block'; }
-      if (e.id !== d.id) {
-        e.id = d.id;
-        e.el.style.setProperty('--dc', G.teamHex?.[d.team] || '#fff');
+      if (e.id !== d!.id) {   // (show면 d가 있다)
+        e.id = d!.id;
+        e.el.style.setProperty('--dc', G.teamHex?.[d!.team] || '#fff');
         e.el.classList.remove('is-new'); void e.el.offsetWidth; e.el.classList.add('is-new');
       }
       e.el.style.transform = `translate3d(${((_v.x * 0.5 + 0.5) * W).toFixed(1)}px,${((0.5 - _v.y * 0.5) * H).toFixed(1)}px,0)`;
-      e.el.style.opacity = d.k.toFixed(2);
+      e.el.style.opacity = d!.k.toFixed(2);
     }
   }
 
   // splatted: the respawn countdown + what's planned
-  _plan(me, q) {
+  _plan(me: Actor, q: JumpPlanView) {
     const n = String(Math.max(1, Math.ceil(me.respawnTimer || 0)));
     if (n !== this._last.planN) { this._last.planN = n; this.planN.textContent = n; }
     const key = q ? `${q.kind}|${q.name}` : '';

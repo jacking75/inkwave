@@ -13,10 +13,11 @@ import { GLYPHS, SQUID } from './ui-icons.js';
 import { splatClip, splatCover, inkBurst } from './menu-art.js';
 import { BOSS_NAME, bossSilhouette } from './boss-art.js';
 import { G } from '../core/ctx.js';
+import type { Menus } from './menus.js';
 
 export const NEWS_ID = 'mp-expansion-1';
 const KEY = 'inkwave.news';
-const art = (f) => new URL(`../../assets/${f}`, import.meta.url).href;
+const art = (f: string) => new URL(`../../assets/${f}`, import.meta.url).href;
 const CONFETTI = ['var(--nc)', 'var(--nc-light)', '#ffd23f', '#fff', 'var(--a)', 'var(--b)'];
 
 export function newsSeen() { try { return localStorage.getItem(KEY) === NEWS_ID; } catch (e) { return false; } }
@@ -32,7 +33,18 @@ function gate() {
   return true;
 }
 
-const PAGES = [
+/** 소식 한 장: 번호·색조, 머리글·제목, 그림(없으면 대체 그림), 도장·테이프, 첫 문단, 항목[아이콘, 굵게, 설명, 작은 그림] */
+interface NewsPage {
+  id: string; tone: string; kicker: string; title: string[]; img: string; fallback?: () => string;
+  stamp?: { text: string; cls: string }; tape?: string; lede: string; bullets: Array<[string, string, string, string?]>;
+}
+/** 소식 창(모달): 뒤로 키 처리, 닫는 중 */
+type NewsEl = HTMLDivElement & { _onBack?: () => void; _closing?: boolean };
+/** 잉크 층: 자란 얼룩 위치·반지름·씨앗(닫을 때 거꾸로 줄인다) */
+type InkLayer = HTMLDivElement & { _splat?: { x: number; y: number; R: number; seed: number } };
+/** 진행 중 보간: 경과·길이, 단계·끝 콜백 */
+interface Tween { t: number; dur: number; step: (k: number) => void; done?: (() => void) | null }
+const PAGES: NewsPage[] = [
   {
     id: 'mp', tone: 'a', kicker: 'INTRODUCING', title: ['THE MULTIPLAYER', 'EXPANSION'], img: 'news/lobby.webp',
     stamp: { text: 'NEW!', cls: 'is-new' },
@@ -56,7 +68,22 @@ const PAGES = [
 ];
 
 export class WhatsNew {
-  constructor(menus) {
+  declare _last: number;
+  declare confetti: HTMLDivElement;
+  declare card: HTMLDivElement;
+  declare inkHost: HTMLDivElement;
+  declare reduced: boolean;
+  declare _waitFrom: number;
+  declare _pre: HTMLImageElement[] | undefined;
+  declare _shownForce: boolean;
+  declare _busy: boolean;
+  declare _raf: number;
+  declare _tweens: Tween[];
+  declare _t: ReturnType<typeof setTimeout> | number;
+  declare page: number;
+  declare el: NewsEl | null;
+  declare M: Menus;
+  constructor(menus: Menus) {
     this.M = menus;
     this.el = null;
     this.page = 0;
@@ -80,7 +107,7 @@ export class WhatsNew {
     this._waitFrom = performance.now();
     this._t = setTimeout(() => this._tryOpen(0), 700);
   }
-  _tryOpen(n) {
+  _tryOpen(n: number) {
     const M = this.M;
     if (this.el || M.current !== 'main' || !M._scr || G.mode === 'match') return;
     if (M._modal || (M.wipe && M.wipe.busy) || M._starting) {
@@ -103,7 +130,7 @@ export class WhatsNew {
     this.inkHost = h('div', { class: 'iw-news__inks' });
     this.card = h('div', { class: 'iw-news__card' });
     this.confetti = h('div', { class: 'iw-news__confetti' });
-    const el = this.el = h('div', { class: 'iw-news' + (this.reduced ? ' is-reduced' : ''), role: 'dialog', 'aria-modal': 'true', 'aria-label': 'What’s new' },
+    const el: NewsEl = this.el = h('div', { class: 'iw-news' + (this.reduced ? ' is-reduced' : ''), role: 'dialog', 'aria-modal': 'true', 'aria-label': 'What’s new' },
       h('div', { class: 'iw-news__dim' }), this.inkHost, this.confetti, h('div', { class: 'iw-news__stage' }, this.card));
     el._onBack = () => this.close('back');
     el.dataset.keys = '1';
@@ -116,15 +143,15 @@ export class WhatsNew {
     this._ink(PAGES[0].tone, r.width * 0.5, r.height * 0.52, 0.62, false);
   }
 
-  _render(i, first) {
-    const M = this.M, P = PAGES[i];
+  _render(i: number, first: boolean) {
+    const M = this.M, P = PAGES[i], root = this.el!;   // (열린 동안만 부른다)
     this.page = i;
-    this.el.dataset.page = P.id;
-    this.el.style.setProperty('--nc', `var(--${P.tone})`);
-    this.el.style.setProperty('--nc-light', `var(--${P.tone}-light)`);
-    this.el.style.setProperty('--nc-dark', `var(--${P.tone}-dark)`);
-    this.el.style.setProperty('--nc-ink', `var(--${P.tone}-ink)`);
-    this.el.style.setProperty('--nc-rgb', `var(--${P.tone}-rgb)`);
+    root.dataset.page = P.id;
+    root.style.setProperty('--nc', `var(--${P.tone})`);
+    root.style.setProperty('--nc-light', `var(--${P.tone}-light)`);
+    root.style.setProperty('--nc-dark', `var(--${P.tone}-dark)`);
+    root.style.setProperty('--nc-ink', `var(--${P.tone}-ink)`);
+    root.style.setProperty('--nc-rgb', `var(--${P.tone}-rgb)`);
     // hero: the render, framed like a ticket, taped to the card
     const img = h('img', { class: 'iw-news__img', alt: '', draggable: 'false' });
     const frame = h('div', { class: 'iw-news__frame' }, img, h('i', { class: 'iw-news__glare' }));
@@ -152,7 +179,7 @@ export class WhatsNew {
       }
       return li;
     }));
-    const btns = [];
+    const btns: HTMLButtonElement[] = [];
     if (i === 0) {
       const go = M._btn({ id: 'news-continue', label: 'CONTINUE', cls: 'iw-btn--primary iw-btn--wide iw-news__go', sound: 'ui_confirm', accept: () => this.next() });
       go.append(h('span', { class: 'iw-news__chev', html: GLYPHS.next }));
@@ -179,10 +206,10 @@ export class WhatsNew {
     M._setFocus(btns[0], { snap: true });
     if (!this.reduced) {
       this._confetti();
-      setTimeout(() => { if (this.el && this.el.isConnected) inkBurst(this.M._scr.el, { ...this._center(body.querySelector('.iw-news__title')), color: 'var(--nc)', count: 14, dist: 12, size: 1.5, ring: true }); }, first ? 520 : 260);
+      setTimeout(() => { if (this.el && this.el.isConnected) inkBurst(this.M._scr!.el, { ...this._center(body.querySelector('.iw-news__title')!), color: 'var(--nc)', count: 14, dist: 12, size: 1.5, ring: true }); }, first ? 520 : 260);
     }
   }
-  _center(node) {
+  _center(node: Element | null) {
     if (!node) return { x: innerWidth / 2, y: innerHeight / 2 };
     const r = node.getBoundingClientRect();
     return { x: r.left + r.width * 0.35, y: r.top + r.height / 2 };
@@ -204,27 +231,27 @@ export class WhatsNew {
 
   // ================================================================ ink wipes (splat clip-path grown by JS)
   /** A full-screen layer of `tone` ink revealed by a splat growing from (x, y). */
-  _ink(tone, x, y, dur, fromPrev) {
-    const layer = h('div', { class: `iw-news__ink is-${tone}` }, h('i', { class: 'iw-news__halftone' }));
+  _ink(tone: string, x: number, y: number, dur: number, fromPrev: boolean) {
+    const layer: InkLayer = h('div', { class: `iw-news__ink is-${tone}` }, h('i', { class: 'iw-news__halftone' }));
     this.inkHost.appendChild(layer);
-    const W = this.el.clientWidth || innerWidth, H = this.el.clientHeight || innerHeight;
+    const W = this.el!.clientWidth || innerWidth, H = this.el!.clientHeight || innerHeight;
     const R = splatCover(x, y, W, H), seed = 7 + this.inkHost.childElementCount * 13;
     if (this.reduced) { layer.style.clipPath = ''; layer.classList.add('is-fade'); this._pruneInks(layer); return layer; }
     layer.style.clipPath = splatClip(x, y, 0.01, seed);
-    this._tween(dur, (k) => { layer.style.clipPath = splatClip(x, y, R * easeOutCubic(k), seed); }, () => { layer.style.clipPath = ''; if (fromPrev) this._pruneInks(layer); });
+    this._tween(dur, (k: number) => { layer.style.clipPath = splatClip(x, y, R * easeOutCubic(k), seed); }, () => { layer.style.clipPath = ''; if (fromPrev) this._pruneInks(layer); });
     layer._splat = { x, y, R, seed };
     return layer;
   }
-  _pruneInks(keep) { for (const n of [...this.inkHost.children]) if (n !== keep) n.remove(); }
+  _pruneInks(keep: Element) { for (const n of [...this.inkHost.children]) if (n !== keep) n.remove(); }
 
-  _tween(dur, step, done) {
-    const o = { t: 0, dur: Math.max(0.01, dur), step, done };
+  _tween(dur: number, step: (k: number) => void, done?: (() => void) | null) {
+    const o: Tween = { t: 0, dur: Math.max(0.01, dur), step, done };
     this._tweens.push(o);
     step(0);
     if (!this._raf) { this._last = performance.now(); this._raf = requestAnimationFrame((t) => this._tick(t)); }
     return o;
   }
-  _tick(t) {
+  _tick(t: number) {
     const dt = Math.min(0.1, (t - this._last) / 1000) * (this.M.timeScale ?? 1);   // slow frames still finish the wipe on time
     this._last = t;
     for (let i = this._tweens.length - 1; i >= 0; i--) {
@@ -263,12 +290,12 @@ export class WhatsNew {
     const finish = () => { el.remove(); if (this.el === el) this.el = null; };
     if (how === 'try') { finish(); this._tryBoss(); return; }
     // the splat drains back into the card's centre, the menu underneath comes back
-    const last = this.inkHost.lastElementChild;
+    const last = this.inkHost.lastElementChild as InkLayer | null;
     if (!this.reduced && last && last._splat) {
       const s = last._splat, r = el.getBoundingClientRect(), cr = this.card.getBoundingClientRect();
       const x = cr.left + cr.width / 2 - r.left, y = cr.top + cr.height / 2 - r.top, R = splatCover(x, y, r.width, r.height);
       this._pruneInks(last);
-      this._tween(0.5, (k) => { last.style.clipPath = splatClip(x, y, Math.max(0.01, R * (1 - easeInOutCubic(k))), s.seed + 1); }, finish);
+      this._tween(0.5, (k: number) => { last.style.clipPath = splatClip(x, y, Math.max(0.01, R * (1 - easeInOutCubic(k))), s.seed + 1); }, finish);
     } else setTimeout(finish, this.reduced ? 200 : 450);
     const prev = M._modalPrev;
     if (prev && prev.isConnected) M._setFocus(prev, { snap: true });
