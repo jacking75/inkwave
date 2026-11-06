@@ -29,14 +29,62 @@
 // Boss mode (docs/BOSS.md): src/ui/hud-boss.js (hud.boss) adds the boss bar / title card / callouts / damage numbers and
 // the endings; the roster slots show the 8-kid squad in squad ink. It switches on match.mode === 'boss' or boss:spawn.
 import { h, clamp, colorVars, toHex, fmtTime, fmtInt, splatSVG, splatShape, pct, shade, lerp, easeOutBack, easeOutCubic, restartAnim, prefersReducedMotion } from './ui-util.js';
+import type { ColorLike, HChild } from './ui-util.js';
 import { SQUID, SPLAT_ICON, DEATH_ICON, GLYPHS, SUB_ICONS, WEAPON_ICONS, richText, keycap, specialIcon, weaponIcon } from './ui-icons.js';
-import { WEAPONS, SPECIALS, TEAM_NAMES, SUB, PLAYER, MATCH, ZONES } from '../config.js';
+import { TEAM_NAMES, SUB, PLAYER, MATCH, ZONES, WEAPON_CFG, SPECIAL_CFG, SUB_CFG } from '../config.js';
 import { on, G } from '../core/ctx.js';
 import { SFX } from '../audio/audio.js';
 import { BossHud } from './hud-boss.js';
+import type { Actor } from '../game/actor.js';
+import type { Match } from '../game/match.js';
+import type { PerspectiveCamera } from 'three';
+import type * as THREE from 'three';
+import type { SubItem } from '../game/subs.js';
+import type { Minimap } from '../game/minimap.js';
+import type { ZoneControl, Zone } from '../game/zones.js';
+import type { ScreenFX } from '../fx/screenfx.js';
+import type { PlayOpts } from '../audio/audio.js';
+import type { MittsKitView } from '../game/kits/mitts-model.js';
 import { installBossAudio } from '../audio/bossAudio.js';
 import { bossEmblem, BOSS_NAME, BOSS_EPITHET } from './boss-art.js';
 
+// ---------------------------------------------------------------- frame contract (main.ts _updateHud → HUD.update)
+/** 분대 표의 한 명 */
+export interface HudPlayer { name: string; weapon: string; alive: boolean; respawn: number; specialReady: boolean; isSelf: boolean }
+/** 팀(색 + 분대) */
+export interface HudTeam { color: ColorLike; players: HudPlayer[] }
+/** 미니맵 위 점(캔버스 비율 좌표) */
+export interface HudMapPlayer { x: number; y: number; team: number; isSelf: boolean; yaw: number; alive: boolean; color: string; tracked: boolean }
+/** 동료 이름표·방향 표시 */
+export interface HudMarker { x: number; y: number; name: string; color: string; onScreen: boolean; angle: number; dist: number; tracked: boolean; weapon?: string }
+/** 사망 표시(main.ts의 고정 풀 기록) */
+export interface HudDeath { on: boolean; id: number; team: number; name: string; ally: boolean; local: boolean; t: number; k: number; sx: number; sy: number; sc: number; vis: boolean; mx: number; my: number }
+/** 한 프레임의 HUD 입력. 실험실(ui-lab)이 일부만 넘길 수 있어 모두 선택이다 */
+export interface HudFrame {
+  time?: number | null; teams?: HudTeam[]; ink?: number; inkLow?: boolean; subCost?: number; subKind?: string; poisoned?: boolean; tracked?: boolean;
+  special?: number; specialReady?: boolean; specialActive?: boolean; specialId?: string; hp?: number; weapon?: string; charge?: number;
+  twin?: { planted: boolean; rolls: number } | null; crosshair?: { spread?: number; onTarget?: string | null; inRange?: boolean };
+  map?: { canvas: HTMLCanvasElement; expanded?: boolean; strike?: boolean; players?: HudMapPlayer[] } | null;
+  markers?: HudMarker[]; cheers?: Array<{ x: number; y: number; k: number; color: string }>; deaths?: HudDeath[] | null;
+  jumpQueue?: { kind: string; target: unknown; name: string } | null; prompt?: string | null; fps?: number; subAim?: boolean;
+  zones?: (ReturnType<ZoneControl['state']> & { viewer: number }) | null;
+}
+/** 판정 연출 선택(영역: 비율, 구역: 수·벌점·승자·이유·연장) */
+interface JudgeOpts {
+  mode?: string; colors?: ColorLike[]; percents?: Array<number | string>; names?: readonly string[]; counts?: number[]; penalty?: number[];
+  winner?: number | null; reason?: string | null; overtime?: boolean;
+}
+/** 요소에 붙여 두는 상태(켜짐·번호·열쇠·색·떠남·만료 타이머·하위 요소) */
+type XEl = HTMLElement & { _w?: string; _k?: string; _sk?: string; _name?: string; _ready?: boolean; _tracked?: boolean; _on?: boolean; _id?: number; _key?: string; _col?: string; _out?: boolean; _t?: ReturnType<typeof setTimeout>; _num?: HTMLElement | null; _pb?: HTMLElement | null };
+type FeedEl = XEl;
+/** 슈퍼 점프 대상(동료 0~2·기지 3·비콘 4~) — _beaconTargets가 만든다(지도 비율 좌표) */
+interface BeaconTarget {
+  x: number; y: number; name: string; ok: boolean; weapon?: string; respawn?: number; actor?: Actor; home?: boolean; pad?: THREE.Vector3; dev?: boolean; beacon?: SubItem;
+}
+/** 조준점이 읽는 우산 러너 상태(kits/brolly) */
+interface BrollyKitView { brolly?: boolean; state: string; hp: number; hpMax: number; regrowK?: number; open: number; launchK?: number }
+/** 실험실 구동자: 지역 선수·선수 목록 */
+interface HudLab { local: Actor | null; actors?: Actor[]; beacons?: Array<BeaconTarget | null>; onJump?(i: number): void }
 let HUD_ID = 0;
 const BUMP = { duration: 320, easing: 'cubic-bezier(.34,1.8,.64,1)' };
 // dualies: the ring of the pistol that just fired jabs outward (SVG → Web Animations; the reflow restart trick needs HTML)
@@ -46,14 +94,14 @@ const TWIN_KICK_T = { duration: 130, easing: 'cubic-bezier(.2,.8,.3,1)' };
 const MITT_KICK = [[{ transform: 'translateX(4px) scale(1.35)' }, { transform: 'none' }], [{ transform: 'translateX(-4px) scale(1.35)' }, { transform: 'none' }]];
 const MITT_KICK_T = { duration: 150, easing: 'cubic-bezier(.2,.8,.3,1)' };
 const TAU = Math.PI * 2;
-const STREAKS = { 2: 'DOUBLE SPLAT!', 3: 'TRIPLE SPLAT!', 4: 'QUAD SPLAT!' };
-const kindOf = (w) => (WEAPONS[w] && WEAPONS[w].kind) || w || 'shooter';
+const STREAKS: Record<number, string | undefined> = { 2: 'DOUBLE SPLAT!', 3: 'TRIPLE SPLAT!', 4: 'QUAD SPLAT!' };
+const kindOf = (w: string | number) => (WEAPON_CFG[w] && WEAPON_CFG[w].kind) || w || 'shooter';
 // super-jump map slots: 3 teammates, base, then up to 6 team jump beacons (keys 1–9, 0)
 const NB = 10;
-const slotKey = (i) => String((i + 1) % 10);
+const slotKey = (i: number) => String((i + 1) % 10);
 // reticle family for weapons that share another kind's crosshair: our twins / spinner / bucket wear upstream's dualies /
 // splatling / slosher reticles (the retired weapons they replaced), the brush the roller's brackets
-const RETICLE_OF = { bucket: 'slosher', spinner: 'splatling', twins: 'dualies', brush: 'roller' };
+const RETICLE_OF: Record<string, string | undefined> = { bucket: 'slosher', spinner: 'splatling', twins: 'dualies', brush: 'roller' };
 
 // ------------------------------------------------------------------ HUD-only art
 const K = '#15121c';
@@ -72,8 +120,8 @@ const SJ_ICON = `<svg viewBox="0 0 64 64" aria-hidden="true"><ellipse cx="42" cy
 const SEA_ICON = `<svg viewBox="0 0 64 64" aria-hidden="true"><path d="M5 45 C12 45 13 32 22 24 C31 16 46 16 52 27 C45 23 37 26 36 33 C35 40 42 44 48 42 C53 40.5 56 43 59 45 L59 51 L5 51 Z" fill="currentColor" stroke="${K}" stroke-width="4.2" stroke-linejoin="round"/><path d="M24 30 Q28 24 35 22.5" fill="none" stroke="#fff" stroke-opacity=".7" stroke-width="3.4" stroke-linecap="round"/><path d="M6 58 Q12.5 53 19 58 T32 58 T45 58 T58 58" fill="none" stroke="${K}" stroke-width="8.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 58 Q12.5 53 19 58 T32 58 T45 58 T58 58" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><circle cx="54" cy="16" r="4.2" fill="currentColor" stroke="${K}" stroke-width="3"/><circle cx="45" cy="9" r="2.8" fill="currentColor" stroke="${K}" stroke-width="2.6"/></svg>`;
 const ZONE_LABEL = { center: 'CENTRE', home: 'YOUR SIDE', away: 'ENEMY SIDE' };
 // main-weapon icon for an id or kind (kit weapons register WEAPON_ICONS[kind] themselves; unknown → the shooter)
-const mainIcon = (id) => WEAPON_ICONS[id] || WEAPON_ICONS[(WEAPONS[id] || {}).kind] || weaponIcon(kindOf(id));
-const ENV_CAUSES = { water: 'Fell in the sea', sea: 'Fell in the sea', fall: 'Fell off the stage', oob: 'Out of bounds', bounds: 'Out of bounds' };
+const mainIcon = (id: string) => WEAPON_ICONS[id] || WEAPON_ICONS[(WEAPON_CFG[id] || {}).kind as string] || weaponIcon(kindOf(id) as string);
+const ENV_CAUSES: Record<string, string | undefined> = { water: 'Fell in the sea', sea: 'Fell in the sea', fall: 'Fell off the stage', oob: 'Out of bounds', bounds: 'Out of bounds' };
 /**
  * What splatted you, for the splat screen: the 'splatted' event's cause (= the finishing hit's weaponId, or 'water') →
  * { kind: 'main' | 'sub' | 'special' | 'env', id, name, tag, icon } (null when there's nothing to show). Sub and special
@@ -83,13 +131,13 @@ const ENV_CAUSES = { water: 'Fell in the sea', sea: 'Fell in the sea', fall: 'Fe
  * or nothing, and a kit weapon that reuses a built-in firing path (the charger beam passes 'charger') is still the
  * attacker's own weapon.
  */
-export function splatCause(cause, attacker) {
+export function splatCause(cause: string | null | undefined, attacker: Actor | null | undefined) {
   const c = typeof cause === 'string' ? cause : null;
   if (c && ENV_CAUSES[c]) return { kind: 'env', id: c, name: attacker ? 'Knocked into the sea' : ENV_CAUSES[c], tag: '', icon: SEA_ICON };
-  if (c && SUB[c]) return { kind: 'sub', id: c, name: SUB[c].name || c, tag: 'SUB', icon: SUB_ICONS[SUB[c].kind] || SUB_ICONS[c] || SUB_ICONS.bomb };
-  if (c && SPECIALS[c]) return { kind: 'special', id: c, name: SPECIALS[c].name || c, tag: 'SPECIAL', icon: specialIcon(c) };
-  const w = (attacker && attacker.weaponId) || (c && WEAPONS[c] ? c : null);
-  if (w) return { kind: 'main', id: w, name: (WEAPONS[w] || {}).name || '', tag: '', icon: mainIcon(w) };
+  if (c && SUB_CFG[c]) return { kind: 'sub', id: c, name: SUB_CFG[c]!.name || c, tag: 'SUB', icon: SUB_ICONS[SUB_CFG[c]!.kind] || SUB_ICONS[c] || SUB_ICONS.bomb };
+  if (c && SPECIAL_CFG[c]) return { kind: 'special', id: c, name: SPECIAL_CFG[c].name || c, tag: 'SPECIAL', icon: specialIcon(c) };
+  const w = (attacker && attacker.weaponId) || (c && WEAPON_CFG[c] ? c : null);
+  if (w) return { kind: 'main', id: w, name: (WEAPON_CFG[w] || {}).name || '', tag: '', icon: mainIcon(w) };
   return null;
 }
 // "Can't use" (a kit sub refused the throw, e.g. one already out): a soft, low two-note bonk — quieter than ui_error's buzz
@@ -104,15 +152,158 @@ if (!SFX.sub_cantuse) SFX.sub_cantuse = {
 };
 // squid-head badge silhouette (roster)
 const BADGE_PATH = 'M32 2.5 C35.5 2.5 43 9 47.5 14.5 C50 14 55 15.5 57 18.5 C58.6 21 57.4 23.6 55.2 24.8 A24.5 24.5 0 1 1 8.8 24.8 C6.6 23.6 5.4 21 7 18.5 C9 15.5 14 14 16.5 14.5 C21 9 28.5 2.5 32 2.5 Z';
-function arcPath(r0, r1, halfDeg, tip) {
+function arcPath(r0: number, r1: number, halfDeg: number, tip: number) {
   const a = (halfDeg * Math.PI) / 180;
-  const P = (r, t) => `${(Math.sin(t) * r).toFixed(2)} ${(-Math.cos(t) * r).toFixed(2)}`;
+  const P = (r: number, t: number) => `${(Math.sin(t) * r).toFixed(2)} ${(-Math.cos(t) * r).toFixed(2)}`;
   return `M${P(r1, -a)} A${r1} ${r1} 0 0 1 ${P(r1, a)} L${P(r0, a * 0.78)} A${r0} ${r0} 0 0 0 ${P(r0, -a * 0.78)} Z M${P(r1 - 1, -0.16)} L${P(r1 + tip, 0)} L${P(r1 - 1, 0.16)} Z`;
 }
 const DD_PATH = arcPath(80, 89, 26, 12);
 
+/** 바뀐 때만 DOM을 쓰려고 기억하는 마지막 값. 분대 칸·구역 수처럼 동적 열쇠(L[k])도 쓴다 */
+type Dirty = string | number | boolean | string[] | null | undefined;
+interface HudLast {
+  [key: string]: Dirty;
+  tankCol?: string[] | null; ca?: string; cb?: string;
+  fpsT?: number; fullT?: number; charge?: number | null; spread?: number | null; special?: number; brL?: number; brH?: number;
+  brS?: string; aimFr?: number; sbFr?: number; vig?: number; bk?: number | null; bl?: number; zShN?: number | null; ring?: number | null; zG?: number | null;
+}
+/** 피격 방향 호 */
+interface DamageDir { a: Actor; el: HTMLDivElement; t: number; ang: number | null; px: number; pz: number }
+/** 화면 잉크 얼룩(캔버스 그림 + 흘러내림) */
+interface Smear {
+  x: number; y: number; r: number; img: HTMLCanvasElement; S: number; hex: string; age: number; life: number; rot: number;
+  drips: Array<{ dx: number; len: number; max: number; sp: number; w: number }>;
+}
+/** 잉크 탱크 그림 캐시 */
+interface TankCache { W?: number; H?: number; col?: string; body?: Path2D; g?: CanvasGradient }
+/** 구역 수 칸(요소에 붙인 하위 요소 기억) */
+type ZoneCountEl = HTMLDivElement & XEl;
 export class HUD {
-  constructor(rootEl, opts = {}) {
+  declare _cs: number;
+  declare _fxMap: Map<string, (dt: number) => unknown> | undefined;
+  declare _byNameA: Actor | undefined;
+  declare _byNameN: number | undefined;
+  declare _byName: Map<string, Actor> | undefined;
+  declare _bcnP: { x: number; y: number; ox: number; oy: number; on: boolean; }[];
+  declare _mapCanvas: HTMLCanvasElement | null | undefined;
+  declare _denyT: number;
+  declare _tankCache: TankCache | undefined;
+  declare _brolly: { hp: HTMLElement | null; ln: HTMLElement | null; ticks: NodeListOf<HTMLElement> } | null;
+  declare _mittS: { c?: number; ch?: boolean; full?: boolean; cl?: boolean; lp?: boolean } | undefined;
+  declare _mittC: HTMLElement[];
+  declare _bowOut: HTMLElement | null;
+  declare _bowIn: HTMLElement | null;
+  declare _chargeEl: HTMLElement | null;
+  declare _chargeC: number;
+  declare _zTick: Array<number | null>;
+  declare _zObj: unknown;
+  declare _mitt: HTMLElement[] | null;
+  declare _twin: HTMLElement[] | null;
+  declare _unsubs: Array<() => unknown>;
+  declare _splatted: { el: HTMLDivElement; tint: HTMLDivElement; hint: HTMLDivElement; qkey: string; end: number; num: HTMLElement; last: number; t?: number } | null;
+  declare _lastHitDmg: number;
+  declare _zKO: number | null;
+  declare _deaths: HudDeath[] | null;
+  declare _practice: boolean;
+  declare overLayer: HTMLDivElement;
+  declare zcalls: HTMLDivElement;
+  declare callouts: HTMLDivElement;
+  declare kcards: HTMLDivElement;
+  declare splatLayer: HTMLDivElement;
+  declare countLayer: HTMLDivElement;
+  declare bannerLayer: HTMLDivElement;
+  declare fpsEl: HTMLDivElement;
+  declare promptEl: HTMLDivElement;
+  declare jnote: HTMLDivElement;
+  declare dmLayer: HTMLDivElement;
+  declare dms: { el: HTMLDivElement; name: HTMLElement; on: boolean; id: number; key: string; }[];
+  declare cheerLayer: HTMLDivElement;
+  declare cheerEls: Array<HTMLDivElement & XEl>;
+  declare markerLayer: HTMLDivElement;
+  declare markers: Array<HTMLDivElement & XEl>;
+  declare _mapV: number;
+  declare _mapT: number;
+  declare mapDim: HTMLDivElement;
+  declare map: HTMLDivElement;
+  declare mapLegend: HTMLDivElement;
+  declare legendRows: Array<HTMLDivElement & XEl>;
+  declare mapJumpLine: HTMLDivElement;
+  declare mapCursor: HTMLDivElement;
+  declare beacons: Array<HTMLDivElement & XEl>;
+  declare mapLabel: HTMLDivElement;
+  declare mapFrame: HTMLDivElement;
+  declare mapDms: XEl[];
+  declare mapDots: XEl[];
+  declare mapSlot: HTMLDivElement;
+  declare ddLayer: HTMLDivElement;
+  declare xh: HTMLDivElement;
+  declare denyEl: HTMLDivElement;
+  declare denyIcon: HTMLSpanElement & XEl;
+  declare tpops: HTMLDivElement;
+  declare tank: HTMLDivElement;
+  declare tankCtx: CanvasRenderingContext2D;
+  declare tankCanvas: HTMLCanvasElement;
+  declare poisonVig: HTMLDivElement;
+  declare statusEl: HTMLDivElement;
+  declare subChip: HTMLDivElement;
+  declare shield: HTMLDivElement;
+  declare killEl: HTMLDivElement;
+  declare hitEl: HTMLDivElement;
+  declare ret: HTMLDivElement;
+  declare sbFg: SVGElement;
+  declare subBadge: HTMLDivElement;
+  declare sbIcon: HTMLSpanElement;
+  declare feedEl: HTMLDivElement;
+  declare turfEl: HTMLDivElement;
+  declare turfNum: HTMLElement;
+  declare spPct: HTMLElement;
+  declare spIcon: HTMLElement;
+  declare spLiquid: HTMLElement;
+  declare sp: HTMLDivElement;
+  declare top: HTMLDivElement;
+  declare zo: HTMLDivElement;
+  declare zoOtBar: HTMLElement;
+  declare zoShiftN: HTMLElement;
+  declare zoLabel: HTMLSpanElement;
+  declare zoIcons: HTMLSpanElement;
+  declare zc: ZoneCountEl[];
+  declare timer: HTMLDivElement;
+  declare timerTxt: HTMLSpanElement;
+  declare squads: HTMLDivElement[];
+  declare ctx: CanvasRenderingContext2D;
+  declare canvas: HTMLCanvasElement;
+  declare vig: HTMLDivElement;
+  declare el: HTMLDivElement;
+  declare boss: BossHud;
+  declare _onResize: () => void;
+  declare _rafId: number;
+  declare _lastFx: number;
+  declare _map: { sx?: number; sy?: number; cx: number; cy: number; hover: number; open: boolean; pressed: number; pressT: number };
+  declare _tank: { level: number; slosh: number; sloshV: number; wobble: number; bubbles: Array<{ x: number; y: number; r: number; v: number }>; prevInk: number; prevYaw: number | null; prevVx: number; prevVz: number; empty: number; t: number; };
+  declare _hitT: number;
+  declare _hitN: number;
+  declare _kick: number;
+  declare _bloom: number;
+  declare _kills: { perActor?: Map<Actor, number>; times: number[]; streak: number; first: boolean; lastKiller: Actor | null; dealt: Map<Actor, number> };
+  declare _turfShown: number;
+  declare _turfTotal: number;
+  declare _turfT: number;
+  declare _turfAcc: number;
+  declare _dd: DamageDir[];
+  declare _t: number;
+  declare lab: HudLab | null;
+  declare fx: ScreenFX | null;
+  declare _fxTime: number;
+  declare paused: boolean;
+  declare timeScale: number;
+  declare _visible: boolean;
+  declare _smears: Smear[];
+  declare _L: HudLast;
+  declare id: number;
+  declare playSound: ((name: string, o?: PlayOpts) => unknown) | null;
+  declare root: HTMLElement;
+  declare _jnT: ReturnType<typeof setTimeout> | undefined;
+  constructor(rootEl: HTMLElement, opts: { playSound?: (name: string, o?: PlayOpts) => unknown } = {}) {
     this.root = rootEl || document.body;
     this.playSound = opts.playSound || null;
     this.id = ++HUD_ID;
@@ -150,10 +341,10 @@ export class HUD {
 
     this.vig = h('div', { class: 'iw-hud__vig' });
     this.canvas = h('canvas', { class: 'iw-hud__smear' });
-    this.ctx = this.canvas.getContext('2d');
+    this.ctx = this.canvas.getContext('2d')!;
 
     // ---- top bar: roster + timer
-    const squad = (side) => h('div', { class: `iw-squad iw-squad--${side}` }, Array.from({ length: 4 }, () => {
+    const squad = (side: string) => h('div', { class: `iw-squad iw-squad--${side}` }, Array.from({ length: 4 }, () => {
       const ring = h('i', { class: 'iw-sq__ring', html: '<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="29" pathLength="100"/></svg>' });
       return h('span', { class: 'iw-sq' },
         h('span', { class: 'iw-sq__badge', html: `<svg class="iw-sq__shape" viewBox="0 0 64 64" aria-hidden="true"><path class="o" d="${BADGE_PATH}"/><path class="f" d="${BADGE_PATH}"/><path class="g" d="M17 30 Q20 22 28 19"/></svg>` },
@@ -169,7 +360,7 @@ export class HUD {
     this.timer = h('div', { class: 'iw-timer' }, h('span', { class: 'iw-timer__blob' }), h('span', { class: 'iw-timer__drip' }), this.timerTxt);
     // Zone Control: a count badge per team either side of the timer + the objective chip hanging under it (all hidden
     // unless the frame carries `zones`, so turf / practice lay out exactly as before)
-    const zcounter = (side) => h('div', { class: `iw-zc iw-zc--${side}` },
+    const zcounter = (side: string) => h('div', { class: `iw-zc iw-zc--${side}` },
       h('span', { class: 'iw-zc__plate' }),
       h('span', { class: 'iw-zc__bar' }, h('i', { class: 'iw-zc__fill' }), h('i', { class: 'iw-zc__pen' })),
       h('b', { class: 'iw-zc__num' }, '100'),
@@ -211,9 +402,9 @@ export class HUD {
       h('span', { class: 'iw-sp__icon' }),
       h('span', { class: 'iw-sp__pct' }),
       h('div', { class: 'iw-sp__ready' }, h('span', null, 'READY!'), h('span', { html: keycap('F') })));
-    this.spLiquid = this.sp.querySelector('.iw-sp__liquid');
-    this.spIcon = this.sp.querySelector('.iw-sp__icon');
-    this.spPct = this.sp.querySelector('.iw-sp__pct');
+    this.spLiquid = this.sp.querySelector<HTMLElement>('.iw-sp__liquid')!;
+    this.spIcon = this.sp.querySelector<HTMLElement>('.iw-sp__icon')!;
+    this.spPct = this.sp.querySelector<HTMLElement>('.iw-sp__pct')!;
     this.turfNum = h('b', null, '0');
     this.turfEl = h('div', { class: 'iw-turf' }, h('i', { html: DROP_ICON }), this.turfNum, h('small', null, 'p'));
     this.feedEl = h('div', { class: 'iw-feed' });
@@ -225,7 +416,7 @@ export class HUD {
       h('i', { class: 'iw-sb__ring', html: '<svg viewBox="0 0 100 100" aria-hidden="true"><circle class="bg" cx="50" cy="50" r="44"/><circle class="fg" cx="50" cy="50" r="44" pathLength="100"/><circle class="spin" cx="50" cy="50" r="44" pathLength="100"/></svg>' }),
       this.sbIcon,
       h('i', { class: 'iw-sb__x', html: GLYPHS.close }));
-    this.sbFg = this.subBadge.querySelector('.fg');
+    this.sbFg = this.subBadge.querySelector<SVGElement>('.fg')!;
 
     // ---- crosshair cluster
     this.ret = h('div', { class: 'iw-ret' });
@@ -237,7 +428,7 @@ export class HUD {
     this.statusEl = h('div', { class: 'iw-status' }, h('span', { class: 'iw-status__b is-tracked' }, 'TRACKED'), h('span', { class: 'iw-status__b is-poison' }, 'POISONED'));
     this.poisonVig = h('div', { class: 'iw-poison' });
     this.tankCanvas = h('canvas', { class: 'iw-tank__cv' });
-    this.tankCtx = this.tankCanvas.getContext('2d');
+    this.tankCtx = this.tankCanvas.getContext('2d')!;
     this.tank = h('div', { class: 'iw-tank' }, this.tankCanvas, h('div', { class: 'iw-tank__low' }, 'LOW INK'));
     this.tpops = h('div', { class: 'iw-tpops' });
     // "Can't use": a kit sub refused the throw (sub:cantuse) — a short callout where the sub-aim chip sits
@@ -296,7 +487,7 @@ export class HUD {
     // death markers in the world view: a fixed pool, one per record of frame.deaths
     this.dms = Array.from({ length: 12 }, () => {
       const el = h('div', { class: 'iw-dm' }, h('i', { class: 'iw-dm__icon', html: DEATH_MARK_SVG }), h('span', { class: 'iw-dm__name' }));
-      return { el, name: el.lastChild, on: false, id: 0, key: '' };
+      return { el, name: el.lastChild as HTMLElement, on: false, id: 0, key: '' };
     });
     this.dmLayer = h('div', { class: 'iw-dms' }, this.dms.map((d) => d.el));
     this.jnote = h('div', { class: 'iw-jnote' });
@@ -323,7 +514,7 @@ export class HUD {
   }
 
   // ================================================================ public
-  setVisible(v) {
+  setVisible(v: boolean) {
     v = !!v;
     if (v === this._visible) return;
     this._visible = v;
@@ -332,7 +523,7 @@ export class HUD {
   }
 
   /** Practice sessions: no clock (the timer reads PRACTICE) and no team rosters. */
-  setPractice(on) {
+  setPractice(on: boolean | undefined) {
     on = !!on;
     if (this._practice === on) return;
     this._practice = on;
@@ -343,13 +534,13 @@ export class HUD {
   }
 
   /** ScreenFX takes over the lens-ink damage smears, the low-HP vignette and the splatted desaturation. */
-  attachScreenFX(fx) {
+  attachScreenFX(fx: ScreenFX | null) {
     this.fx = fx || null;
     this.el.classList.toggle('iw-hud--fx', !!fx);
     this.overLayer.classList.toggle('iw-hud--fx', !!fx);
   }
 
-  update(dt, f) {
+  update(dt: number, f: HudFrame | null | undefined) {
     if (!f) return;
     this._t += dt;
     const L = this._L;
@@ -382,10 +573,10 @@ export class HUD {
     this.boss.update(dt);
   }
 
-  banner(kind = 'custom', text) {
+  banner(kind = 'custom', text?: string | null) {
     if (kind === 'timesup' && this.boss.timesUp()) { this.el.classList.remove('is-live'); return; }
     const k = ['ready', 'go', 'one_minute', 'timesup', 'special', 'custom'].includes(kind) ? kind : 'custom';
-    const defaults = { ready: 'READY?', go: 'GO!', one_minute: '1 minute left!', timesup: "TIME'S UP!", special: 'SPECIAL!', custom: '' };
+    const defaults: Record<string, string> = { ready: 'READY?', go: 'GO!', one_minute: '1 minute left!', timesup: "TIME'S UP!", special: 'SPECIAL!', custom: '' };
     let label = text != null && text !== '' ? String(text) : defaults[k];
     // Zone Control decided by a knockout: the time's-up horn reads KNOCKOUT! instead
     const ko = k === 'timesup' && this._zKO != null && performance.now() - this._zKO < 4000;
@@ -421,7 +612,7 @@ export class HUD {
     if (k === 'timesup') this.el.classList.remove('is-live');
   }
 
-  countdown(n) {
+  countdown(n: number | null) {
     if (n == null || n < 0) return;
     this.countLayer.querySelectorAll('.iw-count').forEach((c) => c.classList.add('is-old'));
     const el = h('div', { class: 'iw-count' + (n <= 3 ? ' is-hot' : '') }, h('i', { class: 'iw-count__ring' }), h('span', { class: 'iw-display' }, String(n)));
@@ -446,7 +637,7 @@ export class HUD {
     else { this._restart(this.hitEl, 'is-on'); this._restart(this.ret, 'is-hitflash'); }
   }
 
-  feed({ text = '', color = '#ffffff', kind = 'info' } = {}) {
+  feed({ text = '', color = '#ffffff' as ColorLike, kind = 'info' } = {}) {
     // your own splats get the big kill card (below the crosshair) — don't repeat them as a feed pill
     if (kind === 'kill' && this._live() && !this.lab) return;
     const icon = kind === 'kill' ? SPLAT_ICON : kind === 'death' ? DEATH_ICON : kind === 'ally' ? SQUID : GLYPHS.drop;
@@ -455,26 +646,26 @@ export class HUD {
       h('span', { class: 'iw-feed__text', html: richText(text) }));
     colorVars(el, 'c', toHex(color, '#ffffff'));
     this.feedEl.prepend(el);
-    const items = [...this.feedEl.querySelectorAll('.iw-feed__item:not(.is-out)')];
+    const items = [...this.feedEl.querySelectorAll<XEl>('.iw-feed__item:not(.is-out)')];
     for (let i = 5; i < items.length; i++) this._expireFeed(items[i], true);
-    el._t = setTimeout(() => this._expireFeed(el), 4200);
+    (el as XEl)._t = setTimeout(() => this._expireFeed(el), 4200);
   }
 
   // angle (optional): screen-space direction toward the attacker (0 = right, +clockwise, y down). Without ScreenFX the
   // smears land on that edge; with ScreenFX the lens ink does the smear and the HUD only draws direction arcs.
-  damage(amount = 0.3, color = '#2f5bff', angle = null) {
+  damage(amount = 0.3, color: ColorLike = '#2f5bff', angle: number | null = null) {
     if (this.fx) return;
     amount = clamp(+amount || 0);
     const hex = toHex(color, '#2f5bff');
     const n = 1 + Math.round(amount * 2.2 + Math.random() * 0.8);
     for (let i = 0; i < n; i++) this._spawnSmear(amount, hex, angle);
     while (this._smears.length > 12) this._smears.shift();
-    this._addFx('smear', (dt) => this._tickSmears(dt));
+    this._addFx('smear', (dt: number) => this._tickSmears(dt));
   }
 
   // attacker / cause (optional, from the 'splatted' event): what splatted you — the attacker's main weapon, or the sub /
   // special / sea that did it (splatCause). Without them: the last killer the HUD saw and their main weapon.
-  showSplatted({ by = null, byColor = '#2f5bff', respawn = 5, attacker, cause } = {}) {
+  showSplatted({ by = null, byColor = '#2f5bff', respawn = 5, attacker, cause }: { by?: string | null; byColor?: ColorLike; respawn?: number; attacker?: Actor | null; cause?: string | null } = {}) {
     this.hideSplatted(true);
     const C = 2 * Math.PI * 44;
     const num = h('b', { class: 'iw-spl__num' }, String(Math.ceil(respawn)));
@@ -497,7 +688,7 @@ export class HUD {
       (hint = h('div', { class: 'iw-spl__hint', html: richText('Hold [TAB] to plan a Super Jump') })));
     colorVars(el, 'by', toHex(byColor, '#2f5bff'));
     this.splatLayer.appendChild(el);
-    const st = { el, tint, hint, qkey: '', end: this._fxTime + Math.max(0, respawn), num, last: Math.ceil(respawn) };
+    const st: NonNullable<HUD['_splatted']> = { el, tint, hint, qkey: '', end: this._fxTime + Math.max(0, respawn), num, last: Math.ceil(respawn) };
     this._splatted = st;
     this._addFx('splatted', () => {
       if (this._splatted !== st) return false;
@@ -522,12 +713,12 @@ export class HUD {
     setTimeout(() => { st.el.remove(); st.tint.remove(); }, 380);
   }
 
-  judge(opts = {}) {
+  judge(opts: JudgeOpts = {}) {
     if (opts && opts.mode === 'zones') return this._judgeZones(opts);
     return this._judgeTurf(opts);
   }
 
-  _judgeTurf({ colors = ['#ff8a14', '#2f5bff'], percents = [50, 50], names = TEAM_NAMES } = {}) {
+  _judgeTurf({ colors = ['#ff8a14', '#2f5bff'], percents = [50, 50], names = TEAM_NAMES }: JudgeOpts = {}): Promise<{ winner: number }> {
     return new Promise((resolve) => {
       const [pa, pb] = pct(percents[0], percents[1]);
       const ca = toHex(colors[0], '#ff8a14'), cb = toHex(colors[1], '#2f5bff');
@@ -554,24 +745,24 @@ export class HUD {
       colorVars(el, 'ja', ca); colorVars(el, 'jb', cb);
       colorVars(el, 'jw', winner === 1 ? cb : ca);
       this.overLayer.appendChild(el);
-      const snd = (n) => this._snd(n);
+      const snd = (n: string) => this._snd(n);
 
       let t = 0, drum = false, reveal = false, punched = false, finished = false;
       const t0 = this._fxTime;
       let rollT = 0;
       const R = { a: 0, b: 0 };
-      const fmt = (v) => `${v.toFixed(1)}%`;
+      const fmt = (v: number) => `${v.toFixed(1)}%`;
       let trackW = 0;
-      const setBars = (a, b) => {
+      const setBars = (a: number, b: number) => {
         barA.style.transform = `scaleX(${a.toFixed(4)})`;
         barB.style.transform = `scaleX(${b.toFixed(4)})`;
-        if (!trackW) trackW = barA.parentNode.offsetWidth;
+        if (!trackW) trackW = (barA.parentNode as HTMLElement).offsetWidth;
         edgeA.style.transform = `translateX(${(a * trackW).toFixed(1)}px)`;
         edgeB.style.transform = `translateX(${(-b * trackW).toFixed(1)}px)`;
       };
       setBars(0, 0);
       let revealFrom = { a: 0, b: 0 };
-      this._addFx('judge', (dt) => {
+      this._addFx('judge', (dt: number) => {
         t = this._fxTime - t0;
         if (t < 0.8) return true;
         if (!drum) { drum = true; snd('judge_drumroll'); el.classList.add('is-racing'); }
@@ -621,12 +812,12 @@ export class HUD {
   }
 
   // ================================================================ bus: event-driven systems
-  _snd(name, o) { try { this.playSound && this.playSound(name, o); } catch (e) { /* optional */ } }
+  _snd(name: string, o?: PlayOpts) { try { this.playSound && this.playSound(name, o); } catch (e) { /* optional */ } }
   _live() { if (this.lab) return true; const m = G.match; return !!(m && !m.attract && G.mode === 'match'); }
   _local() { return this.lab ? this.lab.local : G.match?.local || null; }
   _actors() { return this.lab ? this.lab.actors || [] : G.match?.actors || G.actors || []; }
   _now() { return this._fxTime; }
-  _specialId() { const a = this._local(); if (a && a.specialId) return a.specialId; const w = a && WEAPONS[a.weaponId]; return w ? w.special : 'slam'; }
+  _specialId() { const a = this._local(); if (a && a.specialId) return a.specialId; const w = a && WEAPON_CFG[a.weaponId]; return w ? w.special : 'slam'; }
 
   _bindBus() {
     this._unsubs = [
@@ -668,7 +859,7 @@ export class HUD {
     ];
   }
 
-  _startMatchHud(match) {
+  _startMatchHud(match: Match) {
     this._turfAcc = 0; this._turfTotal = 0; this._turfShown = 0; this._turfT = 0;
     this._kills = { times: [], streak: 0, first: false, lastKiller: null, dealt: new Map(), perActor: new Map() };
     this._clearDamageDirs();
@@ -683,7 +874,7 @@ export class HUD {
     this._lineup(match);
   }
 
-  _onSplatted({ victim, attacker }) {
+  _onSplatted({ victim, attacker }: { victim: Actor; attacker?: Actor | null }) {
     if (!this._live() || !victim) return;
     const me = this._local();
     const K = this._kills;
@@ -718,37 +909,37 @@ export class HUD {
       if (call) this._callout(call, sub, multi >= 3 || call === 'WIPEOUT!');
       return;
     }
-    if (me && attacker && attacker.team === me.team && K.dealt.has(victim) && now - K.dealt.get(victim) < 4) {
+    if (me && attacker && attacker.team === me.team && K.dealt.has(victim) && now - K.dealt.get(victim)! < 4) {
       this._killCard(victim, 'assist');
       K.dealt.delete(victim);
     }
   }
 
   // ---------------------------------------------------------------- kill / assist cards + callouts
-  _killCard(victim, kind) {
+  _killCard(victim: Actor, kind: string) {
     const col = toHex(G.teamHex?.[victim.team], kind === 'assist' ? '#ffffff' : (this._L.cb || '#2f5bff'));
-    const card = h('div', { class: `iw-kcard iw-kcard--${kind}` },
+    const card: XEl = h('div', { class: `iw-kcard iw-kcard--${kind}` },
       h('span', { class: 'iw-kcard__splat', html: splatSVG({ seed: 30 + ((Math.random() * 40) | 0), cls: 'iw-fself', r: 56, arms: 9, drops: 4 }) }),
-      h('span', { class: 'iw-kcard__w', html: weaponIcon(kindOf(victim.weaponId)) }),
+      h('span', { class: 'iw-kcard__w', html: weaponIcon(kindOf(victim.weaponId) as string) }),
       h('span', { class: 'iw-kcard__txt' },
         h('small', null, kind === 'assist' ? 'ASSIST' : 'SPLATTED'),
         h('b', null, victim.name || 'Squidkid')));
     colorVars(card, 'v', col);
     this.kcards.prepend(card);
-    const cards = [...this.kcards.children].filter((c) => !c._out);
+    const cards = [...this.kcards.children as HTMLCollectionOf<XEl>].filter((c) => !c._out);
     for (let i = 2; i < cards.length; i++) this._dropCard(cards[i], true);
     card._t = setTimeout(() => this._dropCard(card), kind === 'assist' ? 1700 : 2200);
     this.el.classList.add('has-cards');
     if (kind === 'assist') this._snd('hit_marker', { volume: 0.4, pitch: 1.3 });
   }
-  _dropCard(card, fast) {
+  _dropCard(card: XEl, fast?: boolean) {
     if (card._out) return;
     card._out = true;
     clearTimeout(card._t);
     card.classList.add('is-out');
     setTimeout(() => { card.remove(); if (!this.kcards.children.length) this.el.classList.remove('has-cards'); }, fast ? 200 : 420);
   }
-  _callout(text, sub, big) {
+  _callout(text: string, sub: string | null, big: boolean) {
     this.callouts.querySelectorAll('.iw-call').forEach((c) => c.remove());
     const el = h('div', { class: 'iw-call' + (big ? ' is-big' : '') },
       h('span', { class: 'iw-call__ribbon' }),
@@ -761,19 +952,19 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- intro lineup
-  _lineup(match) {
+  _lineup(match: Match) {
     this.overLayer.querySelectorAll('.iw-lineup').forEach((e) => e.remove());
     const actors = (match && match.actors) || this._actors();
     if (!actors.length) return;
-    const names = (G.game && G.game.palette && G.game.palette.names) || TEAM_NAMES;
-    const col = (t) => toHex(G.teamHex?.[t], t ? '#2f5bff' : '#ff8a14');
-    const side = (t) => {
+    const gp = (G.game as { palette?: { names?: string[] } } | null | undefined)?.palette, names = (G.game && gp && gp.names) || TEAM_NAMES;
+    const col = (t: number) => toHex(G.teamHex?.[t], t ? '#2f5bff' : '#ff8a14');
+    const side = (t: number) => {
       const list = actors.filter((a) => a.team === t);
       const wrap = h('div', { class: `iw-lu__team iw-lu__team--${t ? 'b' : 'a'}` },
-        h('div', { class: 'iw-lu__name iw-display' }, (names[t] || TEAM_NAMES[t] || '').toUpperCase()),
+        h('div', { class: 'iw-lu__name iw-display' }, ((names as readonly string[])[t] || (TEAM_NAMES as readonly string[])[t] || '').toUpperCase()),
         list.map((a, i) => h('div', { class: 'iw-lu__card' + (a.isLocal ? ' is-self' : ''), style: { '--i': i } },
-          h('span', { class: 'iw-lu__w', html: weaponIcon(kindOf(a.weaponId)) }),
-          h('span', { class: 'iw-lu__txt' }, h('b', null, a.name), h('small', null, (WEAPONS[a.weaponId] || {}).name || '')),
+          h('span', { class: 'iw-lu__w', html: weaponIcon(kindOf(a.weaponId) as string) }),
+          h('span', { class: 'iw-lu__txt' }, h('b', null, a.name), h('small', null, (WEAPON_CFG[a.weaponId] || {}).name || '')),
           a.isLocal ? h('em', null, 'YOU') : null)));
       colorVars(wrap, 't', col(t));
       return wrap;
@@ -782,7 +973,7 @@ export class HUD {
       // boss mode: the whole squad (two columns) vs HULLBREAKER
       const squad = side(0);
       squad.classList.add('is-squad');
-      squad.querySelector('.iw-lu__name').textContent = 'YOUR SQUAD';
+      squad.querySelector('.iw-lu__name')!.textContent = 'YOUR SQUAD';
       const foe = h('div', { class: 'iw-lu__team iw-lu__team--b iw-lu__foe' },
         h('div', { class: 'iw-lu__name iw-display' }, BOSS_NAME),
         h('div', { class: 'iw-lu__bosscard' }, h('span', { class: 'iw-lu__bossart', html: bossEmblem() }), h('small', null, BOSS_EPITHET)));
@@ -807,10 +998,10 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- damage direction arcs
-  _addDamageDir(attacker) {
+  _addDamageDir(attacker: Actor) {
     let d = this._dd.find((x) => x.a === attacker);
     if (!d) {
-      if (this._dd.length >= 6) { const old = this._dd.shift(); old.el.remove(); }
+      if (this._dd.length >= 6) { const old = this._dd.shift()!; old.el.remove(); }
       const el = h('div', { class: 'iw-dd', html: `<svg viewBox="-110 -110 220 220" aria-hidden="true"><path class="o" d="${DD_PATH}"/><path class="f" d="${DD_PATH}"/></svg>` });
       colorVars(el, 'c', toHex(G.teamHex?.[attacker.team], this._L.cb || '#2f5bff'));
       this.ddLayer.appendChild(el);
@@ -822,7 +1013,7 @@ export class HUD {
     this._restart(d.el, 'is-hit');
   }
   _clearDamageDirs() { for (const d of this._dd) d.el.remove(); this._dd = []; }
-  _updDamageDirs(dt) {
+  _updDamageDirs(dt: number) {
     if (!this._dd.length) return;
     const cam = G.camera;
     let fx = 0, fz = 1, rx = 1, rz = 0, cx = 0, cz = 0;
@@ -849,7 +1040,7 @@ export class HUD {
   // frame.deaths = main.js's pooled records { on, id, team, name, ally, k (fade 1 → 0), vis, sx, sy, sc, mx, my };
   // record i ↔ pool element i, so nothing is created per frame. World view: a squid-skull in the victim's ink floating
   // over the spot, smaller with distance; teammates' names under theirs for the first moments.
-  _updDeaths(list) {
+  _updDeaths(list: HudDeath[] | null | undefined) {
     const live = this._live();
     for (let i = 0; i < this.dms.length; i++) {
       const e = this.dms[i], d = list && list[i];
@@ -871,7 +1062,7 @@ export class HUD {
     }
   }
   // minimap: the same records, placed in canvas space under the player dots
-  _updMapDeaths(bw, bh) {
+  _updMapDeaths(bw: number, bh: number) {
     const list = this._deaths;
     for (let i = 0; i < this.mapDms.length; i++) {
       const el = this.mapDms[i], d = list && list[i];
@@ -885,12 +1076,12 @@ export class HUD {
       el.style.opacity = d.k.toFixed(2);
     }
   }
-  _teamHex(t) { return toHex(G.teamHex?.[t], t ? (this._L.cb || '#2f5bff') : (this._L.ca || '#ff8a14')); }
+  _teamHex(t: number) { return toHex(G.teamHex?.[t], t ? (this._L.cb || '#2f5bff') : (this._L.ca || '#ff8a14')); }
 
   // ---------------------------------------------------------------- Super Jump planned while splatted
   // The splat screen's line under the card: "Hold TAB to plan a Super Jump" until a target is picked on the TAB map,
   // then "SUPER JUMP → Name — on respawn" (frame.jumpQueue = the player controller's plan, main.js).
-  _updSplatJump(q) {
+  _updSplatJump(q: HudFrame['jumpQueue']) {
     const st = this._splatted;
     if (!st || !st.hint) return;
     const key = q ? `${q.kind}|${q.name}` : '';
@@ -911,7 +1102,7 @@ export class HUD {
   }
 
   /** A short note over the lower screen — e.g. a Super Jump planned while splatted that had to be called off. */
-  jumpNote(text) {
+  jumpNote(text: string) {
     const el = this.jnote;
     el.textContent = '';
     el.append(h('i', { html: SJ_ICON }), h('span', null, String(text || '')));
@@ -928,10 +1119,10 @@ export class HUD {
   // each zone's live ink share (the ticks = the 80 % needed to take it); then the rotation hint or the OVERTIME badge.
   _zMe() { const a = this._local(); return a && (a.team === 0 || a.team === 1) ? a.team : 0; }
   _zLive() { return this._live() && !!(this.lab || (G.match && G.match.zones)); }
-  _zHex(t) { return t === 0 || t === 1 ? toHex(G.teamHex?.[t], t ? '#2f5bff' : '#ff8a14') : '#ffffff'; }
-  _zLabel(id, me) { return id === 'center' ? ZONE_LABEL.center : (id === 'sideA' ? 0 : 1) === me ? ZONE_LABEL.home : ZONE_LABEL.away; }
+  _zHex(t: number) { return t === 0 || t === 1 ? toHex(G.teamHex?.[t], t ? '#2f5bff' : '#ff8a14') : '#ffffff'; }
+  _zLabel(id: string, me: number) { return id === 'center' ? ZONE_LABEL.center : (id === 'sideA' ? 0 : 1) === me ? ZONE_LABEL.home : ZONE_LABEL.away; }
 
-  _updZones(z, dt) {
+  _updZones(z: HudFrame['zones'], dt: number) {
     const L = this._L;
     const on = !!z;
     if (on !== L.zOn) {
@@ -945,17 +1136,17 @@ export class HUD {
     // ---- team counters
     for (let t = 0; t < 2; t++) {
       const el = this.zc[t];
-      if (!el._num) { el._num = el.querySelector('.iw-zc__num'); el._pb = el.querySelector('.iw-zc__pb'); }
+      if (!el._num) { el._num = el.querySelector<HTMLElement>('.iw-zc__num'); el._pb = el.querySelector<HTMLElement>('.iw-zc__pb'); }
       // count (the score) and penalty (apart: not part of the score) as whole numbers, like the judge and results
       const cnt = Math.max(0, Math.ceil((z.count?.[t] ?? 100) - 1e-6));
       const pen = Math.max(0, Math.ceil((z.penalty?.[t] ?? 0) - 1e-6));
       const hold = z.owner === t;
       const key = `${cnt}|${pen}|${hold ? 1 : 0}`, lk = 'zc' + t;
       if (L[lk] === key) continue;
-      const prev = L[lk] ? L[lk].split('|').map(Number) : null;
+      const prev = L[lk] ? (L[lk] as string).split('|').map(Number) : null;
       L[lk] = key;
-      el._num.textContent = String(cnt);
-      if (pen > 0) el._pb.textContent = `+${pen}`;   // (keeps the last value while it fades out)
+      el._num!.textContent = String(cnt);
+      if (pen > 0) el._pb!.textContent = `+${pen}`;   // (keeps the last value while it fades out)
       el.classList.toggle('has-pen', pen > 0);
       el.style.setProperty('--p', clamp((100 - cnt) / 100).toFixed(3));
       el.style.setProperty('--q', clamp(pen / 100).toFixed(3));
@@ -966,7 +1157,7 @@ export class HUD {
       const ptot = prev[0] + prev[1];
       if (pen > prev[1]) this._restart(el, 'is-penalised');
       else if (tot < ptot) {
-        (cnt < prev[0] ? el._num : el._pb).animate([{ transform: 'translateY(-12%) scale(1.14)' }, { transform: 'none' }], { duration: 260, easing: 'cubic-bezier(.34,1.8,.64,1)' });
+        (cnt < prev[0] ? el._num! : el._pb!).animate([{ transform: 'translateY(-12%) scale(1.14)' }, { transform: 'none' }], { duration: 260, easing: 'cubic-bezier(.34,1.8,.64,1)' });
         if (tot <= 10 && tot > 0) this._snd('zone_tick', { volume: t === me ? 0.55 : 0.4, pitch: t === me ? 1.12 : 0.9 });
       }
       if (hold && !prev[2]) this._restart(el, 'is-took');
@@ -984,8 +1175,8 @@ export class HUD {
             h('span', { class: 'iw-zo__sh' }, h('i', { class: 'a' }), h('i', { class: 'b' }), h('em', { class: 'ta' }), h('em', { class: 'tb' }))));
         }
       }
-      zs.forEach((q, i) => {
-        const el = this.zoIcons.children[i];
+      zs.forEach((q, i: number) => {
+        const el = this.zoIcons.children[i] as XEl;
         const col = q.owner === 0 || q.owner === 1 ? this._zHex(q.owner) : ZONE_NEUTRAL;
         if (el._col !== col) { el._col = col; el.style.setProperty('--zc', col); }
         el.style.setProperty('--sa', clamp(q.share?.[0] || 0).toFixed(3));
@@ -1013,13 +1204,13 @@ export class HUD {
       const g = off ? clamp(1 - (z.neutralT || 0) / (ZONES.overtimeGrace || 10)) : 1;
       if (off !== L.zOff) { L.zOff = off; this.zo.classList.toggle('is-otoff', off); }
       if (lose !== L.zLose) { L.zLose = lose; this.zo.style.setProperty('--zl', lose >= 0 ? this._zHex(lose) : '#ffffff'); }
-      if (L.zG == null || Math.abs(g - L.zG) > 0.004) { L.zG = g; this.zoOtBar.firstChild.style.transform = `scaleX(${g.toFixed(3)})`; }
+      if (L.zG == null || Math.abs(g - L.zG) > 0.004) { L.zG = g; (this.zoOtBar.firstChild as HTMLElement).style.transform = `scaleX(${g.toFixed(3)})`; }
     }
     void dt;
   }
 
   // transient zone call-outs (stacked under the kill call-outs; newest on top, at most two)
-  _zCall(text, { team = -1, sub = null, kind = '', small = false } = {}) {
+  _zCall(text: string, { team = -1, sub = null as string | null, kind = '', small = false } = {}) {
     const el = h('div', { class: 'iw-zcall' + (small ? ' is-small' : '') + (kind ? ` is-${kind}` : '') + (team < 0 ? ' is-neutral' : '') },
       h('span', { class: 'iw-zcall__ribbon' }),
       h('span', { class: 'iw-zcall__row' }, h('i', { class: 'iw-zcall__icon', html: ZONE_ICON }), h('span', { class: 'iw-zcall__txt iw-display' }, text)),
@@ -1031,7 +1222,7 @@ export class HUD {
     setTimeout(() => el.remove(), 3200);
     this.zcalls.prepend(el);
   }
-  _zBanner(text) {
+  _zBanner(text: string) {
     this.bannerLayer.querySelectorAll('.iw-bn[data-g="center"]').forEach((b) => b.remove());
     const el = h('div', { class: 'iw-bn iw-bn--timesup iw-bn--ot' },
       h('div', { class: 'iw-bn__splat b', html: splatSVG({ seed: 8, cls: 'iw-fenemy', r: 60, arms: 9, drops: 6 }) }),
@@ -1043,7 +1234,7 @@ export class HUD {
     this.bannerLayer.appendChild(el);
   }
 
-  _zControl({ owner, prev, objective }) {
+  _zControl({ owner, prev, objective }: { owner: number; prev: number; objective: string }) {
     if (!this._zLive()) return;
     if (this._zObj && objective && objective !== this._zObj) return;   // a rotation resets control: ZONE SHIFTED says it
     const me = this._zMe(), them = 1 - me;
@@ -1053,13 +1244,13 @@ export class HUD {
     else if (prev === me) { this._zCall('WE LOST CONTROL!', { team: them, kind: 'bad' }); this._snd('zone_lost'); }
     else if (prev === them) { this._zCall('THEY LOST CONTROL!', { team: me, small: true }); this._snd('zone_broken'); }
   }
-  _zPenalty({ team, penalty }) {
+  _zPenalty({ team, penalty }: { team: number; penalty: number }) {
     if (!this._zLive() || !(penalty > 0) || (team !== 0 && team !== 1)) return;
     const me = this._zMe();
     this._zCall(`PENALTY +${Math.round(penalty)}`, { team, sub: team === me ? 'WE COUNT IT OFF FIRST' : 'THEY COUNT IT OFF FIRST', small: true, kind: 'pen' });
     this._snd('zone_penalty', { volume: team === me ? 0.9 : 0.65, pitch: team === me ? 0.94 : 1.06 });
   }
-  _zActive({ objective, final, moved }) {
+  _zActive({ objective, final, moved }: { objective: string; final?: boolean; moved?: boolean }) {
     if (!this._zLive()) return;
     this._zObj = objective;
     // the last 30 s lock (zones.js): a note, and the shift call-out only if it actually moved the objective
@@ -1069,19 +1260,19 @@ export class HUD {
     if (!final) this._snd('zone_shift');
     this._restart(this.zo, 'is-moved');
   }
-  _zOvertime() {
+  _zOvertime(_e?: unknown) {
     if (!this._zLive()) return;
     this._zBanner('OVERTIME!');
     this._snd('zone_overtime');
     G.music?.setOvertime?.(true);
   }
-  _zEnd({ reason }) {
+  _zEnd({ reason }: { reason?: string | null }) {
     G.music?.setOvertime?.(false);
     if (reason === 'knockout' && this._zLive()) this._zKO = performance.now();
   }
-  _zZone({ zone, owner }) {
+  _zZone({ zone, owner }: { zone: Zone; owner: number }) {
     if (!this._zLive() || !zone || !G.match?.zones) return;
-    const zs = G.match.zones.active.zones, i = zs.indexOf(zone);
+    const zs = G.match!.zones!.active.zones, i = zs.indexOf(zone);
     const el = i >= 0 ? this.zoIcons.children[i] : null;
     if (el) this._restart(el, 'is-flip');
     // two-zone centres: each half changing hands gets a soft tick (the objective's own cue plays when it's complete)
@@ -1093,14 +1284,14 @@ export class HUD {
   //   { mode: 'zones', colors, names, counts: [a, b], penalty: [a, b], winner, reason, overtime }
   //   counts are the scores (ZoneControl.state().count / match.result.counts); penalty is what each team still had to
   //   count off, shown apart (a hatched block ahead of the bar) — it isn't part of the score
-  _judgeZones({ colors = ['#ff8a14', '#2f5bff'], names = TEAM_NAMES, counts = [100, 100], penalty = [0, 0], winner = null, reason = null, overtime = false } = {}) {
+  _judgeZones({ colors = ['#ff8a14', '#2f5bff'], names = TEAM_NAMES, counts = [100, 100], penalty = [0, 0], winner = null, reason = null, overtime = false }: JudgeOpts = {}): Promise<{ winner: number }> {
     return new Promise((resolve) => {
       const ca = toHex(colors[0], '#ff8a14'), cb = toHex(colors[1], '#2f5bff');
-      const whole = (v, d) => Math.max(0, Math.ceil((Number.isFinite(+v) ? +v : d) - 1e-6));
+      const whole = (v: number, d: number) => Math.max(0, Math.ceil((Number.isFinite(+v) ? +v : d) - 1e-6));
       const cnt = [0, 1].map((t) => whole(counts?.[t], 100)), pen = [0, 1].map((t) => whole(penalty?.[t], 0));
       const win = winner === 0 || winner === 1 ? winner : cnt[0] === cnt[1] ? -1 : cnt[0] < cnt[1] ? 0 : 1;
       const ko = reason === 'knockout';
-      const side = (t) => {
+      const side = (t: number) => {
         const num = h('b', { class: 'iw-jz__num' }, '100');
         const fill = h('i', { class: 'iw-jz__fill' }), penBar = h('i', { class: 'iw-jz__penbar' });
         const el = h('div', { class: `iw-jz__team ${t ? 'b' : 'a'}` },
@@ -1111,7 +1302,7 @@ export class HUD {
         return { el, num, fill, penBar };
       };
       const A = side(0), B = side(1);
-      const sub = ko ? '' : ({ comeback: 'OVERTIME COMEBACK!', retake: 'RETAKEN IN OVERTIME', neutralised: 'HELD ON THROUGH OVERTIME', 'overtime-cap': 'OVERTIME LIMIT' }[reason] || (overtime ? 'OVERTIME' : ''));
+      const sub = ko ? '' : ((<Record<string, string | undefined>>{ comeback: 'OVERTIME COMEBACK!', retake: 'RETAKEN IN OVERTIME', neutralised: 'HELD ON THROUGH OVERTIME', 'overtime-cap': 'OVERTIME LIMIT' })[reason as string] || (overtime ? 'OVERTIME' : ''));
       const wText = win < 0 ? "IT'S A TIE!" : `${(names[win] || TEAM_NAMES[win] || '').toUpperCase()} WINS!`;
       const el = h('div', { class: 'iw-jd iw-jz' + (ko ? ' is-ko' : '') },
         h('div', { class: 'iw-jd__bg' }),
@@ -1130,7 +1321,7 @@ export class HUD {
       const t0 = this._fxTime;
       const shown = [100, 100];
       let tickT = 0, revealed = false, finished = false;
-      const put = (S, t, k) => {
+      const put = (S: ReturnType<typeof side>, t: number, k: number) => {
         const c = Math.round(lerp(100, cnt[t], k));
         if (c !== shown[t]) { shown[t] = c; S.num.textContent = String(c); }
         const p = clamp((100 - lerp(100, cnt[t], k)) / 100), q = Math.min(1 - p, clamp(pen[t] / 100) * k);
@@ -1139,7 +1330,7 @@ export class HUD {
         S.penBar.style[t ? 'right' : 'left'] = `${(p * 100).toFixed(2)}%`;
       };
       put(A, 0, 0); put(B, 1, 0);
-      this._addFx('judgez', (dt) => {
+      this._addFx('judgez', (dt: number) => {
         const t = this._fxTime - t0;
         const k = easeOutCubic(clamp((t - 0.75) / 1.2));
         put(A, 0, k); put(B, 1, k);
@@ -1163,7 +1354,7 @@ export class HUD {
   }
 
   // ================================================================ per-frame pieces
-  _updTimer(time) {
+  _updTimer(time: number | null | undefined) {
     if (time == null) return;
     const L = this._L;
     const txt = fmtTime(time);
@@ -1178,7 +1369,7 @@ export class HUD {
     if (last !== L.lastMin) { L.lastMin = last; this.timer.classList.toggle('is-last', last); }
   }
 
-  _updCheers(list) {
+  _updCheers(list: HudFrame['cheers']) {
     const els = this.cheerEls;
     for (let i = 0; i < els.length; i++) {
       const c = list && list[i], el = els[i];
@@ -1192,7 +1383,7 @@ export class HUD {
   }
 
   // world → NDC without three.js (camera matrices are plain arrays); used by the boss HUD's markers (hud-boss.js)
-  _project(cam, x, y, z) {
+  _project(cam: PerspectiveCamera, x: number, y: number, z: number) {
     const v = cam.matrixWorldInverse.elements, p = cam.projectionMatrix.elements;
     const ex = v[0] * x + v[4] * y + v[8] * z + v[12], ey = v[1] * x + v[5] * y + v[9] * z + v[13], ez = v[2] * x + v[6] * y + v[10] * z + v[14];
     const cx = p[0] * ex + p[4] * ey + p[8] * ez + p[12], cy = p[1] * ex + p[5] * ey + p[9] * ez + p[13], cz = p[2] * ex + p[6] * ey + p[10] * ez + p[14], cw = p[3] * ex + p[7] * ey + p[11] * ez + p[15];
@@ -1202,17 +1393,17 @@ export class HUD {
 
   // online you can be on Bravo: the HUD is drawn from your side (your squad left, your colour as "self")
   _myTeam() { return G.local && G.local.team === 1 ? 1 : 0; }
-  _actorFor(side, i) {
+  _actorFor(side: number, i: number) {
     const team = side ^ this._myTeam();
     const list = this._actors().filter((a) => a.team === team);
     return list[i] || null;
   }
 
-  _updSquads(teams) {
+  _updSquads(teams: Array<{ color?: unknown; players?: HudPlayer[] }>) {
     const L = this._L;
     for (let t = 0; t < 2; t++) {
       const ps = (teams[t] && teams[t].players) || [];
-      const icons = this.squads[t].children;
+      const icons = this.squads[t].children as HTMLCollectionOf<XEl>;
       for (let i = 0; i < 4; i++) {
         const p = ps[i];
         const el = icons[i];
@@ -1224,16 +1415,16 @@ export class HUD {
         const prev = L[k];
         L[k] = key;
         el.classList.remove('is-empty');
-        if (el._w !== w) { el._w = w; el.querySelector('.iw-sq__w').innerHTML = weaponIcon(kindOf(w)); }
-        const wasAlive = prev && prev !== 'none' ? prev[0] === '1' : true;
-        const wasReady = prev && prev !== 'none' ? prev.split('|')[2] === '1' : false;
+        if (el._w !== w) { el._w = w; el.querySelector('.iw-sq__w')!.innerHTML = weaponIcon(kindOf(w) as string); }
+        const wasAlive = prev && prev !== 'none' ? (prev as string)[0] === '1' : true;
+        const wasReady = prev && prev !== 'none' ? (prev as string).split('|')[2] === '1' : false;
         el.classList.toggle('is-dead', !p.alive);
         el.classList.toggle('is-ready', !!p.specialReady && !!p.alive);
         el.classList.toggle('is-self', !!p.isSelf);
-        el.querySelector('.iw-sq__n').textContent = p.alive ? '' : String(Math.max(0, Math.ceil(p.respawn || 0)) || '');
+        el.querySelector('.iw-sq__n')!.textContent = p.alive ? '' : String(Math.max(0, Math.ceil(p.respawn || 0)) || '');
         if (wasAlive && !p.alive) {
           el.animate([{ transform: 'scale(1.4) rotate(-14deg)' }, { transform: 'scale(.92) rotate(4deg)', offset: 0.5 }, { transform: 'scale(1)' }], { duration: 420, easing: 'cubic-bezier(.34,1.6,.64,1)' });
-          const ring = el.querySelector('.iw-sq__ring circle');
+          const ring = el.querySelector<SVGElement>('.iw-sq__ring circle')!;
           ring.style.animationDuration = `${Math.max(0.2, p.respawn || PLAYER.respawnTime)}s`;
           this._restart(el, 'is-dying');
         } else if (!wasAlive && p.alive) {
@@ -1245,7 +1436,7 @@ export class HUD {
     }
   }
 
-  _buildReticle(kind) {
+  _buildReticle(kind: string) {
     const r = this.ret;
     r.className = `iw-ret iw-ret--${kind}`;
     if (kind === 'charger') {
@@ -1269,7 +1460,7 @@ export class HUD {
         <circle cx="-10.5" r="6.2" class="iw-ret__ring thin iw-ret__twin l"/><circle cx="10.5" r="6.2" class="iw-ret__ring thin iw-ret__twin r"/>
         <path class="iw-ret__lock" d="M0 -19 L19 0 L0 19 L-19 0 Z"/></svg>
         <i class="iw-ret__tick" style="--a:0deg"></i><i class="iw-ret__tick" style="--a:90deg"></i><i class="iw-ret__tick" style="--a:180deg"></i><i class="iw-ret__tick" style="--a:270deg"></i>`;
-      this._twin = [r.querySelector('.iw-ret__twin.r'), r.querySelector('.iw-ret__twin.l')];
+      this._twin = [r.querySelector<HTMLElement>('.iw-ret__twin.r')!, r.querySelector<HTMLElement>('.iw-ret__twin.l')!];
     } else if (kind === 'slosher') {
       // the lob: an arch over the aim point and a landing "bucket" bracket under it
       r.innerHTML = `<i class="iw-ret__dot"></i><svg class="iw-ret__svg" viewBox="-40 -40 80 80" aria-hidden="true">
@@ -1300,8 +1491,8 @@ export class HUD {
         <circle r="27" class="iw-ret__mtrack" pathLength="100" style="stroke-dasharray:50 100"/>
         <circle r="27" class="iw-ret__mc" pathLength="100" transform="rotate(90)" style="stroke-dasharray:0 100"/>
         <circle r="27" class="iw-ret__mc" pathLength="100" transform="scale(-1 1) rotate(90)" style="stroke-dasharray:0 100"/></svg>`;
-      this._mitt = [r.querySelector('.iw-ret__mitt.r'), r.querySelector('.iw-ret__mitt.l')];
-      this._mittC = [...r.querySelectorAll('.iw-ret__mc')]; this._mittS = {};
+      this._mitt = [r.querySelector<HTMLElement>('.iw-ret__mitt.r')!, r.querySelector<HTMLElement>('.iw-ret__mitt.l')!];
+      this._mittC = [...r.querySelectorAll<HTMLElement>('.iw-ret__mc')]; this._mittS = {};
     } else if (kind === 'brolly') {
       // Canopy Brolly (kits/brolly.js): four ticks on the pellet cone, and a canopy dome under the dot — its hp (the
       // regrowth while it's broken / launched); held open, the arc above it fills toward the launch
@@ -1315,7 +1506,7 @@ export class HUD {
       this._brolly = { hp: r.querySelector('.iw-ret__brh'), ln: r.querySelector('.iw-ret__brl'), ticks: r.querySelectorAll('.iw-ret__tick') };
     } else if (kind === 'twins') {
       // one full reticle per gun; they slide together into one while planted in rapid mode after a dodge roll
-      const one = (side) => `<div class="iw-ret__gun ${side}"><i class="iw-ret__dot"></i><svg class="iw-ret__svg" viewBox="-40 -40 80 80" aria-hidden="true"><circle r="12" class="iw-ret__ring thin"/></svg>
+      const one = (side: string) => `<div class="iw-ret__gun ${side}"><i class="iw-ret__dot"></i><svg class="iw-ret__svg" viewBox="-40 -40 80 80" aria-hidden="true"><circle r="12" class="iw-ret__ring thin"/></svg>
         <i class="iw-ret__tick" style="--a:0deg"></i><i class="iw-ret__tick" style="--a:90deg"></i><i class="iw-ret__tick" style="--a:180deg"></i><i class="iw-ret__tick" style="--a:270deg"></i></div>`;
       r.innerHTML = one('l') + one('r');
     } else if (kind === 'blade') {
@@ -1335,19 +1526,19 @@ export class HUD {
     this._L.planted = null; this._L.lock = null; this._L.roll = null; this._L.streaming = null; this._L.bk = null; this._L.charging = null;
   }
 
-  _updCrosshair(f, dt) {
+  _updCrosshair(f: HudFrame, dt: number) {
     const L = this._L;
     const w = f.weapon || 'shooter';
     if (w !== L.weapon) {
       L.weapon = w;
-      const W = WEAPONS[w];
+      const W = WEAPON_CFG[w];
       const kind = RETICLE_OF[(W && W.kind) || w] || (W && W.kind) || w;
       this._buildReticle(kind);
       L.kind = kind;
       this.xh.className = `iw-xh iw-xh--${kind}` + (L.tgt ? ' is-target' : '') + (L.far ? ' is-far' : '');
     }
     // the special gauge shows the equipped special (picked in the loadout, can change mid-practice)
-    const sid = f.specialId || (WEAPONS[w] && WEAPONS[w].special) || 'slam';
+    const sid = f.specialId || (WEAPON_CFG[w] && WEAPON_CFG[w].special) || 'slam';
     if (sid !== L.specialId) { L.specialId = sid; this.spIcon.innerHTML = specialIcon(sid); }
     // per-shot kick (recoil events) on top of the live cone the engine reports in screen px (already includes bloom)
     this._bloom = Math.max(0, this._bloom - dt * 5);
@@ -1355,7 +1546,7 @@ export class HUD {
     const ch = f.crosshair || {};
     if (L.kind === 'shooter' || L.kind === 'blaster' || L.kind === 'twins' || L.kind === 'dualies' || L.kind === 'splatling') {
       const kk = L.kind === 'blaster' ? 0 : this._kick * this._kick * (L.kind === 'splatling' ? 4 : 7);
-      const sp = clamp((+ch.spread || 0) + this._bloom * (L.kind === 'blaster' ? 5 : 2.5) + kk, 0, 90);
+      const sp = clamp((+ch.spread! || 0) + this._bloom * (L.kind === 'blaster' ? 5 : 2.5) + kk, 0, 90);
       if (L.spread == null || Math.abs(sp - L.spread) > 0.25) { L.spread = sp; this.ret.style.setProperty('--sp', sp.toFixed(1)); }
     } else {
       const b = this._bloom;
@@ -1368,10 +1559,10 @@ export class HUD {
     const far = ch.inRange === false && !tgt;
     if (far !== L.far) { L.far = far; this.xh.classList.toggle('is-far', far); }
     if (L.kind === 'charger' || L.kind === 'blade') {   // (blade: the charged cut's arc meter)
-      const c = clamp(+f.charge || 0);
+      const c = clamp(+f.charge! || 0);
       if (L.charge == null || Math.abs(c - L.charge) > 0.004) {
         L.charge = c;
-        this._chargeEl.style.strokeDashoffset = (this._chargeC * (1 - c)).toFixed(2);
+        this._chargeEl!.style.strokeDashoffset = (this._chargeC * (1 - c)).toFixed(2);
         this.ret.style.setProperty('--ch', c.toFixed(3));
       }
       const full = c >= 0.999;
@@ -1382,8 +1573,8 @@ export class HUD {
       // splatling meter: fills while spinning up, drains while the stream runs (the spinner's stream = its burst)
       const la = this._local(), lr = la?.weaponRunner, spin = la?.weapon?.kind === 'spinner';
       const streaming = !!(lr && (spin ? lr.burstT > 0 : lr.streaming));
-      const c = spin && streaming ? clamp(lr.burstT / Math.max(0.01, lr.burstDur || 1)) : clamp(+f.charge || 0);
-      if (L.charge == null || Math.abs(c - L.charge) > 0.004) { L.charge = c; this._chargeEl.style.strokeDashoffset = (100 * (1 - c)).toFixed(2); this.ret.style.setProperty('--ch', c.toFixed(3)); }
+      const c = spin && streaming ? clamp(lr.burstT / Math.max(0.01, lr.burstDur || 1)) : clamp(+f.charge! || 0);
+      if (L.charge == null || Math.abs(c - L.charge) > 0.004) { L.charge = c; this._chargeEl!.style.strokeDashoffset = (100 * (1 - c)).toFixed(2); this.ret.style.setProperty('--ch', c.toFixed(3)); }
       if (streaming !== L.streaming) { L.streaming = streaming; this.ret.classList.toggle('is-streaming', streaming); }
       const full = !streaming && c >= 0.999;
       if (full !== L.full) { L.full = full; this.ret.classList.toggle('is-full', full); if (full) this._restart(this.ret, 'is-flash'); }
@@ -1397,11 +1588,11 @@ export class HUD {
     if (L.kind === 'bow') {
       // the rings fill with the draw (ring 1 / full flash the reticle); the fan pips tighten with the charge and turn
       // upright while airborne (the volley fans vertically in the air)
-      const c = clamp(+f.charge || 0), r1 = WEAPONS.bow?.ring1 ?? 0.45;
+      const c = clamp(+f.charge! || 0), r1 = WEAPON_CFG.bow?.ring1 ?? 0.45;
       if (L.charge == null || Math.abs(c - L.charge) > 0.004) {
         L.charge = c;
-        this._bowIn.style.strokeDashoffset = (100 * (1 - clamp(c / r1))).toFixed(2);
-        this._bowOut.style.strokeDashoffset = (100 * (1 - clamp((c - r1) / (1 - r1)))).toFixed(2);
+        this._bowIn!.style.strokeDashoffset = (100 * (1 - clamp(c / r1))).toFixed(2);
+        this._bowOut!.style.strokeDashoffset = (100 * (1 - clamp((c - r1) / (1 - r1)))).toFixed(2);
         this.ret.style.setProperty('--fan', (9 - 3 * c).toFixed(2));
       }
       const ring = c >= 0.999 ? 2 : c >= r1 ? 1 : 0;
@@ -1419,27 +1610,27 @@ export class HUD {
     if (L.kind === 'brolly' && this._brolly) {
       // Canopy Brolly: ticks on the pellet cone (flatter than wide); the dome = canopy hp, or its regrowth while gone
       // (dim); open, it turns your ink and the arc over it fills toward the launch (off the local runner's kit)
-      const B = this._brolly, sp = clamp((+ch.spread || 0) + this._kick * this._kick * 6, 0, 90);
+      const B = this._brolly, sp = clamp((+ch.spread! || 0) + this._kick * this._kick * 6, 0, 90);
       if (L.spread == null || Math.abs(sp - L.spread) > 0.25) {
         L.spread = sp;
-        B.ticks.forEach((t, i) => t.style.setProperty('--sp', (sp * (i % 2 ? 0.9 : 0.66)).toFixed(1)));
+        B.ticks.forEach((t, i: number) => t.style.setProperty('--sp', (sp * (i % 2 ? 0.9 : 0.66)).toFixed(1)));
       }
-      const K = this._local()?.weaponRunner?.kit;
+      const K = this._local()?.weaponRunner?.kit as BrollyKitView | null | undefined;
       if (K && K.brolly) {
         const up = K.state === 'ready', v = up ? K.hp / K.hpMax : K.regrowK || 0, open = up && K.open > 0.5, lk = open ? K.launchK || 0 : 0;
-        if (L.brH == null || Math.abs(v - L.brH) > 0.004) { L.brH = v; B.hp.style.strokeDashoffset = (100 * (1 - v)).toFixed(1); }
-        if (L.brL == null || Math.abs(lk - L.brL) > 0.004) { L.brL = lk; B.ln.style.strokeDashoffset = (100 * (1 - lk)).toFixed(1); }
+        if (L.brH == null || Math.abs(v - L.brH) > 0.004) { L.brH = v; B.hp!.style.strokeDashoffset = (100 * (1 - v)).toFixed(1); }
+        if (L.brL == null || Math.abs(lk - L.brL) > 0.004) { L.brL = lk; B.ln!.style.strokeDashoffset = (100 * (1 - lk)).toFixed(1); }
         const s = !up ? 'down' : open ? 'open' : v < 0.34 ? 'low' : 'up';
         if (s !== L.brS) {
           L.brS = s;
-          B.hp.style.opacity = s === 'down' ? '.4' : '1';
-          B.hp.style.stroke = s === 'open' ? 'var(--self-light)' : s === 'low' ? '#ff5a4a' : '';
+          B.hp!.style.opacity = s === 'down' ? '.4' : '1';
+          B.hp!.style.stroke = s === 'open' ? 'var(--self-light)' : s === 'low' ? '#ff5a4a' : '';
         }
       }
     }
     if (L.kind === 'mitts') {
       // Sponge Mitts: leap-charge meter, stuck-to-a-wall tint, mid-leap fade (off the local runner's kit state)
-      const la = this._local(), K = la?.weaponRunner?.kit?.mitts ? la.weaponRunner.kit : null, S = this._mittS || (this._mittS = {});
+      const la = this._local(), lk = la?.weaponRunner?.kit as MittsKitView | null | undefined, K = lk?.mitts ? lk : null, S = this._mittS || (this._mittS = {});
       const charging = !!(K && K.charging), c = charging ? clamp(K.charge) : 0;
       if (S.c == null || Math.abs(c - S.c) > 0.004) { S.c = c; const d = `${(c * 25).toFixed(2)} 100`; for (const el of this._mittC || []) el.style.strokeDasharray = d; }
       if (charging !== S.ch) { S.ch = charging; this.ret.classList.toggle('is-charging', charging); }
@@ -1456,8 +1647,8 @@ export class HUD {
     const subKey = f.subKind + '|' + (f.subCost ?? 0.7);
     if (f.subKind && subKey !== L.subKey) {
       L.subKey = subKey;
-      this.subChip.firstChild.innerHTML = SUB_ICONS[f.subKind] || SUB_ICONS.bomb;
-      this.subChip.lastChild.textContent = f.subCost === 0 ? 'FREE' : `${Math.round((f.subCost ?? 0.7) * 100)}%`;
+      (this.subChip.firstChild as HTMLElement).innerHTML = SUB_ICONS[f.subKind!] || SUB_ICONS.bomb;
+      this.subChip.lastChild!.textContent = f.subCost === 0 ? 'FREE' : `${Math.round((f.subCost ?? 0.7) * 100)}%`;
     }
     const tr = !!f.tracked, po = !!f.poisoned;
     if (tr !== L.stTr) { L.stTr = tr; this.statusEl.classList.toggle('show-tracked', tr); }
@@ -1473,10 +1664,10 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- ink tank (canvas, sloshing liquid)
-  _updTank(f, dt) {
+  _updTank(f: HudFrame, dt: number) {
     const L = this._L, T = this._tank;
-    const ink = clamp(f.ink == null ? 1 : +f.ink);
-    const sub = clamp(+f.subCost || 0);
+    const ink = clamp(f.ink == null ? 1 : +f.ink!);
+    const sub = clamp(+f.subCost! || 0);
     const low = !!f.inkLow;
     const nosub = sub > 0 && ink < sub;
     if (low !== L.low) { L.low = low; this.tank.classList.toggle('is-low', low); }
@@ -1512,7 +1703,7 @@ export class HUD {
     this._drawTank(dt, sub, low, nosub);
   }
 
-  _drawTank(dt, sub, low, nosub) {
+  _drawTank(dt: number, sub: number, low: boolean, nosub: boolean) {
     const T = this._tank, c = this.tankCtx, cv = this.tankCanvas;
     const dpr = Math.min(2, devicePixelRatio || 1);
     const cw = cv.clientWidth || 18, chh = cv.clientHeight || 74;
@@ -1530,7 +1721,7 @@ export class HUD {
       T2.g = c.createLinearGradient(pad, 0, pad + bw, 0);
       T2.g.addColorStop(0, cDark); T2.g.addColorStop(0.45, cMid); T2.g.addColorStop(1, cLight);
     }
-    const body = T2.body;
+    const body = T2.body!;   // (위에서 만든다)
     // glass back
     c.fillStyle = 'rgba(14,11,22,.62)';
     c.fill(body);
@@ -1550,7 +1741,7 @@ export class HUD {
     }
     c.lineTo(pad + bw + 2, H + 2);
     c.closePath();
-    c.fillStyle = T2.g;
+    c.fillStyle = T2.g!;
     c.fill();
     // depth shading toward the bottom
     const g2 = c.createLinearGradient(0, lvl, 0, H);
@@ -1583,9 +1774,9 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- special gauge
-  _updSpecial(f, dt) {
+  _updSpecial(f: HudFrame, dt: number) {
     const L = this._L;
-    const s = clamp(+f.special || 0);
+    const s = clamp(+f.special! || 0);
     if (L.special == null || Math.abs(s - L.special) > 0.002) {
       if (L.special != null && s > L.special + 0.035 && s < 0.999) {
         this.sp.animate([{ scale: '1.08' }, { scale: '1' }], { duration: 260, easing: 'cubic-bezier(.34,1.8,.64,1)' });
@@ -1612,7 +1803,7 @@ export class HUD {
 
   // ---------------------------------------------------------------- sub badge (on the special orb) + "Can't use"
   // frame.subKind (Bomb Barrage: its bomb), frame.subCost (0..1 of the tank; 0 = free during a barrage), frame.ink
-  _updSubBadge(f) {
+  _updSubBadge(f: HudFrame) {
     const L = this._L, B = this.subBadge;
     const kind = f.subKind || 'bomb';
     if (kind !== L.sbKind) {
@@ -1622,9 +1813,9 @@ export class HUD {
       B.dataset.kind = kind;
       if (!first) this._restart(B, 'is-swap');
     }
-    const cost = f.subCost == null ? 0.7 : Math.max(0, +f.subCost || 0);
+    const cost = f.subCost == null ? 0.7 : Math.max(0, +f.subCost! || 0);
     const free = cost <= 0;
-    const ink = clamp(f.ink == null ? 1 : +f.ink);
+    const ink = clamp(f.ink == null ? 1 : +f.ink!);
     const fr = free ? 1 : clamp(ink / cost);
     if (L.sbFr == null || Math.abs(fr - L.sbFr) > 0.004) { L.sbFr = fr; this.sbFg.style.strokeDashoffset = (100 * (1 - fr)).toFixed(2); }
     const ok = free || ink >= cost - 1e-3;
@@ -1641,11 +1832,11 @@ export class HUD {
 
   // a sub refused the throw (sub:cantuse — e.g. a Torpedo or Boomerang already out): a callout where the aim chip was,
   // the badge shakes, a soft deny bonk
-  _cantUse(kind) {
+  _cantUse(kind: string) {
     const now = performance.now();
     if (now - (this._denyT || -1e9) < 140) return;
     this._denyT = now;
-    const icon = SUB_ICONS[kind] || SUB_ICONS[(SUB[kind] || {}).kind] || SUB_ICONS.bomb;
+    const icon = SUB_ICONS[kind] || SUB_ICONS[(SUB_CFG[kind] || {}).kind as string] || SUB_ICONS.bomb;
     if (this.denyIcon._k !== kind) { this.denyIcon._k = kind; this.denyIcon.innerHTML = icon; }
     this._restart(this.denyEl, 'is-on');
     this._restart(this.subBadge, 'is-deny');
@@ -1653,7 +1844,7 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- turf ticker
-  _updTurf(dt) {
+  _updTurf(dt: number) {
     this._turfT += dt;
     if (this._turfAcc > 0 && (this._turfT > 0.4 || this._turfAcc > 40)) {
       const n = Math.round(this._turfAcc);
@@ -1670,7 +1861,7 @@ export class HUD {
       this._L.turfTxt = txt; this.turfNum.textContent = txt;
     }
   }
-  _turfPop(n) {
+  _turfPop(n: number) {
     const pops = this.tpops.children;
     if (pops.length >= 4) pops[0].remove();
     const big = n >= 25;
@@ -1680,7 +1871,7 @@ export class HUD {
     this._restart(this.turfEl, 'is-tick');
   }
 
-  _updHp(hp) {
+  _updHp(hp: number | null | undefined) {
     const L = this._L;
     const v = clamp(hp == null ? 1 : +hp);
     const o = this.fx ? 0 : clamp((0.42 - v) / 0.32);
@@ -1690,7 +1881,7 @@ export class HUD {
   }
 
   // ---------------------------------------------------------------- minimap + super jump
-  _updMap(m, dt) {
+  _updMap(m: HudFrame['map'], dt: number) {
     const L = this._L, M = this._map;
     const show = !!(m && m.canvas);
     if (show !== L.mapShow) { L.mapShow = show; this.map.style.display = show ? '' : 'none'; if (!show) { this.mapDim.classList.remove('is-on'); M.open = false; } }
@@ -1707,8 +1898,8 @@ export class HUD {
     if (strike !== L.mapStrike) {
       L.mapStrike = strike;
       this.map.classList.toggle('is-strike', strike);
-      this.mapLegend.querySelector('.iw-lg__title').textContent = strike ? 'VORTEX STRIKE' : 'SUPER JUMP';
-      this.mapLegend.querySelector('.iw-lg__sub').textContent = strike ? 'Move the mouse to aim · click to launch' : 'Pick a landing spot';
+      this.mapLegend.querySelector('.iw-lg__title')!.textContent = strike ? 'VORTEX STRIKE' : 'SUPER JUMP';
+      this.mapLegend.querySelector('.iw-lg__sub')!.textContent = strike ? 'Move the mouse to aim · click to launch' : 'Pick a landing spot';
     }
     // the big map only opens during live play (the controller's TAB state can stay latched through time's up)
     const target = m.expanded && (this.lab || !G.match || G.match.state === 'playing') ? 1 : 0;
@@ -1728,7 +1919,7 @@ export class HUD {
     const W = innerWidth, H = innerHeight;
     const u = Math.min(W / 100, (H * 1.7778) / 100);
     const asp = (m.canvas.width || 1) / (m.canvas.height || 1);
-    const fit = (sz) => (asp >= 1 ? [sz, sz / asp] : [sz * asp, sz]);
+    const fit = (sz: number) => (asp >= 1 ? [sz, sz / asp] : [sz * asp, sz]);
     const [w0, h0] = fit(14.5 * u), [w1, h1] = fit(Math.min(H * 0.78, W * 0.6));
     const t = this._mapT;
     const bw = lerp(w0, w1, t), bh = lerp(h0, h1, t);
@@ -1769,13 +1960,13 @@ export class HUD {
   }
 
   // beacon targets: allies in actor order (same numbering as the player controller), then the base spawn pad
-  _beaconTargets() {
+  _beaconTargets(): Array<BeaconTarget | null> {
     const me = this._local();
-    const out = new Array(NB).fill(null);
+    const out: Array<BeaconTarget | null> = new Array(NB).fill(null);
     if (this.lab && this.lab.beacons) return this.lab.beacons;
     if (!me) return out;
     const allies = (G.actors || []).filter((o) => o.team === me.team && o !== me);
-    const mm = G.game && G.game.minimap;
+    const mm = (G.game && (G.game as { minimap?: Minimap }).minimap) as Minimap | null | undefined;
     const tc = { x: 0, y: 0 };
     for (let i = 0; i < 3; i++) {
       const o = allies[i];
@@ -1788,13 +1979,13 @@ export class HUD {
     // team jump beacons (oldest first — the same order the number keys use)
     const bs = G.subs && mm ? G.subs.beaconsFor(me.team).sort((x, y) => x.born - y.born).slice(0, NB - 4) : [];
     bs.forEach((b, k) => {
-      mm.toCanvas(b.pos.x, b.pos.z, tc);
-      out[4 + k] = { x: tc.x / mm.w, y: tc.y / mm.h, name: `${b.owner === me ? 'Your' : b.owner.name + "'s"} beacon · ${b.uses}`, ok: true, dev: true, beacon: b };
+      mm!.toCanvas(b.pos.x, b.pos.z, tc);
+      out[4 + k] = { x: tc.x / mm!.w, y: tc.y / mm!.h, name: `${b.owner === me ? 'Your' : b.owner!.name + "'s"} beacon · ${b.uses}`, ok: true, dev: true, beacon: b };
     });
     return out;
   }
 
-  _updBeacons(bw, bh, dt, u = 16) {
+  _updBeacons(bw: number, bh: number, dt: number, u = 16) {
     const M = this._map, L = this._L;
     const vis = this._mapT > 0.02;
     if (vis !== L.bcnVis) { L.bcnVis = vis; this.map.classList.toggle('has-beacons', vis); }
@@ -1846,15 +2037,15 @@ export class HUD {
       el.style.display = '';
       el.style.transform = `translate3d(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px,0)`;
       const sx = p.ox - p.x, sy = p.oy - p.y, sl = Math.hypot(sx, sy);
-      const stem = el.firstChild;
+      const stem = el.firstChild as HTMLElement;
       if (sl > 3) { stem.style.display = ''; stem.style.width = sl.toFixed(1) + 'px'; stem.style.transform = `rotate(${Math.atan2(sy, sx).toFixed(3)}rad)`; }
       else stem.style.display = 'none';
       el.classList.toggle('is-off', !b.ok || !canJump);
       el.classList.toggle('is-hover', M.hover === i && b.ok && canJump);
-      if (b.dev) el.querySelector('.iw-bcn__label b').textContent = b.name;
+      if (b.dev) el.querySelector('.iw-bcn__label b')!.textContent = b.name;
       else if (!b.home) {
-        if (el._w !== b.weapon) { el._w = b.weapon; el.querySelector('.iw-bcn__icon').innerHTML = weaponIcon(kindOf(b.weapon)); }
-        el.querySelector('.iw-bcn__label b').textContent = b.ok ? b.name : `${b.name} · ${b.respawn || '…'}`;
+        if (el._w !== b.weapon) { el._w = b.weapon; el.querySelector('.iw-bcn__icon')!.innerHTML = weaponIcon(kindOf(b.weapon!) as string); }
+        el.querySelector('.iw-bcn__label b')!.textContent = b.ok ? b.name : `${b.name} · ${b.respawn || '…'}`;
       }
     }
     // dashed jump arc from you to the hovered beacon
@@ -1862,40 +2053,40 @@ export class HUD {
     const showLine = !!(hb && hb.ok && canJump && M.sx != null);
     if (showLine !== L.jl) { L.jl = showLine; this.mapJumpLine.classList.toggle('is-on', showLine); }
     if (showLine) {
-      const x0 = M.sx * bw, y0 = M.sy * bh, x1 = hb.x * bw, y1 = hb.y * bh;
+      const x0 = M.sx! * bw, y0 = M.sy! * bh, x1 = hb.x * bw, y1 = hb.y * bh;
       const mx = (x0 + x1) / 2, my = (y0 + y1) / 2 - Math.hypot(x1 - x0, y1 - y0) * 0.35;
       const d = `M${x0.toFixed(1)} ${y0.toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${x1.toFixed(1)} ${y1.toFixed(1)}`;
-      if (d !== L.jlD) { L.jlD = d; const svg = this.mapJumpLine.firstChild; svg.setAttribute('width', bw.toFixed(0)); svg.setAttribute('height', bh.toFixed(0)); svg.firstChild.setAttribute('d', d); }
+      if (d !== L.jlD) { L.jlD = d; const svg = this.mapJumpLine.firstChild as SVGSVGElement; svg.setAttribute('width', bw.toFixed(0)); svg.setAttribute('height', bh.toFixed(0)); (svg.firstChild as SVGElement).setAttribute('d', d); }
     }
   }
 
-  _updLegendRow(i, b, canJump) {
+  _updLegendRow(i: number, b: BeaconTarget | null | undefined, canJump: boolean) {
     const row = this.legendRows[i], M = this._map;
     const key = b ? `${b.name}|${b.weapon || ''}|${b.ok ? 1 : 0}|${b.respawn || 0}|${M.hover === i ? 1 : 0}|${canJump ? 1 : 0}` : 'x';
     if (row._key === key) return;
     row._key = key;
     row.classList.toggle('is-empty', !b);
     if (!b) return;
-    if (!b.home && !b.dev && row._w !== b.weapon) { row._w = b.weapon; row.querySelector('.iw-lg__w').innerHTML = weaponIcon(kindOf(b.weapon)); }
-    row.querySelector('.iw-lg__name').textContent = b.name;
+    if (!b.home && !b.dev && row._w !== b.weapon) { row._w = b.weapon; row.querySelector('.iw-lg__w')!.innerHTML = weaponIcon(kindOf(b.weapon!) as string); }
+    row.querySelector('.iw-lg__name')!.textContent = b.name;
     const st = !canJump ? '—' : b.ok ? 'READY' : b.respawn ? `${b.respawn}s` : 'BUSY';
-    row.querySelector('.iw-lg__st').textContent = st;
+    row.querySelector('.iw-lg__st')!.textContent = st;
     row.classList.toggle('is-off', !b.ok || !canJump);
     row.classList.toggle('is-hover', M.hover === i && b.ok && canJump);
   }
 
-  _jumpTo(i) {
+  _jumpTo(i: number) {
     const tg = this._beaconTargets()[i];
     if (!tg || !tg.ok) { this._snd('ui_error', { volume: 0.5 }); return; }
     this._restart(this.beacons[i], 'is-press');
     if (this.lab) { this.lab.onJump?.(i); this._snd('ui_confirm'); return; }
     const me = this._local();
     if (!me || !me.canSuperJump || !me.canSuperJump()) { this._snd('ui_error', { volume: 0.5 }); return; }
-    const ok = tg.home ? me.superJump(tg.pad.clone()) : tg.beacon ? G.subs.jumpToBeacon(me, tg.beacon) : me.superJump(tg.actor);
+    const ok = tg.home ? me.superJump(tg.pad!.clone()) : tg.beacon ? G.subs!.jumpToBeacon(me, tg.beacon) : me.superJump(tg.actor!);
     if (!ok) this._snd('ui_error', { volume: 0.5 });
   }
 
-  _updMarkers(ms) {
+  _updMarkers(ms: HudMarker[] | undefined) {
     const L = this._L;
     ms = ms || [];
     let byName = this._byName;
@@ -1919,22 +2110,22 @@ export class HUD {
       if (prev === 'x' || !prev) el.style.display = '';
       if (el._name !== m.name) {
         el._name = m.name;
-        el.querySelector('.iw-mk__tag b').textContent = m.name || '';
+        el.querySelector('.iw-mk__tag b')!.textContent = m.name || '';
         const w = (ac && ac.weaponId) || m.weapon;
-        el.querySelector('.iw-mk__w').innerHTML = w ? weaponIcon(kindOf(w)) : '';
+        el.querySelector('.iw-mk__w')!.innerHTML = w ? weaponIcon(kindOf(w) as string) : '';
       }
       const col = toHex(m.color, '#ffffff');
       if (el._col !== col) { el._col = col; colorVars(el, 'c', col); }
       if (el._on !== on) { el._on = on; el.classList.toggle('is-off', !on); }
       if (el._ready !== ready) { el._ready = ready; el.classList.toggle('is-ready', ready); }
-      if (el._tracked !== !!m.tracked) { el._tracked = !!m.tracked; el.classList.toggle('is-tracked', !!m.tracked); if (m.tracked) el.querySelector('.iw-mk__tag b').textContent = `${m.name} · TRACKED`; }
+      if (el._tracked !== !!m.tracked) { el._tracked = !!m.tracked; el.classList.toggle('is-tracked', !!m.tracked); if (m.tracked) el.querySelector('.iw-mk__tag b')!.textContent = `${m.name} · TRACKED`; }
       el.style.setProperty('--far', far.toFixed(2));
       el.style.transform = `translate3d(${(+m.x).toFixed(1)}px,${(+m.y).toFixed(1)}px,0)`;
-      if (!on) el.lastChild.style.transform = `rotate(${(+m.angle || 0).toFixed(3)}rad)`;
+      if (!on) (el.lastChild as HTMLElement).style.transform = `rotate(${(+m.angle || 0).toFixed(3)}rad)`;
     }
   }
 
-  _updPrompt(p) {
+  _updPrompt(p: string | null | undefined) {
     const L = this._L;
     const v = p || null;
     if (v === L.prompt) return;
@@ -1945,7 +2136,7 @@ export class HUD {
     this.promptEl.animate([{ transform: 'translateX(-50%) translateY(12px) scale(.85)', opacity: 0 }, { transform: 'translateX(-50%) translateY(0) scale(1)', opacity: 1 }], { duration: 380, easing: 'cubic-bezier(.34,1.56,.64,1)' });
   }
 
-  _updFps(fps, dt) {
+  _updFps(fps: number | null | undefined, dt: number) {
     const L = this._L;
     const has = fps != null && isFinite(fps);
     if (has !== L.fpsOn) { L.fpsOn = has; this.fpsEl.style.display = has ? '' : 'none'; }
@@ -1958,26 +2149,26 @@ export class HUD {
   }
 
   // ================================================================ effects loop (self-driven so it works while paused / after the match)
-  _addFx(name, fn) {
+  _addFx(name: string, fn: (dt: number) => unknown) {
     this._fxMap = this._fxMap || new Map();
     this._fxMap.set(name, fn);
     if (!this._rafId) { this._lastFx = performance.now(); this._rafId = requestAnimationFrame(this._fxLoop); }
   }
-  _fxLoop(t) {
+  _fxLoop(t: number) {
     const raw = Math.min(0.25, Math.max(0, (t - this._lastFx) / 1000));
     this._lastFx = t;
     if (this.paused) { this._rafId = requestAnimationFrame(this._fxLoop); return; }
     const dt = raw * this.timeScale;
     this._fxTime += dt;
-    for (const [name, fn] of this._fxMap) { let keep = true; try { keep = fn(dt) !== false; } catch (e) { console.error('[hud]', e); keep = false; } if (!keep) this._fxMap.delete(name); }
-    this._rafId = this._fxMap.size ? requestAnimationFrame(this._fxLoop) : 0;
+    for (const [name, fn] of this._fxMap!) { let keep = true; try { keep = fn(dt) !== false; } catch (e) { console.error('[hud]', e); keep = false; } if (!keep) this._fxMap!.delete(name); }
+    this._rafId = this._fxMap!.size ? requestAnimationFrame(this._fxLoop) : 0;
   }
-  _restart(el, cls) {
+  _restart(el: Element, cls: string) {
     el.classList.remove(cls);
-    void el.offsetWidth; // eslint-disable-line no-void
+    void (el as HTMLElement).offsetWidth; // eslint-disable-line no-void
     el.classList.add(cls);
   }
-  _expireFeed(el, fast) {
+  _expireFeed(el: FeedEl, fast?: boolean) {
     if (el._out) return;
     el._out = true;
     clearTimeout(el._t);
@@ -1998,7 +2189,7 @@ export class HUD {
     if (this.canvas.width !== w || this.canvas.height !== hh) { this.canvas.width = w; this.canvas.height = hh; }
     this._cs = s;
   }
-  _spawnSmear(amount, hex, angle = null) {
+  _spawnSmear(amount: number, hex: string, angle: number | null = null) {
     const W = this.canvas.width, H = this.canvas.height, m = Math.min(W, H);
     const r = m * (0.06 + Math.random() * 0.045) * (0.7 + amount * 0.75);
     let x, y;
@@ -2021,7 +2212,7 @@ export class HUD {
     const S = Math.ceil(r * 3.4);
     const oc = document.createElement('canvas');
     oc.width = oc.height = S;
-    const c = oc.getContext('2d');
+    const c = oc.getContext('2d')!;
     const shape = splatShape(S / 2, S / 2, r, { seed: (Math.random() * 1e6) | 0, arms: 7 + ((Math.random() * 5) | 0), drops: 5 + ((Math.random() * 4) | 0), armLen: 0.35 + Math.random() * 0.3 });
     const core = new Path2D(shape.core);
     c.fillStyle = shade(hex, -0.28);
@@ -2040,7 +2231,7 @@ export class HUD {
     for (let i = 0; i < nd; i++) drips.push({ dx: (Math.random() - 0.5) * r * 1.1, len: 0, max: r * (0.6 + Math.random() * 1.4), sp: r * (0.35 + Math.random() * 0.6), w: r * (0.09 + Math.random() * 0.08) });
     this._smears.push({ x, y, r, img: oc, S, hex, drips, age: 0, life: 1.35 + amount * 0.6 + Math.random() * 0.3, rot: 0 });
   }
-  _tickSmears(dt) {
+  _tickSmears(dt: number) {
     const c = this.ctx, W = this.canvas.width, H = this.canvas.height;
     c.clearRect(0, 0, W, H);
     for (let i = this._smears.length - 1; i >= 0; i--) {

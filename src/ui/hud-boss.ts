@@ -11,24 +11,75 @@
 import { h, clamp, splatSVG, restartAnim, easeOutCubic, fmtInt } from './ui-util.js';
 import { GLYPHS } from './ui-icons.js';
 import { on, emit, G } from '../core/ctx.js';
-import { BOSS_NAME, BOSS_EPITHET, MOVE_ICONS, MOVE_LABELS, bossEmblem } from './boss-art.js';
+import { BOSS_NAME, BOSS_EPITHET, MOVE_ICONS as MOVE_ICON_SET, MOVE_LABELS as MOVE_LABEL_SET, bossEmblem } from './boss-art.js';
+import type * as THREE from 'three';
+import type { HUD } from './hud.js';
+import type { Actor } from '../game/actor.js';
+
+const MOVE_ICONS: Record<string, string | undefined> = MOVE_ICON_SET, MOVE_LABELS: Record<string, string | undefined> = MOVE_LABEL_SET;
+type XYZ = { x: number; y: number; z: number };
+/** 보스 HUD가 읽는 보스(대전 보스·캠페인 거대 보스): 위치·뿌리, 모형 소켓, 체력, 상태, 방향, 현재 기술 */
+interface BossView {
+  // (pos: 대전 보스는 THREE.Vector3, 데모 보스는 평범한 객체)
+  pos?: XYZ; root?: THREE.Object3D; model?: { getSocket?(name: string, out: THREE.Vector3): unknown } | null;
+  hp: number; maxHp: number; dead?: boolean; stunned?: boolean; invuln?: unknown; yaw?: number;
+  move?: { p?: BossMoveParams; params?: BossMoveParams } | null;
+}
+interface BossMoveParams { yaw?: number; dir?: XYZ }
+/** 데미지 숫자 묶음(같은 대상에 이어진 피해를 더한다) */
+interface Combo { el: HTMLDivElement; txt: HTMLElement; sum: number; w: XYZ; last: number; born: number; weak: boolean; out: boolean; jx: number }
+/** 막대·알림·숫자 상태 */
+interface BossHudState {
+  hp: number; max: number; shown: number; chip: number; chipHold: number; gotHp: boolean; phase: number; stunT: number; stunDur: number; sawStun: boolean; shieldT: number;
+  dead: boolean; introT: number | null; tickT: number; hitT: number; weakT: number; critT: number; move: string | null; moveT: number; movePh: string | null; openT: number;
+  cx: number | null; cy: number | null; combo: Combo | null; nums: Combo[]; ended: boolean;
+  L: { sh?: boolean; a?: number; c?: number; pc?: number; low?: boolean; edge?: boolean }; visT?: number; immT?: number; callT?: number;
+}
 
 const NOTCHES = [2 / 3, 1 / 3];
 const CALL_MOVES = new Set(['slam', 'barrage', 'sweep', 'charge', 'crablets', 'frenzy']);
-const PHASE_TXT = {
+const PHASE_TXT: Record<number, { big: string; sub: string } | undefined> = {
   2: { big: 'PHASE 2!', sub: 'Crablets incoming — pop them fast!' },
   3: { big: 'SHELL CRACKED!', sub: 'Final phase · hit the glowing belly!' },
 };
-const V3 = () => ({ x: 0, y: 0, z: 0 });
+const V3 = (): XYZ => ({ x: 0, y: 0, z: 0 });
 
 export class BossHud {
-  constructor(hud) {
+  declare _demoBoss: BossView & { pos: XYZ; yaw: number; phase: number; stunned: boolean; dead: boolean; move: null };
+  declare _sv: THREE.Vector3 | undefined;
+  declare over: HTMLDivElement;
+  declare layer: HTMLDivElement;
+  declare numLayer: HTMLDivElement;
+  declare call: HTMLDivElement;
+  declare callEdge: HTMLElement;
+  declare callArrow: HTMLElement;
+  declare callTxt: HTMLElement;
+  declare callIcon: HTMLElement;
+  declare bar: HTMLDivElement;
+  declare emb: HTMLDivElement;
+  declare pctEl: HTMLElement;
+  declare pips: HTMLElement[];
+  declare stunBar: HTMLElement;
+  declare track: HTMLDivElement;
+  declare shield: HTMLElement;
+  declare notches: HTMLElement[];
+  declare edge: HTMLElement;
+  declare chip: HTMLElement;
+  declare fill: HTMLElement;
+  declare _unsubs: Array<() => unknown>;
+  declare _tmp: XYZ & { set(x: number, y: number, z: number): XYZ; copy(v: XYZ): XYZ };
+  declare S: BossHudState;
+  declare T: number;
+  declare boss: BossView | null;
+  declare on: boolean;
+  declare hud: HUD;
+  constructor(hud: HUD) {
     this.hud = hud;
     this.on = false;
     this.boss = null;
     this.T = 0;
     this.S = this._fresh();
-    this._tmp = { x: 0, y: 0, z: 0, set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }, copy(v) { this.x = v.x; this.y = v.y; this.z = v.z; return this; } };
+    this._tmp = { x: 0, y: 0, z: 0, set(x: number, y: number, z: number) { this.x = x; this.y = y; this.z = z; return this; }, copy(v: XYZ) { this.x = v.x; this.y = v.y; this.z = v.z; return this; } };
     this._build();
     this._unsubs = [
       on('boss:spawn', (e) => this._spawn(e && e.boss)),
@@ -42,7 +93,7 @@ export class BossHud {
     ];
   }
 
-  _fresh() {
+  _fresh(): BossHudState {
     return { hp: 1, max: 1, shown: 1, chip: 1, chipHold: 0, gotHp: false, phase: 1, stunT: 0, stunDur: 0, sawStun: false, shieldT: 0,
       dead: false, introT: null, tickT: 0, hitT: -9, weakT: -9, critT: -9, move: null, moveT: 0, movePh: null, openT: 0,
       cx: null, cy: null, combo: null, nums: [], ended: false, L: {} };
@@ -97,7 +148,7 @@ export class BossHud {
 
   // ================================================================ mode + accessors
   /** Called by the HUD at every match intro (and by boss:spawn). */
-  setMode(onoff, boss = null) {
+  setMode(onoff: boolean, boss: BossView | null = null) {
     onoff = !!onoff;
     this.on = onoff;
     this.boss = onoff ? boss || this.boss || null : null;
@@ -105,7 +156,7 @@ export class BossHud {
     this.hud.el.classList.toggle('is-boss', onoff);
     this.hud.overLayer.classList.toggle('is-boss', onoff);
     this.bar.className = 'iw-bb' + (onoff ? '' : ' is-off');
-    this.emb.querySelector('.iw-bb__embart').innerHTML = bossEmblem();
+    this.emb.querySelector('.iw-bb__embart')!.innerHTML = bossEmblem();
     this.numLayer.innerHTML = '';
     this.over.innerHTML = '';
     this.call.classList.remove('is-on', 'is-act', 'is-open');
@@ -115,18 +166,18 @@ export class BossHud {
     if (b && b.maxHp) { this.S.max = b.maxHp; this.S.hp = this.S.shown = this.S.chip = clamp(b.hp / b.maxHp); }
     this._writeBar(true);
   }
-  _b() { return this.boss || (G.match && G.match.boss) || null; }
-  _mine(a) { const hd = this.hud; return !!a && (a === hd._local() || !!a.isLocal); }
+  _b(): BossView | null { return this.boss || ((G.match && G.match.boss) as BossView | null) || null; }
+  _mine(a: Actor | null | undefined) { const hd = this.hud; return !!a && (a === hd._local() || !!a.isLocal); }
   _t() { return this.T; }   // own clock (the HUD's fx clock only runs while it has effects)
   _u() { return Math.min(innerWidth / 100, (innerHeight * 1.7778) / 100); }
   /** World-space anchor: a model socket if the model exposes one, else the boss root + a height. */
-  _anchor(name, up, out) {
+  _anchor(name: string, up: number, out: XYZ) {
     const b = this._b();
     if (!b) return null;
     const m = b.model;
     if (m && m.getSocket && name && b.pos && b.pos.constructor && b.pos.constructor.prototype.applyMatrix4) {
       // the model wants a real THREE.Vector3 (localToWorld) — borrow the class off boss.pos, no three import here
-      const v = this._sv || (this._sv = new b.pos.constructor());
+      const v = this._sv || (this._sv = new (b.pos.constructor as new () => THREE.Vector3)());
       try { m.getSocket(name, v); if (Number.isFinite(v.x) && (v.x || v.y || v.z)) { out.x = v.x; out.y = v.y + up; out.z = v.z; return out; } } catch (e) { /* model mid-rebuild */ }
     }
     const p = b.pos || (b.root && b.root.position);
@@ -134,7 +185,7 @@ export class BossHud {
     out.x = p.x; out.y = p.y + (name === 'shellTop' ? 5.2 : 3.2) + up; out.z = p.z;
     return out;
   }
-  _screen(w, out) {
+  _screen(w: XYZ | null | undefined, out: { x: number; y: number; behind?: boolean }) {
     const cam = G.camera;
     if (!cam || !w) return null;
     const p = this.hud._project(cam, w.x, w.y, w.z);
@@ -144,12 +195,12 @@ export class BossHud {
   }
 
   // ================================================================ events
-  _spawn(boss) {
+  _spawn(boss: BossView | null | undefined) {
     if (!boss) return;
     if (!this.on || this.boss !== boss) this.setMode(true, boss);
   }
 
-  _intro(e) {
+  _intro(e: { boss?: BossView }) {
     if (!this.on) this.setMode(true, e.boss || null);
     const S = this.S;
     S.introT = 0;
@@ -159,11 +210,11 @@ export class BossHud {
     this._titleCard();
   }
 
-  _hp({ hp, max }) {
+  _hp({ hp, max }: { hp?: number; max?: number }) {
     if (!this.on) return;
     const S = this.S;
-    if (max > 0) S.max = max;
-    const t = clamp((+hp || 0) / Math.max(1e-6, S.max));
+    if (max! > 0) S.max = max!;
+    const t = clamp((+hp! || 0) / Math.max(1e-6, S.max));
     S.gotHp = true;
     const prev = S.hp;
     S.hp = t;
@@ -180,7 +231,7 @@ export class BossHud {
     if (t <= 0 && !S.dead) restartAnim(this.bar, 'is-zero');
   }
 
-  _move({ id, phase }) {
+  _move({ id, phase }: { id: string; phase: string }) {
     if (!this.on || this.S.dead) return;
     const S = this.S;
     S.move = id; S.movePh = phase; S.moveT = 0;
@@ -193,9 +244,9 @@ export class BossHud {
       if (this.call.dataset.move === id) restartAnim(this.call, 'is-act');
     } else if (phase === 'rec' && S.openT <= 0) this.call.classList.remove('is-on', 'is-act');
   }
-  _showCall(id) {
+  _showCall(id: string) {
     this.call.dataset.move = id;
-    this.callIcon.innerHTML = MOVE_ICONS[id] || MOVE_ICONS.open;
+    this.callIcon.innerHTML = MOVE_ICONS[id] || MOVE_ICON_SET.open;
     this.callTxt.textContent = MOVE_LABELS[id] || id.toUpperCase();
     this.call.classList.toggle('is-open', id === 'open');
     this.call.classList.toggle('has-dir', id === 'charge');
@@ -204,7 +255,7 @@ export class BossHud {
     restartAnim(this.call, 'is-on');
   }
 
-  _hit({ damage = 0, weak = false, attacker = null, pos = null, crab = false, blocked = false }) {
+  _hit({ damage = 0, weak = false, attacker = null, pos = null, crab = false, blocked = false }: { damage?: number; weak?: boolean; attacker?: Actor | null; pos?: XYZ | null; crab?: boolean; blocked?: boolean }) {
     if (!this.on || this.S.dead) return;
     const S = this.S, now = this._t();
     const mine = this._mine(attacker);
@@ -229,32 +280,32 @@ export class BossHud {
     if (weak && now - S.critT > 0.22) { S.critT = now; this._crit(w); }
   }
 
-  _stun({ dur = 3 }) {
+  _stun({ dur = 3 }: { dur?: number }) {
     if (!this.on || this.S.dead) return;
     const S = this.S;
     S.stunDur = S.stunT = S.openT = Math.max(0.5, +dur || 3);
     S.sawStun = false;
     this.bar.classList.add('is-open');
-    restartAnim(this.bar.querySelector('.iw-bb__open'), 'is-pop');
+    restartAnim(this.bar.querySelector('.iw-bb__open')!, 'is-pop');
     this._showCall('open');
     this.hud._snd('special_ready', { volume: 0.45, pitch: 1.25 });
   }
 
-  _phase({ phase }) {
+  _phase({ phase }: { phase?: number }) {
     if (!this.on) return;
     const S = this.S;
-    phase = clamp(phase | 0, 1, 3);
+    phase = clamp(phase! | 0, 1, 3);
     if (phase <= S.phase) return;
     S.phase = phase;
     S.shieldT = 1.8;
     this._pips(phase);
-    if (phase >= 3) { this.bar.classList.add('is-enraged'); this.emb.querySelector('.iw-bb__embart').innerHTML = bossEmblem({ cracked: true }); }
+    if (phase >= 3) { this.bar.classList.add('is-enraged'); this.emb.querySelector('.iw-bb__embart')!.innerHTML = bossEmblem({ cracked: true }); }
     restartAnim(this.bar, 'is-phase');
     const T = PHASE_TXT[phase];
     if (T) this._banner(T.big, T.sub, phase);
   }
 
-  _defeat() {
+  _defeat(_e?: unknown) {
     if (!this.on || this.S.dead) return;
     const S = this.S;
     S.dead = true; S.hp = 0; S.openT = 0; S.stunT = 0;
@@ -275,21 +326,21 @@ export class BossHud {
   }
 
   /** Contextual prompt: the turf tutorial line becomes a boss one; OPEN! gets its own nudge. */
-  prompt(p) {
+  prompt(p: string | null | undefined) {
     if (this.S.openT > 0.4 && !this.S.dead) return 'It\u2019s OPEN \u2014 unload on it!';
     if (p && /turf wins/i.test(p)) return this.S.phase >= 3 ? 'Shell cracked \u2014 hit the glowing belly!' : 'Shoot HULLBREAKER \u2014 its glowing eyes take extra damage!';
     return p;
   }
 
   /** The 4v4 roster slots re-used for the squad: up to 8 kids, 4 either side of the timer, all in squad ink. */
-  squadTeams(teams) {
-    const all = [];
+  squadTeams<P>(teams: Array<{ color?: unknown; players?: P[] } | null | undefined> | null | undefined) {
+    const all: P[] = [];
     for (const t of teams || []) for (const p of (t && t.players) || []) all.push(p);
     return [{ color: teams && teams[0] && teams[0].color, players: all.slice(0, 4) }, { color: teams && teams[0] && teams[0].color, players: all.slice(4, 8) }];
   }
 
   // ================================================================ per frame
-  update(dt) {
+  update(dt: number) {
     if (!this.on) return;
     this.T += dt;
     const S = this.S, b = this._b();
@@ -333,9 +384,9 @@ export class BossHud {
     this._updNums(dt);
   }
 
-  _writeBar(force) {
+  _writeBar(force: boolean) {
     const S = this.S, L = S.L;
-    const f = (v) => `translateX(${((v - 1) * 100).toFixed(3)}%)`;
+    const f = (v: number) => `translateX(${((v - 1) * 100).toFixed(3)}%)`;
     const a = Math.round(S.shown * 4000), c = Math.round(S.chip * 4000);
     if (force || a !== L.a) { L.a = a; this.fill.style.transform = f(S.shown); this.edge.style.transform = f(S.shown); }
     if (force || c !== L.c) { L.c = c; this.chip.style.transform = f(S.chip); }
@@ -345,12 +396,12 @@ export class BossHud {
     if (low !== L.low) { L.low = low; this.bar.classList.toggle('is-low', low); }
   }
 
-  _pips(phase) {
+  _pips(phase: number) {
     this.pips.forEach((p, i) => { p.classList.toggle('is-on', i < phase); p.classList.toggle('is-cur', i === phase - 1); });
     this.bar.dataset.phase = String(phase);
   }
 
-  _placeCall(dt) {
+  _placeCall(dt: number) {
     const S = this.S, u = this._u(), W = innerWidth, H = innerHeight;
     const w = this._anchor('shellTop', 1.9, this._tmp);
     const sp = w && this._screen(w, { x: 0, y: 0 });
@@ -376,8 +427,8 @@ export class BossHud {
     }
     if (S.cx == null) { S.cx = x; S.cy = y; }
     const k = Math.min(1, dt * 12);
-    S.cx += (x - S.cx) * k; S.cy += (y - S.cy) * k;
-    this.call.style.transform = `translate3d(${S.cx.toFixed(1)}px,${S.cy.toFixed(1)}px,0)`;
+    S.cx += (x - S.cx) * k; S.cy! += (y - S.cy!) * k;   // (cx와 함께 정해진다)
+    this.call.style.transform = `translate3d(${S.cx.toFixed(1)}px,${S.cy!.toFixed(1)}px,0)`;
     if (edge !== S.L.edge) { S.L.edge = edge; this.call.classList.toggle('is-edge', edge); }
     if (edge) this.callEdge.style.transform = `rotate(${ang.toFixed(3)}rad)`;
     // CHARGE!: the arrow points where it's going to run (boss forward, projected)
@@ -387,7 +438,7 @@ export class BossHud {
       const p = b && (b.pos || (b.root && b.root.position));
       if (p) {
         const mp = b.move && (b.move.p || b.move.params);
-        const yaw = mp && Number.isFinite(mp.yaw) ? mp.yaw : b.yaw ?? (b.root ? b.root.rotation.y : 0);
+        const yaw = mp && Number.isFinite(mp.yaw) ? mp.yaw! : b.yaw ?? (b.root ? b.root.rotation.y : 0);
         const d = mp && mp.dir;
         const fx = d ? d.x : Math.sin(yaw), fz = d ? d.z : Math.cos(yaw);
         const a0 = this._screen({ x: p.x, y: p.y + 1, z: p.z }, { x: 0, y: 0 }), a1 = this._screen({ x: p.x + fx * 6, y: p.y + 1, z: p.z + fz * 6 }, { x: 0, y: 0 });
@@ -399,15 +450,15 @@ export class BossHud {
   }
 
   // ---------------------------------------------------------------- damage numbers
-  _addNum(w, dmg, weak, now) {
+  _addNum(w: XYZ, dmg: number, weak: boolean, now: number) {
     const S = this.S;
     let c = S.combo;
     if (!c || c.out || now - c.last > 0.45) {
       const el = h('div', { class: 'iw-bnum' }, h('b'));
       this.numLayer.appendChild(el);
-      c = S.combo = { el, txt: el.firstChild, sum: 0, w: { ...w }, last: now, born: now, weak: false, out: false, jx: (Math.random() - 0.5) * 2 };
+      c = S.combo = { el, txt: el.firstChild as HTMLElement, sum: 0, w: { ...w }, last: now, born: now, weak: false, out: false, jx: (Math.random() - 0.5) * 2 };
       S.nums.push(c);
-      while (S.nums.length > 6) { const o = S.nums.shift(); o.el.remove(); }
+      while (S.nums.length > 6) { const o = S.nums.shift()!; o.el.remove(); }
     }
     c.sum += dmg; c.last = now;
     c.w.x += (w.x - c.w.x) * 0.35; c.w.y += (w.y - c.w.y) * 0.35; c.w.z += (w.z - c.w.z) * 0.35;
@@ -416,7 +467,7 @@ export class BossHud {
     c.el.style.setProperty('--s', clamp(0.85 + Math.log10(Math.max(1, c.sum)) * 0.16 + (c.weak ? 0.2 : 0), 0.85, 1.6).toFixed(3));
     restartAnim(c.el, 'is-bump');
   }
-  _crit(w, txt = 'CRIT!') {
+  _crit(w: XYZ, txt = 'CRIT!') {
     const p = this._screen(w, { x: 0, y: 0 });
     if (!p || p.behind) return;
     const el = h('div', { class: 'iw-bcrit' + (txt === 'CRIT!' ? '' : ' is-immune') }, h('i', { class: 'iw-bcrit__burst' }), h('span', { class: 'iw-display' }, txt));
@@ -425,7 +476,7 @@ export class BossHud {
     setTimeout(() => el.remove(), 900);
     this.numLayer.appendChild(el);
   }
-  _updNums() {
+  _updNums(_dt?: number) {
     const S = this.S, now = this._t(), u = this._u();
     for (let i = S.nums.length - 1; i >= 0; i--) {
       const c = S.nums[i];
@@ -460,7 +511,7 @@ export class BossHud {
     setTimeout(() => { if (el.isConnected) this.hud._snd('splat_big', { volume: 0.7, pitch: 0.7 }); }, 80);
   }
 
-  _banner(big, sub, phase) {
+  _banner(big: string, sub: string, phase: number) {
     this.over.querySelectorAll('.iw-bph').forEach((e) => e.remove());
     const el = h('div', { class: 'iw-bph' + (phase >= 3 ? ' is-rage' : '') },
       h('span', { class: 'iw-bph__splat', html: splatSVG({ seed: 30 + phase * 7, fill: 'var(--boss)', r: 58, arms: 10, drops: 6 }) }),
@@ -471,7 +522,7 @@ export class BossHud {
     this.over.appendChild(el);
   }
 
-  _ending(win) {
+  _ending(win: boolean) {
     const S = this.S;
     if (S.ended) return;
     S.ended = true;
@@ -495,17 +546,17 @@ export class BossHud {
 
   // ================================================================ console preview
   /** Runs every boss HUD state on a fake boss 14 m in front of the camera. For UI work / audits only. */
-  demo(opts = {}) {
+  demo(opts: { dist?: number; yaw?: number; steps?: string[] } = {}) {
     const cam = G.camera;
     const fwd = { x: 0, z: -1 };
     if (cam && cam.matrixWorld) { const e = cam.matrixWorld.elements; const l = Math.hypot(e[8], e[10]) || 1; fwd.x = -e[8] / l; fwd.z = -e[10] / l; }
     const base = cam ? cam.position : { x: 0, y: 0, z: 0 };
     const d = opts.dist ?? 16;
-    const boss = this._demoBoss = { pos: { x: base.x + fwd.x * d, y: 0, z: base.z + fwd.z * d }, yaw: Math.atan2(-fwd.x, -fwd.z) + (opts.yaw || 0.9), hp: 12000, maxHp: 12000, phase: 1, stunned: false, dead: false, move: null };
+    const boss: BossHud['_demoBoss'] = this._demoBoss = { pos: { x: base.x + fwd.x * d, y: 0, z: base.z + fwd.z * d }, yaw: Math.atan2(-fwd.x, -fwd.z) + (opts.yaw || 0.9), hp: 12000, maxHp: 12000, phase: 1, stunned: false, dead: false, move: null };
     const me = this.hud._local();
-    const T = [];
-    const at = (s, fn) => T.push(setTimeout(fn, s * 1000));
-    const hit = (dmg, weak) => { boss.hp = Math.max(0, boss.hp - dmg * (weak ? 2.5 : 1)); emit('boss:hit', { damage: dmg * (weak ? 2.5 : 1), weak, attacker: me, pos: { x: boss.pos.x + (Math.random() - 0.5) * 2, y: weak ? 4.1 : 3 + Math.random() * 2, z: boss.pos.z } }); emit('boss:hp', { hp: boss.hp, max: boss.maxHp }); };
+    const T: (number | undefined)[] = [];
+    const at = (s: number, fn: TimerHandler) => T.push(setTimeout(fn, s * 1000));
+    const hit = (dmg: number, weak: boolean) => { boss.hp = Math.max(0, boss.hp - dmg * (weak ? 2.5 : 1)); emit('boss:hit', { damage: dmg * (weak ? 2.5 : 1), weak, attacker: me, pos: { x: boss.pos.x + (Math.random() - 0.5) * 2, y: weak ? 4.1 : 3 + Math.random() * 2, z: boss.pos.z } }); emit('boss:hp', { hp: boss.hp, max: boss.maxHp }); };
     emit('boss:spawn', { boss });
     at(0.1, () => emit('boss:intro', { boss, dur: 2.5 }));
     const steps = opts.steps || ['move', 'hits', 'stun', 'phase2', 'charge', 'phase3', 'end'];
