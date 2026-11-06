@@ -8,11 +8,21 @@
 // treat local z = 0 as the wall face and project toward +Z. Runs (rails, posts, railings) extend along local +X.
 // Palette: bleached silver timber, salt white, pink brine, faded oxide red, rust and galvanised steel — muted, so the
 // team inks stay the loudest thing on screen. Signage uses 3D channel / painted letters from a small stroke font.
+import type * as THREE from 'three';
+import type { PropDefs, PackHelpers, Builder, PropParams, PartOpts, ColorLike, PropDef } from '../../props.js';
 const P = Math.PI;
 
-export function register(D, H) {
+// 지역 도우미 선택(도우미 본문의 o.키와 호출부 값에서 모은 타입)
+interface BoardSignOpts { board?: ColorLike; border?: ColorLike; c?: ColorLike; glow?: number; h?: number; hb?: number; mat?: string; pad?: number; track?: number; w?: number; wt?: number }
+interface LedgedDoorOpts { track?: number; trackX?: number }
+interface Window4Opts { frame?: ColorLike; glass?: ColorLike; lit?: number; shutter?: ColorLike }
+interface MoundOpts { ao?: boolean; c?: ColorLike; mat?: string; ry?: number; seed?: number }
+interface BeamOpts { ext?: number; r?: number }
+interface LettersOpts { h?: number; wt?: number; flat?: boolean; dep?: number; bev?: number; track?: number; ds?: number; align?: 'left' | 'right' | 'center'; mat?: string; c?: ColorLike; x?: number; y?: number; z?: number; glow?: number; lit?: number; litC?: ColorLike }
+
+export function register(D: PropDefs, H: PackHelpers) {
   const { THREE, col, shade, mixc, chamferBox, latheGeo, tubeGeo, extrudeGeo, blobGeo, drum, PI, TAU, HP, P3 } = H;
-  const NS = (m) => (H.noShadow && m !== 'glow' && m !== 'blob' ? H.noShadow(m) : m);
+  const NS = (m: string) => (m !== 'glow' && m !== 'blob' ? H.noShadow(m) : m);   // (도우미 묶음에 noShadow가 늘 있다)
 
   // ------------------------------------------------------------------------------------------ local palette
   const K = {
@@ -30,9 +40,14 @@ export function register(D, H) {
 
   // Parts whose shadow can't be seen (under-deck posts, lettering, small fittings, far scenery) go through NS(mat).
   class GB {
+    idx: number[] = [];
+    c: number[] = [];
+    uv: number[] = [];
+    n: number[] = [];
+    p: number[] = [];
     constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.idx = []; }
-    v(x, y, z, nx, ny, nz, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
-    tri(a, b, c) {
+    v(x: number, y: number, z: number, nx: number, ny: number, nz: number, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
+    tri(a: number, b: number, c: number) {
       const P = this.p, N = this.n;
       const ax = P[a * 3], ay = P[a * 3 + 1], az = P[a * 3 + 2];
       const e1x = P[b * 3] - ax, e1y = P[b * 3 + 1] - ay, e1z = P[b * 3 + 2] - az;
@@ -42,7 +57,7 @@ export function register(D, H) {
       const s = cx * (N[a * 3] + N[b * 3] + N[c * 3]) + cy * (N[a * 3 + 1] + N[b * 3 + 1] + N[c * 3 + 1]) + cz * (N[a * 3 + 2] + N[b * 3 + 2] + N[c * 3 + 2]);
       if (s < 0) this.idx.push(a, c, b); else this.idx.push(a, b, c);
     }
-    quad(a, b, c, d) { this.tri(a, b, c); this.tri(a, c, d); }
+    quad(a: number, b: number, c: number, d: number) { this.tri(a, b, c); this.tri(a, c, d); }
     geo() {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(this.p, 3));
@@ -53,17 +68,17 @@ export function register(D, H) {
       return g;
     }
   }
-  const TPL = new Map();
-  const tpl = (key, fn) => { let g = TPL.get(key); if (!g) { g = fn(); TPL.set(key, g); } return g; };
-  const kf = (a) => (typeof a === 'number' ? a.toFixed(4) : String(a));
-  const hash = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
-  const cx3 = (c) => { const k = col(c); return [k.r, k.g, k.b]; };
-  const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-  const smooth = (e0, e1, x) => { const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+  const TPL = new Map<string, unknown>();   // (키마다 만드는 값의 모양이 다르다: 형상·글리프 등)
+  const tpl = <T,>(key: string, fn: () => T): T => { let g = TPL.get(key) as T | undefined; if (g === undefined) { g = fn(); TPL.set(key, g); } return g; };
+  const kf = (a: unknown) => (typeof a === 'number' ? a.toFixed(4) : String(a));
+  const hash = (n: number) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+  const cx3 = (c: ColorLike) => { const k = col(c); return [k.r, k.g, k.b]; };
+  const lerp3 = (a: number[], b: number[], t: number) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  const smooth = (e0: number, e1: number, x: number) => { const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
 
   // Compose another prop type inside this one (at x,y,z / ry in the current local frame) with its colliders carried
   // along (B.col boxes are prop-local, so nested builds must be re-mapped).
-  function sub(B, type, x, y, z, ry, opts = {}) {
+  function sub(B: Builder, type: string, x: number, y: number, z: number, ry: number, opts: PropParams = {}) {
     const def = D[type];
     if (!def) return;
     const n0 = B.cols.length, ao = B.aoBase;
@@ -83,13 +98,15 @@ export function register(D, H) {
     }
   }
   // local-frame collider helper: centre + size
-  const colBox = (B, x, y, z, w, h, d) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2);
+  const colBox = (B: Builder, x: number, y: number, z: number, w: number, h: number, d: number) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2);
 
   // ------------------------------------------------------------------------------------------ stroke font
   // Rounded bold sans (cap height 1): centre-line strokes, round caps + round joins, bevelled front, flat back.
-  const EA = (cx, cy, rx, ry, a0, a1, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
-  const LOOP = (cx, cy, rx, ry, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
-  const GL = {
+  const EA = (cx: number, cy: number, rx: number, ry: number, a0: number, a1: number, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
+  const LOOP = (cx: number, cy: number, rx: number, ry: number, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
+  // 글리프: [폭, 획…], 획은 점 목록 또는 닫힌 곡선 { c: 점 목록 }
+  type Stroke = number[][] | { c: number[][] };
+  const GL: Record<string, Array<number | Stroke>> = {
     A: [0.66, [[0, 0], [0.33, 1], [0.66, 0]], [[0.13, 0.33], [0.53, 0.33]]],
     B: [0.58, [[0, 0], [0, 1]], [[0, 1], ...EA(0.3, 0.755, 0.245, 0.245, 90, -90, 12), [0, 0.51]], [[0, 0.51], ...EA(0.32, 0.255, 0.255, 0.255, 90, -90, 12), [0, 0]]],
     C: [0.64, EA(0.34, 0.5, 0.34, 0.5, 46, 314, 22)],
@@ -132,26 +149,26 @@ export function register(D, H) {
     "'": [0, [[0, 1], [0, 0.8]]],
     '&': [0.7, [[0.7, 0], ...EA(0.27, 0.72, 0.17, 0.2, -40, 220, 12).reverse(), [0.08, 0.28], ...EA(0.26, 0.24, 0.24, 0.24, 180, 300, 6), [0.62, 0.36]]],
   };
-  const DOTS = { '·': [[0, 0.46]], '.': [[0, 0]], ':': [[0, 0.1], [0, 0.62]] };
+  const DOTS: Record<string, number[][]> = { '·': [[0, 0.46]], '.': [[0, 0]], ':': [[0, 0.1], [0, 0.62]] };
   const SPACE = 0.34;
 
   // Stroke ribbon: flat face at z = d (bevel b down to the sides), side walls to z0. b = 0 → no bevel; d = z0 → flat
   // (paint / stencil lettering: face only).
-  function ribbon(g, pts, closed, hw, b, d, z0) {
+  function ribbon(g: GB, pts: number[][], closed: boolean, hw: number, b: number, d: number, z0: number) {
     const n = pts.length, R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5;
-    const N = pts.map((p, i) => {
+    const N = pts.map((p: number[], i: number) => {
       const a = closed ? pts[(i - 1 + n) % n] : i > 0 ? pts[i - 1] : null;
       const c = closed ? pts[(i + 1) % n] : i < n - 1 ? pts[i + 1] : null;
-      const nrm = (u, v) => { const dx = v[0] - u[0], dy = v[1] - u[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; };
+      const nrm = (u: number[], v: number[]) => { const dx = v[0] - u[0], dy = v[1] - u[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; };
       const n1 = a ? nrm(a, p) : null, n2 = c ? nrm(p, c) : null;
-      if (!n1) return [n2[0], n2[1], 1];
+      if (!n1) return [n2![0], n2![1], 1];
       if (!n2) return [n1[0], n1[1], 1];
       let mx = n1[0] + n2[0], my = n1[1] + n2[1]; const ml = Math.hypot(mx, my) || 1; mx /= ml; my /= ml;
       return [mx, my, Math.min(1.6, 1 / Math.max(0.3, mx * n2[0] + my * n2[1]))];
     });
-    const rings = pts.map((p, i) => {
+    const rings = pts.map((p: number[], i: number) => {
       const [nx, ny, k] = N[i];
-      const at = (s) => [p[0] + nx * k * s, p[1] + ny * k * s];
+      const at = (s: number) => [p[0] + nx * k * s, p[1] + ny * k * s];
       const hi = bev ? hw - b : hw, Li = at(hi), Lo = at(hw), Ri = at(-hi), Ro = at(-hw), dz = bev ? b : 0;
       const r = [g.v(Li[0], Li[1], d, 0, 0, 1), g.v(Ri[0], Ri[1], d, 0, 0, 1)];
       if (bev) r.push(g.v(Li[0], Li[1], d, nx * R, ny * R, R), g.v(Lo[0], Lo[1], d - b, nx * R, ny * R, R), g.v(Ri[0], Ri[1], d, -nx * R, -ny * R, R), g.v(Ro[0], Ro[1], d - b, -nx * R, -ny * R, R));
@@ -165,9 +182,9 @@ export function register(D, H) {
     }
   }
   // round cap / join: disc (a0..a1 = 0..TAU) or a half disc facing an open stroke end
-  function disc(g, cx, cy, r, b, d, z0, seg, a0 = 0, a1 = TAU) {
+  function disc(g: GB, cx: number, cy: number, r: number, b: number, d: number, z0: number, seg: number, a0 = 0, a1 = TAU) {
     const R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5, ri = bev ? r - b : r, full = a1 - a0 > TAU - 1e-4;
-    const c0 = g.v(cx, cy, d, 0, 0, 1), f = [], bi = [], bo = [], wt = [], wb = [];
+    const c0 = g.v(cx, cy, d, 0, 0, 1), f: number[] = [], bi: number[] = [], bo: number[] = [], wt: number[] = [], wb: number[] = [];
     const n = full ? seg : seg + 1;
     for (let k = 0; k < n; k++) {
       const a = a0 + ((a1 - a0) * k) / seg, cs = Math.cos(a), sn = Math.sin(a);
@@ -184,9 +201,9 @@ export function register(D, H) {
   }
   // glyph geometry in cap units (baseline y = 0, cap y = 1, back at z = 0, face at z = dep); returns { geo, adv }.
   // dep = 0 → flat painted lettering (face only); ds = round-cap segments.
-  function glyph(ch, wt, dep, bev, ds = 10) {
+  function glyph(ch: string, wt: number, dep: number, bev: number, ds = 10): { geo: THREE.BufferGeometry | null; adv: number } {
     return tpl(['gl', ch, wt, dep, bev, ds].map(kf).join('|'), () => {
-      const s = 1 - wt, hw = wt / 2, T = (p) => [hw + p[0] * s, hw + p[1] * s];
+      const s = 1 - wt, hw = wt / 2, T = (p: number[]) => [hw + p[0] * s, hw + p[1] * s];
       const g = new GB();
       const b = Math.min(bev, hw * 0.6);
       if (DOTS[ch]) {
@@ -195,12 +212,12 @@ export function register(D, H) {
       }
       const def = GL[ch];
       if (!def) return { geo: null, adv: SPACE };
-      const [w, ...strokes] = def;
-      strokes.forEach((st, si) => {
+      const [w, ...strokes] = def as [number, ...Stroke[]];
+      strokes.forEach((st, si: number) => {
         const d = dep > 0 ? dep - si * 0.006 : si * 0.0004;
         const closed = !Array.isArray(st);
-        let pts = (closed ? st.c : st).map(T);
-        pts = pts.filter((p, i) => i === 0 || Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 1e-4);
+        let pts = (Array.isArray(st) ? st : st.c).map(T);
+        pts = pts.filter((p: number[], i: number) => i === 0 || Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 1e-4);
         if (closed) { ribbon(g, pts, true, hw, b, d, 0); return; }
         // split at sharp turns (round join discs there), round caps at both ends
         let cur = [pts[0]];
@@ -216,17 +233,17 @@ export function register(D, H) {
         }
         if (cur.length > 1) ribbon(g, cur, false, hw, b, d, 0);
         // half-disc caps at the two open ends (facing outward), full discs at the sharp joints
-        const endCap = (p, q) => { const a = Math.atan2(p[1] - q[1], p[0] - q[0]); disc(g, p[0], p[1], hw, b, d, 0, Math.max(3, Math.round(ds / 2)), a - HP, a + HP); };
+        const endCap = (p: number[], q: number[]) => { const a = Math.atan2(p[1] - q[1], p[0] - q[0]); disc(g, p[0], p[1], hw, b, d, 0, Math.max(3, Math.round(ds / 2)), a - HP, a + HP); };
         endCap(pts[0], pts[1]); endCap(pts[pts.length - 1], pts[pts.length - 2]);
         for (const p of joints.slice(2)) disc(g, p[0], p[1], hw, b, d, 0, ds);
       });
       return { geo: g.geo(), adv: w * s + wt };
     });
   }
-  const textW = (str, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
+  const textW = (str: string, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
   // Lay out a line of letters facing +Z in the current frame (raised channel letters, or flat paint with flat: true).
   // Returns the width (m).
-  function letters(B, str, o = {}) {
+  function letters(B: Builder, str: string, o: LettersOpts = {}) {
     const h = o.h ?? 0.3, wt = o.wt ?? 0.17, flat = !!o.flat;
     const dep = flat ? 0 : o.dep ?? 0.12, bev = flat ? 0 : o.bev ?? (h < 0.34 ? 0 : 0.03), track = o.track ?? 0.12;
     const ds = o.ds ?? (flat || h < 0.12 ? 6 : 8);
@@ -251,39 +268,39 @@ export function register(D, H) {
 
   // 7-segment LED digits (unit cell 0.62 × 1, slight italic): lit segments on 'glow', the unlit "ghost 8" on 'paint'
   const pboxGeo = () => tpl('pbox', () => new THREE.BoxGeometry(1, 1, 1));
-  const pbox = (B, mat, c, w, h, d, x, y, z, o = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
+  const pbox = (B: Builder, mat: string, c: ColorLike, w: number, h: number, d: number, x: number, y: number, z: number, o: PartOpts = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
 
   // ------------------------------------------------------------------------------------------ geometry helpers
   // box between two points a → b (current frame): w = horizontal width, h = height of the section
-  function beam(B, mat, c, a, b, w, h, o = {}) {
+  function beam(B: Builder, mat: string, c: ColorLike, a: number[], b: number[], w: number, h: number, o: BeamOpts = {}) {
     const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], L = Math.hypot(dx, dy, dz);
     B.box(mat, c, L + (o.ext ?? 0), h, w, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2, { ry: Math.atan2(-dz, dx), rz: Math.atan2(dy, Math.hypot(dx, dz)), r: o.r ?? 0.012 });
   }
-  function pbeam(B, mat, c, a, b, w, h) {
+  function pbeam(B: Builder, mat: string, c: ColorLike, a: number[], b: number[], w: number, h: number) {
     const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], L = Math.hypot(dx, dy, dz);
     pbox(B, mat, c, L, h, w, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2, { ry: Math.atan2(-dz, dx), rz: Math.atan2(dy, Math.hypot(dx, dz)) });
   }
-  const rodT = (B, mat, c, a, b, r, radial = 5) => B.tube(mat, c, [a, b], r, { radial });
+  const rodT = (B: Builder, mat: string, c: ColorLike, a: number[], b: number[], r: number, radial = 5) => B.tube(mat, c, [a, b], r, { radial });
   // Railing collision (engine `rail`: kids can't pass; shots, ink, squids and sight go through; nobody stands on it)
   // along a run a → b of base points on the walking surface (prop-local frame), `h` tall above that line. Sloped or
   // non-axis-aligned runs are split into short steps so each axis-aligned box hugs the rail.
-  function railCols(B, a, b, h = 1.05, w = 0.12, seg = 0.6) {
+  function railCols(B: Builder, a: number[], b: number[], h = 1.05, w = 0.12, seg = 0.6) {
     const L = Math.hypot(b[0] - a[0], b[2] - a[2]), n = Math.max(1, Math.ceil(L / seg - 1e-6));
     for (let i = 0; i < n; i++) {
-      const p = (t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+      const p = (t: number) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
       const p0 = p(i / n), p1 = p((i + 1) / n);
       B.col(Math.min(p0[0], p1[0]) - w / 2, Math.min(p0[1], p1[1]) - 0.05, Math.min(p0[2], p1[2]) - w / 2,
         Math.max(p0[0], p1[0]) + w / 2, Math.max(p0[1], p1[1]) + h, Math.max(p0[2], p1[2]) + w / 2, { rail: true });
     }
   }
   // sagging cable / rope a → b
-  function sag(B, mat, c, a, b, s, r, n = 8) {
+  function sag(B: Builder, mat: string, c: ColorLike, a: number[], b: number[], s: number, r: number, n = 8) {
     const pts = [];
     for (let i = 0; i <= n; i++) { const t = i / n; pts.push(P3(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t - s * 4 * t * (1 - t), a[2] + (b[2] - a[2]) * t)); }
     B.tube(mat, c, pts, r, { radial: 4 });
   }
   // merge several geometries (position / normal / uv / color + index) into one template
-  function mergeGeos(list) {
+  function mergeGeos(list: THREE.BufferGeometry[]) {
     let nv = 0, ni = 0;
     for (const g of list) { nv += g.attributes.position.count; ni += g.index ? g.index.count : g.attributes.position.count; }
     const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3), uv = new Float32Array(nv * 2), cl = new Float32Array(nv * 3), idx = new Uint32Array(ni);
@@ -302,12 +319,12 @@ export function register(D, H) {
     g.setIndex(new THREE.BufferAttribute(idx, 1));
     return g;
   }
-  const paintGeo = (g, c) => { const k = cx3(c), n = g.attributes.position.count, a = new Float32Array(n * 3); for (let i = 0; i < n; i++) a.set(k, i * 3); g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g; };
-  const xform = (g, x, y, z, rx = 0, ry = 0, rz = 0, s = 1) => g.applyMatrix4(new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'YXZ')), new THREE.Vector3(s, s, s)));
+  const paintGeo = (g: THREE.BufferGeometry, c: ColorLike) => { const k = cx3(c), n = g.attributes.position.count, a = new Float32Array(n * 3); for (let i = 0; i < n; i++) a.set(k, i * 3); g.setAttribute('color', new THREE.BufferAttribute(a, 3)); return g; };
+  const xform = (g: THREE.BufferGeometry, x: number, y: number, z: number, rx = 0, ry = 0, rz = 0, s = 1) => g.applyMatrix4(new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz, 'YXZ')), new THREE.Vector3(s, s, s)));
 
   // Lumpy salt mound / windrow along local X (base y = 0): rounded cross-section, rounded ends, crumbly lumps, a pink
   // brine-wet foot; L = length, W = base width, H = height. Vertex colours carry the shading (multiply by white).
-  function moundGeo(L, W, H, seed) {
+  function moundGeo(L: number, W: number, H: number, seed: number) {
     return tpl(['mound', L, W, H, seed % 7].map(kf).join('|'), () => {
       const nu = Math.max(6, Math.min(120, Math.round(L / 0.22))), nv = 10, s = (seed % 7) * 1.37 + 0.4, fq = 1 / Math.max(1, W / 1.15), amp = Math.min(1, 1.6 / W);
       const pos = [], cl = [], idx = [];
@@ -339,10 +356,10 @@ export function register(D, H) {
       return g;
     });
   }
-  const mound = (B, L, W, H, x, y, z, o = {}) => B.add(o.mat ?? 'rubber', moundGeo(L, W, H, o.seed ?? Math.floor(B.r(0, 7))), o.c ?? 'white', x, y, z, { ry: o.ry ?? 0, ao: o.ao });
+  const mound = (B: Builder, L: number, W: number, H: number, x: number, y: number, z: number, o: MoundOpts = {}) => B.add(o.mat ?? 'rubber', moundGeo(L, W, H, o.seed ?? Math.floor(B.r(0, 7))), o.c ?? 'white', x, y, z, { ry: o.ry ?? 0, ao: o.ao });
 
   // ------------------------------------------------------------------------------------------ narrow-gauge railway
-  function pathSamples(pts, step) {
+  function pathSamples(pts: number[][], step: number) {
     if (pts.length === 2) {
       const [a, b] = pts, dx = b[0] - a[0], dz = b[1] - a[1], L = Math.hypot(dx, dz), n = Math.max(1, Math.round(L / step));
       const out = []; for (let i = 0; i <= n; i++) out.push({ x: a[0] + (dx * i) / n, z: a[1] + (dz * i) / n, tx: dx / L, tz: dz / L });
@@ -356,7 +373,7 @@ export function register(D, H) {
   D.saltpan_rail = {
     desc: 'Narrow-gauge (600 mm) salt-works track laid on the ground: tarred timber sleepers every 0.6 m, flat-bottom rails (rusty sides, polished running tops) along a smoothed local path (pos = start; path = [[x, z], …] local points; default a straight run of `length` along +X). Non-colliding.',
     params: { path: 'local [[x, z], …]', length: 'm (8)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const pts = o.path || [[0, 0], [o.length ?? 8, 0]];
       const G2 = 0.3;
       const rails = pathSamples(pts, o.path && o.path.length > 2 ? 0.4 : 1e9);
@@ -382,7 +399,7 @@ export function register(D, H) {
   D.saltpan_buffer = {
     desc: 'Timber buffer stop closing a narrow-gauge line (the track runs along local +X, the stop faces -X at pos): two posts with raking shores, red buffer beam with white bands, a red tail lamp. Collides.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       for (const sz of [-0.32, 0.32]) {
         B.box('wood', K.timberDk, 0.16, 0.95, 0.16, 0.12, 0.475, sz, { r: 0.02 });
         beam(B, 'wood', K.timberDk, [0.18, 0.78, sz], [1.1, 0.04, sz], 0.14, 0.13);
@@ -398,7 +415,7 @@ export function register(D, H) {
   D.saltpan_turntable = {
     desc: 'Flush wagon turntable at a narrow-gauge junction: round cast-iron deck plate (1.5 m) with crossed rail stubs, a raised rim, handling pin sockets. Non-colliding.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.cyl('metal', K.iron, 0.8, 0.05, 0, 0.025, 0, { seg: 24 });
       B.cyl(NS('metal'), K.ironLt, 0.74, 0.012, 0, 0.056, 0, { seg: 24 });
       B.tor(NS('metal'), K.rustDk, 0.78, 0.022, 0, 0.055, 0, { rx: HP, rs: 4, ts: 28 });
@@ -413,7 +430,7 @@ export function register(D, H) {
   D.saltpan_wagon = {
     desc: 'Decauville V-skip tipper wagon on 600 mm track (pos = track centre at ground, local X along the rails): flanged wheels on axle boxes, iron frame, timber buffer beams with link couplings, the V skip on rocking cradles with a locking catch. variant 0 heaped with salt, 1 empty, 2 skip tipped over to +Z with the load spilled. color = skip paint. Collides.',
     params: { color: 'skip paint' }, variants: 3, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 3, wc = col(o.color ?? [K.wagonA, K.wagonB, K.wagonC, K.wagonD][Math.floor(B.r(0, 3.999))]);
       // running gear
       for (const sx of [-0.42, 0.42]) {
@@ -459,7 +476,7 @@ export function register(D, H) {
   D.saltpan_saltrow = {
     desc: 'Raked salt in a crystallising pan: variant 0 a windrow (length L × 1.1 m, 0.6 m high), 1 a row of small cones along +X (count, 1.8 m apart), 2 one big cone (1.9 m, 1.0 m high). Lumpy white salt with a pink brine-wet foot. Collides.',
     params: { length: 'windrow m (5)', count: 'cones (3)', height: 'm' }, variants: 3, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 3, sd = Math.floor(B.r(0, 7));
       if (v === 0) {
         const L = o.length ?? 5, H = o.height ?? 0.62;
@@ -486,7 +503,7 @@ export function register(D, H) {
   D.saltpan_revet = {
     desc: 'Timber revetment on a pan wall (wall face at local z = 0, pan on +Z, dyke top at y = 0): tarred posts every `spacing` from the pan floor to just above the dyke edge, iron dogs, a few salt-crusted tide lines. Non-colliding.',
     params: { length: 'm', depth: 'pan depth m (0.9)', spacing: 'm (1.6)' }, variants: 1, mount: 'wall',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const L = o.length ?? 8, d = o.depth ?? 0.9, sp = o.spacing ?? 1.6, n = Math.max(1, Math.round(L / sp));
       for (let i = 0; i <= n; i++) {
@@ -503,7 +520,7 @@ export function register(D, H) {
   D.saltpan_bwposts = {
     desc: 'Salt-pan boardwalk structure under a level deck (deck top at pos y, runs along local +X for `length`, width `width` across Z, pan floor `drop` below): paired tarred posts every 1.6 m, cross bearers and stringers, iron straps; `rail` = +1/-1 adds a post-and-rope handrail on that side. Non-colliding.',
     params: { length: 'm', width: 'm (1.8)', drop: 'm (0.9)', rail: '0 | 1 | -1' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const L = o.length ?? 8, W = o.width ?? 1.8, d = o.drop ?? 0.9, n = Math.max(1, Math.round(L / 1.6)), hw = W / 2 - 0.12;
       for (const sz of [-hw, hw]) pbox(B, NS('wood'), K.timberOld, L, 0.14, 0.09, L / 2, -0.24, sz);
@@ -535,7 +552,7 @@ export function register(D, H) {
   D.saltpan_sluice = {
     desc: 'Timber sluice headstock on a dyke (pos = dyke top centre; the culvert runs along local Z under the dyke, pans on ±Z): two heavy posts and a head beam, the raised gate paddle with iron straps, rack and pinion with a spoked handwheel, sill timbers, culvert mouths on the pan walls (walls = [[z, depth], …]). Collides.',
     params: { walls: '[[z of pan wall face, pan depth], …]', open: '0..1 paddle raise (0.4)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const lift = (o.open ?? 0.4) * 0.8, tb = K.timberDk;
       B.box('wood', shade(K.timberOld, 0.9), 1.8, 0.14, 0.62, 0, 0.07, 0, { r: 0.02 });
       for (const sx of [-0.56, 0.56]) {
@@ -578,7 +595,7 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ sacks, barrows, tools
-  function sack(B, x, y, z, ry, c, print) {
+  function sack(B: Builder, x: number, y: number, z: number, ry: number, c: ColorLike, print: string) {
     B.box('rubber', c, 0.64, 0.19, 0.4, x, y + 0.095, z, { round: true, r: 0.07, ry });
     B.push(x, y, z, ry);
     for (const s of [-1, 1]) B.sph(NS('rubber'), shade(c, 0.9), 0.035, s * 0.31, 0.11, s * 0.1, { ws: 5, hs: 4 });
@@ -588,7 +605,7 @@ export function register(D, H) {
   D.saltpan_sacks = {
     desc: 'Salt sacks: variant 0 a pallet stacked `rows` high in a brick bond (5 sacks a layer, alternating), 1 a loose heap of sacks, 2 a single row of sacks along +X (count). Jute-white sacks with blue or red printed bands. Collides.',
     params: { rows: 'layers (3)', count: 'variant 2 sacks (4)' }, variants: 3, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 3, pr = [K.printBlue, K.printRed][Math.floor(B.r(0, 1.999))];
       const sc = () => mixc(K.sack, K.sackDk, B.r(0, 0.6));
       if (v === 0) {
@@ -616,7 +633,7 @@ export function register(D, H) {
   D.saltpan_barrow = {
     desc: 'Timber salt barrow (wheel at local +X): tapered slatted tray, long handles with worn grips, iron-shod spoked wheel, splayed legs; variant 0 heaped with salt, 1 empty, 2 tipped up on its wheel against nothing (resting on the handles). Collides.',
     params: {}, variants: 3, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 3;
       const tilt = v === 2 ? -0.55 : 0.1;
       B.push(0, 0, 0, 0, 0, tilt);
@@ -638,7 +655,7 @@ export function register(D, H) {
   };
 
   // salt rake (las): long ash pole with a wide timber head
-  function rake(B, a, b, headW = 0.62) {
+  function rake(B: Builder, a: number[], b: number[], headW = 0.62) {
     rodT(B, 'wood', K.timberLt, a, b, 0.018, 5);
     const dx = b[0] - a[0], dz = b[2] - a[2], ry = Math.atan2(-dz, dx);
     B.push(b[0], b[1], b[2], ry + HP);
@@ -648,9 +665,9 @@ export function register(D, H) {
   D.saltpan_tools = {
     desc: 'Salt-worker tools: variant 0 two long salt rakes and a shovel lying on the ground, 1 rakes + shovel + broom leaning on a little timber rack (rack along +X, tools lean toward -Z), 2 one rake lying by a pan edge. Non-colliding.',
     params: {}, variants: 3, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 3;
-      const shovel = (x, y, z, ry, rz) => {
+      const shovel = (x: number, y: number, z: number, ry: number, rz: number) => {
         B.push(x, y, z, ry, 0, rz);
         rodT(B, 'wood', K.timberLt, P3(-0.75, 0, 0), P3(0.45, 0, 0), 0.02, 5);
         B.tor(NS('wood'), K.timberDk, 0.06, 0.015, -0.8, 0, 0, { rs: 4, ts: 8, rx: HP });
@@ -675,7 +692,7 @@ export function register(D, H) {
 
   // ------------------------------------------------------------------------------------------ lamps
   // enamel dish shade with a warm glowing bulb (shade axis down), at x,y,z in the current frame
-  function dishLamp(B, x, y, z, R = 0.24) {
+  function dishLamp(B: Builder, x: number, y: number, z: number, R = 0.24) {
     B.lathe('gloss', '#2f5a4e', [[0, 0.0], [R * 0.38, -0.02], [R * 0.96, -0.085], [R * 1.02, -0.08], [R, -0.06], [R * 0.4, 0.04], [0.02, 0.06]], x, y, z, { seg: 14 });
     B.cyl(NS('metal'), K.iron, 0.04, 0.08, x, y + 0.08, z, { seg: 8 });
     B.sph('glow', K.lamp, 0.075, x, y - 0.05, z, { ws: 10, hs: 6, glow: 1.9 });
@@ -684,7 +701,7 @@ export function register(D, H) {
   D.saltpan_lamp = {
     desc: 'Salt-works lighting: variant 0 a tarred timber pole (5.4 m) with a crossarm, pot insulators and a swan-neck enamel dish lamp reaching toward +Z (optional `cable` = [dx, dy, dz] local offset to the next pole top: a sagging line); 1 a wall-mounted swan-neck dish lamp (wall at z = 0). Pole collides.',
     params: { cable: '[dx, dy, dz]', height: 'm (5.4)' }, variants: 2, mount: 'ground|wall',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 2;
       if (v === 1) {
         B.aoBase = null;
@@ -708,7 +725,7 @@ export function register(D, H) {
 
   // ------------------------------------------------------------------------------------------ small fittings
   // four-pane timber window (opening w × h, bottom at y, centred at x) on a wall at z = 0
-  function window4(B, x, y, w, h, o = {}) {
+  function window4(B: Builder, x: number, y: number, w: number, h: number, o: Window4Opts = {}) {
     const fc = o.frame ?? K.trim, t = 0.07;
     pbox(B, NS('gloss'), o.glass ?? K.glass, w, h, 0.02, x, y + h / 2, 0.012);
     pbox(B, 'paint', fc, w + t * 2, t, 0.06, x, y + h + t / 2, 0.03);
@@ -724,9 +741,9 @@ export function register(D, H) {
     }
   }
   // diagonal brace on a wall (x0,y0) → (x1,y1) at depth z
-  function beamZ(B, mat, c, x0, y0, x1, y1, z, w = 0.07) { pbeam(B, mat, c, [x0, y0, z], [x1, y1, z], 0.03, w); }
+  function beamZ(B: Builder, mat: string, c: ColorLike, x0: number, y0: number, x1: number, y1: number, z: number, w = 0.07) { pbeam(B, mat, c, [x0, y0, z], [x1, y1, z], 0.03, w); }
   // ledged-and-braced timber door leaf (w × h), bottom-left… centred at x, bottom y, on a wall at z = 0
-  function ledgedDoor(B, x, y, w, h, c, o = {}) {
+  function ledgedDoor(B: Builder, x: number, y: number, w: number, h: number, c: ColorLike, o: LedgedDoorOpts = {}) {
     B.box('wood', c, w, h, 0.05, x, y + h / 2, 0.03, { r: 0.012 });
     const nb = Math.max(2, Math.round(w / 0.16));
     for (let i = 1; i < nb; i++) pbox(B, NS('paint'), shade(c, 0.78), 0.012, h - 0.04, 0.01, x - w / 2 + (i * w) / nb, y + h / 2, 0.056);
@@ -737,7 +754,7 @@ export function register(D, H) {
     pbox(B, NS('metal'), K.iron, 0.03, 0.14, 0.03, x + w * 0.38, y + 1.0, 0.085);
   }
   // board sign: text painted on a board (centre x, y; faces +Z at z)
-  function boardSign(B, text, x, y, z, o = {}) {
+  function boardSign(B: Builder, text: string, x: number, y: number, z: number, o: BoardSignOpts = {}) {
     const h = o.h ?? 0.22, pad = o.pad ?? h * 0.6, W = o.w ?? textW(text, o.wt ?? 0.19, o.track ?? 0.12) * h + pad * 2, Hb = o.hb ?? h + pad * 1.1;
     B.box(o.mat ?? 'paint', o.board ?? K.white, W, Hb, 0.05, x, y, z + 0.025, { r: Math.min(0.03, Hb * 0.15) });
     if (o.border) B.box(NS('paint'), o.border, W - 0.05, Hb - 0.05, 0.004, x, y, z + 0.052, { r: 0.01 });
@@ -763,7 +780,7 @@ export function register(D, H) {
       for (let s = 0; s < 3; s++) { g.quad(F[s][0], F[s][1], F[s + 1][1], F[s + 1][0]); g.quad(Bk[s][0], Bk[s][1], Bk[s + 1][1], Bk[s + 1][0]); }
     }
     const parts = [g.geo()];
-    const ring = (R, r) => { const pts = []; for (let k = 0; k < 36; k++) { const a = (k / 36) * TAU; pts.push([Math.cos(a) * R, 0, Math.sin(a) * R]); } return paintGeo(tubeGeo(pts, r, 4, true), '#8d959a'); };
+    const ring = (R: number, r: number) => { const pts = []; for (let k = 0; k < 36; k++) { const a = (k / 36) * TAU; pts.push([Math.cos(a) * R, 0, Math.sin(a) * R]); } return paintGeo(tubeGeo(pts, r, 4, true), '#8d959a'); };
     parts.push(ring(r1, 0.022), ring(1.15, 0.018), ring(r0, 0.02));
     for (let k = 0; k < 6; k++) { const a = (k / 6) * TAU; parts.push(paintGeo(tubeGeo([[Math.cos(a) * 0.14, 0.05, Math.sin(a) * 0.14], [Math.cos(a) * r1, 0, Math.sin(a) * r1]], 0.016, 4), '#80888d')); }
     parts.push(paintGeo(new THREE.CylinderGeometry(0.16, 0.2, 0.28, 12), '#5a6063'));
@@ -773,9 +790,9 @@ export function register(D, H) {
   D.saltpan_windpump = {
     desc: 'The brine wind pump (landmark): 9 m four-legged galvanised lattice tower on concrete footings with girts, X-bracing and a ladder, a timber work platform with a rail at the top, the geared head on its turntable, an 18-blade 3.7 m windwheel turning to face +Z, a faded red tail vane lettered SALTPAN on a braced boom, the pump rod down the middle to a cast-iron pump head feeding a brine launder. Feet + pump collide.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const Ht = 9.0, b0 = 1.3, b1 = 0.34, stl = '#9aa2a6', stlDk = '#72797d';
-      const half = (y) => b0 + ((b1 - b0) * y) / Ht;
+      const half = (y: number) => b0 + ((b1 - b0) * y) / Ht;
       // footings
       for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
         B.box('paint', '#c9c3b6', 0.5, 0.26, 0.5, sx * b0, 0.13, sz * b0, { r: 0.03 });
@@ -845,7 +862,7 @@ export function register(D, H) {
   D.saltpan_launder = {
     desc: 'Brine launder: an open timber trough (0.4 m wide) on trestles along local +X at rim height `height`, pink brine inside, drips of salt crust on the outside, a spout at the far end. Collides.',
     params: { length: 'm (4)', height: 'rim m (0.9)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const L = o.length ?? 4, Hh = o.height ?? 0.9, n = Math.max(1, Math.round(L / 1.8));
       B.box('wood', K.timberDk, L, 0.05, 0.42, L / 2, Hh - 0.3, 0, { r: 0.01 });
       for (const sz of [-0.19, 0.19]) B.box('wood', K.timberDk, L, 0.3, 0.05, L / 2, Hh - 0.15, sz, { r: 0.01 });
@@ -863,7 +880,7 @@ export function register(D, H) {
   D.saltpan_tank = {
     desc: 'Brine header tank: corrugated-iron round tank (1.9 m) with a conical lid and hatch on a timber stand (1.2 m), outlet pipe and valve wheel, a ladder, salt-crusted drips. Collides.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const R = 0.95, y0 = 1.25, Ht = 1.3;
       for (const sx of [-0.7, 0.7]) for (const sz of [-0.7, 0.7]) B.box('wood', K.timberDk, 0.16, y0, 0.16, sx, y0 / 2, sz, { r: 0.02 });
       for (const sx of [-0.7, 0.7]) { pbeam(B, NS('wood'), K.timberOld, [sx, 0.15, -0.7], [sx, y0 - 0.15, 0.7], 0.06, 0.1); pbeam(B, NS('wood'), K.timberOld, [-0.7, 0.15, sx], [0.7, y0 - 0.15, sx], 0.1, 0.06); }
@@ -886,8 +903,8 @@ export function register(D, H) {
   // Built in Alpha-half stage coordinates (place at pos [0,0,0], rotY 0; the mirror copy dresses Bravo's).
   // Level pieces it dresses: catwalk x 20…22.6 / z -26…-13 / top 3.6, head platform x 16…22.6 / z -13…-9.5,
   // incline 2.6 wide from (21.3, 0, -35.6) up to (21.3, 3.6, -26), hopper block x 19.2…23.2 / z -39.8…-36.8 / 1.4.
-  const yInc = (z) => (3.6 * (z + 35.6)) / 9.6;
-  function beltRun(B, z0, y0, z1, y1, x) {
+  const yInc = (z: number) => (3.6 * (z + 35.6)) / 9.6;
+  function beltRun(B: Builder, z0: number, y0: number, z1: number, y1: number, x: number) {
     // troughed belt along Z from (z0, y0) to (z1, y1) (belt surface heights), frame stringers, idlers every 1.2 m
     const L = Math.hypot(z1 - z0, y1 - y0), a = Math.atan2(y1 - y0, z1 - z0), n = Math.max(1, Math.round(L / 1.2));
     B.push(x, (y0 + y1) / 2, (z0 + z1) / 2, 0, -a);
@@ -906,10 +923,10 @@ export function register(D, H) {
   D.saltpan_gantry = {
     desc: 'Conveyor gantry feeding the salt heap (stage coordinates, place at the origin): lattice trestle bents under the catwalk, head platform and incline, troughed belt carrying salt from the tail hopper up the incline and along the catwalk to the head drum, discharge chute with a salt stream onto the heap ridge, corrugated drive house on the head platform, galvanised handrails, hopper funnel with a grizzly. Legs, belt frame, drive house and funnel collide.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = 0;
       const stl = '#8e979b', stlDk = '#6d7478', rail = '#b4babf';
-      const bent = (z, xs, top, foot = 0, open = false) => {
+      const bent = (z: number, xs: number[], top: number, foot = 0, open = false) => {
         for (const x of xs) {
           B.box('metal', stl, 0.16, top - foot, 0.16, x, foot + (top - foot) / 2, z, { r: 0.02 });
           for (const k of [-1, 1]) pbox(B, NS('metal'), stlDk, 0.03, top - foot, 0.03, x + k * 0.09, foot + (top - foot) / 2, z + 0.09);
@@ -950,7 +967,7 @@ export function register(D, H) {
       for (const z of [-12.9, -9.6]) pbox(B, 'metal', stlDk, 6.45, 0.24, 0.1, 19.22, 3.22, z);
       for (const x of [20.15, 22.3]) { B.push(x, yInc(-30.8) - 0.3, -30.8, 0, -Math.atan2(3.6, 9.6)); pbox(B, 'metal', stlDk, 0.1, 0.22, 10.2, 0, 0, 0); B.pop(); }
       // handrails: outer edge of incline + catwalk + head platform (north + east)
-      const railRun = (pts) => {
+      const railRun = (pts: number[][]) => {
         for (const p of pts) { B.cyl('metal', rail, 0.022, 1.0, p[0], p[1] + 0.5, p[2], { seg: 6 }); }
         for (let i = 0; i + 1 < pts.length; i++) {
           const a = pts[i], b = pts[i + 1];
@@ -1006,15 +1023,15 @@ export function register(D, H) {
     },
   };
   // door leaf on a side wall: frame at x,z facing ry
-  function ledgedDoorOn(B, x, y, z, ry, w, h, c) { B.push(x, y, z, ry); ledgedDoor(B, 0, 0, w, h, c); B.pop(); }
+  function ledgedDoorOn(B: Builder, x: number, y: number, z: number, ry: number, w: number, h: number, c: ColorLike) { B.push(x, y, z, ry); ledgedDoor(B, 0, 0, w, h, c); B.pop(); }
 
   // ------------------------------------------------------------------------------------------ the salt heap
   // Heap (stage coordinates, place at the origin): ridge x 17.5 / y 2.4 from z -25 to -13, slopes to x 11.8 and 23.2.
-  const heapY = (x) => Math.max(0, 2.4 * (1 - Math.abs(x - 17.5) / 5.7));
+  const heapY = (x: number) => Math.max(0, 2.4 * (1 - Math.abs(x - 17.5) / 5.7));
   D.saltpan_heap = {
     desc: 'Salt heap dressing (stage coordinates, place at the origin): timber heap-board bulkhead with posts across the back end, the working face at the mid end with a fall of loose salt and a shovel, crumbly salt lumps softening both toes, a rounded crest along the ridge. Bulkhead + salt fall collide.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const zb = -25;
       for (const x of [12.3, 14.6, 17.5, 20.4, 22.7]) {
         const h = heapY(x) + 0.35;
@@ -1058,7 +1075,7 @@ export function register(D, H) {
   D.saltpan_shed = {
     desc: 'Packing-shed dressing (stage coordinates, place at the origin): corner boards, tarred plinth, sliding ledged doors onto the loading dock (one open on a dark interior of sacks), four-pane windows, eaves overhangs with fascias, gutters and downpipes, barge boards, galvanised ridge roll, two roof ventilators (collide), PACKING SHED board and a louvred vent on the gable, loft-stair stringers, posts and handrail, dock nosing and rubbing posts, dock-step rails. zones: true = the Zone Control front (layout.js shed-stair + shed-landing): the facade stair and landing dressed (stringer, posts, handrail + rail colliders), the second door, window and wall lamp moved out of the stair\'s way.',
     params: { zones: 'bool: the Zone Control front (facade stair)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = 0;
       const ZC = !!o.zones;
       const x0 = -26, x1 = -15, zb = -25, zf = -18, Hw = 3.2, zr = -21.5, dockY = 1.1;
@@ -1072,7 +1089,7 @@ export function register(D, H) {
       const pitch = Math.atan2(1.0, 3.5);
       // (Zone Control: the front eave stops either side of the facade stair + landing, x −23 … −16.6, so nothing hangs
       // over the treads — the stair climbs straight onto the roof edge)
-      const eaveRuns = (z) => (ZC && z === zf ? [[x0 - 0.15, -23], [-16.6, x1 + 0.15]] : [[x0 - 0.15, x1 + 0.15]]);
+      const eaveRuns = (z: number) => (ZC && z === zf ? [[x0 - 0.15, -23], [-16.6, x1 + 0.15]] : [[x0 - 0.15, x1 + 0.15]]);
       for (const [z, s] of [[zb, -1], [zf, 1]]) for (const [ea, eb] of eaveRuns(z)) {
         const em = (ea + eb) / 2, eL = eb - ea;
         B.push(em, Hw - 0.02, z + s * 0.2, 0, s * pitch);
@@ -1134,7 +1151,7 @@ export function register(D, H) {
       // end stays open (swim up its timber end wall, or hop over from the sack pallets)
       if (ZC) {
         const x0 = -16.7, x1 = -21.5, xl = -23, y0 = dockY, y1 = 3.2, ze = -16.52;
-        const sy = (x) => y0 + ((y1 - y0) * (x0 - x)) / (x0 - x1);
+        const sy = (x: number) => y0 + ((y1 - y0) * (x0 - x)) / (x0 - x1);
         pbeam(B, 'wood', K.timberDk, [x0 + 0.3, y0 - 0.06, ze], [x1, y1 - 0.06, ze], 0.08, 0.16);
         pbox(B, 'wood', K.timberDk, x1 - xl, 0.16, 0.08, (x1 + xl) / 2, y1 - 0.06, ze);
         for (const x of [-17.1, -18.6, -20.1, -21.5, -23.0]) B.box('wood', K.timberDk, 0.08, 1.02, 0.08, x, (x < x1 ? y1 : sy(x)) + 0.51, ze, { r: 0.012 });
@@ -1149,7 +1166,7 @@ export function register(D, H) {
         pbox(B, 'metal', K.iron, 1.5, 0.05, 0.08, (x1 + xl) / 2, y1 - 0.02, ze + 0.02);
       }
       // loft stair: stringers, posts, handrails
-      const sy = (z) => (3.2 * (z + 33)) / 8;
+      const sy = (z: number) => (3.2 * (z + 33)) / 8;
       for (const x of [-17.95, -16.05]) {
         pbeam(B, 'wood', K.timberDk, [x, -0.08, -33.4], [x, 3.12, -25.2], 0.08, 0.34);
         for (const z of [-31.5, -29.5, -27.5]) B.box('wood', K.timberOld, 0.14, sy(z) - 0.25, 0.14, x, (sy(z) - 0.25) / 2, z, { r: 0.02 });
@@ -1173,7 +1190,7 @@ export function register(D, H) {
   D.saltpan_crane = {
     desc: 'Hand jib crane on a loading dock: cast-iron post (3.1 m) on a bolted base, jib reaching toward local +Z with a tie rod, crab, chain and hook carrying a sling of salt sacks, winch with a crank on the post. Post collides.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.lathe('metal', '#3f4e57', [[0.28, 0], [0.28, 0.06], [0.14, 0.12], [0.1, 0.3], [0.08, 3.0], [0.12, 3.06], [0.12, 3.12], [0, 3.14]], 0, 0, 0, { seg: 12 });
       B.box('metal', '#3f4e57', 0.16, 0.2, 2.0, 0, 2.95, 0.9, { r: 0.02 });
       rodT(B, 'metal', '#3f4e57', P3(0, 3.1, 0), P3(0, 3.0, 1.85), 0.02, 5);
@@ -1191,7 +1208,7 @@ export function register(D, H) {
   D.saltpan_scale = {
     desc: 'Platform weighing scale for sacks: low iron platform, cast column with a sliding-weight beam and counterweights on a hook, brass plate. Collides (low).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.box('metal', '#4b5a5f', 0.9, 0.14, 0.7, 0, 0.07, 0, { r: 0.02 });
       pbox(B, NS('metal'), K.ironLt, 0.82, 0.01, 0.62, 0, 0.145, 0);
       B.lathe('metal', '#4b5a5f', [[0.1, 0], [0.08, 0.1], [0.05, 1.1], [0.07, 1.16], [0, 1.17]], 0, 0, -0.42, { seg: 10 });
@@ -1209,7 +1226,7 @@ export function register(D, H) {
   D.saltpan_store = {
     desc: 'The Salt Store behind the spawn (stage coordinates, place at the origin): facade fittings (corner boards, eaves band, loading doors onto the gallery — one open on stacked sacks — windows, small doors in the side bays, wall lamps), the big boarded gable with SALTPAN BASIN channel letters and SALT CO. · 1889, loft door and hoist beam with pulley, rope and a hanging sling of sacks, corrugated roof with a louvred ventilator and fish weather-vane, side walls, the quay it stands on, and the tall brick chimney of the old boiling house. The gable top collides (keeps climbers off the wall head).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const zf = -45.4, xl = -12, xr = 8, Hw = 5.4, cxg = -2, apex = 9.5, zbk = -60;
       const wall = '#9c6a5b', wallDk = '#86594c', trim = K.trim;
@@ -1265,7 +1282,7 @@ export function register(D, H) {
       for (let k = 0; k < 4; k++) for (const f of [1, -1]) pbox(B, NS('paint'), '#8f8a80', 1.0, 0.05, 0.02, cxg, apex + 0.3 + k * 0.17, vz + f * 0.66, { rx: f * 0.4 });
       B.add('paint', tpl('pyr', () => latheGeo([[0, 0], [1.0, 0], [0, 0.6]], 4)), K.roof, cxg, apex + 1.0, vz, { ry: PI / 4 });
       B.cyl('metal', K.iron, 0.02, 1.1, cxg, apex + 2.0, vz, { seg: 5 });
-      for (const [a, t] of [[0, 'N'], [HP, 'E'], [PI, 'S'], [-HP, 'W']]) pbox(B, NS('metal'), K.iron, 0.4, 0.015, 0.015, cxg + Math.cos(a) * 0.2, apex + 1.9, vz - Math.sin(a) * 0.2, { ry: a });
+      for (const [a, t] of [[0, 'N'], [HP, 'E'], [PI, 'S'], [-HP, 'W']] as Array<[number, string]>) pbox(B, NS('metal'), K.iron, 0.4, 0.015, 0.015, cxg + Math.cos(a) * 0.2, apex + 1.9, vz - Math.sin(a) * 0.2, { ry: a });
       B.add('metal', tpl('fish', () => extrudeGeo([[-0.45, 0], [-0.2, 0.14], [0.2, 0.12], [0.35, 0.2], [0.4, 0], [0.35, -0.2], [0.2, -0.12], [-0.2, -0.14]], 0.02, 0.004)), K.clubGold, cxg, apex + 2.3, vz, { ry: HP + 0.4 });
       // side + back walls
       for (const x of [xl - 0.1, xr + 0.1]) {
@@ -1292,7 +1309,7 @@ export function register(D, H) {
   D.saltpan_office = {
     desc: 'Works office dressing (stage coordinates, place at the origin): gabled corrugated roof with a brick chimney, a veranda on posts with a lean-to roof along the front, sash windows, a panelled door, WORKS OFFICE board, a notice board with pinned sheets, a bell on a bracket, bench, rain barrel, telephone pole with wires. Roof block collides (keeps climbers off).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = 0;
       const x0 = -25.5, x1 = -19, z0 = -45.5, z1 = -40.5, Hw = 2.8, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2, trim = K.officeTrim;
       for (const x of [x0, x1]) for (const z of [z0, z1]) B.box('paint', trim, 0.16, Hw, 0.16, x + (x === x0 ? 0.06 : -0.06), Hw / 2, z + (z === z0 ? -0.06 : 0.06), { r: 0.02 });
@@ -1349,14 +1366,14 @@ export function register(D, H) {
   D.saltpan_gallery = {
     desc: 'Loading-gallery dressing (stage coordinates, place at the origin): heavy timber posts and an edge beam on the gallery front, post-and-rail balustrade round the deck, stair stringers with handrails and newel posts, side-ramp rails, a timber salt chute to the yard. Non-colliding.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = 0;
       const zf = -38.5, top = 2.4;
       for (const x of [-8.85, -6.6, -4.62, 0.62, 2.8, 4.85]) B.box('wood', K.timberOld, 0.24, top - 0.1, 0.16, x, (top - 0.1) / 2, zf + 0.08, { r: 0.03 });
       for (const [a, b] of [[-9, -4.5], [0.5, 5]]) pbox(B, 'wood', K.timberDk, b - a, 0.28, 0.1, (a + b) / 2, top - 0.17, zf + 0.05);
       for (const x of [-9, 5]) pbox(B, 'wood', K.timberDk, 0.1, 0.28, 6.9, x + (x < 0 ? -0.05 : 0.05), top - 0.17, -41.95);
       // balustrade
-      const rail = (pts, h = 1.0) => {
+      const rail = (pts: number[][], h = 1.0) => {
         for (const p of pts) B.box('wood', K.timberDk, 0.1, h, 0.1, p[0], p[1] + h / 2, p[2], { r: 0.015 });
         for (let i = 0; i + 1 < pts.length; i++) {
           const a = pts[i], b = pts[i + 1];
@@ -1377,7 +1394,7 @@ export function register(D, H) {
       B.push(-8.85, top, -38.75, 0); D.stringlights.build(B, { length: 13.7, height: 3.3, endHeight: 3.3, sag: 0.45, count: 26 }); B.pop();
       B.aoBase = 0;
       // stair: stringers, handrails, newels
-      const sy = (z) => (top * (z + 32.4)) / -6.1;
+      const sy = (z: number) => (top * (z + 32.4)) / -6.1;
       for (const x of [-4.56, 0.56]) {
         pbeam(B, 'wood', K.timberDk, [x, -0.1, -32.1], [x, top - 0.06, -38.52], 0.1, 0.36);
         const pts = [];
@@ -1387,7 +1404,7 @@ export function register(D, H) {
         B.box(NS('wood'), K.endgrain, 0.26, 0.06, 0.26, x, 1.18, -32.5, { r: 0.01 });
       }
       // side ramp (x 5 → 11.4), rail on its open side
-      const ry = (x) => top * (1 - (x - 5) / 6.4);
+      const ry = (x: number) => top * (1 - (x - 5) / 6.4);
       const rp = []; for (const x of [5.3, 7.3, 9.3, 11.1]) rp.push([x, ry(x), -42.02]);
       rail(rp);
       pbeam(B, 'wood', K.timberDk, [5, top - 0.06, -41.98], [11.6, -0.1, -41.98], 0.1, 0.36);
@@ -1398,7 +1415,7 @@ export function register(D, H) {
   D.saltpan_sign = {
     desc: 'Salt-works sign: variant 0 a painted pan board on two tarred posts (text, e.g. PAN 4), 1 a wall board (wall at z = 0), 2 a small enamel warning plate on a post (text). Board faces +Z. Posts collide (variant 0).',
     params: { text: 'string', board: 'colour', color: 'letter colour', h: 'letter height' }, variants: 3, mount: 'ground|wall',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 3, text = o.text ?? 'PAN 4';
       if (v === 1) { B.aoBase = null; boardSign(B, text, 0, 0, 0, { h: o.h ?? 0.22, board: o.board ?? K.cream, c: o.color ?? K.navy, border: o.color ?? K.navy }); return; }
       if (v === 2) {
@@ -1422,7 +1439,7 @@ export function register(D, H) {
   D.saltpan_ponds = {
     desc: 'Outer evaporation-pond field (scenery beyond the arena, local x 0…w, z 0…d at sea level): brine ponds of graded colours between mud dykes, a dyke road with telegraph poles, optional distant wind pump and salt camelle. Non-colliding.',
     params: { w: 'm', d: 'm', seed: 'n', pump: '[x, z]', camelle: '[x, z, len]' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const W = o.w ?? 50, Dd = o.d ?? 60, rnd = H.mulberry32(o.seed ?? 7), yW = -1.33, yD = -1.05;
       // dyke grid: columns split x, rows per column split z
@@ -1464,7 +1481,7 @@ export function register(D, H) {
   // ------------------------------------------------------------------------------------------ salt-marsh plants
   // glasswort / samphire: fleshy jointed cushions, green going red in the salt — a run along +X (length) or one clump
   const SAMP = ['#7c9453', '#8d9d5b', '#9c6049', '#a86c50', '#878a4f', '#93594a'];
-  function sampClump(B, x, y, z, s) {
+  function sampClump(B: Builder, x: number, y: number, z: number, s: number) {
     const c1 = SAMP[Math.floor(B.r(0, SAMP.length - 0.001))], c2 = SAMP[Math.floor(B.r(0, SAMP.length - 0.001))];
     for (let k = 0; k < 2; k++) {
       const a = B.r(0, TAU), r = B.r(0, 0.1) * s;
@@ -1478,7 +1495,7 @@ export function register(D, H) {
   D.saltpan_samphire = {
     desc: 'Salt-marsh glasswort (samphire): fleshy jointed cushions going from green to red in the salt; variant 0 a ragged run of clumps along +X (length), 1 a single clump. Non-colliding.',
     params: { length: 'm (4)' }, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       if ((o.variant ?? 0) % 2 === 1) { sampClump(B, 0, 0, 0, B.r(0.9, 1.3)); return; }
       const L = o.length ?? 4;
       for (let x = B.r(0, 0.4); x < L; x += B.r(0.35, 0.9)) sampClump(B, x, 0, B.r(-0.18, 0.18), B.r(0.6, 1.25));
@@ -1489,7 +1506,7 @@ export function register(D, H) {
   D.saltpan_hut = {
     desc: 'Small timber sluice-keeper hut (front +Z): boarded walls on a tarred plinth, pent corrugated roof, ledged door, four-pane window, stove pipe, a winch wheel and rope coil by the door, lifebuoy-free (this is salt, not a marina). Collides.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const W = 1.9, Dd = 1.7, Hf = 2.3, Hb = 2.0;
       B.box('paint', '#a8b2a9', W, Hb, Dd, 0, Hb / 2, 0, { r: 0.03 });
       pbox(B, 'paint', '#a8b2a9', W, Hf - Hb, 0.06, 0, Hb + (Hf - Hb) / 2, Dd / 2 - 0.03);
@@ -1515,9 +1532,9 @@ export function register(D, H) {
   D.saltpan_staging = {
     desc: 'Wind-pump staging dressing (centred on the staging, mirror: false): tarred kerb timbers round the edge (open where the boardwalks land), iron bollards at the corners, a tool chest, rope coil, oil drum. Kerbs + bollards non-colliding, chest collides.',
     params: { size: 'half-size m (3.6)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const s = o.size ?? 3.6, y = 0;
-      const kerb = (x0, z0, x1, z1) => pbox(B, 'wood', K.tar, Math.abs(x1 - x0) + 0.16, 0.14, Math.abs(z1 - z0) + 0.16, (x0 + x1) / 2, y + 0.07, (z0 + z1) / 2);
+      const kerb = (x0: number, z0: number, x1: number, z1: number) => pbox(B, 'wood', K.tar, Math.abs(x1 - x0) + 0.16, 0.14, Math.abs(z1 - z0) + 0.16, (x0 + x1) / 2, y + 0.07, (z0 + z1) / 2);
       // edges (boardwalks land at +X z -2.6…-0.8, -X z 0.8…2.6, -Z x 1.4…3.2, +Z x -3.2…-1.4)
       const e = s - 0.1;
       kerb(-e, -e, 1.2, -e); kerb(3.4, -e, e, -e);
@@ -1534,7 +1551,7 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ flamingos (scenery)
-  function flamingo(B, x, y, z, ry, feeding, s = 1) {
+  function flamingo(B: Builder, x: number, y: number, z: number, ry: number, feeding: boolean, s = 1) {
     B.push(x, y, z, ry, 0, 0, s);
     const pink = '#eea7a1', pinkDk = '#d98580', leg = '#d88e8a';
     B.cyl(NS('paint'), leg, 0.012, 0.78, 0.0, 0.39, 0.05, { seg: 4 });
@@ -1551,7 +1568,7 @@ export function register(D, H) {
   D.saltpan_flamingos = {
     desc: 'A flock of greater flamingos wading in a brine pond (scenery): `count` birds scattered over a radius, standing, preening or feeding head-down, legs in the water (pos = water surface). Non-colliding.',
     params: { count: 'birds (7)', radius: 'm (4)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const n = o.count ?? 7, R = o.radius ?? 4;
       for (let i = 0; i < n; i++) { const a = B.r(0, TAU), r = Math.sqrt(B.r(0, 1)) * R; flamingo(B, Math.cos(a) * r, -0.12, Math.sin(a) * r, B.r(0, TAU), B.r(0, 1) < 0.45, B.r(0.9, 1.1)); }
@@ -1562,7 +1579,7 @@ export function register(D, H) {
   D.saltpan_gauge = {
     desc: 'Brine staff gauge in a pan: white graduated board with black ticks and red decimetre numbers on a tarred post (pos = pan floor), a salt tide line near the foot. Non-colliding.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.box('wood', K.tar, 0.1, 1.4, 0.08, 0, 0.7, -0.05, { r: 0.012 });
       pbox(B, 'paint', K.white, 0.12, 1.0, 0.02, 0, 0.72, 0.0);
       for (let k = 0; k <= 20; k++) pbox(B, NS('paint'), k % 5 ? K.tar : K.red, k % 5 ? 0.05 : 0.09, 0.012, 0.004, -0.02, 0.24 + k * 0.047, 0.012);
@@ -1572,7 +1589,7 @@ export function register(D, H) {
   D.saltpan_stakes = {
     desc: 'A run of white-painted marker stakes with red tops along +X (length, every 2 m), leaning a little, salt-crusted at the foot. Non-colliding.',
     params: { length: 'm (6)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const L = o.length ?? 6;
       for (let x = 0; x <= L + 0.01; x += 2) {
         const rz = B.r(-0.06, 0.06), rx = B.r(-0.06, 0.06);
@@ -1584,7 +1601,7 @@ export function register(D, H) {
   D.saltpan_sleepers = {
     desc: 'A crib-stacked pile of spare tarred rail sleepers with a few rail lengths on top. Collides.',
     params: { rows: 'layers (4)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const rows = o.rows ?? 4;
       for (let r = 0; r < rows; r++) for (let k = 0; k < 5; k++) {
         const along = r % 2 === 0;
@@ -1599,7 +1616,7 @@ export function register(D, H) {
   D.saltpan_gull = {
     desc: 'A herring gull perched on a post or beam (pos = its feet), facing local +X; variant 0 standing, 1 hunkered down. Non-colliding.',
     params: {}, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const v = (o.variant ?? 0) % 2, lo = v ? -0.05 : 0;
       for (const z of [-0.03, 0.03]) if (!v) B.cyl(NS('paint'), '#d7a35a', 0.006, 0.07, 0, 0.035, z, { seg: 3 });
@@ -1615,7 +1632,7 @@ export function register(D, H) {
   D.saltpan_seaedge = {
     desc: 'Timber-revetted tidal-flat quay edge along local +X (length) at a deck edge (deck top y = 0 at pos, sea on local +Z): tarred piles every ~1.3 m driven into the mud, two waling planks on the face, a capping fender along the top, a weed band and a salt tide-line at the waterline, the odd mooring post with a rope. Non-colliding.',
     params: { length: 'm (6)', post: 'bool: a mooring post at mid-length' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const L = o.length ?? 6, n = Math.max(1, Math.round(L / 1.3));
       for (let i = 0; i <= n; i++) {

@@ -13,12 +13,25 @@
 // and sea railings along the other, bandstands, a floral clock, the lifeboat station and the two piers out at sea.
 // Palette: cream / pastel stucco, sea-green painted cast iron, coral + navy accents, gilt details, slate roofs.
 import { SQ, PROM, TERR, COLO, STAIR, chainSections } from './layout.js';
+import type * as THREE from 'three';
+import type { PropDefs, PackHelpers, Builder, PropParams, PartOpts, ColorLike, PropDef } from '../../props.js';
 
 const P = Math.PI;
 
-export function register(D, H) {
+// 지역 도우미 선택(도우미 본문의 o.키와 호출부 값에서 모은 타입)
+interface RusticateOpts { c?: ColorLike; cap?: boolean }
+interface RampBalustradeOpts { c?: ColorLike; col?: boolean; h?: number; rail?: boolean; skirt?: boolean; skirtZ?: number }
+interface BayWindowOpts { lit?: number }
+interface ShopfrontOpts { board?: ColorLike; c?: ColorLike; doorLeft?: boolean; glowC?: ColorLike; glowLetters?: number; h?: number; lc?: ColorLike; lh?: number; lit?: number | false }
+interface IronRailOpts { bay?: number; c?: ColorLike; col?: boolean; h?: number; p0?: boolean; p1?: boolean }
+interface BalustradeOpts { balls?: boolean; bay?: number; c?: ColorLike; c0?: number; c1?: number; col?: boolean; h?: number; lamp0?: boolean; lamp1?: boolean; p0?: boolean; p1?: boolean; seg?: number; urnC?: ColorLike; urns?: number }
+interface ArchOpeningOpts { bars?: boolean; door?: ColorLike; fan?: boolean; frame?: ColorLike; glass?: ColorLike; impost?: boolean; key?: ColorLike; lit?: number; transom?: number }
+interface SashOpts { balconette?: boolean; bars?: number; blind?: ColorLike; frame?: ColorLike; glass?: ColorLike; hood?: string; key?: boolean; lit?: number; ns?: boolean; sash?: ColorLike }
+interface LettersOpts { align?: 'left' | 'right' | 'center'; bev?: number; c?: ColorLike; dep?: number; ds?: number; flat?: boolean; glow?: number; h?: number; lit?: number; litC?: ColorLike; mat?: string; track?: number; wt?: number; x?: number; y?: number; z?: number }
+
+export function register(D: PropDefs, H: PackHelpers) {
   const { THREE, col, shade, mixc, latheGeo, tubeGeo, extrudeGeo, arcPts, PI, TAU, HP, P3 } = H;
-  const NS = (m) => (H.noShadow ? H.noShadow(m) : m);
+  const NS = (m: string) => (H.noShadow ? H.noShadow(m) : m);
 
   // ------------------------------------------------------------------------------------------ local palette
   const K = {
@@ -35,9 +48,14 @@ export function register(D, H) {
   // ------------------------------------------------------------------------------------------ geometry helpers
   // tiny builder (same contract as props.js GB: triangles auto-orient to the supplied outward normals)
   class GB {
+    idx: number[] = [];
+    c: number[] = [];
+    uv: number[] = [];
+    n: number[] = [];
+    p: number[] = [];
     constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.idx = []; }
-    v(x, y, z, nx, ny, nz, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
-    tri(a, b, c) {
+    v(x: number, y: number, z: number, nx: number, ny: number, nz: number, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
+    tri(a: number, b: number, c: number) {
       const Pp = this.p, N = this.n;
       const ax = Pp[a * 3], ay = Pp[a * 3 + 1], az = Pp[a * 3 + 2];
       const e1x = Pp[b * 3] - ax, e1y = Pp[b * 3 + 1] - ay, e1z = Pp[b * 3 + 2] - az;
@@ -47,7 +65,7 @@ export function register(D, H) {
       const s = cx * (N[a * 3] + N[b * 3] + N[c * 3]) + cy * (N[a * 3 + 1] + N[b * 3 + 1] + N[c * 3 + 1]) + cz * (N[a * 3 + 2] + N[b * 3 + 2] + N[c * 3 + 2]);
       if (s < 0) this.idx.push(a, c, b); else this.idx.push(a, b, c);
     }
-    quad(a, b, c, d) { this.tri(a, b, c); this.tri(a, c, d); }
+    quad(a: number, b: number, c: number, d: number) { this.tri(a, b, c); this.tri(a, c, d); }
     geo() {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(this.p, 3));
@@ -58,36 +76,36 @@ export function register(D, H) {
       return g;
     }
   }
-  const TPL = new Map();
-  const tpl = (key, fn) => { let g = TPL.get(key); if (!g) { g = fn(); TPL.set(key, g); } return g; };
-  const kf = (a) => (typeof a === 'number' ? a.toFixed(4) : String(a));
-  const cx3 = (c) => { const k = col(c); return [k.r, k.g, k.b]; };
+  const TPL = new Map<string, unknown>();   // (키마다 만드는 값의 모양이 다르다: 형상·글리프 등)
+  const tpl = <T,>(key: string, fn: () => T): T => { let g = TPL.get(key) as T | undefined; if (g === undefined) { g = fn(); TPL.set(key, g); } return g; };
+  const kf = (a: unknown) => (typeof a === 'number' ? a.toFixed(4) : String(a));
+  const cx3 = (c: ColorLike) => { const k = col(c); return [k.r, k.g, k.b]; };
   const pboxGeo = () => tpl('pbox', () => new THREE.BoxGeometry(1, 1, 1));
   // plain (unbevelled) box for small parts: 12 triangles
-  const pbox = (B, mat, c, w, h, d, x, y, z, o = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
+  const pbox = (B: Builder, mat: string, c: ColorLike, w: number, h: number, d: number, x: number, y: number, z: number, o: PartOpts = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
   // cached extrusion of a closed (z, y) profile along X (length L)
-  const ext = (key, prof, L, b = 0.004) => tpl('tx|' + key + '|' + kf(L), () => extrudeGeo(prof, L, b));
+  const ext = (key: string, prof: number[][], L: number, b = 0.004) => tpl('tx|' + key + '|' + kf(L), () => extrudeGeo(prof, L, b));
   // Colliders are prop-local (B.col ignores B.push), so builders that nest frames track them here: fpush/fpop wrap
   // B.push/B.pop for yaw-only frames, COL maps a box from the current frame into prop-local space (AABB).
-  const FR = [];
+  const FR: number[][] = [];   // 좌표 프레임 스택 [x, y, z, ry]
   const frame = () => FR[FR.length - 1] || [0, 0, 0, 0];
-  function fpush(B, x, y, z, ry = 0) { const t = frame(), c = Math.cos(t[3]), sn = Math.sin(t[3]); FR.push([t[0] + x * c + z * sn, t[1] + y, t[2] - x * sn + z * c, t[3] + ry]); B.push(x, y, z, ry); }
-  function fpop(B) { FR.pop(); B.pop(); }
+  function fpush(B: Builder, x: number, y: number, z: number, ry = 0) { const t = frame(), c = Math.cos(t[3]), sn = Math.sin(t[3]); FR.push([t[0] + x * c + z * sn, t[1] + y, t[2] - x * sn + z * c, t[3] + ry]); B.push(x, y, z, ry); }
+  function fpop(B: Builder) { FR.pop(); B.pop(); }
   // o.roof: an off-limits top (never inkable, nobody can stand on it); o.rail: a railing / balustrade / grille — kids
   // can't pass, shots, ink and squids can (and nobody stands on it) — see props.js B.col
-  function COL(B, x0, y0, z0, x1, y1, z1, o) {
+  function COL(B: Builder, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, o?: PartOpts) {
     const t = frame(), c = Math.cos(t[3]), sn = Math.sin(t[3]);
     let ax = Infinity, az = Infinity, bx = -Infinity, bz = -Infinity;
     for (const [lx, lz] of [[x0, z0], [x1, z0], [x1, z1], [x0, z1]]) { const wx = t[0] + lx * c + lz * sn, wz = t[2] - lx * sn + lz * c; ax = Math.min(ax, wx); bx = Math.max(bx, wx); az = Math.min(az, wz); bz = Math.max(bz, wz); }
-    const r = (v) => Math.round(v * 1e4) / 1e4;
+    const r = (v: number) => Math.round(v * 1e4) / 1e4;
     const f = (o && o.roof ? 1 : 0) | (o && o.rail ? 2 : 0);
     B.cols.push(f ? [r(ax), r(t[1] + y0), r(az), r(bx), r(t[1] + y1), r(bz), f] : [r(ax), r(t[1] + y0), r(az), r(bx), r(t[1] + y1), r(bz)]);
   }
-  const colBox = (B, x, y, z, w, h, d, o) => COL(B, x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2, o);
+  const colBox = (B: Builder, x: number, y: number, z: number, w: number, h: number, d: number, o?: PartOpts) => COL(B, x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2, o);
   // every build starts with an empty frame stack (a throw mid-build must not leak frames into the next prop)
-  const def = (o) => { const b = o.build; o.build = (B, opts) => { FR.length = 0; b(B, opts); }; return o; };
+  const def = (o: PropDef) => { const b = o.build; o.build = (B: Builder, opts: PropParams) => { FR.length = 0; b(B, opts); }; return o; };
   // flat disc facing +Z (for dials, glass heads), optional half (top) disc
-  const discGeo = (r, seg, half = false) => tpl(['disc', r, seg, half ? 1 : 0].map(kf).join('|'), () => {
+  const discGeo = (r: number, seg: number, half = false) => tpl(['disc', r, seg, half ? 1 : 0].map(kf).join('|'), () => {
     const g = new GB(), c0 = g.v(0, 0, 0, 0, 0, 1), ids = [];
     const n = half ? seg : seg;
     for (let i = 0; i <= n; i++) { const a = half ? (i / n) * PI : (i / n) * TAU; ids.push(g.v(Math.cos(a) * r, Math.sin(a) * r, 0, 0, 0, 1)); }
@@ -95,7 +113,7 @@ export function register(D, H) {
     return g.geo();
   });
   // round-headed panel (rectangle w × h with a semicircular head on top, total height h + w/2), facing +Z
-  const archPanelGeo = (w, h, seg = 10) => tpl(['archp', w, h, seg].map(kf).join('|'), () => {
+  const archPanelGeo = (w: number, h: number, seg = 10) => tpl(['archp', w, h, seg].map(kf).join('|'), () => {
     const g = new GB(), r = w / 2;
     const q = [g.v(-r, 0, 0, 0, 0, 1), g.v(r, 0, 0, 0, 0, 1), g.v(r, h, 0, 0, 0, 1), g.v(-r, h, 0, 0, 0, 1)];
     g.quad(q[0], q[1], q[2], q[3]);
@@ -105,24 +123,26 @@ export function register(D, H) {
     return g.geo();
   });
   // triangle (gable / pediment face) facing +Z: base w, height h
-  const triGeo = (w, h) => tpl(['tri', w, h].map(kf).join('|'), () => {
+  const triGeo = (w: number, h: number) => tpl(['tri', w, h].map(kf).join('|'), () => {
     const g = new GB(); g.tri(g.v(-w / 2, 0, 0, 0, 0, 1), g.v(w / 2, 0, 0, 0, 0, 1), g.v(0, h, 0, 0, 0, 1)); return g.geo();
   });
   // mouldings (closed z/y profiles, z = projection from the wall)
-  const PROF = {
+  const PROF: Record<string, number[][]> = {
     cornice: [[0, 0], [0.06, 0], [0.06, 0.05], [0.1, 0.08], [0.13, 0.14], [0.26, 0.17], [0.3, 0.24], [0.33, 0.3], [0.34, 0.36], [0, 0.36]],
     string: [[0, 0], [0.05, 0], [0.07, 0.03], [0.07, 0.09], [0.05, 0.12], [0, 0.12]],
     plinth: [[0, 0], [0.09, 0], [0.09, 0.28], [0.05, 0.32], [0, 0.34]],
     sill: [[0, 0], [0.09, 0.01], [0.1, 0.05], [0.08, 0.07], [0, 0.07]],
     coping: [[-0.22, 0], [0.22, 0], [0.22, 0.06], [0.17, 0.1], [0, 0.13], [-0.17, 0.1], [-0.22, 0.06]],
   };
-  const mould = (B, mat, c, kind, L, x, y, z, o = {}) => B.add(mat, ext(kind, PROF[kind], L), c, x, y, z, o);
+  const mould = (B: Builder, mat: string, c: ColorLike, kind: string, L: number, x: number, y: number, z: number, o: PartOpts = {}) => B.add(mat, ext(kind, PROF[kind], L), c, x, y, z, o);
 
   // ------------------------------------------------------------------------------------------ stroke font
   // (adapted from the marina dock pack) Rounded bold sans (cap height 1): centre-line strokes, round caps + round joins, bevelled front, flat back.
-  const EA = (cx, cy, rx, ry, a0, a1, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
-  const LOOP = (cx, cy, rx, ry, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
-  const GL = {
+  const EA = (cx: number, cy: number, rx: number, ry: number, a0: number, a1: number, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
+  const LOOP = (cx: number, cy: number, rx: number, ry: number, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
+  // 글리프: [폭, 획…], 획은 점 목록 또는 닫힌 곡선 { c: 점 목록 }
+  type Stroke = number[][] | { c: number[][] };
+  const GL: Record<string, Array<number | Stroke>> = {
     A: [0.66, [[0, 0], [0.33, 1], [0.66, 0]], [[0.13, 0.33], [0.53, 0.33]]],
     B: [0.58, [[0, 0], [0, 1]], [[0, 1], ...EA(0.3, 0.755, 0.245, 0.245, 90, -90, 12), [0, 0.51]], [[0, 0.51], ...EA(0.32, 0.255, 0.255, 0.255, 90, -90, 12), [0, 0]]],
     C: [0.64, EA(0.34, 0.5, 0.34, 0.5, 46, 314, 22)],
@@ -165,26 +185,26 @@ export function register(D, H) {
     "'": [0, [[0, 1], [0, 0.8]]],
     '&': [0.7, [[0.7, 0], ...EA(0.27, 0.72, 0.17, 0.2, -40, 220, 12).reverse(), [0.08, 0.28], ...EA(0.26, 0.24, 0.24, 0.24, 180, 300, 6), [0.62, 0.36]]],
   };
-  const DOTS = { '·': [[0, 0.46]], '.': [[0, 0]], ':': [[0, 0.1], [0, 0.62]] };
+  const DOTS: Record<string, number[][]> = { '·': [[0, 0.46]], '.': [[0, 0]], ':': [[0, 0.1], [0, 0.62]] };
   const SPACE = 0.34;
 
   // Stroke ribbon: flat face at z = d (bevel b down to the sides), side walls to z0. b = 0 → no bevel; d = z0 → flat
   // (paint / stencil lettering: face only).
-  function ribbon(g, pts, closed, hw, b, d, z0) {
+  function ribbon(g: GB, pts: number[][], closed: boolean, hw: number, b: number, d: number, z0: number) {
     const n = pts.length, R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5;
-    const N = pts.map((p, i) => {
+    const N = pts.map((p: number[], i: number) => {
       const a = closed ? pts[(i - 1 + n) % n] : i > 0 ? pts[i - 1] : null;
       const c = closed ? pts[(i + 1) % n] : i < n - 1 ? pts[i + 1] : null;
-      const nrm = (u, v) => { const dx = v[0] - u[0], dy = v[1] - u[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; };
+      const nrm = (u: number[], v: number[]) => { const dx = v[0] - u[0], dy = v[1] - u[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; };
       const n1 = a ? nrm(a, p) : null, n2 = c ? nrm(p, c) : null;
-      if (!n1) return [n2[0], n2[1], 1];
+      if (!n1) return [n2![0], n2![1], 1];
       if (!n2) return [n1[0], n1[1], 1];
       let mx = n1[0] + n2[0], my = n1[1] + n2[1]; const ml = Math.hypot(mx, my) || 1; mx /= ml; my /= ml;
       return [mx, my, Math.min(1.6, 1 / Math.max(0.3, mx * n2[0] + my * n2[1]))];
     });
-    const rings = pts.map((p, i) => {
+    const rings = pts.map((p: number[], i: number) => {
       const [nx, ny, k] = N[i];
-      const at = (s) => [p[0] + nx * k * s, p[1] + ny * k * s];
+      const at = (s: number) => [p[0] + nx * k * s, p[1] + ny * k * s];
       const hi = bev ? hw - b : hw, Li = at(hi), Lo = at(hw), Ri = at(-hi), Ro = at(-hw), dz = bev ? b : 0;
       const r = [g.v(Li[0], Li[1], d, 0, 0, 1), g.v(Ri[0], Ri[1], d, 0, 0, 1)];
       if (bev) r.push(g.v(Li[0], Li[1], d, nx * R, ny * R, R), g.v(Lo[0], Lo[1], d - b, nx * R, ny * R, R), g.v(Ri[0], Ri[1], d, -nx * R, -ny * R, R), g.v(Ro[0], Ro[1], d - b, -nx * R, -ny * R, R));
@@ -198,9 +218,9 @@ export function register(D, H) {
     }
   }
   // round cap / join: disc (a0..a1 = 0..TAU) or a half disc facing an open stroke end
-  function disc(g, cx, cy, r, b, d, z0, seg, a0 = 0, a1 = TAU) {
+  function disc(g: GB, cx: number, cy: number, r: number, b: number, d: number, z0: number, seg: number, a0 = 0, a1 = TAU) {
     const R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5, ri = bev ? r - b : r, full = a1 - a0 > TAU - 1e-4;
-    const c0 = g.v(cx, cy, d, 0, 0, 1), f = [], bi = [], bo = [], wt = [], wb = [];
+    const c0 = g.v(cx, cy, d, 0, 0, 1), f: number[] = [], bi: number[] = [], bo: number[] = [], wt: number[] = [], wb: number[] = [];
     const n = full ? seg : seg + 1;
     for (let k = 0; k < n; k++) {
       const a = a0 + ((a1 - a0) * k) / seg, cs = Math.cos(a), sn = Math.sin(a);
@@ -217,9 +237,9 @@ export function register(D, H) {
   }
   // glyph geometry in cap units (baseline y = 0, cap y = 1, back at z = 0, face at z = dep); returns { geo, adv }.
   // dep = 0 → flat painted lettering (face only); ds = round-cap segments.
-  function glyph(ch, wt, dep, bev, ds = 10) {
+  function glyph(ch: string, wt: number, dep: number, bev: number, ds = 10): { geo: THREE.BufferGeometry | null; adv: number } {
     return tpl(['gl', ch, wt, dep, bev, ds].map(kf).join('|'), () => {
-      const s = 1 - wt, hw = wt / 2, T = (p) => [hw + p[0] * s, hw + p[1] * s];
+      const s = 1 - wt, hw = wt / 2, T = (p: number[]) => [hw + p[0] * s, hw + p[1] * s];
       const g = new GB();
       const b = Math.min(bev, hw * 0.6);
       if (DOTS[ch]) {
@@ -228,12 +248,12 @@ export function register(D, H) {
       }
       const def = GL[ch];
       if (!def) return { geo: null, adv: SPACE };
-      const [w, ...strokes] = def;
-      strokes.forEach((st, si) => {
+      const [w, ...strokes] = def as [number, ...Stroke[]];
+      strokes.forEach((st, si: number) => {
         const d = dep > 0 ? dep - si * 0.006 : si * 0.0004;
         const closed = !Array.isArray(st);
-        let pts = (closed ? st.c : st).map(T);
-        pts = pts.filter((p, i) => i === 0 || Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 1e-4);
+        let pts = (Array.isArray(st) ? st : st.c).map(T);
+        pts = pts.filter((p: number[], i: number) => i === 0 || Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 1e-4);
         if (closed) { ribbon(g, pts, true, hw, b, d, 0); return; }
         // split at sharp turns (round join discs there), round caps at both ends
         let cur = [pts[0]];
@@ -249,17 +269,17 @@ export function register(D, H) {
         }
         if (cur.length > 1) ribbon(g, cur, false, hw, b, d, 0);
         // half-disc caps at the two open ends (facing outward), full discs at the sharp joints
-        const endCap = (p, q) => { const a = Math.atan2(p[1] - q[1], p[0] - q[0]); disc(g, p[0], p[1], hw, b, d, 0, Math.max(3, Math.round(ds / 2)), a - HP, a + HP); };
+        const endCap = (p: number[], q: number[]) => { const a = Math.atan2(p[1] - q[1], p[0] - q[0]); disc(g, p[0], p[1], hw, b, d, 0, Math.max(3, Math.round(ds / 2)), a - HP, a + HP); };
         endCap(pts[0], pts[1]); endCap(pts[pts.length - 1], pts[pts.length - 2]);
         for (const p of joints.slice(2)) disc(g, p[0], p[1], hw, b, d, 0, ds);
       });
       return { geo: g.geo(), adv: w * s + wt };
     });
   }
-  const textW = (str, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
+  const textW = (str: string, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
   // Lay out a line of letters facing +Z in the current frame (raised channel letters, or flat paint with flat: true).
   // Returns the width (m).
-  function letters(B, str, o = {}) {
+  function letters(B: Builder, str: string, o: LettersOpts = {}) {
     const h = o.h ?? 0.3, wt = o.wt ?? 0.17, flat = !!o.flat;
     const dep = flat ? 0 : o.dep ?? 0.12, bev = flat ? 0 : o.bev ?? (h < 0.34 ? 0 : 0.03), track = o.track ?? 0.12;
     const ds = o.ds ?? (flat || h < 0.12 ? 6 : 8);
@@ -286,7 +306,7 @@ export function register(D, H) {
   // Everything mounts on a wall at local z = 0 facing +Z (≤ 0.12 m proud unless it is a sill, hood or cornice).
   // Victorian sash window: stucco architrave, recessed dark glass, two sashes with glazing bars, bracketed sill,
   // optional hood (cornice / triangular / segmental pediment), keystone, lit blind (glows at dusk).
-  function sash(B, x, y, w, h, o = {}) {
+  function sash(B: Builder, x: number, y: number, w: number, h: number, o: SashOpts = {}) {
     const fc = o.frame ?? K.trim, sc = o.sash ?? K.white, t = 0.12, dz = 0.05, Pm = o.ns ? NS('paint') : 'paint';
     pbox(B, NS('gloss'), o.glass ?? K.glass, w, h, 0.02, x, y + h / 2, 0.01);
     // architrave
@@ -328,7 +348,7 @@ export function register(D, H) {
     }
   }
   // round-headed window / door opening with archivolt + keystone (opening w wide, springing at y + h)
-  function archOpening(B, x, y, w, h, o = {}) {
+  function archOpening(B: Builder, x: number, y: number, w: number, h: number, o: ArchOpeningOpts = {}) {
     const fc = o.frame ?? K.trim, r = w / 2;
     B.add(NS('gloss'), archPanelGeo(w, h, 12), o.glass ?? K.glass, x, y, 0.012, {});
     // reveal lining + archivolt
@@ -359,14 +379,14 @@ export function register(D, H) {
     }
   }
   // flat pilaster with base + capital (wall z = 0), from y0 to y1
-  function pilaster(B, x, y0, y1, w = 0.4, c = K.trim, dz = 0.07) {
+  function pilaster(B: Builder, x: number, y0: number, y1: number, w = 0.4, c = K.trim, dz = 0.07) {
     pbox(B, 'paint', c, w, y1 - y0 - 0.3, dz, x, (y0 + y1) / 2, dz / 2);
     pbox(B, 'paint', c, w + 0.1, 0.18, dz + 0.04, x, y0 + 0.09, (dz + 0.04) / 2);
     pbox(B, 'paint', c, w + 0.12, 0.08, dz + 0.06, x, y1 - 0.2, (dz + 0.06) / 2);
     pbox(B, 'paint', c, w + 0.16, 0.1, dz + 0.08, x, y1 - 0.06, (dz + 0.08) / 2);
   }
   // corner quoins down a vertical corner (along the wall at x, facing +Z), alternating long/short blocks
-  function quoins(B, x, y0, y1, side = 1, c = K.stoneDk) {
+  function quoins(B: Builder, x: number, y0: number, y1: number, side = 1, c = K.stoneDk) {
     let k = 0;
     for (let y = y0; y < y1 - 0.1; y += 0.4, k++) pbox(B, 'paint', c, k % 2 ? 0.34 : 0.52, 0.34, 0.035, x - side * (k % 2 ? 0.17 : 0.26), y + 0.19, 0.0175);
   }
@@ -374,7 +394,7 @@ export function register(D, H) {
   // stone balustrade along +X (freestanding, centred on the run line): plinth, vase balusters, coping, piers every
   // `bay` m with ball finials or urns; a rail collider (kids blocked, shots / squids pass) unless col: false
   const BALU = [[0, 0], [0.068, 0], [0.068, 0.05], [0.048, 0.075], [0.043, 0.11], [0.07, 0.21], [0.076, 0.27], [0.062, 0.37], [0.04, 0.45], [0.036, 0.5], [0.05, 0.53], [0.064, 0.56], [0.064, 0.6], [0, 0.6]];
-  function balustrade(B, L, o = {}) {
+  function balustrade(B: Builder, L: number, o: BalustradeOpts = {}) {
     const Hh = o.h ?? 0.95, c = o.c ?? K.stone, bay = o.bay ?? 2.6, nb = Math.max(1, Math.round(L / bay)), bl = L / nb;
     const pw = 0.34, sy = 0.17, top = Hh - 0.13, bh = top - sy;
     B.box('paint', shade(c, 0.93), L, sy, 0.3, L / 2, sy / 2, 0, { r: 0.025 });
@@ -395,16 +415,16 @@ export function register(D, H) {
     if (o.col !== false) COL(B, o.c0 ?? -pw / 2, 0, -0.2, L + (o.c1 ?? pw / 2), Hh + 0.1, 0.2, { rail: true });
   }
   // planted stone urn
-  function urn(B, x, y, z, flowers = K.coral) {
+  function urn(B: Builder, x: number, y: number, z: number, flowers: ColorLike = K.coral) {
     B.lathe('paint', K.stone, [[0, 0], [0.12, 0], [0.12, 0.04], [0.06, 0.08], [0.06, 0.14], [0.16, 0.2], [0.21, 0.32], [0.22, 0.4], [0.2, 0.42], [0, 0.42]], x, y, z, { seg: 10 });
     B.add('foliage', G_blob(0.2, 1, 3), K.leaf, x, y + 0.47, z, { sy: 0.7 });
     for (let i = 0; i < 5; i++) { const a = (i / 5) * TAU + 0.3; B.sph(NS('paint'), flowers, 0.045, x + Math.cos(a) * 0.14, y + 0.52 + (i % 2) * 0.04, z + Math.sin(a) * 0.14, { ws: 6, hs: 4 }); }
   }
-  const G_blob = (r, det, seed) => tpl(['blob', r, det, seed].map(kf).join('|'), () => H.blobGeo(r, det, seed));
+  const G_blob = (r: number, det: number, seed: number) => tpl(['blob', r, det, seed].map(kf).join('|'), () => H.blobGeo(r, det, seed));
 
   // cast-iron sea railing along +X (height 1.05): moulded posts with ball finials every ~1.8 m, rounded top rail,
   // bottom rail, dog bars, a band of rings under the top rail; collides as a thin wall (players can hop it)
-  function ironRail(B, L, o = {}) {
+  function ironRail(B: Builder, L: number, o: IronRailOpts = {}) {
     const Hh = o.h ?? 1.05, c = o.c ?? K.iron, nb = Math.max(1, Math.round(L / (o.bay ?? 1.8))), bl = L / nb;
     B.cyl('gloss', c, 0.028, L, L / 2, Hh, 0, { rz: HP, seg: 8, open: true });
     B.cyl('gloss', c, 0.017, L, L / 2, Hh - 0.24, 0, { rz: HP, seg: 6, open: true });
@@ -429,7 +449,7 @@ export function register(D, H) {
   // ------------------------------------------------------------------------------------------ street furniture
   // Victorian seafront lamp standard: a coiled-dolphin cast-iron base on a stone plinth, fluted column with collars,
   // variant 0 = one lantern on top, 1 = scrolled crossarm with two lanterns, 2 = five-light candelabra
-  function lantern(B, x, y, z, s = 1) {
+  function lantern(B: Builder, x: number, y: number, z: number, s = 1) {
     B.push(x, y, z, 0, 0, 0, s);
     B.lathe('gloss', K.ironDk, [[0, 0], [0.05, 0], [0.11, 0.06], [0.13, 0.1], [0.1, 0.12], [0, 0.12]], 0, 0, 0, { seg: 6 });
     B.lathe(NS('glow'), K.lamp, [[0, 0.1], [0.11, 0.12], [0.14, 0.34], [0.12, 0.42], [0, 0.42]], 0, 0, 0, { seg: 6, glow: 1.5 });
@@ -438,14 +458,14 @@ export function register(D, H) {
     B.sph('gloss', K.gold, 0.035, 0, 0.66, 0, { ws: 6, hs: 4 });
     B.pop();
   }
-  function dolphinBase(B, c) {
+  function dolphinBase(B: Builder, c: ColorLike) {
     B.lathe('paint', K.granite, [[0, 0], [0.34, 0], [0.34, 0.1], [0.3, 0.14], [0.28, 0.3], [0.24, 0.34], [0, 0.34]], 0, 0, 0, { seg: 10 });
     B.lathe('gloss', c, [[0, 0.34], [0.2, 0.34], [0.2, 0.4], [0.14, 0.46], [0.11, 0.62], [0.13, 0.66], [0.09, 0.7], [0, 0.7]], 0, 0, 0, { seg: 10 });
     // three dolphins coiled round the foot of the column: fat bodies tapering to upturned tails
     for (let k = 0; k < 3; k++) {
-      const a0 = (k / 3) * TAU, pts = [];
+      const a0 = (k / 3) * TAU, pts: number[][] = [];
       for (let i = 0; i <= 10; i++) { const t = i / 10, a = a0 + t * 2.2, r = 0.18 - 0.06 * t; pts.push(P3(Math.cos(a) * r, 0.42 + t * 0.55 + 0.08 * Math.sin(t * PI), Math.sin(a) * r)); }
-      B.add('gloss', tpl('dolph' + k, () => tubeGeo(pts, (t) => 0.012 + 0.05 * Math.pow(Math.sin(PI * Math.min(1, t * 1.25)), 0.7), 6)), c, 0, 0, 0, {});
+      B.add('gloss', tpl('dolph' + k, () => tubeGeo(pts, (t: number) => 0.012 + 0.05 * Math.pow(Math.sin(PI * Math.min(1, t * 1.25)), 0.7), 6)), c, 0, 0, 0, {});
       const p = pts[pts.length - 1];
       B.push(p[0], p[1], p[2], -(a0 + 2.2)); pbox(B, 'gloss', c, 0.02, 0.08, 0.12, 0, 0.02, 0, { rx: 0.4 }); B.pop();
     }
@@ -453,12 +473,12 @@ export function register(D, H) {
   D.tidewater_lamp = {
     desc: 'Victorian seafront lamp standard: granite plinth, three coiled cast-iron dolphins round the foot, fluted column with gilt collars; variant 0 single lantern on top, 1 scrolled crossarm with two lanterns (arm along X), 2 five-light candelabra. Lanterns glow at dusk. Base collides.',
     params: { color: 'iron paint', height: 'm (4.2)' }, variants: 3, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const c = o.color ?? K.iron, v = (o.variant ?? 0) % 3, Hh = o.height ?? (v === 2 ? 4.6 : 4.2);
       dolphinBase(B, c);
       B.lathe('gloss', c, [[0.075, 0.7], [0.07, 1.2], [0.058, Hh - 0.35], [0.07, Hh - 0.3], [0.07, Hh - 0.22], [0.05, Hh - 0.18], [0, Hh - 0.18]], 0, 0, 0, { seg: 10 });
       for (const yy of [1.2, 1.26, Hh - 0.36]) B.tor(NS('metal'), K.gold, 0.072, 0.012, 0, yy, 0, { rx: HP, rs: 4, ts: 12 });
-      const basket = (x, y, z) => {
+      const basket = (x: number, y: number, z: number) => {
         B.tube(NS('metal'), K.ironDk, [P3(x, y + 0.45, z), P3(x, y + 0.1, z)], 0.008, { radial: 3 });
         B.lathe('metal', K.ironDk, [[0, 0], [0.2, 0.02], [0.27, 0.16], [0, 0.16]], x, y - 0.1, z, { seg: 8 });
         B.add('foliage', G_blob(0.3, 1, 11), K.leaf, x, y + 0.02, z, { sy: 0.7 });
@@ -491,7 +511,7 @@ export function register(D, H) {
   };
 
   // seaside bench: cast-iron scroll ends (sea green), varnished slats, faces +Z; optional back-to-back pair
-  function benchUnit(B, L, c) {
+  function benchUnit(B: Builder, L: number, c: ColorLike) {
     for (const fx of [-1, 1]) {
       const x = fx * (L / 2 - 0.08);
       B.tube('gloss', c, [P3(x, 0.0, 0.26), P3(x, 0.22, 0.22), P3(x, 0.42, 0.2), P3(x, 0.44, 0.0), P3(x, 0.44, -0.18)], 0.028, { radial: 5 });
@@ -505,7 +525,7 @@ export function register(D, H) {
   D.tidewater_bench = {
     desc: 'Victorian seaside bench: sea-green cast-iron scroll ends, varnished slat seat + back, faces +Z. variant 1 = back-to-back pair. Low collider.',
     params: { length: 'm (1.9)', color: 'iron' }, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const L = o.length ?? 1.9, c = o.color ?? K.iron;
       benchUnit(B, L, c);
       const pair = (o.variant ?? 0) % 2, z0 = pair ? -0.95 : -0.32, nc = o.segCol ?? 1;
@@ -519,18 +539,18 @@ export function register(D, H) {
   D.tidewater_balustrade = {
     desc: 'Portland-stone balustrade run along +X from pos: plinth, vase balusters, moulded coping, piers every ~2.6 m with ball finials (urns: every Nth pier carries a planted urn). Collides as a low wall (0.95 m) unless col:false.',
     params: { length: 'm (4)', h: 'm (0.95)', urns: 'N', col: 'bool', p0: 'first pier', p1: 'last pier' }, variants: 1, mount: 'ground',
-    build(B, o) { balustrade(B, o.length ?? 4, o); },
+    build(B: Builder, o: PropParams) { balustrade(B, o.length ?? 4, o as BalustradeOpts); },   // (배치 매개변수가 곧 난간 선택)
   };
   D.tidewater_searail = {
     desc: 'Sea-green cast-iron promenade railing along +X from pos (posts with ball finials, rings under the top rail, dog bars); collides as a thin 1.1 m wall.',
     params: { length: 'm (6)', col: 'bool' }, variants: 1, mount: 'ground',
-    build(B, o) { ironRail(B, o.length ?? 6, o); },
+    build(B: Builder, o: PropParams) { ironRail(B, o.length ?? 6, o); },
   };
 
   // ------------------------------------------------------------------------------------------ the Jubilee clock tower
   // dial: cream glass disc (glows at dusk), iron bezel, minute ring, hour batons (heavier at 12 / 3 / 6 / 9), gilt
   // spade hands at ten past ten, centre boss
-  function clockFace(B, x, y, z, R, ry) {
+  function clockFace(B: Builder, x: number, y: number, z: number, R: number, ry: number) {
     B.push(x, y, z, ry);
     B.add(NS('glow'), discGeo(R, 32), '#f6eedb', 0, 0, 0.02, { glow: 0.95 });
     B.tor('gloss', K.ironDk, R + 0.03, 0.05, 0, 0, 0.03, { rs: 4, ts: 32 });
@@ -542,7 +562,7 @@ export function register(D, H) {
       pbox(B, NS('paint'), K.ink, big ? 0.07 : 0.04, big ? 0.24 : 0.16, 0.01, 0, 0, 0);
       B.pop();
     }
-    const hand = (a, len, w) => { B.push(0, 0, 0.05, 0, 0, -a); pbox(B, NS('gloss'), K.ink, w, len, 0.012, 0, len / 2 - 0.06, 0); B.add(NS('gloss'), triGeo(w * 2.8, w * 2.4), K.ink, 0, len - 0.06, 0.001, {}); B.pop(); };
+    const hand = (a: number, len: number, w: number) => { B.push(0, 0, 0.05, 0, 0, -a); pbox(B, NS('gloss'), K.ink, w, len, 0.012, 0, len / 2 - 0.06, 0); B.add(NS('gloss'), triGeo(w * 2.8, w * 2.4), K.ink, 0, len - 0.06, 0.001, {}); B.pop(); };
     hand((10 + 10 / 60) / 12 * TAU, R * 0.5, 0.05);
     hand((10 / 60) * TAU, R * 0.74, 0.035);
     B.cyl(NS('gloss'), K.gold, 0.05, 0.05, 0, 0, 0.07, { rx: HP, seg: 10 });
@@ -551,7 +571,7 @@ export function register(D, H) {
   D.tidewater_clocktower = {
     desc: 'Jubilee clock tower dressing for the 3.4 m square tower block (pos = centre of its base on the terrace, block rises 11.3 m): granite quoins, drinking-fountain troughs (±X) and JUBILEE plaques (±Z) on the plinth, string courses, tall lancet slots, four gabled clock stages with glowing dials, then (above the block) an open belfry with a bell, a balustrade, the copper ogee dome, a lantern and a ship weather vane (~18 m). Mirror-symmetric; place once (mirror:false).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const Wd = 3.4, hw = Wd / 2, TOP = o.top ?? 11.3, stucco = K.stucco, trim = K.trim;
       for (let side = 0; side < 4; side++) {
@@ -656,7 +676,7 @@ export function register(D, H) {
   D.tidewater_townhall = {
     desc: 'Town Hall (variant 0) / Custom House (1): blind arcade of glazed doors with fanlights behind the spawn loggia and the east wing walk, pilasters, lanterns; above the 5.2 m wall a two-storey stucco palazzo — giant-order centre pavilion with a pediment carrying the borough crest, the name in bronze letters on the frieze, sash windows with hoods and balconettes, balustraded parapet with urns, slate roof with dormers and chimneys, a flagstaff; building mass behind the wall for outside views. Upper storey collides (camera-safe).',
     params: {}, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const v = (o.variant ?? 0) % 2, stucco = v ? '#eadfcb' : K.stucco, trim = K.trim, accent = v ? K.navy : K.ironDk;
       const WT = 5.2, X0 = -9.5, X1 = 22, BZ = -8.5;
@@ -750,7 +770,7 @@ export function register(D, H) {
   };
   // ------------------------------------------------------------------------------------------ the Colonnade
   // cast-iron column (foot at y = 0, abacus top at yTop): square plinth, fluted shaft with collars, bell capital
-  function ironColumn(B, x, z, yTop, c = K.iron) {
+  function ironColumn(B: Builder, x: number, z: number, yTop: number, c = K.iron) {
     B.box('gloss', c, 0.36, 0.28, 0.36, x, 0.14, z, { r: 0.03 });
     B.lathe('gloss', c, [[0.15, 0.28], [0.15, 0.34], [0.115, 0.4], [0.1, 0.48], [0.09, yTop - 0.55], [0.105, yTop - 0.5], [0.095, yTop - 0.44], [0.14, yTop - 0.32], [0.19, yTop - 0.2], [0, yTop - 0.2]], x, 0, z, { seg: 10 });
     for (const yy of [0.6, yTop - 0.62]) B.tor(NS('gloss'), c, 0.098, 0.018, x, yy, z, { rx: HP, rs: 4, ts: 10 });
@@ -758,7 +778,7 @@ export function register(D, H) {
     B.box('gloss', c, 0.42, 0.2, 0.42, x, yTop - 0.1, z, { r: 0.02 });
   }
   // shopfront on a wall (z = 0, facing +Z), W wide centred on x = 0, fascia with the name; o.c = paint, o.sign = board
-  function shopfront(B, W, name, o = {}) {
+  function shopfront(B: Builder, W: number, name: string, o: ShopfrontOpts = {}) {
     const c = o.c ?? K.navy, board = o.board ?? c, lc = o.lc ?? K.gold, Hs = o.h ?? 2.7;
     for (const sx of [-1, 1]) { pbox(B, 'paint', c, 0.2, Hs, 0.1, sx * (W / 2 - 0.1), Hs / 2, 0.05); pbox(B, 'paint', shade(c, 1.1), 0.26, 0.3, 0.16, sx * (W / 2 - 0.1), Hs - 0.02, 0.08); }
     const dw = 0.95, dx = o.doorLeft ? -W / 2 + 0.2 + dw / 2 : W / 2 - 0.2 - dw / 2;
@@ -789,7 +809,7 @@ export function register(D, H) {
   }
   // wares by a shop door (a little cover on the covered walk): v 0 bucket-and-spade stand, 1 postcard spinner +
   // rock barrel, 2 fish-box of lettered rock + bins, 3 news + sweets stand
-  function wares(B, x, z, v) {
+  function wares(B: Builder, x: number, z: number, v: number) {
     B.push(x, 0, z);
     if (v === 0) {
       B.box('wood', K.woodLt, 0.9, 0.9, 0.5, 0, 0.45, 0, { r: 0.02 });
@@ -824,12 +844,13 @@ export function register(D, H) {
   // is dressed in its own frame — local +z along the section (from its railing-line corner q0), local +x outward (the
   // railing line at x = 0, columns at 0.2, the shop fronts at DK, the shops' backs at DK + shops depth).
   const SECS = chainSections(COLO.front, -COLO.deck), DK = COLO.deck, YT = COLO.deckBot, DT = COLO.deckTop, BK = COLO.deck + COLO.shops;
-  const secFrame = (B, s) => fpush(B, s.q0[0], 0, s.q0[1], (s.h * PI) / 180);
-  const frontSpan = (s, i) => { const f0 = COLO.front[i], f1 = COLO.front[i + 1]; return [(f0[0] - s.q0[0]) * s.d[0] + (f0[1] - s.q0[1]) * s.d[1], (f1[0] - s.q0[0]) * s.d[0] + (f1[1] - s.q0[1]) * s.d[1]]; };
+  type Sec = ReturnType<typeof chainSections>[number];
+  const secFrame = (B: Builder, s: Sec) => fpush(B, s.q0[0], 0, s.q0[1], (s.h * PI) / 180);
+  const frontSpan = (s: Sec, i: number) => { const f0 = COLO.front[i], f1 = COLO.front[i + 1]; return [(f0[0] - s.q0[0]) * s.d[0] + (f0[1] - s.q0[1]) * s.d[1], (f1[0] - s.q0[0]) * s.d[0] + (f1[1] - s.q0[1]) * s.d[1]]; };
   D.tidewater_colonnade = {
     desc: 'The Crescent’s cast-iron colonnade (site piece, pos = world origin, Alpha half; mirrored copy dresses Bravo’s): fluted sea-green columns (collide) at every bay and bend of the three bent sections, elliptical arches with pierced spandrels, the frieze on the terrace-walk edge, transverse girders + pendant lanterns, the walk railing (visual; the layout carries the rail collision), the landing pier, the mid stair’s handrail (rail collision), the open end’s stone piers.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const c = K.iron;
       SECS.forEach((s, si) => {
         const L = s.len, m = Math.max(1, Math.round(L / 3.4)), zs = Array.from({ length: m + 1 }, (_, k) => (k * L) / m);
@@ -883,7 +904,7 @@ export function register(D, H) {
 
   // ------------------------------------------------------------------------------------------ the Crescent's frontage
   // bay window (projects from the wall, first floor and up): canted sides, sashes, cornice + lead roof
-  function bayWindow(B, x, y, w, h, c, o = {}) {
+  function bayWindow(B: Builder, x: number, y: number, w: number, h: number, c: ColorLike, o: BayWindowOpts = {}) {
     const d = 0.55, sw = 0.45;
     B.box('paint', c, w, 0.3, d, x, y - 0.15, d / 2, { r: 0.03 });
     B.box('paint', c, w + 0.1, 0.25, d + 0.08, x, y + h + 0.12, d / 2, { r: 0.03 });
@@ -894,7 +915,7 @@ export function register(D, H) {
     pbox(B, NS('paint'), K.white, w - 0.2, 0.05, d, x, y + h * 0.62, d / 2 - 0.02);
     if (o.lit) pbox(B, NS('glow'), K.lamp, w - sw * 1.4, h * 0.25, 0.004, x, y + h * 0.84, d - 0.005, { glow: o.lit });
   }
-  const SHOPS = [
+  const SHOPS: Array<[string, string, string, ShopfrontOpts]> = [
     ['PENNY ARCADE', '#7a3b67', K.yellow, { glowLetters: 1.4, glowC: '#ffd27a', lit: 1.2 }],
     ['ROCK SHOP', '#e8a7b8', '#8a2f52', {}],
     ['FISH & CHIPS', '#2f5d8a', K.white, {}],
@@ -908,7 +929,7 @@ export function register(D, H) {
   D.tidewater_arcadefront = {
     desc: 'The Crescent’s frontage (site piece, pos = world origin, Alpha half): nine shopfronts on the covered walk (PENNY ARCADE … THE ANCHOR) with wares out front (small cover, collides) and blade signs, then above the terrace walk the three buildings of the bent terrace: seaside houses with bay windows, the GRAND HOTEL (glazed canopy, parapet, roof letters), a turreted corner house at the mid end; slate roofs, chimneys, dormers, the sea-side backs.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       let shopIdx = 0;
       SECS.forEach((s, si) => {
@@ -992,9 +1013,9 @@ export function register(D, H) {
   D.tidewater_bandstand = {
     desc: 'Victorian bandstand dressing for the octagonal 1 m stage (pos = stage centre at ground level, R 3.8): eight sea-green cast-iron columns (collide), railings on the six step-less faces (collide), fretwork frieze, cream + coral ogee roof with cresting, cupola lantern and lyre vane, music stands and chairs, pendant lanterns; cast-iron grilles on the plinth faces.',
     params: { R: 'circumradius (3.8)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const R = o.R ?? 3.8, A = R * Math.cos(PI / 8), c = K.iron, FL = 1.0, CT = 4.1, rc = R - 0.28;
-      const V = (k, r = rc) => { const a = PI / 8 + (k * PI) / 4; return [Math.cos(a) * r, Math.sin(a) * r]; };
+      const V = (k: number, r = rc) => { const a = PI / 8 + (k * PI) / 4; return [Math.cos(a) * r, Math.sin(a) * r]; };
       // plinth faces: arched grilles
       for (let k = 0; k < 8; k++) {
         const a = (k * PI) / 4, fx = Math.cos(a) * A, fz = Math.sin(a) * A;
@@ -1077,7 +1098,7 @@ export function register(D, H) {
   D.tidewater_fountain = {
     desc: 'Town Hall Square fountain (pos = centre): granite basin 4.8 m across (0.34 m kerb, walk-over), water, a tiered cast-iron fountain — dolphin pedestal, scalloped lower bowl, upper bowl, gilt ship finial — with falling water; the pedestal + lower bowl collide (cover).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const Rb = 2.4;
       B.lathe('paint', K.granite, [[Rb - 0.34, 0.33], [Rb - 0.3, 0.36], [Rb - 0.02, 0.36], [Rb + 0.02, 0.3], [Rb + 0.04, 0.05], [Rb + 0.1, 0], [0, 0]], 0, 0, 0, { seg: 24 });
       B.lathe('paint', shade(K.granite, 0.8), [[0, 0.05], [Rb - 0.33, 0.05], [Rb - 0.33, 0.3]], 0, 0, 0, { seg: 24 });
@@ -1087,9 +1108,9 @@ export function register(D, H) {
       B.lathe('paint', K.granite, [[0, 0.26], [0.7, 0.26], [0.7, 0.5], [0.6, 0.56], [0.5, 0.56], [0, 0.56]], 0, 0, 0, { seg: 12 });
       B.lathe('gloss', K.iron, [[0, 0.56], [0.3, 0.56], [0.26, 0.7], [0.18, 0.9], [0.16, 1.3], [0.22, 1.45], [0, 1.45]], 0, 0, 0, { seg: 12 });
       for (let k = 0; k < 3; k++) {
-        const a0 = (k / 3) * TAU + 0.5, pts = [];
+        const a0 = (k / 3) * TAU + 0.5, pts: number[][] = [];
         for (let i = 0; i <= 10; i++) { const t = i / 10; pts.push(P3(Math.cos(a0 + t * 0.9) * (0.2 + 0.3 * Math.sin(t * PI)), 0.62 + t * 0.85, Math.sin(a0 + t * 0.9) * (0.2 + 0.3 * Math.sin(t * PI)))); }
-        B.add('gloss', tpl('fdolph' + k, () => tubeGeo(pts, (t) => 0.02 + 0.09 * Math.pow(Math.sin(PI * Math.min(1, 0.15 + t)), 0.8), 7)), K.ironLt, 0, 0, 0, {});
+        B.add('gloss', tpl('fdolph' + k, () => tubeGeo(pts, (t: number) => 0.02 + 0.09 * Math.pow(Math.sin(PI * Math.min(1, 0.15 + t)), 0.8), 7)), K.ironLt, 0, 0, 0, {});
         const p = pts[0];
         B.sph('gloss', K.ironLt, 0.08, p[0], p[1], p[2], { ws: 6, hs: 5 });
         // water jet from each dolphin's mouth arcing into the basin
@@ -1125,7 +1146,7 @@ export function register(D, H) {
   D.tidewater_shelter = {
     desc: 'Cross-plan promenade shelter over the 5 × 5 m cross of 1.15 m stucco screens (pos = centre): white-framed glazed screens above the walls (collide), four bays with benches (collide), iron corner columns (collide), hipped slate roof with a coral fretwork fascia and a finial.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const hw = 2.5, WH = 1.15, TOP = 2.6;
       for (const [ax, L] of [[0, 2.5], [HP, 2.5]]) for (const s of [-1, 1]) {
         B.push(0, 0, 0, ax + (s > 0 ? 0 : PI));
@@ -1170,9 +1191,9 @@ export function register(D, H) {
   D.tidewater_icecream = {
     desc: 'Ice-cream kiosk dressing on the 2.6 m square, 2.5 m block (pos = block base centre): serving hatches with striped awnings on the plaza + spawn-facing sides, menu boards, a chest freezer (collides), a scalloped canopy valance round the flat roof (a squid-only perch) and a giant 99 cone sculpture on the roof (collides), wall posters.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const hw = 1.3, Hh = 2.5;
-      const face = (side, fn) => { const ry = [0, HP, PI, -HP][side]; fpush(B, Math.sin(ry) * hw, 0, Math.cos(ry) * hw, ry); fn(); fpop(B); };
+      const face = (side: number, fn: () => void) => { const ry = [0, HP, PI, -HP][side]; fpush(B, Math.sin(ry) * hw, 0, Math.cos(ry) * hw, ry); fn(); fpop(B); };
       for (let side = 0; side < 4; side++) face(side, () => {
         pbox(B, 'paint', K.trim, 2.7, 0.14, 0.08, 0, Hh - 0.07, 0.04);
         for (let i = 0; i < 13; i++) { const x = -1.3 + (i + 0.5) * 0.2; B.add(NS('paint'), discGeo(0.1, 6, true), i % 2 ? K.white : '#e98aa6', x, Hh - 0.14, 0.085, { rz: PI }); }
@@ -1186,7 +1207,7 @@ export function register(D, H) {
           for (let i = 0; i < 9; i++) { const x = -0.8 + i * 0.2; B.push(x, 2.12, 0.02, 0, 0.62); pbox(B, 'paint', i % 2 ? K.white : '#e98aa6', 0.2, 0.03, 0.6, 0, 0, 0.3); B.pop(); }
           for (const sx of [-1, 1]) B.tube(NS('metal'), K.ironDk, [P3(sx * 0.82, 1.8, 0.02), P3(sx * 0.82, 1.9, 0.35), P3(sx * 0.82, 1.83, 0.5)], 0.012, { radial: 3 });
           letters(B, 'ICES', { h: 0.14, x: 0, y: 2.25, z: 0.09, c: '#b83a5e', flat: true, wt: 0.22, track: 0.15 });
-          for (const [x, n] of [[-1.05, 'ice'], [1.05, 'menu']]) B.decal(n, 0.34, 0.44, x, 1.45, 0.02);
+          for (const [x, n] of [[-1.05, 'ice'], [1.05, 'menu']] as Array<[number, string]>) B.decal(n, 0.34, 0.44, x, 1.45, 0.02);
         }
       });
       // chest freezer at the plaza-side hatch (collides)
@@ -1215,9 +1236,9 @@ export function register(D, H) {
   D.tidewater_tearooms = {
     desc: 'Tea rooms pavilion on the 4 × 4 m, 2.8 m block (pos = block base centre): arched glazed bays on all sides, a glass entrance porch, a verandah canopy on iron posts on the plaza side, a hipped roof with a lantern cupola and TEA ROOMS letters (roof collides), café tables + parasols outside (cover, collide).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const hw = 2.0, Hh = o.h ?? 2.8;
-      const face = (side, fn) => { const ry = [0, HP, PI, -HP][side]; fpush(B, Math.sin(ry) * hw, 0, Math.cos(ry) * hw, ry); fn(); fpop(B); };
+      const face = (side: number, fn: () => void) => { const ry = [0, HP, PI, -HP][side]; fpush(B, Math.sin(ry) * hw, 0, Math.cos(ry) * hw, ry); fn(); fpop(B); };
       for (let side = 0; side < 4; side++) face(side, () => {
         B.add('paint', ext('plinthTR', PROF.plinth, 4.1), K.stoneDk, 0, 0, 0, {});
         for (const x of [-1.0, 1.0]) archOpening(B, x, 0.55, 1.0, 1.35, { lit: 0.85, transom: 0.7, key: K.coral });
@@ -1248,7 +1269,7 @@ export function register(D, H) {
   };
 
   // ------------------------------------------------------------------------------------------ floral clock + border
-  function flowerBed(B, w, d, y, seed, cols) {
+  function flowerBed(B: Builder, w: number, d: number, y: number, seed: number, cols: ColorLike[]) {
     const n = Math.round(w * d * 5), rnd = H.mulberry32(seed);
     for (let i = 0; i < n; i++) {
       const x = (rnd() - 0.5) * (w - 0.2), z = (rnd() - 0.5) * (d - 0.2);
@@ -1258,7 +1279,7 @@ export function register(D, H) {
   D.tidewater_floralclock = {
     desc: 'Floral clock on the 4.4 m square, 0.7 m kerbed bed (pos = bed centre on the ground): a tilted dial of bedding plants in rings (numerals as dark leaf batons), giant iron hands, a bronze plaque, box-hedge border. A raked collider over the dial (cover).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const hw = 2.2, Y = 0.7;
       B.box('paint', K.stone, 4.5, 0.12, 4.5, 0, Y - 0.04, 0, { r: 0.03 });
       for (const s of [-1, 1]) { B.box('foliage', K.leafDk, 4.3, 0.28, 0.3, 0, Y + 0.14, s * 2.0, { r: 0.1 }); B.box('foliage', K.leafDk, 0.3, 0.28, 3.7, s * 2.0, Y + 0.14, 0, { r: 0.1 }); }
@@ -1267,7 +1288,7 @@ export function register(D, H) {
       B.add('paint', tpl('fcBank', () => extrudeGeo([[-1.9, 0], [1.9, 0], [1.9, 0.06], [-1.9, rise]], 3.8, 0.002)), '#5a4535', 0, Y, 0, { ry: HP });
       fpush(B, 0, Y + rise / 2 + 0.04, 0, HP);
       B.push(0, 0, 0, 0, tilt);
-      const rings = [['#e7d24a', 1.75], ['#d9554f', 1.45], [K.leaf, 1.2], ['#f1ede0', 0.95], ['#9a6ac2', 0.5]];
+      const rings: Array<[string, number]> = [['#e7d24a', 1.75], ['#d9554f', 1.45], [K.leaf, 1.2], ['#f1ede0', 0.95], ['#9a6ac2', 0.5]];
       for (const [cc, r] of rings) B.add('foliage', discGeo(r, 28), cc, 0, 0.002 * (2 - r), 0, { rx: -HP });
       for (let i = 0; i < 12; i++) { const a = (i / 12) * TAU; B.push(Math.sin(a) * 1.32, 0.03, Math.cos(a) * 1.32, -a); pbox(B, NS('foliage'), K.leafDk, 0.1, 0.06, 0.26, 0, 0, 0); B.pop(); }
       B.push(0, 0.07, 0, 0.8); pbox(B, 'gloss', K.ink, 0.1, 0.04, 1.0, 0, 0, 0.45); B.pop();
@@ -1284,7 +1305,7 @@ export function register(D, H) {
   D.tidewater_border = {
     desc: 'Raised flower border on a W × D stone-kerbed bed of height h (pos = bed centre on the ground): massed bedding (coral, cream, violet, yellow), cordyline palms, clipped box balls, a TIDEWATER IN BLOOM sign.',
     params: { w: 'm (6)', d: 'm (5)', h: 'm (0.9)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const w = o.w ?? 6, d = o.d ?? 5, Y = o.h ?? 0.9;
       B.box('paint', K.stone, w + 0.1, 0.12, d + 0.1, 0, Y - 0.04, 0, { r: 0.03 });
       B.box('paint', '#5a4535', w - 0.3, 0.04, d - 0.3, 0, Y + 0.005, 0, { r: 0.01 });
@@ -1306,7 +1327,7 @@ export function register(D, H) {
   D.tidewater_anchor = {
     desc: 'Lifeboat memorial on the 2.2 m square, 1.0 m granite plinth (pos = plinth base centre): a great black admiralty anchor standing on it with a chain swag, bronze plaques, a wreath.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const Y = 1.0;
       B.add('paint', ext('plinthAn', PROF.plinth, 2.3), K.graniteDk, 0, 0, 1.1, {});
       B.box('paint', K.trim, 2.3, 0.1, 2.3, 0, Y + 0.05, 0, { r: 0.02 });
@@ -1332,8 +1353,8 @@ export function register(D, H) {
   // ------------------------------------------------------------------------------------------ stair + wall dressing
   // stone balustrade following a flight along +X from height ya (x = 0) to yb (x = L), on the flight's open edge; a
   // skirt panel (facing local +Z, skirtZ behind pos) over the flight's side face below it; stepped colliders
-  function rampBalustrade(B, L, ya, yb, o = {}) {
-    const c = o.c ?? K.stone, Hh = o.h ?? 0.95, sl = Math.atan2(yb - ya, L), len = Math.hypot(L, yb - ya), yAt = (x) => ya + (yb - ya) * (x / L);
+  function rampBalustrade(B: Builder, L: number, ya: number, yb: number, o: RampBalustradeOpts = {}) {
+    const c = o.c ?? K.stone, Hh = o.h ?? 0.95, sl = Math.atan2(yb - ya, L), len = Math.hypot(L, yb - ya), yAt = (x: number) => ya + (yb - ya) * (x / L);
     if (o.rail !== false) {
       for (const [x, y] of [[0, ya], [L, yb]]) { B.box('paint', c, 0.4, Hh + 0.12, 0.42, x, y + (Hh + 0.12) / 2, 0, { r: 0.03 }); pbox(B, 'paint', shade(c, 1.03), 0.48, 0.07, 0.5, x, y + Hh + 0.155, 0); B.sph('paint', c, 0.12, x, y + Hh + 0.3, 0, { ws: 10, hs: 7 }); }
       B.push(L / 2, (ya + yb) / 2 + Hh - 0.08, 0, 0, 0, sl);
@@ -1361,11 +1382,11 @@ export function register(D, H) {
   D.tidewater_rampbal = {
     desc: 'Stone balustrade on a flight’s open edge: runs along +X from pos, from height ya to yb over `length` (piers + ball finials at both ends, raking coping, balusters), with a skirt over the flight’s side face (rail:false = skirt only); stepped colliders.',
     params: { length: 'm', ya: 'm at pos', yb: 'm at the far end', col: 'bool', rail: 'bool', skirt: 'bool', skirtZ: 'm behind pos (0.22)' }, variants: 1, mount: 'ground',
-    build(B, o) { rampBalustrade(B, o.length ?? 6, o.ya ?? 0, o.yb ?? 2.4, o); },
+    build(B: Builder, o: PropParams) { rampBalustrade(B, o.length ?? 6, o.ya ?? 0, o.yb ?? 2.4, o as RampBalustradeOpts); },   // (배치 매개변수가 곧 난간 선택)
   };
   // rusticated stone wall dressing on a block face (wall z = 0, W wide centred on x = 0, Hh tall): channelled courses,
   // a plinth, optional blind arches / doors
-  function rusticate(B, W, Hh, o = {}) {
+  function rusticate(B: Builder, W: number, Hh: number, o: RusticateOpts = {}) {
     const c = o.c ?? K.stone;
     B.add('paint', ext('plinthR', PROF.plinth, W), shade(c, 0.9), 0, 0, 0, {});
     for (let y = 0.6; y < Hh - 0.1; y += 0.45) pbox(B, NS('paint'), shade(c, 0.82), W, 0.035, 0.02, 0, y, 0.008);
@@ -1374,7 +1395,7 @@ export function register(D, H) {
   D.tidewater_townhallbase = {
     desc: 'Town Hall ground storey under the spawn (site piece, pos = world origin, Alpha half): the balcony front with the rusticated entrance arch + doors, lanterns and a plaque; the east wing front with blind arches + a side door; the wing-steps block’s side; bike stands, a notice board and bins in the nook behind the east flight.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       // balcony body front (z = -36, x -4.8 … 4.8, 0 … 2.2)
       fpush(B, 0, 0, -36, 0);
       rusticate(B, 9.6, 2.4);
@@ -1402,10 +1423,10 @@ export function register(D, H) {
       archOpening(B, -1.1, 0.3, 1.2, 0.95, { door: '#3a4a5c', lit: 0.8 });
       pbox(B, 'wood', K.wood, 1.4, 0.9, 0.06, 1.25, 1.35, 0.03);
       pbox(B, NS('paint'), '#2f4f45', 1.3, 0.8, 0.02, 1.25, 1.35, 0.065);
-      for (const [x, y, n] of [[0.9, 1.5, 'pst2'], [1.55, 1.4, 'pst6']]) B.decal(n, 0.3, 0.45, x, y, 0.08);
+      for (const [x, y, n] of [[0.9, 1.5, 'pst2'], [1.55, 1.4, 'pst6']] as Array<[number, number, string]>) B.decal(n, 0.3, 0.45, x, y, 0.08);
       fpop(B);
       // the nook: bike stands, bins, a lamp
-      for (const x of [11.0, 11.9, 12.8]) { B.tube('metal', K.ironDk, arcPts(x, 0, -40.5, 0.4, 0, PI, 8, 'xz').map((p) => P3(p[0], Math.sin(Math.acos(Math.max(-1, Math.min(1, (p[0] - x) / 0.4)))) * 0.75, -40.5)), 0.025, { radial: 5 }); COL(B, x - 0.42, 0, -40.56, x + 0.42, 0.8, -40.44, { rail: true }); }
+      for (const x of [11.0, 11.9, 12.8]) { B.tube('metal', K.ironDk, arcPts(x, 0, -40.5, 0.4, 0, PI, 8, 'xz').map((p: number[]) => P3(p[0], Math.sin(Math.acos(Math.max(-1, Math.min(1, (p[0] - x) / 0.4)))) * 0.75, -40.5)), 0.025, { radial: 5 }); COL(B, x - 0.42, 0, -40.56, x + 0.42, 0.8, -40.44, { rail: true }); }
       B.push(13.7, 0, -40.9); B.lathe('gloss', K.ironDk, [[0, 0], [0.26, 0], [0.26, 0.85], [0.28, 0.9], [0.2, 1.0], [0, 1.02]], 0, 0, 0, { seg: 10 }); B.pop();
       COL(B, 13.4, 0, -41.2, 14.0, 1.0, -40.6, { roof: true });
     },
@@ -1415,7 +1436,7 @@ export function register(D, H) {
   D.tidewater_lifeboat = {
     desc: 'Lifeboat station out on its own stone jetty off the tip of the promenade (pos = centre of its front at the foot, front faces +Z; out of play, no collision): the 15.5 × 7.6 m, 6.2 m house — gable, LIFEBOAT STATION letters, crew door, windows, service boards, the old bell — roofs + the octagonal lookout tower with its flagstaff, the boat-hall doors (local -X end) open onto a slipway running down into the sea with the lifeboat on its cradle.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const X0 = -25, X1 = -9.5, FZ = -38.4, TOP = 6.2, red = '#b8403a', navy = K.navy, cream = K.butter;
       // authored in the old corner coordinates: shift so the front centre is the prop origin
@@ -1525,7 +1546,7 @@ export function register(D, H) {
   D.tidewater_pier = {
     desc: 'Pier gate + pier (pos = gate centre on the promenade edge, pier out along local -X): booth dressing (turnstile windows, clocks, pay boards, domed cupolas), a lit wrought-iron arch with the pier’s name, closed ornamental gates (collide), then the pier over the sea: cast-iron legs + bracing, a planked deck with railings and lamps, twin kiosks halfway, and the domed pavilion at the end with flags. variant 0 PALACE PIER, 1 VICTORIA PIER.',
     params: {}, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 2, name = v ? 'VICTORIA PIER' : 'PALACE PIER', accent = v ? '#5e7fb0' : K.coral, c = K.iron;
       // booths: dress the gate-facing + promenade-facing sides of the two 3 × 3 blocks (local x 0 … 3, z ±(2.5 … 5.5))
       for (const s of [-1, 1]) {
@@ -1625,7 +1646,7 @@ export function register(D, H) {
 
   // ------------------------------------------------------------------------------------------ seaside furniture
   // café table: iron pedestal, marble top, three bistro chairs, a striped parasol (st 0 teal, 1 coral)
-  function cafeTable(B, x, y, z, st) {
+  function cafeTable(B: Builder, x: number, y: number, z: number, st: string | number) {
     B.push(x, y, z);
     B.cyl('metal', K.ironDk, 0.03, 0.72, 0, 0.36, 0, { seg: 6 });
     B.cyl('paint', K.white, 0.4, 0.04, 0, 0.74, 0, { seg: 14 });
@@ -1640,13 +1661,13 @@ export function register(D, H) {
   D.tidewater_cafe = {
     desc: 'Café table (marble top on an iron pedestal) with three bistro chairs and a striped parasol; the table collides (low cover). variant 0 teal, 1 coral.',
     params: {}, variants: 2, mount: 'ground',
-    build(B, o) { cafeTable(B, 0, 0, 0, (o.variant ?? 0) % 2); },
+    build(B: Builder, o: PropParams) { cafeTable(B, 0, 0, 0, (o.variant ?? 0) % 2); },
   };
 
   D.tidewater_punchjudy = {
     desc: 'Punch & Judy booth (front +Z): red-and-white striped canvas tower on a frame, a gilt proscenium with PUNCH & JUDY letters, curtains, Mr Punch and his crocodile, a swazzle-man’s bottle bag; collides (cover).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const W = 1.5, Dd = 1.0, Hh = 2.1;
       // striped canvas sides (vertex-coloured stripes)
       const stripes = tpl('pjStripe', () => { const g = new GB(); const n = 10; for (let i = 0; i < n; i++) { const c3 = cx3(i % 2 ? K.white : K.red); const x0 = -0.5 + i / n, x1 = x0 + 1 / n; const q = [g.v(x0, 0, 0, 0, 0, 1, ...c3), g.v(x1, 0, 0, 0, 0, 1, ...c3), g.v(x1, 1, 0, 0, 0, 1, ...c3), g.v(x0, 1, 0, 0, 0, 1, ...c3)]; g.quad(q[0], q[1], q[2], q[3]); } return g.geo(); });
@@ -1686,7 +1707,7 @@ export function register(D, H) {
   D.tidewater_telescope = {
     desc: 'Coin-operated seafront binocular viewer on a fluted cast-iron pedestal, faces +Z; small collider.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const c = o.color ?? K.iron;
       B.lathe('gloss', c, [[0, 0], [0.2, 0], [0.2, 0.06], [0.1, 0.12], [0.07, 0.2], [0.06, 1.0], [0.09, 1.06], [0, 1.08]], 0, 0, 0, { seg: 10 });
       B.push(0, 1.25, 0, 0, -0.15);
@@ -1702,7 +1723,7 @@ export function register(D, H) {
   D.tidewater_tidegauge = {
     desc: 'Harbour tide board on the sea railing: a tall white post with a painted metre scale, a TIDE TABLE board with high/low water times and a little hood, a brass tide-clock dial. Non-colliding apart from the post.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.box('paint', K.white, 0.22, 3.4, 0.14, 0, 1.7, 0, { r: 0.02 });
       for (let i = 0; i < 16; i++) pbox(B, NS('paint'), i % 2 ? K.ink : K.red, i % 5 === 0 ? 0.16 : 0.1, 0.03, 0.01, 0.04, 0.3 + i * 0.2, 0.075);
       B.box('paint', K.navy, 0.9, 1.05, 0.06, 0, 2.0, 0.1, { r: 0.03 });
@@ -1718,7 +1739,7 @@ export function register(D, H) {
   D.tidewater_pillarbox = {
     desc: 'Victorian hexagonal pillar box (red, crowned cap with acanthus bud, VR cypher, posting slit, collection plate); collides.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const c = '#c7372f';
       B.lathe('gloss', c, [[0.3, 0], [0.3, 0.1], [0.26, 0.14], [0.26, 1.2], [0.31, 1.26], [0.31, 1.32], [0.22, 1.42], [0.12, 1.5], [0.06, 1.6], [0, 1.66]], 0, 0, 0, { seg: 6, ry: PI / 6 });
       B.sph('gloss', c, 0.07, 0, 1.66, 0, { ws: 8, hs: 6 });
@@ -1733,7 +1754,7 @@ export function register(D, H) {
   D.tidewater_barometer = {
     desc: 'The public barometer: a Portland-stone obelisk pillar on a stepped base with a big aneroid barometer dial (glows at dusk), a thermometer, a tide-time plaque and a gas lamp on top; collides (cover).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.box('paint', K.granite, 1.1, 0.2, 1.1, 0, 0.1, 0, { r: 0.03 });
       B.box('paint', K.stone, 0.9, 0.25, 0.9, 0, 0.32, 0, { r: 0.03 });
       B.lathe('paint', K.stone, [[0.36, 0], [0.3, 2.3], [0.36, 2.34], [0.36, 2.44], [0, 2.44]], 0, 0.44, 0, { seg: 4, ry: PI / 4 });
@@ -1758,7 +1779,7 @@ export function register(D, H) {
   D.tidewater_boattrips = {
     desc: 'BOAT TRIPS booking kiosk: hexagonal timber booth (2 m across) with a glazed hatch, fare boards, a bell-cast roof and a pennant; collides (cover).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const R = 1.0, Hh = 2.3;
       B.lathe('paint', '#3f7fa0', [[R, 0], [R, Hh], [0, Hh]], 0, 0, 0, { seg: 6 });
       for (let k = 0; k < 6; k++) {
@@ -1783,7 +1804,7 @@ export function register(D, H) {
   D.tidewater_urn = {
     desc: 'Planted Portland-stone urn on a square pedestal (1.3 m), bedding flowers; collides.',
     params: { color: 'flowers' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.box('paint', K.stone, 0.56, 0.72, 0.56, 0, 0.36, 0, { r: 0.03 });
       pbox(B, 'paint', K.trim, 0.66, 0.08, 0.66, 0, 0.76, 0);
       urn(B, 0, 0.8, 0, o.color ?? K.coral);
@@ -1797,7 +1818,7 @@ export function register(D, H) {
   D.tidewater_kerb = {
     desc: 'Granite band laid in the paving along +X from pos (length, width w), 2 cm proud; non-colliding.',
     params: { length: 'm', w: 'm (0.36)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const L = o.length ?? 10, w = o.w ?? 0.36, n = Math.max(1, Math.round(L / 1.2));
       for (let i = 0; i < n; i++) B.box(NS('paint'), shade(K.granite, 0.94 + 0.08 * ((i * 7) % 3) / 2), L / n - 0.012, 0.03, w, (i + 0.5) * (L / n), 0.005, 0, { r: 0.008 });
     },
@@ -1806,13 +1827,13 @@ export function register(D, H) {
   D.tidewater_fingerpost = {
     desc: 'Cast-iron fingerpost with a crown finial and three or four pointing arms (PIER, TOWN HALL, BANDSTAND, LIFEBOAT, TEA ROOMS, PROMENADE); arm angles via `arms` [[label, deg], …]. Post collides.',
     params: { arms: '[[label, yaw deg], …]' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const c = K.iron, arms = o.arms ?? [['PIER', 90], ['TOWN HALL', 180], ['BANDSTAND', 0]];
       B.lathe('gloss', c, [[0, 0], [0.16, 0], [0.16, 0.1], [0.1, 0.18], [0.07, 0.3], [0.06, 2.9], [0.08, 2.95], [0.08, 3.02], [0, 3.02]], 0, 0, 0, { seg: 8 });
       B.tor(NS('gloss'), K.gold, 0.065, 0.014, 0, 0.5, 0, { rx: HP, rs: 3, ts: 10 });
       B.lathe('gloss', c, [[0, 0], [0.1, 0], [0.12, 0.08], [0.06, 0.16], [0.08, 0.24], [0, 0.3]], 0, 3.02, 0, { seg: 8 });
       B.sph('metal', K.gold, 0.05, 0, 3.36, 0, { ws: 6, hs: 4 });
-      arms.forEach(([t, deg], i) => {
+      arms.forEach(([t, deg], i: number) => {
         const y = 2.68 - i * 0.3;
         B.push(0, y, 0, (deg * PI) / 180);
         const w = Math.max(0.7, t.length * 0.1 + 0.25);
@@ -1828,7 +1849,7 @@ export function register(D, H) {
   D.tidewater_bollard = {
     desc: 'Cast-iron cannon bollard (a muzzle-down old cannon, painted), collides; `count` of them along +X every `step` m.',
     params: { count: '1', step: 'm (1.4)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const n = o.count ?? 1, st = o.step ?? 1.4;
       for (let i = 0; i < n; i++) {
         const x = i * st;
@@ -1841,7 +1862,7 @@ export function register(D, H) {
   D.tidewater_drain = {
     desc: 'Round cast-iron gully cover / coal-hole plate flush in the paving (no collider).',
     params: { r: 'm (0.3)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const r = o.r ?? 0.3;
       B.cyl(NS('metal'), '#3d4046', r, 0.02, 0, 0.005, 0, { seg: 16 });
       for (let i = -2; i <= 2; i++) pbox(B, NS('metal'), '#2b2d31', r * 1.6 * Math.cos(Math.asin(Math.min(0.95, Math.abs(i) * 0.3))), 0.004, 0.04, 0, 0.017, i * r * 0.3);
@@ -1849,7 +1870,7 @@ export function register(D, H) {
   };
 
 
-  function pierLamp(B, x, y, z) {
+  function pierLamp(B: Builder, x: number, y: number, z: number) {
     B.lathe('gloss', K.iron, [[0, 0], [0.14, 0], [0.14, 0.06], [0.09, 0.12], [0.06, 0.2], [0.05, 0.85], [0.07, 0.9], [0, 0.92]], x, y, z, { seg: 8 });
     B.tor(NS('gloss'), K.gold, 0.055, 0.012, x, y + 0.3, z, { rx: HP, rs: 3, ts: 8 });
     lantern(B, x, y + 0.9, z, 1.0);
@@ -1859,7 +1880,7 @@ export function register(D, H) {
   D.tidewater_tree = {
     desc: 'Pollarded London plane: mottled trunk with knuckled pollard heads, a cloud of leaf clusters (≈ 3.5 m up, 5 m across), a square cast-iron tree grate + hooped guard; the trunk collides.',
     params: { s: 'size (1)' }, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const s = o.s ?? 1, v = (o.variant ?? 0) % 2;
       pbox(B, NS('metal'), K.ironDk, 1.3, 0.02, 1.3, 0, 0.01, 0);
       for (let i = -2; i <= 2; i++) { pbox(B, NS('metal'), '#2a2d31', 1.2, 0.022, 0.03, 0, 0.012, i * 0.22); }
@@ -1867,8 +1888,8 @@ export function register(D, H) {
       B.tor(NS('gloss'), K.iron, 0.36, 0.015, 0, 1.0, 0, { rx: HP, rs: 3, ts: 14 });
       B.tor(NS('gloss'), K.iron, 0.36, 0.012, 0, 0.55, 0, { rx: HP, rs: 3, ts: 14 });
       const trunk = [P3(0, 0, 0), P3(0.05, 1.2, 0.02), P3(-0.04, 2.4, 0.06), P3(0.02, 3.2 * s, 0)];
-      B.tube('wood', '#9c9580', trunk, (t) => 0.2 - 0.07 * t, { radial: 8 });
-      for (let k = 0; k < 5; k++) { const a = (k / 5) * TAU + v; B.tube('wood', '#a8a08a', [P3(0.02, 3.0 * s, 0), P3(Math.cos(a) * 0.6, 3.6 * s, Math.sin(a) * 0.6), P3(Math.cos(a) * 1.0, 4.1 * s, Math.sin(a) * 1.0)], (t) => 0.1 - 0.05 * t, { radial: 5 }); B.sph('wood', '#8f8874', 0.11, Math.cos(a) * 1.0, 4.1 * s, Math.sin(a) * 1.0, { ws: 6, hs: 4 }); }
+      B.tube('wood', '#9c9580', trunk, (t: number) => 0.2 - 0.07 * t, { radial: 8 });
+      for (let k = 0; k < 5; k++) { const a = (k / 5) * TAU + v; B.tube('wood', '#a8a08a', [P3(0.02, 3.0 * s, 0), P3(Math.cos(a) * 0.6, 3.6 * s, Math.sin(a) * 0.6), P3(Math.cos(a) * 1.0, 4.1 * s, Math.sin(a) * 1.0)], (t: number) => 0.1 - 0.05 * t, { radial: 5 }); B.sph('wood', '#8f8874', 0.11, Math.cos(a) * 1.0, 4.1 * s, Math.sin(a) * 1.0, { ws: 6, hs: 4 }); }
       const rnd = H.mulberry32(17 + v * 7), tones = ['#5f9a52', '#6fa85c', '#4f8a4a', '#86b565'];
       for (let k = 0; k < 16; k++) {
         const a = (k / 16) * TAU * 2.3 + rnd(), r = 0.35 + rnd() * 1.45, y = 4.3 + rnd() * 1.3 - r * 0.3 + (k < 3 ? 0.6 : 0);
@@ -1883,7 +1904,7 @@ export function register(D, H) {
   D.tidewater_streetname = {
     desc: 'Cast-iron street name plate on a wall (z = 0, pos = plate centre): white enamel, black letters, a coral key line, fixing bolts; text param.',
     params: { text: 'TIDEWATER PLAZA', sub: 'second line (optional)' }, variants: 1, mount: 'wall',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const t = o.text ?? 'TIDEWATER PLAZA', w = Math.max(1.0, t.length * 0.11 + 0.3), h = o.sub ? 0.44 : 0.32, bronze = !!o.bronze;
       B.box(bronze ? 'metal' : 'paint', bronze ? K.bronze : K.ink, w + 0.06, h + 0.06, 0.03, 0, 0, 0.015, { r: 0.02 });
       B.box(bronze ? 'metal' : 'paint', bronze ? shade(K.bronze, 0.8) : K.white, w, h, 0.02, 0, 0, 0.035, { r: 0.02 });
@@ -1899,7 +1920,7 @@ export function register(D, H) {
   D.tidewater_gull = {
     desc: 'Herring gull perched (pos = feet), faces +Z: white body, grey back + wings with black tips, yellow beak with a red spot, pink legs. variant 1 hunched, 2 calling. No collider.',
     params: {}, variants: 3, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 3, s = 1;
       for (const sx of [-0.035, 0.035]) B.cyl(NS('paint'), '#e8a6a0', 0.008, 0.08, sx, 0.04, 0, { seg: 3 });
       B.push(0, 0.1, 0, 0, v === 1 ? 0.1 : -0.25);
@@ -1919,7 +1940,7 @@ export function register(D, H) {
   D.tidewater_rnlibox = {
     desc: 'Lifeboat collection box: a little navy-and-orange lifeboat on a red pillar (collides, off-limits top).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const red = '#b8403a';
       B.box('paint', red, 0.5, 0.95, 0.5, 0, 0.475, 0, { r: 0.05 });
       B.add('gloss', tpl('cbhull', () => extrudeGeo([[-0.34, 0], [0.34, 0], [0.4, 0.2], [-0.4, 0.2]], 0.9, 0.02)), K.navy, 0, 0.95, 0, {});
@@ -1938,12 +1959,12 @@ export function register(D, H) {
 // Alpha's half (mirrored automatically unless mirror:false). Curve-following dressing is generated from the layout's
 // geometry (PROM crescent, TERR ring, COLO sections) so railings, lamps and benches sit exactly on the curves.
 const D2R = Math.PI / 180;
-const polar = (c, r, a) => [c[0] + r * Math.cos(a * D2R), c[1] + r * Math.sin(a * D2R)];
-const runRot = (p, q) => Math.atan2(-(q[1] - p[1]), q[0] - p[0]);          // rotY so local +X runs from p to q
-const faceRot = (dx, dz) => Math.atan2(dx, dz);                              // rotY so local +Z faces (dx, dz)
-const dist = (p, q) => Math.hypot(q[0] - p[0], q[1] - p[1]);
+const polar = (c: number[], r: number, a: number) => [c[0] + r * Math.cos(a * D2R), c[1] + r * Math.sin(a * D2R)];
+const runRot = (p: number[], q: number[]) => Math.atan2(-(q[1] - p[1]), q[0] - p[0]);          // rotY so local +X runs from p to q
+const faceRot = (dx: number, dz: number) => Math.atan2(dx, dz);                              // rotY so local +Z faces (dx, dz)
+const dist = (p: number[], q: number[]) => Math.hypot(q[0] - p[0], q[1] - p[1]);
 const SECT = chainSections(COLO.front, -COLO.deck);
-const onSec = (i, x, z) => { const s = SECT[i]; return [s.q0[0] + s.d[0] * z + s.n[0] * x, s.q0[1] + s.d[1] * z + s.n[1] * x]; };
+const onSec = (i: number, x: number, z: number) => { const s = SECT[i]; return [s.q0[0] + s.d[0] * z + s.n[0] * x, s.q0[1] + s.d[1] * z + s.n[1] * x]; };
 const out = [];
 // ---- the promenade crescent: sea railing chords, lamps with baskets, bunting, benches + deckchairs facing the bay
 {
@@ -1989,7 +2010,7 @@ const out = [];
   { const p = onSec(2, 1.2, SECT[2].len - 0.9); out.push({ type: 'tidewater_telescope', pos: [p[0], COLO.deckTop, p[1]], rotY: 0.2 }); }
   { const s = SECT[1], p = onSec(1, 0.08, s.len * 0.4); out.push({ type: 'tidewater_gull', pos: [p[0], COLO.deckTop + 1.03, p[1]], rotY: 1.9, variant: 1 }); }
 }
-const SQL = (x, z, o) => ({ pos: [x, SQ, z], ...o });
+const SQL = (x: number, z: number, o?: Record<string, unknown>) => ({ pos: [x, SQ, z], ...o });
 export const PLACEMENTS = [
   // ---- the clock tower (single, self-symmetric) on its dais
   { type: 'tidewater_clocktower', pos: [0, TERR.daisTop, 0], rotY: 0, top: 12.5 - TERR.daisTop, mirror: false },

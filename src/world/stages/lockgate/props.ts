@@ -7,11 +7,27 @@
 // The place: a flight of broad locks climbing out of the harbour basin through an old brick warehouse district.
 // Materials: red + blue engineering brick, sandstone copings with worn arrises, black-and-white lock timber, cast iron.
 // Signage is modelled (flat painted / raised stroke letters, cached per glyph) — never the shared sign atlas.
+import type * as THREE from 'three';
+import type { PropDefs, PackHelpers, Builder, PropParams, PartOpts, ColorLike, PropDef } from '../../props.js';
 const P = Math.PI;
 
-export function register(D, H) {
+// 지역 도우미 선택(도우미 본문의 o.키와 호출부 값에서 모은 타입)
+interface CaskOpts { c?: ColorLike; lie?: boolean; ry?: number; s?: number }
+interface PlankDoorOpts { dutch?: boolean; fan?: boolean; frame?: ColorLike }
+interface SashWinOpts { box?: ColorLike; frame?: ColorLike; lintel?: boolean; lit?: number; sill?: ColorLike }
+interface TerraceRowOpts { eaves?: number; gable?: boolean; render?: boolean; rise?: number; w?: number }
+interface TakingDoorOpts { c?: ColorLike; open?: boolean }
+interface ArchWinOpts { bars?: number; frame?: ColorLike; glass?: ColorLike; lit?: number; ns?: boolean; sill?: ColorLike }
+interface SlateRoofOpts { course?: number; noGable?: boolean; noGutter?: boolean; ns?: boolean; ov?: number; slate?: ColorLike; wall?: ColorLike }
+interface PaddleGearOpts { raised?: boolean; windlass?: boolean }
+interface BoardSignOpts { bd?: number; board?: ColorLike; boardMat?: string; border?: ColorLike; c?: ColorLike; glow?: number; h?: number; hb?: number; mat?: string; pad?: number; track?: number; w?: number; wt?: number; z?: number }
+interface LettersOpts { h?: number; wt?: number; flat?: boolean; dep?: number; bev?: number; track?: number; ds?: number; align?: 'left' | 'right' | 'center'; mat?: string; c?: ColorLike; x?: number; y?: number; z?: number; glow?: number; lit?: number; litC?: ColorLike }
+interface BrickBoxOpts { courses?: boolean; faces?: string; mat?: string; r?: number; step?: number }
+interface SegOpts { plain?: boolean; r?: number }
+
+export function register(D: PropDefs, H: PackHelpers) {
   const { THREE, PI, TAU, HP, P3, col, shade, mixc, latheGeo, tubeGeo, extrudeGeo, arcPts } = H;
-  const NS = (m) => (H.noShadow ? H.noShadow(m) : m);
+  const NS = (m: string) => (H.noShadow ? H.noShadow(m) : m);
 
   // ------------------------------------------------------------------------------------------ palette
   // muted, sooty canal tones: the team inks stay the loudest thing on screen
@@ -27,9 +43,14 @@ export function register(D, H) {
 
   // ------------------------------------------------------------------------------------------ geometry kit
   class GB {
+    idx: number[] = [];
+    c: number[] = [];
+    uv: number[] = [];
+    n: number[] = [];
+    p: number[] = [];
     constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.idx = []; }
-    v(x, y, z, nx, ny, nz, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
-    tri(a, b, c) {
+    v(x: number, y: number, z: number, nx: number, ny: number, nz: number, r = 1, g = r, b = r) { this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(0, 0); this.c.push(r, g, b); return this.p.length / 3 - 1; }
+    tri(a: number, b: number, c: number) {
       const P = this.p, N = this.n;
       const ax = P[a * 3], ay = P[a * 3 + 1], az = P[a * 3 + 2];
       const e1x = P[b * 3] - ax, e1y = P[b * 3 + 1] - ay, e1z = P[b * 3 + 2] - az;
@@ -39,7 +60,7 @@ export function register(D, H) {
       const s = cx * (N[a * 3] + N[b * 3] + N[c * 3]) + cy * (N[a * 3 + 1] + N[b * 3 + 1] + N[c * 3 + 1]) + cz * (N[a * 3 + 2] + N[b * 3 + 2] + N[c * 3 + 2]);
       if (s < 0) this.idx.push(a, c, b); else this.idx.push(a, b, c);
     }
-    quad(a, b, c, d) { this.tri(a, b, c); this.tri(a, c, d); }
+    quad(a: number, b: number, c: number, d: number) { this.tri(a, b, c); this.tri(a, c, d); }
     geo() {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(this.p, 3));
@@ -50,20 +71,20 @@ export function register(D, H) {
       return g;
     }
   }
-  const TPL = new Map();
-  const tpl = (key, fn) => { let g = TPL.get(key); if (!g) { g = fn(); TPL.set(key, g); } return g; };
-  const kf = (a) => (typeof a === 'number' ? a.toFixed(4) : String(a));
-  const hash = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
-  const cx3 = (c) => { const k = col(c); return [k.r, k.g, k.b]; };
-  const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  const TPL = new Map<string, unknown>();   // (키마다 만드는 값의 모양이 다르다: 형상·글리프 등)
+  const tpl = <T,>(key: string, fn: () => T): T => { let g = TPL.get(key) as T | undefined; if (g === undefined) { g = fn(); TPL.set(key, g); } return g; };
+  const kf = (a: unknown) => (typeof a === 'number' ? a.toFixed(4) : String(a));
+  const hash = (n: number) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+  const cx3 = (c: ColorLike) => { const k = col(c); return [k.r, k.g, k.b]; };
+  const lerp3 = (a: number[], b: number[], t: number) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
   // plain 12-tri box for small / flush parts
   const pboxGeo = () => tpl('pbox', () => new THREE.BoxGeometry(1, 1, 1));
-  const pbox = (B, mat, c, w, h, d, x, y, z, o = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
+  const pbox = (B: Builder, mat: string, c: ColorLike, w: number, h: number, d: number, x: number, y: number, z: number, o: PartOpts = {}) => B.add(mat, pboxGeo(), c, x, y, z, { ...o, sx: w, sy: h, sz: d });
   // low-poly unit cylinders (scaled)
-  const ucyl = (seg, open) => tpl('ucyl|' + seg + (open ? 'o' : ''), () => new THREE.CylinderGeometry(1, 1, 1, seg, 1, !!open));
-  const cyl = (B, mat, c, r, h, x, y, z, o = {}) => B.add(mat, ucyl(o.seg ?? 8, o.open), c, x, y, z, { ...o, sx: r, sy: h, sz: r });
+  const ucyl = (seg: number, open?: boolean) => tpl('ucyl|' + seg + (open ? 'o' : ''), () => new THREE.CylinderGeometry(1, 1, 1, seg, 1, !!open));
+  const cyl = (B: Builder, mat: string, c: ColorLike, r: number, h: number, x: number, y: number, z: number, o: PartOpts = {}) => B.add(mat, ucyl(o.seg ?? 8, o.open), c, x, y, z, { ...o, sx: r, sy: h, sz: r });
   // a segment (box) between two points in the XZ plane at height y (beam, rail …), section w x h
-  function seg(B, mat, c, a, b, w, h, o = {}) {
+  function seg(B: Builder, mat: string, c: ColorLike, a: number[], b: number[], w: number, h: number, o: SegOpts = {}) {
     const dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2], L = Math.hypot(dx, dy, dz);
     const ry = Math.atan2(-dz, dx), rz = Math.atan2(dy, Math.hypot(dx, dz));
     B.push((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2, ry, 0, rz);
@@ -71,12 +92,12 @@ export function register(D, H) {
     B.pop();
   }
   // collision boxes are always in the prop's root frame: rotate a local (x, z) about Y by ry and offset
-  const rot = (x, z, ry) => [x * Math.cos(ry) + z * Math.sin(ry), -x * Math.sin(ry) + z * Math.cos(ry)];
-  const colC = (B, x, y, z, w, h, d, o) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2, o);
+  const rot = (x: number, z: number, ry: number) => [x * Math.cos(ry) + z * Math.sin(ry), -x * Math.sin(ry) + z * Math.cos(ry)];
+  const colC = (B: Builder, x: number, y: number, z: number, w: number, h: number, d: number, o?: PartOpts) => B.col(x - w / 2, y, z - d / 2, x + w / 2, y + h, z + d / 2, o);
   const ROOF = { roof: true };
   const RAIL = { rail: true };   // see-through railings: kids blocked, shots / ink / squids pass, nobody stands on top
   // collider chain along a segment (AABBs of short pieces hug a diagonal beam)
-  function colSeg(B, a, b, r, y0, y1, n) {
+  function colSeg(B: Builder, a: number[], b: number[], r: number, y0: number, y1: number, n: number) {
     for (let i = 0; i < n; i++) {
       const t0 = i / n, t1 = (i + 1) / n;
       const x0 = a[0] + (b[0] - a[0]) * t0, z0 = a[1] + (b[1] - a[1]) * t0, x1 = a[0] + (b[0] - a[0]) * t1, z1 = a[1] + (b[1] - a[1]) * t1;
@@ -84,13 +105,13 @@ export function register(D, H) {
     }
   }
   // brick-coursed box: body + faint course lines on the ±X/±Z faces (flush lines, no shadow) — for prop brickwork
-  function brickBox(B, c, w, h, d, x, y, z, o = {}) {
+  function brickBox(B: Builder, c: ColorLike, w: number, h: number, d: number, x: number, y: number, z: number, o: BrickBoxOpts = {}) {
     B.box(o.mat ?? 'paint', c, w, h, d, x, y, z, { r: o.r ?? 0.02 });
     if (o.courses === false) return;
     const cc = shade(c, 0.82), step = o.step ?? 0.3;
     for (let yy = y - h / 2 + step; yy < y + h / 2 - 0.05; yy += step) {
-      if (o.faces?.includes('z') !== false) { pbox(B, NS('paint'), cc, w - 0.02, 0.012, d + 0.008, x, yy, z); }
-      if (o.faces?.includes('x')) pbox(B, NS('paint'), cc, w + 0.008, 0.012, d - 0.02, x, yy, z);
+      if ((o.faces as string | undefined)?.includes('z') !== false) { pbox(B, NS('paint'), cc, w - 0.02, 0.012, d + 0.008, x, yy, z); }
+      if ((o.faces as string | undefined)?.includes('x')) pbox(B, NS('paint'), cc, w + 0.008, 0.012, d - 0.02, x, yy, z);
     }
   }
 
@@ -98,9 +119,11 @@ export function register(D, H) {
 
   // ------------------------------------------------------------------------------------------ stroke font
   // Rounded bold sans (cap height 1): centre-line strokes, round caps + round joins, bevelled front, flat back.
-  const EA = (cx, cy, rx, ry, a0, a1, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
-  const LOOP = (cx, cy, rx, ry, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
-  const GL = {
+  const EA = (cx: number, cy: number, rx: number, ry: number, a0: number, a1: number, n = 12) => { const o = []; for (let i = 0; i <= n; i++) { const a = ((a0 + (a1 - a0) * (i / n)) * PI) / 180; o.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); } return o; };
+  const LOOP = (cx: number, cy: number, rx: number, ry: number, n = 24) => ({ c: EA(cx, cy, rx, ry, 0, 360, n).slice(0, n) });
+  // 글리프: [폭, 획…], 획은 점 목록 또는 닫힌 곡선 { c: 점 목록 }
+  type Stroke = number[][] | { c: number[][] };
+  const GL: Record<string, Array<number | Stroke>> = {
     A: [0.66, [[0, 0], [0.33, 1], [0.66, 0]], [[0.13, 0.33], [0.53, 0.33]]],
     B: [0.58, [[0, 0], [0, 1]], [[0, 1], ...EA(0.3, 0.755, 0.245, 0.245, 90, -90, 12), [0, 0.51]], [[0, 0.51], ...EA(0.32, 0.255, 0.255, 0.255, 90, -90, 12), [0, 0]]],
     C: [0.64, EA(0.34, 0.5, 0.34, 0.5, 46, 314, 22)],
@@ -143,26 +166,26 @@ export function register(D, H) {
     "'": [0, [[0, 1], [0, 0.8]]],
     '&': [0.7, [[0.7, 0], ...EA(0.27, 0.72, 0.17, 0.2, -40, 220, 12).reverse(), [0.08, 0.28], ...EA(0.26, 0.24, 0.24, 0.24, 180, 300, 6), [0.62, 0.36]]],
   };
-  const DOTS = { '·': [[0, 0.46]], '.': [[0, 0]], ':': [[0, 0.1], [0, 0.62]] };
+  const DOTS: Record<string, number[][]> = { '·': [[0, 0.46]], '.': [[0, 0]], ':': [[0, 0.1], [0, 0.62]] };
   const SPACE = 0.34;
 
   // Stroke ribbon: flat face at z = d (bevel b down to the sides), side walls to z0. b = 0 → no bevel; d = z0 → flat
   // (paint / stencil lettering: face only).
-  function ribbon(g, pts, closed, hw, b, d, z0) {
+  function ribbon(g: GB, pts: number[][], closed: boolean, hw: number, b: number, d: number, z0: number) {
     const n = pts.length, R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5;
-    const N = pts.map((p, i) => {
+    const N = pts.map((p: number[], i: number) => {
       const a = closed ? pts[(i - 1 + n) % n] : i > 0 ? pts[i - 1] : null;
       const c = closed ? pts[(i + 1) % n] : i < n - 1 ? pts[i + 1] : null;
-      const nrm = (u, v) => { const dx = v[0] - u[0], dy = v[1] - u[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; };
+      const nrm = (u: number[], v: number[]) => { const dx = v[0] - u[0], dy = v[1] - u[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; };
       const n1 = a ? nrm(a, p) : null, n2 = c ? nrm(p, c) : null;
-      if (!n1) return [n2[0], n2[1], 1];
+      if (!n1) return [n2![0], n2![1], 1];
       if (!n2) return [n1[0], n1[1], 1];
       let mx = n1[0] + n2[0], my = n1[1] + n2[1]; const ml = Math.hypot(mx, my) || 1; mx /= ml; my /= ml;
       return [mx, my, Math.min(1.6, 1 / Math.max(0.3, mx * n2[0] + my * n2[1]))];
     });
-    const rings = pts.map((p, i) => {
+    const rings = pts.map((p: number[], i: number) => {
       const [nx, ny, k] = N[i];
-      const at = (s) => [p[0] + nx * k * s, p[1] + ny * k * s];
+      const at = (s: number) => [p[0] + nx * k * s, p[1] + ny * k * s];
       const hi = bev ? hw - b : hw, Li = at(hi), Lo = at(hw), Ri = at(-hi), Ro = at(-hw), dz = bev ? b : 0;
       const r = [g.v(Li[0], Li[1], d, 0, 0, 1), g.v(Ri[0], Ri[1], d, 0, 0, 1)];
       if (bev) r.push(g.v(Li[0], Li[1], d, nx * R, ny * R, R), g.v(Lo[0], Lo[1], d - b, nx * R, ny * R, R), g.v(Ri[0], Ri[1], d, -nx * R, -ny * R, R), g.v(Ro[0], Ro[1], d - b, -nx * R, -ny * R, R));
@@ -176,9 +199,9 @@ export function register(D, H) {
     }
   }
   // round cap / join: disc (a0..a1 = 0..TAU) or a half disc facing an open stroke end
-  function disc(g, cx, cy, r, b, d, z0, seg, a0 = 0, a1 = TAU) {
+  function disc(g: GB, cx: number, cy: number, r: number, b: number, d: number, z0: number, seg: number, a0 = 0, a1 = TAU) {
     const R = Math.SQRT1_2, walls = d - z0 > 1e-5, bev = b > 1e-5, ri = bev ? r - b : r, full = a1 - a0 > TAU - 1e-4;
-    const c0 = g.v(cx, cy, d, 0, 0, 1), f = [], bi = [], bo = [], wt = [], wb = [];
+    const c0 = g.v(cx, cy, d, 0, 0, 1), f: number[] = [], bi: number[] = [], bo: number[] = [], wt: number[] = [], wb: number[] = [];
     const n = full ? seg : seg + 1;
     for (let k = 0; k < n; k++) {
       const a = a0 + ((a1 - a0) * k) / seg, cs = Math.cos(a), sn = Math.sin(a);
@@ -195,9 +218,9 @@ export function register(D, H) {
   }
   // glyph geometry in cap units (baseline y = 0, cap y = 1, back at z = 0, face at z = dep); returns { geo, adv }.
   // dep = 0 → flat painted lettering (face only); ds = round-cap segments.
-  function glyph(ch, wt, dep, bev, ds = 10) {
+  function glyph(ch: string, wt: number, dep: number, bev: number, ds = 10): { geo: THREE.BufferGeometry | null; adv: number } {
     return tpl(['gl', ch, wt, dep, bev, ds].map(kf).join('|'), () => {
-      const s = 1 - wt, hw = wt / 2, T = (p) => [hw + p[0] * s, hw + p[1] * s];
+      const s = 1 - wt, hw = wt / 2, T = (p: number[]) => [hw + p[0] * s, hw + p[1] * s];
       const g = new GB();
       const b = Math.min(bev, hw * 0.6);
       if (DOTS[ch]) {
@@ -206,12 +229,12 @@ export function register(D, H) {
       }
       const def = GL[ch];
       if (!def) return { geo: null, adv: SPACE };
-      const [w, ...strokes] = def;
-      strokes.forEach((st, si) => {
+      const [w, ...strokes] = def as [number, ...Stroke[]];
+      strokes.forEach((st, si: number) => {
         const d = dep > 0 ? dep - si * 0.006 : si * 0.0004;
         const closed = !Array.isArray(st);
-        let pts = (closed ? st.c : st).map(T);
-        pts = pts.filter((p, i) => i === 0 || Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 1e-4);
+        let pts = (Array.isArray(st) ? st : st.c).map(T);
+        pts = pts.filter((p: number[], i: number) => i === 0 || Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) > 1e-4);
         if (closed) { ribbon(g, pts, true, hw, b, d, 0); return; }
         // split at sharp turns (round join discs there), round caps at both ends
         let cur = [pts[0]];
@@ -227,17 +250,17 @@ export function register(D, H) {
         }
         if (cur.length > 1) ribbon(g, cur, false, hw, b, d, 0);
         // half-disc caps at the two open ends (facing outward), full discs at the sharp joints
-        const endCap = (p, q) => { const a = Math.atan2(p[1] - q[1], p[0] - q[0]); disc(g, p[0], p[1], hw, b, d, 0, Math.max(3, Math.round(ds / 2)), a - HP, a + HP); };
+        const endCap = (p: number[], q: number[]) => { const a = Math.atan2(p[1] - q[1], p[0] - q[0]); disc(g, p[0], p[1], hw, b, d, 0, Math.max(3, Math.round(ds / 2)), a - HP, a + HP); };
         endCap(pts[0], pts[1]); endCap(pts[pts.length - 1], pts[pts.length - 2]);
         for (const p of joints.slice(2)) disc(g, p[0], p[1], hw, b, d, 0, ds);
       });
       return { geo: g.geo(), adv: w * s + wt };
     });
   }
-  const textW = (str, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
+  const textW = (str: string, wt = 0.17, track = 0.12) => { let w = 0; const cs = [...str]; cs.forEach((ch, i) => { w += ch === ' ' ? SPACE : glyph(ch, wt, 0.12, 0.035).adv; if (i < cs.length - 1) w += track; }); return w; };
   // Lay out a line of letters facing +Z in the current frame (raised channel letters, or flat paint with flat: true).
   // Returns the width (m).
-  function letters(B, str, o = {}) {
+  function letters(B: Builder, str: string, o: LettersOpts = {}) {
     const h = o.h ?? 0.3, wt = o.wt ?? 0.17, flat = !!o.flat;
     const dep = flat ? 0 : o.dep ?? 0.12, bev = flat ? 0 : o.bev ?? (h < 0.34 ? 0 : 0.03), track = o.track ?? 0.12;
     const ds = o.ds ?? (flat || h < 0.12 ? 6 : 8);
@@ -253,7 +276,8 @@ export function register(D, H) {
       // the sign reads as switched on at dusk and as a crisp lit sign by day
       if (gi.geo && o.lit) {
         const fg = glyph(ch, wt, 0, 0, ds);
-        if (fg.geo) B.add(NS('glow'), fg.geo, o.litC ?? o.c ?? K.blackGold, (o.x ?? 0) + x, o.y ?? 0, (o.z ?? 0) + dep * h + 0.004, { s: h, sz: 1, glow: o.lit, ao: false });
+        if (fg.geo) B.add(NS('glow'), fg.geo, o.litC ?? o.c ?? 'white',   // (K에 blackGold가 없어 기본 흰색이 쓰인다)
+           (o.x ?? 0) + x, o.y ?? 0, (o.z ?? 0) + dep * h + 0.004, { s: h, sz: 1, glow: o.lit, ao: false });
       }
       x += (gi.adv + (i < cs.length - 1 ? track : 0)) * h;
     });
@@ -261,11 +285,11 @@ export function register(D, H) {
   }
 
   // 7-segment LED digits (unit cell 0.62 × 1, slight italic): lit segments on 'glow', the unlit "ghost 8" on 'paint'
-  const SEG7 = { a: [[0.1, 1], [0.46, 1]], b: [[0.53, 0.94], [0.53, 0.56]], c: [[0.53, 0.44], [0.53, 0.06]], d: [[0.1, 0], [0.46, 0]], e: [[0.03, 0.44], [0.03, 0.06]], f: [[0.03, 0.94], [0.03, 0.56]], g: [[0.1, 0.5], [0.46, 0.5]] };
+  const SEG7: Record<string, number[][]> = { a: [[0.1, 1], [0.46, 1]], b: [[0.53, 0.94], [0.53, 0.56]], c: [[0.53, 0.44], [0.53, 0.06]], d: [[0.1, 0], [0.46, 0]], e: [[0.03, 0.44], [0.03, 0.06]], f: [[0.03, 0.94], [0.03, 0.56]], g: [[0.1, 0.5], [0.46, 0.5]] };
   const DIG = ['abcdef', 'bc', 'abged', 'abgcd', 'fgbc', 'afgcd', 'afgedc', 'abc', 'abcdefg', 'abcdfg'];
 
   // flush sign board with flat painted letters (board centred at x, y; faces +Z); returns the board width
-  function boardSign(B, text, x, y, o = {}) {
+  function boardSign(B: Builder, text: string, x: number, y: number, o: BoardSignOpts = {}) {
     const h = o.h ?? 0.2, pad = o.pad ?? h * 0.6, W = o.w ?? textW(text, o.wt ?? 0.18, o.track ?? 0.12) * h + pad * 2, Hb = o.hb ?? h + pad * 1.1;
     const bd = o.bd ?? 0.04, z = o.z ?? 0;
     B.box(o.boardMat ?? 'paint', o.board ?? K.green, W, Hb, bd, x, y, z + bd / 2, { r: Math.min(0.02, Hb * 0.15) });
@@ -276,7 +300,7 @@ export function register(D, H) {
 
   // ================================================================================================ small cast iron
   // Victorian gas lamp: stepped plinth, fluted shaft, ladder bar, square tapered lantern (glowing panes), crown + finial.
-  function lantern(B, x, y, z, s = 1) {
+  function lantern(B: Builder, x: number, y: number, z: number, s = 1) {
     B.push(x, y, z, 0, 0, 0, s);
     B.lathe('metal', K.iron, [[0.07, 0], [0.11, 0.03], [0.12, 0.06], [0.07, 0.09], [0, 0.09]], 0, 0, 0, { seg: 8 });
     B.add('glow', tpl('lantern', () => latheGeo([[0.09, 0], [0.16, 0.42], [0, 0.42]], 4)), K.lamp, 0, 0.09, 0, { ry: PI / 4, glow: 1.5 });
@@ -289,7 +313,7 @@ export function register(D, H) {
   D.lockgate_lamp = {
     desc: 'Cast-iron canal gas lamp. variant 0 = 3.6 m post (plinth, fluted shaft, ladder bar, square lantern with warm panes); 1 = wall bracket lamp (wall at z = 0, pos.y = bracket height) with a scroll arm; 2 = short pier-top lamp (sits on a parapet pier).',
     params: {}, variants: 3, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 3;
       if (v === 0) {
         B.lathe('metal', K.iron, [[0, 0], [0.2, 0], [0.2, 0.08], [0.16, 0.12], [0.15, 0.42], [0.12, 0.5], [0.09, 0.56], [0, 0.56]], 0, 0, 0, { seg: 8 });
@@ -313,7 +337,7 @@ export function register(D, H) {
       }
     },
   };
-  function pierLamp(B, x, y, z) {
+  function pierLamp(B: Builder, x: number, y: number, z: number) {
     B.lathe('metal', K.iron, [[0.12, 0], [0.1, 0.06], [0.06, 0.1], [0.05, 0.62], [0.08, 0.66], [0, 0.68]], x, y, z, { seg: 8 });
     lantern(B, x, y + 0.66, z, 0.95);
   }
@@ -322,7 +346,7 @@ export function register(D, H) {
   D.lockgate_bollard = {
     desc: 'Canal mooring bollard. variant 0 = cast-iron mushroom bollard (black, white band, worn rope groove); 1 = oak mooring stump with an iron cap band.',
     params: {}, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 2;
       if (v === 0) {
         B.lathe('gloss', K.black, [[0, 0], [0.17, 0], [0.18, 0.03], [0.14, 0.08], [0.11, 0.2], [0.1, 0.34], [0.13, 0.42], [0.17, 0.46], [0.17, 0.5], [0.12, 0.55], [0, 0.57]], 0, 0, 0, { seg: 12 });
@@ -340,7 +364,7 @@ export function register(D, H) {
   };
 
   // iron mooring ring on a staple set into the coping (edge at z = 0, water +Z)
-  function ring(B, x, y, z, ry = 0) {
+  function ring(B: Builder, x: number, y: number, z: number, ry = 0) {
     B.push(x, y, z, ry);
     B.box(NS('metal'), K.iron, 0.14, 0.02, 0.1, 0, 0.01, 0, { r: 0.006 });
     B.tor(NS('metal'), K.ironLt, 0.08, 0.014, 0, 0.016, 0.12, { rs: 4, ts: 10, rx: HP });
@@ -350,11 +374,11 @@ export function register(D, H) {
   D.lockgate_ring = {
     desc: 'Iron mooring ring on a staple set in the coping (edge at z = 0, water +Z). Non-colliding.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) { B.aoBase = null; ring(B, 0, 0, -0.12, 0); },
+    build(B: Builder, o: PropParams) { B.aoBase = null; ring(B, 0, 0, -0.12, 0); },
   };
 
   // ground paddle gear: cast-iron rack post on a bed plate — the lock's water valves (cover on the lock side)
-  function paddleGear(B, x, y, z, ry, o = {}) {
+  function paddleGear(B: Builder, x: number, y: number, z: number, ry: number, o: PaddleGearOpts = {}) {
     B.push(x, y, z, ry);
     B.box('paint', K.stoneDk, 0.62, 0.06, 0.5, 0, 0.03, 0, { r: 0.015 });
     B.box('gloss', K.black, 0.3, 0.72, 0.24, 0, 0.42, 0, { r: 0.03 });
@@ -380,7 +404,7 @@ export function register(D, H) {
   D.lockgate_paddle = {
     desc: 'Lock ground-paddle gear: black cast-iron rack post with gear cheeks, pinion spindle (white tip) and pawl on a stone bed plate. raised: rack drawn up; windlass: a windlass left on the spindle.',
     params: { raised: 'bool', windlass: 'bool' }, variants: 1, mount: 'ground',
-    build(B, o) { paddleGear(B, 0, 0, 0, 0, o); B.blob(0.8, 0.7); },
+    build(B: Builder, o: PropParams) { paddleGear(B, 0, 0, 0, 0, o); B.blob(0.8, 0.7); },
   };
 
   // ================================================================================================ lock gates
@@ -391,7 +415,7 @@ export function register(D, H) {
   // handrail on the downstream side, gate paddles. kind 'upper': leaves stand on the brick cill (colliding) with the
   // upper pound behind (visual water, higher than the sea), leaks spraying through into the drained chamber.
   const LOCK = { half: 2.75, floor: -3.2, low: -2.9, up: -1.6, heelX: -0.7, mitreX: -0.1 };
-  function gateLeaf(B, side, yb, yt) {
+  function gateLeaf(B: Builder, side: number, yb: number, yt: number) {
     const hx = LOCK.heelX, hz = side * LOCK.half, mx = LOCK.mitreX, dx = mx - hx, dz = -hz, L = Math.hypot(dx, dz);
     const ry = Math.atan2(-dz, dx), H = yt - yb, dn = side < 0 ? 1 : -1;       // local z * dn = downstream
     B.push(hx, yb, hz, ry);
@@ -412,13 +436,13 @@ export function register(D, H) {
     B.pop();
     return { L, ry, dn };
   }
-  function balanceBeam(B, side, len = 4.4, sweep = 1) {
+  function balanceBeam(B: Builder, side: number, len = 4.4, sweep = 1) {
     const hx = LOCK.heelX, hz = side * LOCK.half;
     // heel post extension above the coping + the beam running back over the lock side
     B.box('wood', K.black, 0.34, 1.2, 0.34, hx, 0.5, hz, { r: 0.05 });
     B.box('wood', K.white, 0.38, 0.06, 0.38, hx, 1.12, hz, { r: 0.02 });
     const dir = [-0.12, side * 0.993], a = [hx + dir[0] * 0.1, 0.92, hz + dir[1] * 0.1], b = [hx + dir[0] * len, 0.86, hz + dir[1] * len];
-    const cut = (t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+    const cut = (t: number) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
     seg(B, 'wood', K.black, a, cut(0.74), 0.3, 0.32);
     seg(B, 'wood', K.white, cut(0.74), b, 0.31, 0.33);
     seg(B, 'wood', K.white, a, cut(0.06), 0.31, 0.33);
@@ -438,7 +462,7 @@ export function register(D, H) {
   D.lockgate_gates = {
     desc: 'A pair of black timber mitre gates with white-ended balance beams across a broad lock chamber (local +X upstream, chamber z ±2.75, origin on the gate line at coping level; the walkway on top is a level block x ±0.6). kind lower | upper (see LOCK notes in props.js). Beams, heel posts, handrail, cill (upper) collide.',
     params: { kind: 'lower | upper' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const upper = o.kind === 'upper';
       const yb = upper ? -2.25 : LOCK.floor, yt = -0.25;
@@ -481,7 +505,7 @@ export function register(D, H) {
         for (const [xs, ys, zj, r] of jets) {
           const pts = [];
           for (let i = 0; i <= 8; i++) { const t = i / 8; pts.push(P3(xs - t * 0.55, ys - t * t * (ys - LOCK.floor), zj)); }
-          B.tube(NS('gloss'), K.foam, pts, (t) => r * (1 + t * 0.8), { radial: 6 });
+          B.tube(NS('gloss'), K.foam, pts, (t: number) => r * (1 + t * 0.8), { radial: 6 });
           B.add(NS('paint'), tpl('splash', () => latheGeo([[0, 0.02], [0.18, 0.015], [0.34, 0.0]], 8)), K.foam, pts[8][0], LOCK.floor + 0.012, zj, { s: 1 + r * 6 });
         }
         // the leak's puddle along the foot of the cill
@@ -495,7 +519,7 @@ export function register(D, H) {
   // ================================================================================================ water
   // Visual (non-lethal-looking-but-honest) canal water ABOVE the sea: the upper pounds only, which the arena never
   // borders except across a gate. Gently rippled gloss surface (baked normal jitter), foam lines along the walls.
-  function waterSheet(L, W, seedN) {
+  function waterSheet(L: number, W: number, seedN: number) {
     return tpl(['water', L, W, seedN].map(kf).join('|'), () => {
       const g = new GB(), nx = Math.max(2, Math.round(L / 0.9)), nz = Math.max(2, Math.round(W / 0.9)), ids = [];
       const c0 = cx3(K.water), c1 = cx3(K.waterLt);
@@ -513,7 +537,7 @@ export function register(D, H) {
   D.lockgate_pound = {
     desc: 'Upper-pound canal water (visual, above the sea): rippled gloss sheet running along local +X for `length` (width `width`, surface at pos.y), foam lines along both walls and at the start (the gate).',
     params: { length: 'm (18)', width: 'm (5.5)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const L = o.length ?? 18, W = o.width ?? 5.5;
       B.add('gloss', waterSheet(L, W, 3), 'white', 0, 0, 0, {});
@@ -535,9 +559,9 @@ export function register(D, H) {
   // towpath arches (z ±5…±7, springing 1.9) the towpaths pass under, spandrel walls, the barrel soffits, blue-brick
   // voussoir rings, stone string course, saddleback parapet copings (colliding), end piers with lamps, bridge plates.
   const BR = { R: 5.11, yc: 2.45 - 5.11, Rt: 1.336, yt: 1.014, spring: 1.9, face: 2.6 };
-  const deckTop = (z) => { const a = Math.abs(z); return a >= 8.4 ? (3.0 * (15.2 - a)) / 6.8 : a >= 7 ? 3.0 : 3.0 + 0.3 * (1 - a / 7); };
-  const soffitW = (z) => BR.yc + Math.sqrt(Math.max(0, BR.R * BR.R - z * z));
-  const soffitT = (z) => { const c = z < 0 ? -6 : 6; return BR.yt + Math.sqrt(Math.max(0, BR.Rt * BR.Rt - (z - c) * (z - c))); };
+  const deckTop = (z: number) => { const a = Math.abs(z); return a >= 8.4 ? (3.0 * (15.2 - a)) / 6.8 : a >= 7 ? 3.0 : 3.0 + 0.3 * (1 - a / 7); };
+  const soffitW = (z: number) => BR.yc + Math.sqrt(Math.max(0, BR.R * BR.R - z * z));
+  const soffitT = (z: number) => { const c = z < 0 ? -6 : 6; return BR.yt + Math.sqrt(Math.max(0, BR.Rt * BR.Rt - (z - c) * (z - c))); };
   function spandrelProfile() {
     const p = [];
     for (let i = 0; i <= 28; i++) { const z = -7 + (i / 28) * 14; p.push([z, deckTop(z) - 0.25]); }
@@ -552,19 +576,19 @@ export function register(D, H) {
   }
   // voussoir ring on a face (face plane at local z = 0, facing +Z in the ring frame): blocks between radii r0 … r1 on a
   // circle centred (cz, cy) from angle a0 → a1; colours alternate (blue headers, the odd red), mortar gaps between
-  function voussoirGeo(key, cz, cy, r0, r1, a0, a1, n, proud) {
+  function voussoirGeo(key: string, cz: number, cy: number, r0: number, r1: number, a0: number, a1: number, n: number, proud: number) {
     return tpl('vous|' + key, () => {
       const g = new GB(), cb = cx3(K.blue), cb2 = cx3(K.blueDk), cr = cx3(K.brickDk), gap = 0.006;
       for (let i = 0; i < n; i++) {
         const t0 = a0 + ((a1 - a0) * i) / n, t1 = a0 + ((a1 - a0) * (i + 1)) / n, h = hash(i * 3.7 + r0);
         const c = h < 0.12 ? cr : h < 0.55 ? cb : cb2;
-        const q = (r, t) => [cz + Math.cos(t) * r, cy + Math.sin(t) * r];
+        const q = (r: number, t: number) => [cz + Math.cos(t) * r, cy + Math.sin(t) * r];
         const e0 = t0 + gap / r0, e1 = t1 - gap / r0;
         const A = q(r0, e0), Bq = q(r0, e1), C = q(r1, e1), Dq = q(r1, e0);
         const f = [A, Bq, C, Dq].map(([z, y]) => g.v(z, y, proud, 0, 0, 1, c[0], c[1], c[2]));
         g.quad(f[0], f[1], f[2], f[3]);
         // intrados (soffit edge) + extrados edge + radial sides of the proud block
-        const side = (P0, P1, nz, ny) => { const a = g.v(P0[0], P0[1], proud, nz, ny, 0, ...c), b = g.v(P1[0], P1[1], proud, nz, ny, 0, ...c), c2 = g.v(P1[0], P1[1], 0, nz, ny, 0, ...c), d = g.v(P0[0], P0[1], 0, nz, ny, 0, ...c); g.quad(a, b, c2, d); };
+        const side = (P0: number[], P1: number[], nz: number, ny: number) => { const a = g.v(P0[0], P0[1], proud, nz, ny, 0, ...c), b = g.v(P1[0], P1[1], proud, nz, ny, 0, ...c), c2 = g.v(P1[0], P1[1], 0, nz, ny, 0, ...c), d = g.v(P0[0], P0[1], 0, nz, ny, 0, ...c); g.quad(a, b, c2, d); };
         const tm = (e0 + e1) / 2;
         side(A, Bq, -Math.cos(tm), -Math.sin(tm));
         side(Dq, C, Math.cos(tm), Math.sin(tm));
@@ -573,7 +597,7 @@ export function register(D, H) {
     });
   }
   // a curved barrel soffit (under an arch): rows along X, profile fn(z) → y, faces down
-  function barrelGeo(key, z0, z1, fn, W, n, colr) {
+  function barrelGeo(key: string, z0: number, z1: number, fn: (z: number) => number, W: number, n: number, colr: string) {
     return tpl('barrel|' + key, () => {
       const g = new GB(), rows = [], c0 = cx3(colr);
       for (let i = 0; i <= n; i++) {
@@ -589,13 +613,13 @@ export function register(D, H) {
   D.lockgate_bridge = {
     desc: 'The humpback brick bridge dressing (placed once at the origin, mirror: false): water arch + towpath arches, spandrels, barrel soffits, blue-brick voussoir rings, stone string course, saddleback parapet copings, end piers with lamps, cast-iron bridge plates, rope guards. See the BR notes in props.js.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const F = BR.face;
       const span = tpl('spandrel', () => extrudeGeo(spandrelProfile(), 0.36, 0.004));
       for (const sx of [-1, 1]) B.add('paint', span, K.brickDk, sx * 2.4, 0, 0, {});
       // brick courses on the spandrel faces (flush mortar lines clipped to the masonry)
-      const inMasonry = (z, y) => {
+      const inMasonry = (z: number, y: number) => {
         const a = Math.abs(z);
         if (y > deckTop(z) - 0.3) return false;
         if (a < 5) return y > soffitW(z) + 0.02;
@@ -605,7 +629,7 @@ export function register(D, H) {
       B.add(NS('paint'), tpl('spandrelBricks', () => {
         // brick face detail over the flat spandrel: course lines + vitrified blue headers + per-brick tone patches
         const g = new GB(), cl = cx3(K.brickDk), cb = cx3(K.blueDk), cL = cx3(K.brickLt);
-        const quad = (z0, z1, y0, y1, c) => { const a = g.v(0, y0, z0, 1, 0, 0, ...c), b = g.v(0, y0, z1, 1, 0, 0, ...c), d = g.v(0, y1, z1, 1, 0, 0, ...c), e = g.v(0, y1, z0, 1, 0, 0, ...c); g.quad(a, b, d, e); };
+        const quad = (z0: number, z1: number, y0: number, y1: number, c: number[]) => { const a = g.v(0, y0, z0, 1, 0, 0, ...c), b = g.v(0, y0, z1, 1, 0, 0, ...c), d = g.v(0, y1, z1, 1, 0, 0, ...c), e = g.v(0, y1, z0, 1, 0, 0, ...c); g.quad(a, b, d, e); };
         let row = 0;
         for (let y = -1.3; y < 3.2; y += 0.075, row++) {
           const hdr = row % 2 === 1, bl = hdr ? 0.1125 : 0.225, off = hdr ? 0 : 0.056;
@@ -622,7 +646,7 @@ export function register(D, H) {
         return g.geo();
       }), 'white', F - 0.011, 0, 0, {});
       B.push(0, 0, 0, PI);
-      B.add(NS('paint'), TPL.get('spandrelBricks'), 'white', F - 0.011, 0, 0, {});
+      B.add(NS('paint'), TPL.get('spandrelBricks') as THREE.BufferGeometry, 'white', F - 0.011, 0, 0, {});
       B.pop();
       // soffits: the water barrel + the two towpath barrels, pier faces toward the towpaths
       B.add(NS('paint'), barrelGeo('w', -4.99, 4.99, soffitW, 2 * F - 0.06, 40, K.blueDk), 'white', 0, 0, 0, {});
@@ -662,7 +686,7 @@ export function register(D, H) {
         B.pop();
       }
       // saddleback copings on the four parapet runs (collide), end piers with lamps
-      const top = (z) => deckTop(z) + 0.85;
+      const top = (z: number) => deckTop(z) + 0.85;
       for (const sx of [-1, 1]) {
         const x = sx * 2.4;
         for (let i = 0; i < 40; i++) {
@@ -697,7 +721,7 @@ export function register(D, H) {
   // Façades face +Z in the current frame with the wall plane at z = 0 (fittings ≤ 0.12 m proud on playable walls).
   // pitched slate roof over x0…x1 × z0…z1, ridge along X at yE + rise: gable-end prisms, slates with course lines,
   // ridge tiles, eaves gutter. o.wall = gable brick colour, o.ov = overhang, o.hip: no gable prisms (hidden ends)
-  function slateRoof(B, x0, x1, z0, z1, yE, rise, o = {}) {
+  function slateRoof(B: Builder, x0: number, x1: number, z0: number, z1: number, yE: number, rise: number, o: SlateRoofOpts = {}) {
     const L = x1 - x0, cx = (x0 + x1) / 2, d = z1 - z0, cz = (z0 + z1) / 2, ov = o.ov ?? 0.3, sc = o.slate ?? K.slate;
     const mat = o.ns ? NS('paint') : 'paint';
     if (!o.noGable) B.add(mat, tpl(['gprism', d, rise].map(kf).join('|'), () => extrudeGeo([[-d / 2, 0], [d / 2, 0], [0, rise]], 1, 0.001)), o.wall ?? K.brick, cx, yE, cz, { sx: L });
@@ -712,7 +736,7 @@ export function register(D, H) {
     B.box(mat, shade(sc, 0.7), L + ov * 2 + 0.04, 0.16, 0.26, cx, yE + rise + 0.06, cz, { r: 0.05 });
   }
   // segmental-arched cast-iron window (opening w × h, sill at y): dark glass, glazing bars, blue-brick arch, stone sill
-  function archWin(B, x, y, w, h, o = {}) {
+  function archWin(B: Builder, x: number, y: number, w: number, h: number, o: ArchWinOpts = {}) {
     const mat = o.ns ? NS('paint') : 'paint', gl = o.glass ?? K.glass, fr = o.frame ?? K.iron;
     pbox(B, NS('gloss'), gl, w, h, 0.02, x, y + h / 2, 0.01);
     if (o.lit) pbox(B, NS('glow'), '#ffcf8a', w * 0.8, h * 0.5, 0.004, x, y + h * 0.45, 0.022, { glow: o.lit });
@@ -727,7 +751,7 @@ export function register(D, H) {
     B.box(mat, o.sill ?? K.stone, w + 0.22, 0.09, 0.14, x, y - 0.045, 0.06, { r: 0.015 });
   }
   // timber taking-in door pair (opening w × h, bottom at y), open: one leaf folded back, a sack in the dark doorway
-  function takingDoor(B, x, y, w, h, o = {}) {
+  function takingDoor(B: Builder, x: number, y: number, w: number, h: number, o: TakingDoorOpts = {}) {
     const c = o.c ?? K.green;
     pbox(B, NS('paint'), '#141517', w, h, 0.02, x, y + h / 2, 0.01);
     B.box('paint', K.stone, w + 0.3, 0.14, 0.2, x, y - 0.07, 0.08, { r: 0.02 });
@@ -749,13 +773,13 @@ export function register(D, H) {
     }
   }
   // chimney stack with oversailing courses and pots
-  function chimney(B, x, y, z, w, d, h, pots = 2, mat = 'paint') {
+  function chimney(B: Builder, x: number, y: number, z: number, w: number, d: number, h: number, pots = 2, mat = 'paint') {
     B.box(mat, K.brick, w, h, d, x, y + h / 2, z, { r: 0.03 });
     B.box(mat, K.brickDk, w + 0.12, 0.12, d + 0.12, x, y + h - 0.2, z, { r: 0.02 });
     B.box(mat, K.brickDk, w + 0.16, 0.1, d + 0.16, x, y + h - 0.05, z, { r: 0.02 });
     for (let k = 0; k < pots; k++) B.lathe(mat, '#a45a3c', [[0.13, 0], [0.11, 0.3], [0.13, 0.34], [0.1, 0.36], [0, 0.36]], x + (k - (pots - 1) / 2) * (w / pots), y + h, z, { seg: 7 });
   }
-  function downpipe(B, x, y0, y1, z = 0.08, c = K.iron) {
+  function downpipe(B: Builder, x: number, y0: number, y1: number, z = 0.08, c = K.iron) {
     B.cyl('paint', c, 0.05, y1 - y0, x, (y0 + y1) / 2, z, { seg: 6 });
     B.box('paint', c, 0.2, 0.22, 0.16, x, y1 - 0.05, z, { r: 0.03 });
     B.cyl('paint', c, 0.06, 0.2, x, y0 + 0.1, z + 0.05, { rx: 0.9, seg: 6 });
@@ -770,7 +794,7 @@ export function register(D, H) {
   D.lockgate_warehouse = {
     desc: 'LOCKGATE WHARF bonded warehouse (spawn building; pos = centre of the back wall face, local z = 0, building behind): ground-floor fittings on the playable wall, loading canopy over the spawn stage, 5-storey centre block with pediment + clock + lucam hoist (jib, chain, hook, bale), 3-storey wings with a cast-iron wall crane, painted sign band, slate roofs, chimneys; upper mass collides.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const WT = 4.6, CE = 16.4, WE = 11, DZ = -12.6, br = K.brick, trim = K.stone;
       const floorsC = [4.6, 7.6, 10.6, 13.6], floorsW = [4.6, 7.8];
@@ -908,7 +932,7 @@ export function register(D, H) {
   D.lockgate_mill = {
     desc: 'ANCHOR MILLS: five-storey brick mill straddling the upper pound (pos = arena face at the canal centre, local +Z into the arena, building behind). Arch ring + tunnel vault over the canal, windows, name band, lucam, slate roof; collides above the level wall.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const W = o.W ?? 24, DZ = -14, EA = 17.2, br = K.brickDk;
       B.box('paint', br, W, EA - 9, -DZ, 0, (EA + 9) / 2, DZ / 2, { r: 0.05 });
@@ -941,7 +965,7 @@ export function register(D, H) {
       const R = 2.94, cy = 1.26, sa = Math.asin((2.3 - cy) / R);
       B.add('paint', voussoirGeo('millArch', 0, cy, R, R + 0.5, sa, PI - sa, 30, 0.06), 'white', 0, 0, 0, {});
       B.add('paint', tpl('millFill', () => { const p = [[2.76, 4.21], [-2.76, 4.21], [-2.76, 2.3]]; for (let i = 0; i <= 16; i++) { const a = PI - sa - (i / 16) * (PI - 2 * sa); p.push([Math.cos(a) * R, cy + Math.sin(a) * R]); } p.push([2.76, 2.3]); return extrudeGeo(p.map(([x, y]) => [x, y]), 0.06, 0.002); }), br, 0, 0, 0.0, { ry: -HP });
-      B.add(NS('paint'), barrelGeo('millVault', -2.75, 2.75, (x) => cy + Math.sqrt(Math.max(0, R * R - x * x)), 16, 20, K.blueDk), 'white', 0, 0, -8, { ry: HP });
+      B.add(NS('paint'), barrelGeo('millVault', -2.75, 2.75, (x: number) => cy + Math.sqrt(Math.max(0, R * R - x * x)), 16, 20, K.blueDk), 'white', 0, 0, -8, { ry: HP });
       for (const sx of [-1, 1]) pbox(B, NS('paint'), K.blueDk, 0.3, 4.0, 14, sx * 2.9, 0.3, -8);
       // beyond the mill: the next lock up (gates + beams in the sunlight at the tunnel's end)
       B.push(0, 1.3, -20, -HP);
@@ -956,7 +980,7 @@ export function register(D, H) {
   // Everything outside the walls for one half (placed once, mirrored): land slabs so the district reads as land, not a
   // raft in the bay; terraced houses behind the west wall (backs, yards, chimneys), ANCHOR WAREHOUSE behind the transit
   // shed, the mill chimney (a landmark from anywhere), roofs behind the wharf warehouse, the upper canal's banks.
-  function terraceRow(B, x0, z0, n, o = {}) {
+  function terraceRow(B: Builder, x0: number, z0: number, n: number, o: TerraceRowOpts = {}) {
     // n houses along local +X from (x0, z0), rear elevation facing +Z at z0, 5 m deep behind it
     const hw = o.w ?? 4.6, eaves = o.eaves ?? 6.4, rise = o.rise ?? 2.2, D = 5.2, rend = o.render;
     for (let i = 0; i < n; i++) {
@@ -977,9 +1001,9 @@ export function register(D, H) {
   D.lockgate_backdrop = {
     desc: 'The town beyond one half of the arena (placed once at the origin, mirrored): land slabs (incl. the cut SW + SE corners inside the bounds), a terrace row along the chamfered SW corner, the cooperage in the SW notch, ANCHOR WAREHOUSE in the stepped SE corner, the upper canal walls east of the mill, roofs behind the wharf warehouse, a spire, the mill chimney. No colliders, no shadows.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
-      const land = (x0, x1, z0, z1, c = '#8f8a82') => pbox(B, NS('paint'), c, x1 - x0, 0.6, z1 - z0, (x0 + x1) / 2, -0.35, (z0 + z1) / 2);
+      const land = (x0: number, x1: number, z0: number, z1: number, c = '#8f8a82') => pbox(B, NS('paint'), c, x1 - x0, 0.6, z1 - z0, (x0 + x1) / 2, -0.35, (z0 + z1) / 2);
       land(-90, 90, -140, -46);
       land(28, 90, -46, 9.05); land(28, 90, 14.95, 46);
       land(22.6, 28, -46, -17);                    // the stepped SE corner
@@ -1035,12 +1059,12 @@ export function register(D, H) {
 
   // ================================================================================================ small buildings
   // face helper for block dressings: side 0 +Z, 1 +X, 2 -Z, 3 -X → frame on that face (x along the face, z out)
-  function onFace(B, W, Dd, side, fn) {
+  function onFace(B: Builder, W: number, Dd: number, side: number, fn: (L: number) => void) {
     const ry = [0, HP, PI, -HP][side], off = side % 2 === 0 ? Dd / 2 : W / 2;
     B.push(Math.sin(ry) * off, 0, Math.cos(ry) * off, ry); fn(side % 2 === 0 ? W : Dd); B.pop();
   }
   // painted timber sash window (opening w × h, sill at y): white frame, 2-over-2 bars, stone sill + lintel
-  function sashWin(B, x, y, w, h, o = {}) {
+  function sashWin(B: Builder, x: number, y: number, w: number, h: number, o: SashWinOpts = {}) {
     const fr = o.frame ?? K.sash;
     pbox(B, NS('gloss'), K.glass, w, h, 0.02, x, y + h / 2, 0.01);
     if (o.lit) pbox(B, NS('glow'), '#ffd49a', w * 0.8, h * 0.4, 0.004, x, y + h * 0.7, 0.022, { glow: o.lit });
@@ -1055,7 +1079,7 @@ export function register(D, H) {
       for (let k = 0; k < 5; k++) B.sph('foliage', ['#c94f5c', '#e8b64a', '#f2eee6', '#b563a8', '#5ba257'][(k + Math.round(x * 3)) % 5], 0.07, x - w / 2 + 0.1 + (k * (w - 0.1)) / 4, y - 0.05, 0.12, { ws: 6, hs: 4 });
     }
   }
-  function plankDoor(B, x, y, w, h, c, o = {}) {
+  function plankDoor(B: Builder, x: number, y: number, w: number, h: number, c: ColorLike, o: PlankDoorOpts = {}) {
     pbox(B, NS('paint'), '#141517', w + 0.04, h + 0.04, 0.012, x, y + h / 2, 0.006);
     B.box('wood', c, w, h, 0.06, x, y + h / 2, 0.03, { r: 0.01 });
     for (let k = -w / 2 + 0.12; k < w / 2 - 0.05; k += 0.14) pbox(B, NS('paint'), shade(c, 0.78), 0.012, h - 0.04, 0.012, x + k, y + h / 2, 0.062);
@@ -1065,16 +1089,16 @@ export function register(D, H) {
     if (o.fan) { B.add('paint', tpl('fan', () => latheGeo([[0, 0], [0.45, 0], [0, 0.001]], 10)), o.frame ?? K.sash, x, y + h + 0.08, 0.02, { rx: -HP, sy: 1, s: 1 }); pbox(B, NS('gloss'), K.glassLt, w * 0.8, 0.2, 0.02, x, y + h + 0.2, 0.02); }
   }
   // stone steps up to a door (along +Z from the wall)
-  function doorStep(B, x, w, n = 1) { for (let i = 0; i < n; i++) B.box('paint', K.stone, w + 0.3 - i * 0.1, 0.16, 0.36 + (n - 1 - i) * 0.3, x, 0.08 + i * 0.16, 0.18 + (n - 1 - i) * 0.15, { r: 0.02 }); }
+  function doorStep(B: Builder, x: number, w: number, n = 1) { for (let i = 0; i < n; i++) B.box('paint', K.stone, w + 0.3 - i * 0.1, 0.16, 0.36 + (n - 1 - i) * 0.3, x, 0.08 + i * 0.16, 0.18 + (n - 1 - i) * 0.15, { r: 0.02 }); }
 
   // ---- lock-keeper's cottage (pos = centre of the 6.5 x 6.5 x 5.2 block base; front door +Z toward the lock)
   D.lockgate_cottage = {
     desc: "Lock-keeper's cottage dressing around a 6.5 x 6.5 x 5.2 rendered block: slate roof + gable chimneys (roof collides), gabled timber porch over the front door (+Z), sash windows with window boxes, lamp, LOCK HOUSE plaque, back door + water butt, the flat-roofed wash-house outshut on +X (walkable roof: coping + chimney pot).",
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const W = 6.5, Dd = 6.5, Hh = 5.2;
-      for (let side = 0; side < 4; side++) onFace(B, W, Dd, side, (L) => {
+      for (let side = 0; side < 4; side++) onFace(B, W, Dd, side, (L: number) => {
         B.box('paint', mixc(K.render, K.stoneDk, 0.55), L + 0.04, 0.35, 0.05, 0, 0.175, 0.025, { r: 0.012 });
         B.box('paint', K.sash, L + 0.1, 0.18, 0.08, 0, Hh - 0.09, 0.04, { r: 0.02 });
       });
@@ -1121,10 +1145,10 @@ export function register(D, H) {
   D.lockgate_office = {
     desc: 'LOCKGATE CANAL Co. office dressing around a 6.5 x 8 x 2.45 block: sash windows, panelled door with fanlight + steps (+X), name board on the canal face, bracket clock at the NE corner, roof terrace kit (chimney stack collides, flag staff), rails for the iron stair up the south face.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const W = 6.5, Dd = 8, Hh = 2.6;
-      for (let side = 0; side < 4; side++) onFace(B, W, Dd, side, (L) => {
+      for (let side = 0; side < 4; side++) onFace(B, W, Dd, side, (L: number) => {
         B.box('paint', K.stone, L + 0.06, 0.12, 0.08, 0, Hh - 0.06, 0.04, { r: 0.02 });
         B.box('paint', K.blue, L + 0.02, 0.4, 0.04, 0, 0.2, 0.02, { r: 0.01 });
       });
@@ -1178,10 +1202,10 @@ export function register(D, H) {
   D.lockgate_stables = {
     desc: 'Canal horse stables with a hay loft around a 7 x 8 x 3.6 brick block: Dutch stable doors, loft gablet with a hay door + hoist beam, louvred ridge vent, slate roof (collides), tack hooks, a horse trough and a hay rack on the wharf side.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const W = 7, Dd = 8, Hh = 3.6;
-      for (let side = 0; side < 4; side++) onFace(B, W, Dd, side, (L) => {
+      for (let side = 0; side < 4; side++) onFace(B, W, Dd, side, (L: number) => {
         B.box('paint', K.blue, L + 0.02, 0.45, 0.04, 0, 0.225, 0.02, { r: 0.01 });
         B.box('paint', K.stone, L + 0.08, 0.14, 0.08, 0, Hh - 0.07, 0.04, { r: 0.02 });
       });
@@ -1212,14 +1236,14 @@ export function register(D, H) {
   D.lockgate_shed = {
     desc: 'Canal carriers\' transit shed around a 10 x 15 x 4.8 brick block: three sliding goods doors on the loading-bank side (-X, bank at 1.3 m) under a boarded canopy on iron brackets (collides), painted band, cart door + windows on the yard end, slate roof with a hoist gablet and ridge louvres (collides).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const W = 10, Dd = 15, Hh = 4.8, bank = 1.3;
-      for (let side = 0; side < 4; side++) onFace(B, W, Dd, side, (L) => {
+      for (let side = 0; side < 4; side++) onFace(B, W, Dd, side, (L: number) => {
         B.box('paint', K.stone, L + 0.08, 0.16, 0.1, 0, Hh - 0.08, 0.05, { r: 0.02 });
         for (let x = -L / 2 + 0.2; x < L / 2 - 0.1; x += 0.45) pbox(B, NS('paint'), K.brick, 0.2, 0.12, 0.1, x, Hh - 0.24, 0.05);
       });
-      onFace(B, W, Dd, 3, (L) => {
+      onFace(B, W, Dd, 3, (L: number) => {
         B.push(0, bank, 0);
         for (const x of [-5, 0, 5]) {
           pbox(B, NS('paint'), '#141517', 2.6, 2.6, 0.012, x, 1.3, 0.006);
@@ -1263,18 +1287,18 @@ export function register(D, H) {
   // pos = hull block centre at gunwale height; bow toward local -X. kind 'cabin' (painted cabin, windows, roof kit,
   // livery on the level face = mural) or 'working' (cloth-covered hold on the level block: strings, top plank, stern
   // back-cabin, cratch at the fore end). L = hull block length (the blocks' ends), W = beam, cab = cabin half length.
-  function bowGeo(len, hw, key) {
+  function bowGeo(len: number, hw: number, key: string) {
     return tpl('bow|' + key, () => {
       const g = new GB(), n = 10, cBlk = cx3('#1f2226'), cTop = cx3('#8d2f2a'), cDeck = cx3(K.oak);
-      const sec = (t) => { const w = hw * Math.pow(Math.max(0, Math.cos(t * HP)), 0.72); return { x: -t * len, w, y0: -1.9 + 0.5 * t * t, y1: 0.04 + 0.38 * t * t }; };
+      const sec = (t: number) => { const w = hw * Math.pow(Math.max(0, Math.cos(t * HP)), 0.72); return { x: -t * len, w, y0: -1.9 + 0.5 * t * t, y1: 0.04 + 0.38 * t * t }; };
       const S = []; for (let i = 0; i <= n; i++) S.push(sec(i / n));
       for (const side of [-1, 1]) {
         for (let i = 0; i < n; i++) {
           const a = S[i], b = S[i + 1], dx = b.x - a.x, dw = (b.w - a.w) * side, l = Math.hypot(dx, dw) || 1, nx = -dw / l, nz = dx / l * side;
           const nn = [nx * -side * 0 + (dw / l) * -1 * 0 + nx, 0, nz];
-          const q = (p, y, c) => g.v(p.x, y, side * p.w, (b.w - a.w) / l, 0, side * Math.abs(dx) / l, ...c);
+          const q = (p: { x: number; w: number }, y: number, c: number[]) => g.v(p.x, y, side * p.w, (b.w - a.w) / l, 0, side * Math.abs(dx) / l, ...c);
           // hull black up to the top-bend strake, a red-oxide top band
-          const yb = (p) => p.y1 - 0.14;
+          const yb = (p: { y1: number }) => p.y1 - 0.14;
           g.quad(q(a, a.y0, cBlk), q(b, b.y0, cBlk), q(b, yb(b), cBlk), q(a, yb(a), cBlk));
           g.quad(q(a, yb(a), cTop), q(b, yb(b), cTop), q(b, b.y1, cTop), q(a, a.y1, cTop));
           void nn;
@@ -1289,7 +1313,7 @@ export function register(D, H) {
       return g.geo();
     });
   }
-  function sternGeo(len, hw, key) {
+  function sternGeo(len: number, hw: number, key: string) {
     return tpl('stern|' + key, () => {
       const g = new GB(), n = 8, cBlk = cx3('#1f2226'), cTop = cx3('#8d2f2a'), cDeck = cx3('#3a3d42');
       const S = [];
@@ -1297,8 +1321,8 @@ export function register(D, H) {
       S.unshift({ x: 0, w: hw, y0: -1.9, y1: 0 });
       for (const side of [-1, 1]) for (let i = 0; i < S.length - 1; i++) {
         const a = S[i], b = S[i + 1], dx = b.x - a.x, dw = b.w - a.w, l = Math.hypot(dx, dw) || 1;
-        const q = (p, y, c) => g.v(p.x, y, side * p.w, -dw / l * 0 + (dw < 0 ? -dw / l : 0) + (dx / l) * 0 + (i === 0 ? 0 : 0.7), 0, side * (dx / l), ...c);
-        const yb = (p) => p.y1 - 0.14;
+        const q = (p: { x: number; w: number }, y: number, c: number[]) => g.v(p.x, y, side * p.w, -dw / l * 0 + (dw < 0 ? -dw / l : 0) + (dx / l) * 0 + (i === 0 ? 0 : 0.7), 0, side * (dx / l), ...c);
+        const yb = (p: { y1: number }) => p.y1 - 0.14;
         g.quad(q(a, a.y0, cBlk), q(b, b.y0, cBlk), q(b, yb(b), cBlk), q(a, yb(a), cBlk));
         g.quad(q(a, yb(a), cTop), q(b, yb(b), cTop), q(b, b.y1, cTop), q(a, a.y1, cTop));
       }
@@ -1307,7 +1331,7 @@ export function register(D, H) {
       return g.geo();
     });
   }
-  function waterCan(B, x, y, z, s = 1) {
+  function waterCan(B: Builder, x: number, y: number, z: number, s = 1) {
     B.push(x, y, z, 0, 0, 0, s);
     B.lathe('gloss', K.green, [[0, 0], [0.15, 0], [0.16, 0.02], [0.15, 0.3], [0.12, 0.34], [0.06, 0.36], [0, 0.36]], 0, 0, 0, { seg: 10 });
     B.lathe(NS('gloss'), K.red, [[0.152, 0.1], [0.152, 0.22]], 0, 0, 0, { seg: 10 });
@@ -1319,7 +1343,7 @@ export function register(D, H) {
   D.lockgate_narrowboat = {
     desc: 'Narrowboat dressing around level hull (gunwale -0.7) + cabin (top 0.25) blocks. kind cabin | working. Bow (pointed, top bend, button fender, well deck) at local -X, counter stern + rudder + brass tiller at +X, rubbing strakes, portholes / cloth strings, roof kit kept to the edges (chimney collides), mooring lines to the bank (lines: [[x, z] …] prop-local bank points).',
     params: { kind: 'cabin | working', L: 'hull block length (7.8)', W: 'beam (2.0)', cab: 'cabin half length (2.9)', lines: 'bank tie points (local)', name: 'boat name on the stern' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const L = o.L ?? 7.8, W = o.W ?? 2.0, cab = o.cab ?? 2.9, hw = W / 2, working = o.kind === 'working';
       const paint = working ? '#2f4a3c' : K.green, band = working ? '#b58a3a' : K.maroon;
@@ -1406,7 +1430,7 @@ export function register(D, H) {
 
   // ================================================================================================ wharf goods + furniture
   // oak cask (hoops, bung): upright at (x, y, z) or lying along local X (lie: true)
-  function cask(B, x, y, z, o = {}) {
+  function cask(B: Builder, x: number, y: number, z: number, o: CaskOpts = {}) {
     const s = o.s ?? 1, c = o.c ?? K.oak;
     B.push(x, y, z, o.ry ?? 0, 0, o.lie ? HP : 0, s);
     const oy = o.lie ? -0.36 : 0;
@@ -1417,7 +1441,7 @@ export function register(D, H) {
   D.lockgate_casks = {
     desc: 'Oak casks on the wharf. variant 0 = a pyramid of 3 lying on a timber stillage + 2 upright; 1 = 3 upright with a lid plank; 2 = a single lying cask chocked with bricks.',
     params: {}, variants: 3, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 3;
       if (v === 0) {
         for (const z of [-0.45, 0.45]) B.box('wood', K.timberLt, 1.7, 0.12, 0.14, 0, 0.06, z, { r: 0.02 });
@@ -1443,7 +1467,7 @@ export function register(D, H) {
   D.lockgate_goods = {
     desc: 'Wharf goods stack (collides): variant 0 = sacks on a stillage + tea chests; 1 = crated machinery under a tied tarpaulin; 2 = timber deals stacked on bearers.',
     params: {}, variants: 3, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 3;
       if (v === 0) {
         B.box('wood', K.timberLt, 1.8, 0.14, 1.2, 0, 0.07, 0, { r: 0.02 });
@@ -1471,7 +1495,7 @@ export function register(D, H) {
   D.lockgate_cart = {
     desc: 'Two-wheeled timber flat cart: big iron-tyred spoked wheels, shafts resting on the ground (+X), a load of sacks + a cask (collides).',
     params: { load: 'bool (true)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.push(0, 0.72, 0, 0, 0, -0.09);
       B.box('wood', K.oakLt, 2.2, 0.1, 1.3, -0.2, 0, 0, { r: 0.02 });
       for (const z of [-0.66, 0.66]) B.box('wood', K.oak, 2.2, 0.2, 0.06, -0.2, 0.12, z, { r: 0.01 });
@@ -1492,7 +1516,7 @@ export function register(D, H) {
   D.lockgate_trough = {
     desc: 'Granite horse trough (1.9 m) on plinths with water in it and a cast-iron drinking fountain plate at one end (collides).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       for (const x of [-0.6, 0.6]) B.box('paint', K.stoneDk, 0.3, 0.3, 0.6, x, 0.15, 0, { r: 0.03 });
       B.box('paint', K.stone, 1.9, 0.5, 0.75, 0, 0.55, 0, { r: 0.05 });
       pbox(B, 'gloss', K.water, 1.7, 0.02, 0.55, 0, 0.74, 0);
@@ -1506,7 +1530,7 @@ export function register(D, H) {
   D.lockgate_bench = {
     desc: 'Canal-side bench: painted slats on black cast-iron scroll ends, faces +Z (collides).',
     params: { length: 'm (1.8)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const L = o.length ?? 1.8;
       for (const sx of [-1, 1]) {
         const x = sx * (L / 2 - 0.12);
@@ -1524,7 +1548,7 @@ export function register(D, H) {
   D.lockgate_milepost = {
     desc: 'Cast-iron canal milepost (white with black raised lettering): LOCKGATE BASIN ½ MILE (collides).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.box('paint', K.white, 0.32, 0.9, 0.22, 0, 0.45, 0, { r: 0.03 });
       B.push(0, 0.86, 0, 0, 0, 0); B.box('paint', K.white, 0.4, 0.24, 0.32, 0, 0.1, 0.04, { rx: -0.5, r: 0.03 }); B.pop();
       B.push(0, 0.62, 0.115);
@@ -1540,7 +1564,7 @@ export function register(D, H) {
   D.lockgate_postbox = {
     desc: 'Red cast-iron pillar box with a crowned cap, a slot and a collection plate (collides).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.lathe('gloss', K.red, [[0, 0], [0.27, 0], [0.27, 0.08], [0.23, 0.12], [0.23, 1.2], [0.28, 1.26], [0.28, 1.32], [0.18, 1.45], [0.06, 1.52], [0, 1.53]], 0, 0, 0, { seg: 14 });
       pbox(B, NS('paint'), K.black, 0.28, 0.04, 0.02, 0, 1.12, 0.23);
       pbox(B, NS('paint'), K.white, 0.2, 0.14, 0.01, 0, 0.9, 0.232);
@@ -1553,11 +1577,11 @@ export function register(D, H) {
   D.lockgate_fingerpost = {
     desc: 'Canal junction fingerpost: black-and-white post with cast finial, three arms (HARBOUR BASIN / TOWPATH / LOCKS) (collides as a post).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.lathe('paint', K.black, [[0.12, 0], [0.09, 0.3], [0.06, 0.34], [0.06, 2.4], [0.08, 2.46], [0, 2.52]], 0, 0, 0, { seg: 8 });
       B.lathe(NS('paint'), K.white, [[0.061, 0.4], [0.061, 1.8]], 0, 0, 0, { seg: 8 });
       B.sph('paint', K.white, 0.08, 0, 2.58, 0, { ws: 8, hs: 6 });
-      for (const [ry, txt, y] of [[0.3, 'HARBOUR', 2.2], [PI + 0.2, 'LOCKS', 2.0], [HP + 0.4, 'TOWPATH', 1.8]]) {
+      for (const [ry, txt, y] of [[0.3, 'HARBOUR', 2.2], [PI + 0.2, 'LOCKS', 2.0], [HP + 0.4, 'TOWPATH', 1.8]] as Array<[number, string, number]>) {
         B.push(0, y, 0, ry);
         B.box('paint', K.white, 1.0, 0.16, 0.04, 0.55, 0, 0, { r: 0.01 });
         B.add('paint', tpl('fpTip', () => extrudeGeo([[-0.08, 0], [0.08, 0], [0, 0.1]], 0.04, 0.002)), K.white, 1.05, 0, 0, { rz: -HP });
@@ -1572,7 +1596,7 @@ export function register(D, H) {
   D.lockgate_lifebuoy = {
     desc: 'Towpath life buoy on a black post with a white hood + throwline (collides as a post).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.box('paint', K.black, 0.12, 1.5, 0.12, 0, 0.75, 0, { r: 0.02 });
       B.box('paint', K.white, 0.5, 0.08, 0.2, 0, 1.52, 0.02, { r: 0.02 });
       const g = tpl('buoyRing', () => { const t = new THREE.TorusGeometry(0.26, 0.06, 6, 20), Pp = t.attributes.position, cl = new Float32Array(Pp.count * 3); const a = new THREE.Color(K.red), b = new THREE.Color(K.white); for (let i = 0; i < Pp.count; i++) { const ang = Math.atan2(Pp.getY(i), Pp.getX(i)) + TAU; const q = Math.floor((ang + PI / 8) / (TAU / 8)) % 2 ? b : a; cl.set([q.r, q.g, q.b], i * 3); } t.setAttribute('color', new THREE.BufferAttribute(cl, 3)); return t; });
@@ -1585,7 +1609,7 @@ export function register(D, H) {
   D.lockgate_stopplanks = {
     desc: 'Maintenance kit on the lock side: a stack of timber stop planks on bearers, a LOCK CLOSED FOR REPAIR notice on a trestle, cones, a portable pump with its hose over the chamber edge (+Z side = the chamber) (collides).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       for (const x of [-1.0, 0, 1.0]) B.box('wood', K.timber, 0.12, 0.1, 0.9, x, 0.05, -1.0, { r: 0.02 });
       for (let j = 0; j < 4; j++) B.box('wood', mixc(K.timberLt, K.oak, hash(j)), 2.6, 0.12, 0.26, (j % 2) * 0.05, 0.16 + j * 0.12, -1.0 + (j % 2 ? 0.14 : -0.14), { r: 0.015 });
       B.col(-1.35, 0, -1.45, 1.35, 0.64, -0.55);
@@ -1612,7 +1636,7 @@ export function register(D, H) {
   D.lockgate_silt = {
     desc: 'Drained-chamber floor dressing (flat, non-colliding except the pram): silt banks along the walls, puddles, weed, a lost bike, a rusty pram chassis, a tyre, bricks.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       for (const [x, z, w, d] of [[0.5, 2.3, 5.5, 0.9], [-2.6, -2.3, 2.4, 0.7], [2.2, -2.35, 2.0, 0.6]]) B.box(NS('paint'), K.mud, w, 0.08, d, x, 0.02, z, { round: true, r: 0.04 });
       for (const [x, z, w, d] of [[-1.2, 0.4, 2.2, 1.1], [1.8, -0.6, 1.4, 0.8], [3.3, 1.2, 0.9, 0.7]]) B.box(NS('gloss'), K.puddle, w, 0.012, d, x, 0.008, z, { round: true, r: 0.004 });
@@ -1636,7 +1660,7 @@ export function register(D, H) {
   D.lockgate_ladder = {
     desc: 'Recessed iron ladder in a canal / chamber wall (wall at z = 0, facing +Z) from y0 up to the coping (pos.y), grab hoop over the edge. Non-colliding.',
     params: { depth: 'm below the coping (3)' }, variants: 1, mount: 'wall',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const d = o.depth ?? 3;
       pbox(B, NS('paint'), '#1a1c1e', 0.55, d, 0.01, 0, -d / 2, 0.004);
@@ -1649,7 +1673,7 @@ export function register(D, H) {
   D.lockgate_planter = {
     desc: 'Half-barrel planter with geraniums / marigolds (collides).',
     params: {}, variants: 2, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const v = (o.variant ?? 0) % 2;
       B.lathe('wood', K.oak, [[0, 0], [0.34, 0], [0.4, 0.2], [0.42, 0.42], [0, 0.42]], 0, 0, 0, { seg: 12 });
       for (const y of [0.08, 0.34]) B.lathe(NS('metal'), K.iron, [[0.37 + y * 0.12, y], [0.37 + y * 0.12, y + 0.04]], 0, 0, 0, { seg: 12 });
@@ -1664,8 +1688,8 @@ export function register(D, H) {
   D.lockgate_tree = {
     desc: 'Old apple tree: gnarled trunk, lumpy canopy puffs with a few apples (trunk collides).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
-      B.tube('wood', '#6b5140', [P3(0, 0, 0), P3(0.1, 1.0, 0.05), P3(-0.1, 1.8, 0.1), P3(0.2, 2.4, 0)], (t) => 0.2 - t * 0.09, { radial: 7 });
+    build(B: Builder, o: PropParams) {
+      B.tube('wood', '#6b5140', [P3(0, 0, 0), P3(0.1, 1.0, 0.05), P3(-0.1, 1.8, 0.1), P3(0.2, 2.4, 0)], (t: number) => 0.2 - t * 0.09, { radial: 7 });
       for (const [x, y, z, r] of [[0.1, 3.0, 0, 1.2], [-0.8, 2.7, 0.4, 0.9], [0.9, 2.6, -0.4, 0.9], [0.2, 2.5, 0.9, 0.8], [-0.2, 3.5, -0.3, 0.8]]) B.add('foliage', tpl('puff' + (Math.round(x * 3 + 5) % 6), () => H.puffGeo(1, Math.round(x * 3 + 5) % 6)), mixc('#4f8a45', '#8fc46b', hash(x + z) * 0.4), x, y, z, { s: r, sy: r * 0.85 });
       for (let k = 0; k < 9; k++) B.sph(NS('paint'), K.red, 0.06, Math.cos(k * 1.9) * 1.1, 2.3 + hash(k) * 0.9, Math.sin(k * 1.9) * 1.0, { ws: 5, hs: 4 });
       colC(B, 0, 0, 0, 0.45, 2.2, 0.45, ROOF);
@@ -1676,7 +1700,7 @@ export function register(D, H) {
   D.lockgate_crane = {
     desc: 'Victorian cast-iron wharf crane on a stone plinth at the canal edge: tapering post, curved jib over the water (+Z), gear frame with crank handles, chain + hook with a bale, painted black and white (post + plinth collide).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.box('paint', K.stone, 1.3, 0.4, 1.3, 0, 0.2, 0, { r: 0.05 });
       B.lathe('gloss', K.black, [[0.32, 0.4], [0.28, 0.6], [0.2, 2.6], [0.17, 3.1], [0.22, 3.2], [0, 3.25]], 0, 0, 0, { seg: 10 });
       // jib: two curved plates from the post top out over the water, a tie back to the post
@@ -1699,7 +1723,7 @@ export function register(D, H) {
   D.lockgate_railing = {
     desc: 'Black cast-iron railing along +X: spear-top bars, top + bottom rails, square posts every ~1.8 m (rail collider: shots / squids pass).',
     params: { length: 'm (4)', height: 'm (1.0)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const L = o.length ?? 4, Hh = o.height ?? 1.0, n = Math.max(1, Math.round(L / 1.8));
       for (let i = 0; i <= n; i++) { const x = (i / n) * L; B.box('metal', K.black, 0.07, Hh + 0.08, 0.07, x, (Hh + 0.08) / 2, 0, { r: 0.012 }); B.sph(NS('metal'), K.black, 0.05, x, Hh + 0.1, 0, { ws: 6, hs: 4 }); }
       for (const y of [0.12, Hh - 0.08]) pbox(B, 'metal', K.black, L, 0.035, 0.03, L / 2, y, 0);
@@ -1713,10 +1737,10 @@ export function register(D, H) {
   D.lockgate_scaffrail = {
     desc: 'Scaffold-tube handrail for the chamber maintenance stairs (local +X from the foot up to (run, rise); rail on the open side z = side * 0.93): galvanised standards with couplers, top + knee rails, toe board. Rail colliders follow the slope.',
     params: { run: 'm (7.25)', rise: 'm (3.2)', side: '+1 | -1' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const run = o.run ?? 7.25, rise = o.rise ?? 3.2, sd = o.side ?? 1, z = sd * 0.93, n = 5, galv = '#aab2b8';
-      const at = (t, h) => P3(t * run, t * rise + h, z);
+      const at = (t: number, h: number) => P3(t * run, t * rise + h, z);
       for (let i = 0; i <= n; i++) { const t = 0.03 + (i / n) * 0.94, p = at(t, 0); B.cyl('metal', galv, 0.024, 1.1, p[0], p[1] + 0.55, z, { seg: 6 }); B.cyl(NS('metal'), K.iron, 0.05, 0.03, p[0], p[1] + 0.02, z, { seg: 6 }); for (const h of [0.55, 1.0]) B.sph(NS('metal'), '#8d959c', 0.035, p[0], p[1] + h, z, { ws: 5, hs: 4 }); }
       B.tube('metal', galv, [at(0.02, 1.0), at(0.98, 1.0)], 0.024, { radial: 6 });
       B.tube(NS('metal'), galv, [at(0.02, 0.55), at(0.98, 0.55)], 0.022, { radial: 6 });
@@ -1730,7 +1754,7 @@ export function register(D, H) {
   D.lockgate_hut = {
     desc: "Lock-keeper's tool hut: black-tarred weatherboards, white window + door, felt roof with a stove pipe, windlasses hung by the door, a bucket (collides; roof off-limits).",
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const W = 2.0, Dd = 1.8, Hh = 2.2;
       B.box('wood', K.black, W, Hh, Dd, 0, Hh / 2, 0, { r: 0.03 });
       for (let y = 0.15; y < Hh; y += 0.18) for (const s of [-1, 1]) { pbox(B, NS('wood'), K.blackLt, W + 0.01, 0.02, 0.01, 0, y, s * (Dd / 2 + 0.004)); pbox(B, NS('wood'), K.blackLt, 0.01, 0.02, Dd + 0.01, s * (W / 2 + 0.004), y, 0); }
@@ -1752,7 +1776,7 @@ export function register(D, H) {
   D.lockgate_pump = {
     desc: 'Cast-iron parish pump: fluted column with a domed cap, swan-neck spout over a stone basin, long handle (collides).',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.box('paint', K.stone, 1.0, 0.25, 0.6, 0.35, 0.125, 0, { r: 0.04 });
       pbox(B, NS('gloss'), K.water, 0.8, 0.02, 0.44, 0.35, 0.24, 0);
       B.lathe('gloss', K.green, [[0.2, 0], [0.18, 0.12], [0.13, 0.2], [0.13, 1.25], [0.16, 1.3], [0.18, 1.42], [0.1, 1.55], [0, 1.6]], -0.2, 0, 0, { seg: 12 });
@@ -1772,7 +1796,7 @@ export function register(D, H) {
   D.lockgate_stagekit = {
     desc: 'Loading-stage dressing for the spawn: parapet copings, grand-stair cheeks + newel piers with lamps (piers collide, off-limits), stage-edge stone band, sack barrow + platform scale in the back corners.',
     params: {}, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const top = 2.4;
       for (const sx of [-1, 1]) {
@@ -1817,7 +1841,7 @@ export function register(D, H) {
   D.lockgate_garden = {
     desc: "Lock-keeper's back garden kit: white picket fence along +X with a gate gap, raised veg beds, a washing line of cloth, beehive, water butt, rhubarb forcers (fence + beds + hive collide).",
     params: { length: 'fence length (5.8)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       const L = o.length ?? 5.8;
       // picket fence on the +X edge (x = 4.9), gate gap z -0.8 … 0.4
       for (let z = -2.9; z <= 2.9; z += 0.16) { if (z > -0.8 && z < 0.4) continue; B.box('wood', K.white, 0.05, 0.85, 0.07, 4.9, 0.42, z, { r: 0.01 }); B.add(NS('wood'), tpl('picket', () => latheGeo([[0.04, 0], [0, 0.07]], 4)), K.white, 4.9, 0.85, z, {}); }
@@ -1834,7 +1858,7 @@ export function register(D, H) {
       // washing line between two posts with sheets flapping (cloth flags, their own tint)
       for (const z of [-2.6, 2.6]) B.box('wood', K.oakLt, 0.08, 2.0, 0.08, -2.6, 1.0, z, { r: 0.015 });
       B.tube(NS('paint'), K.white, [P3(-2.6, 1.9, -2.6), P3(-2.6, 1.78, 0), P3(-2.6, 1.9, 2.6)], 0.008, { radial: 3 });
-      for (const [z, c, w, h] of [[-1.7, '#f2eee6', 0.9, 0.8], [-0.6, '#9cc3dd', 0.7, 0.55], [0.5, '#f2eee6', 1.0, 0.9], [1.6, '#d9b35f', 0.5, 0.45]]) {
+      for (const [z, c, w, h] of [[-1.7, '#f2eee6', 0.9, 0.8], [-0.6, '#9cc3dd', 0.7, 0.55], [0.5, '#f2eee6', 1.0, 0.9], [1.6, '#d9b35f', 0.5, 0.45]] as Array<[number, string, number, number]>) {
         B.push(-2.6, 1.8 - h / 2, z, HP, 0.06);
         B.box(NS('foliage'), c, w, h, 0.012, 0, 0, 0, { r: 0.004 });
         for (const sx of [-1, 1]) pbox(B, NS('wood'), K.oakLt, 0.02, 0.07, 0.03, sx * (w / 2 - 0.08), h / 2 + 0.01, 0);
@@ -1859,7 +1883,7 @@ export function register(D, H) {
   D.lockgate_enamel = {
     desc: 'Enamel sign on a wall (wall at z = 0, pos.y = sign centre): variant 0 NO MOORING, 1 BEWARE OF THE LOCK, 2 DEAD SLOW, 3 TOWPATH, 4 LOCK 2, 5 NO SWIMMING, 6 KEEP CLEAR, 7 BASIN. post: true stands it on its own post (pos = ground).',
     params: { post: 'bool' }, variants: ENAMEL.length, mount: 'wall',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const [txt, fg, bg] = ENAMEL[(o.variant ?? 0) % ENAMEL.length];
       const h = 0.13, W = textW(txt, 0.2, 0.1) * h + 0.24, y = o.post ? 1.6 : 0;
@@ -1877,7 +1901,7 @@ export function register(D, H) {
   D.lockgate_cheek = {
     desc: 'Brick cheek wall with a sloping stone coping along the open side of a flight of steps (local +X from the foot up to (run, rise), cheek face at local z = 0 facing +Z; covers the flight\'s side). Non-colliding (the flight\'s own side is the wall).',
     params: { run: 'm', rise: 'm', up: 'coping height above the treads (0.25)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const run = o.run ?? 4, rise = o.rise ?? 1.3, up = o.up ?? 0.25, f = o.flip ? -1 : 1;
       const prof = [[0, -0.05], [run + 0.02, -0.05], [run + 0.02, rise + up], [0, up + 0.02]];
@@ -1892,7 +1916,7 @@ export function register(D, H) {
   D.lockgate_weeds = {
     desc: 'Weeds and moss along a wall foot / kerb: tufts of grass, dandelions, a buddleia sprig (along +X for length). Non-colliding.',
     params: { length: 'm (4)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const L = o.length ?? 4, n = Math.max(2, Math.round(L * 1.6));
       for (let i = 0; i < n; i++) {
@@ -1908,7 +1932,7 @@ export function register(D, H) {
   D.lockgate_bills = {
     desc: 'Paper bills pasted on a wall (wall at z = 0, pos.y = bottom): 2–3 overlapping posters with headlines and print bars, a torn one (non-colliding).',
     params: { count: '2|3' }, variants: 5, mount: 'wall',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const n = o.count ?? 3, v = o.variant ?? 0;
       for (let k = 0; k < n; k++) {
@@ -1927,7 +1951,7 @@ export function register(D, H) {
   D.lockgate_wallcap = {
     desc: 'Saddleback stone coping along a wall top (along +X, width w, pos.y = the wall top), weathered joints every ~0.9 m. Non-colliding.',
     params: { length: 'm (6)', w: 'wall width + overhang (0.72)' }, variants: 1, mount: 'ground',
-    build(B, o) {
+    build(B: Builder, o: PropParams) {
       B.aoBase = null;
       const L = o.length ?? 6, w = o.w ?? 0.72, n = Math.max(1, Math.round(L / 0.9));
       for (let i = 0; i < n; i++) {
@@ -1942,7 +1966,7 @@ export function register(D, H) {
 
 // frame helpers for the diagonal pound (must match layout.js): s along u = (c, c), t along v = (-c, c)
 const C45 = Math.SQRT1_2;
-const DW = (s, t, y = 0) => [C45 * (s - t), y, C45 * (s + t)];
+const DW = (s: number, t: number, y = 0) => [C45 * (s - t), y, C45 * (s + t)];
 const Q = -P / 4;                       // rotY that turns local +X along u (local +Z along v)
 
 export const PLACEMENTS = [
