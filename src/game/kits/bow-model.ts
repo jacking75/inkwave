@@ -13,12 +13,14 @@
 // The two glow rings on the riser light at ring 1 and at full draw (coil material, aSeg 0.45 / 1.0); the arrowheads
 // glow brighter at each ring.
 import * as THREE from 'three';
-import { registerWeaponModel, GEO_KIT } from '../character-weapons.js';
+import { registerWeaponModel, GEO_KIT, Parts } from '../character-weapons.js';
+import type { WeaponInst, WeaponDef, WeaponAnimState, WeaponPart, LampSpec } from '../character-weapons.js';
 import { superEllipsoid, sweep } from '../character-geo.js';
+import type { SweepOpts } from '../character-geo.js';
 import { WEAPONS } from '../../config.js';
 import { WEAPON_ICONS } from '../../ui/ui-icons.js';
 
-const { Parts, C, M, latheZ, torus, at } = GEO_KIT;
+const { C, M, latheZ, torus, at } = GEO_KIT;
 const V3 = THREE.Vector3;
 
 const BRACE = 0.1;                   // riser grip → string at rest (m)
@@ -30,14 +32,14 @@ const ROOT_U = new V3(0, 0.165, 0.118), ROOT_L = new V3(0, -0.19, 0.118); // lim
 const ARROW = 0.5;                   // nocked arrow length (nock → tip)
 const INK = C.white;                 // (ink parts ignore the vertex colour; the team gloss material paints them)
 
-function sweepY(pts, r, flat, extra = {}) {
+function sweepY(pts: number[][], r: (t: number) => number, flat: number | ((t: number) => number), extra: SweepOpts = {}) {
   return sweep(pts.map((p) => new V3(p[0], p[1], p[2])), { seg: 22, radial: 12, capSteps: 3, radius: r, flat, outward: (P, o) => o.set(1, 0, 0), ...extra }).geo;
 }
-function part(P, pivot, mat = 'body', lamp = null) { return { src: P.build(), pivot: pivot.clone(), mat, lamp }; }
+function part(P: Parts, pivot: THREE.Vector3, mat = 'body', lamp: LampSpec | null = null): WeaponPart { return { src: P.build(), pivot: pivot.clone(), mat, lamp }; }
 
 // one limb (sign +1 upper, -1 lower): the centreline leaves the riser pocket, bends back toward the archer and curls
 // away again at the tip (the recurve); the string touches the belly where the curl starts (TIP_*)
-function limbPts(sign) {
+function limbPts(sign: number) {
   const y0 = sign > 0 ? ROOT_U.y : ROOT_L.y;
   const prof = [[0, 0.118], [0.06, 0.104], [0.115, 0.07], [0.16, 0.032], [0.196, 0.0105], [0.217, 0.0052], [0.234, 0.013], [0.247, 0.036]];
   return prof.map(([dy, z]) => [0, y0 + sign * dy, z]);
@@ -78,9 +80,9 @@ function buildBow() {
   // charge bands round the upper block: the lower one lights at ring 1, the upper one at full draw
   for (const y of [0.158, 0.137]) GL.add(at(superEllipsoid(0.0152, 0.0045, 0.0282, 0.5, 0.5, 10, 4), RX, y, B + 0.018 + 0.012 * ((y - 0.084) / 0.086) ** 2), '#ffffff');
   // ---- limbs: team-ink laminate, cream tip caps with a string groove
-  for (const [sign, LB, LI] of [[1, LU, LUI], [-1, LL, LLI]]) {
+  for (const [sign, LB, LI] of [[1, LU, LUI], [-1, LL, LLI]] as Array<[number, Parts, Parts]>) {
     const pts = limbPts(sign);
-    LI.add(sweepY(pts, (t) => 0.0088 - 0.0036 * t, (t) => 2.7 - 1.0 * t), INK);
+    LI.add(sweepY(pts, (t: number) => 0.0088 - 0.0036 * t, (t: number) => 2.7 - 1.0 * t), INK);
     LB.add(sweepY(pts.slice(0, 2).concat([[0, pts[0][1] + sign * 0.085, 0.092]]), () => 0.0094, 2.75, { seg: 8 }), C.dark, M.satin);   // the root shoe in the pocket
     const tip = pts[pts.length - 1], pre = pts[pts.length - 2];
     const cap = superEllipsoid(0.0105, 0.0125, 0.0068, 0.55, 0.6, 8, 6);
@@ -89,7 +91,7 @@ function buildBow() {
     LB.add(at(superEllipsoid(0.0108, 0.0022, 0.0072, 0.6, 0.6, 8, 4), 0, tip[1] - sign * 0.009, tip[2] - 0.004), C.dark, M.satin);
   }
   // ---- string (two halves from the nock to the tips) — cream bowstring, dark centre serving, brass nock beads
-  for (const [S, tip, s] of [[SU, TIP_U, 1], [SL, TIP_L, -1]]) {
+  for (const [S, tip, s] of [[SU, TIP_U, 1], [SL, TIP_L, -1]] as Array<[Parts, THREE.Vector3, number]>) {
     const L = Math.abs(tip.y);
     const g = new THREE.CylinderGeometry(0.0021, 0.0021, L, 6, 1); g.translate(0, s * L / 2, 0);
     S.add(g, C.bone, M.satin);
@@ -110,7 +112,7 @@ function buildBow() {
     }
   }
   // glow: per-vertex aSeg thresholds (makeCoilMaterial lights each band as the charge passes it)
-  const glow = GL.build();
+  const glow = GL.build()!;
   {
     const pz = glow.attributes.position, seg = new Float32Array(pz.count);
     for (let i = 0; i < pz.count; i++) seg[i] = pz.getY(i) < 0.1475 ? 0.45 : 1.0;
@@ -129,7 +131,7 @@ function buildBow() {
     gripL: { pos: new V3(0, -0.047, B - 0.001), handZ: new V3(0, 1, 0), handY: new V3(0, -0.12, -1) },
   };
 }
-function _smooth(ctrl, n = 14) {
+function _smooth(ctrl: number[][], n = 14) {
   const c = new THREE.SplineCurve(ctrl.map(([r, y]) => new THREE.Vector2(r, y)));
   return c.getSpacedPoints(n).map((p) => [Math.max(0, p.x), p.y]);
 }
@@ -137,15 +139,19 @@ function _smooth(ctrl, n = 14) {
 // ---------------------------------------------------------------------------------------------- animation
 const _v = new V3(), _v2 = new V3(), UPV = new V3(0, 1, 0), DNV = new V3(0, -1, 0), _white = new THREE.Color(1, 1, 1);
 const RING1 = WEAPONS.bow?.ring1 ?? 0.45;
-function tipAt(tip, root, th, out) {
+function tipAt(tip: THREE.Vector3, root: THREE.Vector3, th: number, out: THREE.Vector3) {
   const dy = tip.y - root.y, dz = tip.z - root.z, c = Math.cos(th), s = Math.sin(th);
   return out.set(tip.x, root.y + dy * c - dz * s, root.z + dy * s + dz * c);
 }
-function aimString(g, nock, tip, dirRest, L) {
+function aimString(g: THREE.Object3D, nock: THREE.Vector3, tip: THREE.Vector3, dirRest: THREE.Vector3, L: number) {
   _v2.subVectors(tip, nock); const len = _v2.length() || 1e-4;
   g.position.copy(nock); g.quaternion.setFromUnitVectors(dirRest, _v2.multiplyScalar(1 / len)); g.scale.set(1, len / L, 1);
 }
-function animateBow(w, st) {
+/** 활 정의 고유 필드: 당김 길이, 줌 거리 */
+type BowDef = WeaponDef & { drawLen: number; brace: number };
+/** 활 인스턴스 상태: 휴지 위치·축, 시위 위치·속도, 놓음 여부, 직전 놓음 경과, 빛. bowDraw = 주먹 당김(character가 쓴다) */
+type BowInst = WeaponInst & { def: BowDef; bowDraw?: number; bw?: { rest: THREE.Vector3; ax: THREE.Vector3; str: number; strV: number; loose: boolean; lastRel: number; glow: number } };
+function animateBow(w: BowInst, st: WeaponAnimState) {
   const d = w.def, P = w.parts, t = st.t, dt = Math.min(0.1, Math.max(0, st.dt || 0));
   let s = w.bw;
   if (!s) {
@@ -189,7 +195,7 @@ function animateBow(w, st) {
   const ring = c >= 0.999 ? 2 : c >= RING1 ? 1 : 0;
   const want = drawing ? 0.35 + 1.4 * c + (ring >= 1 ? 1.4 : 0) + (ring === 2 ? 2.2 + 0.9 * Math.sin(t * 30) : 0) : 0.35;
   s.glow += (want - s.glow) * (1 - Math.exp(-dt * 18));
-  const hm = P.heads.userData.mesh.material;
+  const hm = (P.heads.userData.mesh as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>).material;
   const col = st.color || _white;
   hm.color.copy(col).multiplyScalar(0.55); hm.emissive.copy(col); hm.emissiveIntensity = s.glow + 5 * (st.chargeFlash || 0);
   if (w.coil) {
@@ -211,7 +217,7 @@ WEAPON_ICONS.bow = (() => {
     + tips.map((t) => `<path d="M14 32 L${t.x} ${t.y}" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>`).join('');
   const heads = tips.map((t) => `<ellipse cx="${t.x}" cy="${t.y}" rx="6.6" ry="4.6" transform="rotate(${t.a.toFixed(1)} ${t.x} ${t.y})" fill="currentColor"/>`).join('');
   const vanes = tips.map((t) => { const r = (t.a * Math.PI) / 180, c = Math.cos(r), s = Math.sin(r), x0 = 16 + 3 * c, y0 = 32 + 3 * s;
-    const P = (u, v) => `${(x0 + u * c - v * s).toFixed(1)} ${(y0 + u * s + v * c).toFixed(1)}`;
+    const P = (u: number, v: number) => `${(x0 + u * c - v * s).toFixed(1)} ${(y0 + u * s + v * c).toFixed(1)}`;
     return `<path d="M${P(0, 0)} L${P(6.5, -4.2)} L${P(8.5, 0)} Z M${P(0, 0)} L${P(6.5, 4.2)} L${P(8.5, 0)} Z" fill="#fff" stroke-width="2"/>`; }).join('');
   return `<svg class="iw-ico " viewBox="0 0 64 64" aria-hidden="true">
     <path d="M15 6.5 L15 57.5" stroke="${K}" stroke-width="2.2"/>

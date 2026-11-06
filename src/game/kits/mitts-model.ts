@@ -9,10 +9,11 @@
 import * as THREE from 'three';
 import { superEllipsoid, lathe, smoothProfile } from '../character-geo.js';
 import { registerWeaponModel, GEO_KIT } from '../character-weapons.js';
+import type { WeaponInst, WeaponAnimState } from '../character-weapons.js';
 
 const { Parts, C, M, latheZ, torus, at, deformG, decal, placeXY, squidShape } = GEO_KIT;
 const V3 = THREE.Vector3;
-const gauss = (x, s) => Math.exp(-(x * x) / (2 * s * s));
+const gauss = (x: number, s: number) => Math.exp(-(x * x) / (2 * s * s));
 const PAD_PIVOT = new V3(0, 0, -0.034);   // pad ↔ cuff seam: the pad squashes / swells about it
 
 function buildMitts() {
@@ -134,16 +135,20 @@ export function makeSpongeMaterial() {
 // ---------------------------------------------------------------------------------------------- part animation
 // st: see character-weapons.js animateWeapon. The runner's kit state (kits/mitts.js) says what the gloves are doing.
 const _white = new THREE.Color(1, 1, 1);
-const pulse = (t, atk, dec) => (t < 0 ? 0 : t < atk ? t / atk : Math.exp(-(t - atk) * dec));
-function spring(S, i, target, hz, zeta, dt) {   // exact damped spring (see character-weapons sprE)
+const pulse = (t: number, atk: number, dec: number) => (t < 0 ? 0 : t < atk ? t / atk : Math.exp(-(t - atk) * dec));
+function spring(S: Float32Array, i: number, target: number, hz: number, zeta: number, dt: number) {   // exact damped spring (see character-weapons sprE)
   const w = Math.PI * 2 * hz, x0 = S[i] - target, v0 = S[i + 1];
   const wd = w * Math.sqrt(1 - zeta * zeta), e = Math.exp(-zeta * w * dt), c = Math.cos(wd * dt), sn = Math.sin(wd * dt), B = (v0 + zeta * w * x0) / wd;
   S[i] = e * (x0 * c + B * sn) + target; S[i + 1] = e * ((-zeta * w * x0 + wd * B) * c + (-zeta * w * B - wd * x0) * sn);
   return S[i];
 }
-function animateMitts(w, st) {
+/** 장갑 러너 상태 중 모델이 읽는 것(kits/mitts.ts가 runner.kit에 둔다) */
+export interface MittsKitView { mitts: true; charging: boolean; charge: number; cling: boolean; leaping: boolean; landT: number }
+/** 장갑 인스턴스 상태: 스프링 버퍼, 스펀지 재질, 직전 주먹 경과 */
+type MittsInst = WeaponInst & { ms?: Float32Array; sponge?: ReturnType<typeof makeSpongeMaterial>; lastPunch?: number };
+function animateMitts(w: MittsInst, st: WeaponAnimState) {
   const dt = Math.min(0.1, Math.max(0, st.dt || 0));
-  if (!w.ms) { w.ms = new Float32Array(8); w.ms[0] = 1; w.ms[2] = 1; w.near = true; w.sponge = makeSpongeMaterial(); w.lastPunch = 99; }
+  if (!w.ms || !w.sponge) { w.ms = new Float32Array(8); w.ms[0] = 1; w.ms[2] = 1; w.near = true; w.sponge = makeSpongeMaterial(); w.lastPunch = 99; }
   const S = w.ms, pad = w.parts && w.parts.pad;
   // near / far LOD (kit weapons animate themselves, LOD included)
   const near = st.near !== false;
@@ -154,15 +159,15 @@ function animateMitts(w, st) {
     for (const g of w.partList || []) g.visible = near;
   }
   if (!pad) return;
-  const mesh = pad.userData.mesh;
+  const mesh = pad.userData.mesh as THREE.Mesh;
   if (mesh.material !== w.sponge) mesh.material = w.sponge;   // (setColor re-assigns 'ink' parts; take it back)
   const sp = w.sponge, U = sp.userData.u;
   sp.color.copy(st.color); sp.sheenColor.copy(st.color).lerp(_white, 0.5);
-  const R = st.runner, K = R && R.kit && R.kit.mitts ? R.kit : null;
+  const R = st.runner, kit = R && (R.kit as MittsKitView | null | undefined), K = kit && kit.mitts ? kit : null;
   const hand = st.hand || 0;
   const ts = R && R.sinceHand ? R.sinceHand[hand] : (st.sinceShoot ?? 99);
   // punch: the glove lands at full reach (~45 ms in): squash along the face, bulge round it, jiggle back
-  if (ts < w.lastPunch) S[1] -= 7.5;                                      // (new punch this frame: kick the spring)
+  if (ts < (w.lastPunch ?? 99)) S[1] -= 7.5;                                      // (new punch this frame: kick the spring)
   w.lastPunch = ts;
   const charge = K && K.charging ? K.charge : 0;
   const cling = K && K.cling && hand === 1 ? 1 : 0;

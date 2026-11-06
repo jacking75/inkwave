@@ -9,6 +9,7 @@
 // aura (the blade inflated) shimmers over the steel while charging.
 import * as THREE from 'three';
 import { GEO_KIT } from '../character-weapons.js';
+import type { WeaponInst, WeaponDef, WeaponAnimState } from '../character-weapons.js';
 import { superEllipsoid, lathe, smoothProfile, sweep } from '../character-geo.js';
 
 const { Parts, C, M, latheZ, torus, at, orient, screw, decal, placeXY, squidShape, rng } = GEO_KIT;
@@ -23,13 +24,13 @@ export const BLADE = {
 };
 const L = BLADE.z1 - BLADE.z0;
 // centreline height at blade fraction u (0 root → 1 tip): the sabre curve rises toward the spine side
-const yc = (u) => BLADE.bow * u * u;
+const yc = (u: number) => BLADE.bow * u * u;
 // half-width (spine → edge distance / 2) along the blade: 54 mm wide at the root, a waist, a flare toward the point
-const halfW = (u) => 0.0272 - 0.0042 * Math.sin(Math.PI * Math.min(1, u / 0.7)) + 0.0052 * Math.exp(-(((u - 0.8) / 0.09) ** 2));
+const halfW = (u: number) => 0.0272 - 0.0042 * Math.sin(Math.PI * Math.min(1, u / 0.7)) + 0.0052 * Math.exp(-(((u - 0.8) / 0.09) ** 2));
 // spine thickness (full, across X) along the blade
-const spineT = (u) => 0.0112 - 0.0048 * u;
+const spineT = (u: number) => 0.0112 - 0.0048 * u;
 // spine / edge heights at u, with the clipped point: past 0.8 the spine drops (false edge) and the edge rises to meet it
-function span(u) {
+function span(u: number) {
   const c = yc(u), h = halfW(u);
   let ys = c + h, ye = c - h;
   const tipY = yc(1) + 0.006;
@@ -48,15 +49,16 @@ const BEVEL = 0.36;   // share of the width (from the edge) that is the ink beve
 // bevel and the spine keep crisp highlights.
 function bladeGeos() {
   const N = 44;
-  const body = { pos: [], nor: [], idx: [] }, edge = { pos: [], nor: [], idx: [], seg: [] }, fuller = { pos: [], nor: [], idx: [] };
+  type Mesh0 = { pos: number[]; nor: number[]; idx: number[]; seg?: number[] };
+  const body: Mesh0 = { pos: [], nor: [], idx: [] }, edge = { pos: [] as number[], nor: [] as number[], idx: [] as number[], seg: [] as number[] }, fuller: Mesh0 = { pos: [], nor: [], idx: [] };
   // stations: roughly uniform, a touch denser toward the tip where the point forms
-  const us = [];
+  const us: number[] = [];
   for (let i = 0; i <= N; i++) us.push(Math.min(1, (i / N) * 0.93 + 0.07 * Math.pow(i / N, 3)));
-  const Z = (u) => BLADE.z0 + u * L;
+  const Z = (u: number) => BLADE.z0 + u * L;
   // ---- body: per station, 2 × 4 points (right side then left side)
-  const bodyRing = (u) => {
+  const bodyRing = (u: number) => {
     const [ys, ye] = span(u), w = ys - ye, yb = ye + w * BEVEL, T = spineT(u) * (u > 0.97 ? (1 - u) / 0.03 * 0.9 + 0.1 : 1);
-    const pts = [];
+    const pts: number[][] = [];
     for (const sx of [1, -1]) {
       pts.push([sx * T * 0.18, ys, 0, 1]);                       // crown (normal up)
       pts.push([sx * T * 0.5, ys - Math.min(0.0035, w * 0.08), sx, 0.35]);  // shoulder
@@ -115,7 +117,7 @@ function bladeGeos() {
       for (const [k0, k1] of [[3, 4], [4, 5]]) fuller.idx.push(a + k0, a + k1, b + k0, a + k1, b + k1, b + k0);
     }
   }
-  const mk = (d, extra) => {
+  const mk = (d: Mesh0, extra?: number[]) => {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(d.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(d.nor, 3));
@@ -251,8 +253,14 @@ function makeAuraMaterial() {
 // ------------------------------------------------------------------------------------------ animate
 // st: see character-weapons.js animateWeapon. Charge comes from the runner's kit state (kits/blade.js) when there is a
 // runner, else st.charge (labs / lockers). The release flash: runner.kit.flash (set on a charged slash).
-const dampE = (a, b, l, dt) => a + (b - a) * (1 - Math.exp(-l * dt));
-export function animateBlade(w, st) {
+const dampE = (a: number, b: number, l: number, dt: number) => a + (b - a) * (1 - Math.exp(-l * dt));
+/** 칼 정의 고유 필드: 날 형상(빛나는 날·잔상) */
+type BladeDef = WeaponDef & { bladeEdge: THREE.BufferGeometry; bladeAura: THREE.BufferGeometry };
+/** 칼 러너 상태 중 모델이 읽는 것(kits/blade.ts가 runner.kit에 둔다) */
+interface BladeKitView { charge?: number; flashT?: number | null }
+/** 칼 인스턴스 상태: 날·잔상 메시와 재질, 차지·섬광·완충 */
+type BladeInst = WeaponInst & { def: BladeDef; bl?: { edge: THREE.Mesh; aura: THREE.Mesh; em: ReturnType<typeof makeEdgeMaterial>; am: ReturnType<typeof makeAuraMaterial>; charge: number; flash: number; full: number; near: boolean } };
+export function animateBlade(w: BladeInst, st: WeaponAnimState) {
   const d = w.def, dt = Math.min(0.1, Math.max(0, st.dt || 0));
   if (!w.bl) {
     const em = makeEdgeMaterial(), am = makeAuraMaterial();
@@ -261,7 +269,7 @@ export function animateBlade(w, st) {
     w.off.add(edge, aura);
     w.bl = { edge, aura, em, am, charge: 0, flash: 0, full: 0, near: true };
   }
-  const B = w.bl, R = st.runner, K = R && R.kit;
+  const B = w.bl, R = st.runner, K = R && (R.kit as BladeKitView | null | undefined);
   // LOD like the built-ins (the edge stays: a charging blade is a tell at any range)
   const near = st.near !== false;
   if (near !== B.near) {
@@ -271,7 +279,7 @@ export function animateBlade(w, st) {
   }
   let ch = K ? K.charge || 0 : (st.charge || 0);
   if (K && K.flashT != null && K.flashT < 0.02) B.flash = 1;
-  if (!K && st.chargeFlash > 0.9) B.flash = 1;
+  if (!K && (st.chargeFlash ?? 0) > 0.9) B.flash = 1;
   B.flash = Math.max(0, B.flash - dt * 3.2);
   B.charge = dampE(B.charge, ch, ch > B.charge ? 30 : 9, dt);
   const full = ch >= 0.999 ? 1 : 0;

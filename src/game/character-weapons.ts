@@ -26,6 +26,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { superEllipsoid, lathe, smoothProfile, sweep, finalize, torus as torusG, HAND } from './character-geo.js';
+import type { Deform } from './character-geo.js';
 import { WMAT } from './character-mats.js';
 
 const V3 = THREE.Vector3;
@@ -35,9 +36,63 @@ const C = {
   gunmetal: '#5b616c', rubber: '#26282e', lens: '#0b0f16', red: '#ff3b30', green: '#3dff7a', amber: '#ffb000', decal: '#f7f7f5', hazard: '#ffcf33',
 };
 
-class Parts {
-  constructor() { this.list = []; }
-  add(geo, color, mat = M.satin) {
+// ---------------------------------------------------------------------------------------------- contracts
+/** 손잡이 축: 축이 지나는 점, 엄지 쪽 방향, 손목 쪽 방향(무기 공간) */
+export interface Grip { pos: THREE.Vector3; handZ: THREE.Vector3; handY: THREE.Vector3 }
+/** 손 프레임(무기 공간 또는 손 공간) */
+export interface HandFrame { pos: THREE.Vector3; quat: THREE.Quaternion }
+/** 발광 부품 재질 선택 */
+export interface LampSpec { color?: THREE.ColorRepresentation; emissive?: THREE.ColorRepresentation; intensity?: number; roughness?: number }
+/** 움직이는 부품: 빌더가 낸 무기 공간 형상(src) → getWeaponDef가 피벗 기준 형상(geo)으로 바꾼다 */
+export interface WeaponPart { src?: THREE.BufferGeometry | null; geo?: THREE.BufferGeometry; pivot: THREE.Vector3; mat: string; lamp?: LampSpec | null }
+/** 무기 정의(빌더 결과 + getWeaponDef가 붙이는 손 프레임). 키트 무기는 고유 필드를 더 붙인다. */
+export interface WeaponDef {
+  kind: string; body: THREE.BufferGeometry | null; ink: THREE.BufferGeometry | null;
+  bodyStatic?: THREE.BufferGeometry | null; inkStatic?: THREE.BufferGeometry | null;
+  parts?: Record<string, WeaponPart>;
+  muzzle: THREE.Vector3; gripR: Grip; gripL: Grip; twirl?: THREE.Vector3;
+  glow?: THREE.BufferGeometry | null;
+  drum?: THREE.BufferGeometry; drumCaps?: THREE.BufferGeometry | null; drumAt?: THREE.Vector3; drumR?: number;
+  spin?: THREE.BufferGeometry | null; spinAt?: THREE.Vector3;
+  dual?: boolean; mirrorDual?: boolean;
+  face?: { center: THREE.Vector3; normal: THREE.Vector3; size: number[]; across: THREE.Vector3; along: THREE.Vector3 };
+  handR?: HandFrame; handL?: HandFrame; inHand?: HandFrame; inHandL?: HandFrame;
+  [k: string]: unknown;
+}
+/** 보조 무기 소품 정의(getSubDef가 손 프레임을 붙인다) */
+export interface SubDef {
+  kind: string; body: THREE.BufferGeometry | null; ink: THREE.BufferGeometry | null; glow?: THREE.BufferGeometry | null; grip: Grip;
+  spin?: THREE.BufferGeometry | null; spinInk?: THREE.BufferGeometry | null; spinAt?: THREE.Vector3; width?: number;
+  handL?: HandFrame; inHandL?: HandFrame;
+  [k: string]: unknown;
+}
+/** 들고 있는 무기 인스턴스(character.ts _weaponInstance가 만들고 animateWeapon이 상태를 둔다). 키트 무기는 고유 상태를 더 둔다. */
+export interface WeaponInst {
+  def: WeaponDef; pivot: THREE.Group; off: THREE.Group;
+  body: THREE.Mesh; ink: THREE.Mesh; bodyFar: THREE.Mesh; inkFar: THREE.Mesh;
+  glow: THREE.Mesh | null; drum: THREE.Group | null; muzzle: THREE.Object3D;
+  parts: Record<string, THREE.Group>; partList: THREE.Group[]; lamps: THREE.Material[]; coil: THREE.MeshStandardMaterial | null;
+  near: boolean; pump: number; trig: number; left: WeaponInst | null; hidden: number; spin: THREE.Group | null;
+  pivotL: THREE.Group | null; inkL: THREE.Mesh | null;
+  // animateWeapon 상태(ps가 없으면 첫 호출에서 모두 초기화한다)
+  ps: Float32Array | null; heat: number; drumW: number; drumA: number; spinW: number; spinA: number;
+}
+/** 무기를 든 쪽 러너에서 부품 애니메이션이 읽는 것(weapons.ts WeaponRunner의 일부) */
+export interface AnimRunner { charging: boolean; streaming: boolean; charge: number; burstFrac: number; sinceHand?: number[]; kit?: unknown; a?: { isLocal?: boolean } | null }
+/** animateWeapon 입력(설명은 animateWeapon 위 주석) */
+export interface WeaponAnimState {
+  t: number; dt: number; color: THREE.Color; near?: boolean; hand?: number; runner?: AnimRunner | null;
+  sinceShoot?: number; sinceFlick?: number; sinceRelease?: number;
+  charge?: number; full?: boolean; chargeFlash?: number; lowInk?: number;
+  firing?: boolean; rolling?: number; grounded?: boolean; groundSpeed?: number; worldQuat?: THREE.Quaternion;
+  [k: string]: unknown;
+}
+export type WeaponBuilder = () => WeaponDef;
+export type WeaponAnimator = (w: WeaponInst, st: WeaponAnimState) => void;
+
+export class Parts {
+  list: THREE.BufferGeometry[] = [];
+  add(geo: THREE.BufferGeometry, color?: THREE.ColorRepresentation, mat = M.satin) {
     const g = geo.index ? geo : finalize(geo);
     const n = g.attributes.position.count; const col = new Float32Array(n * 3); const c = new THREE.Color(color);
     for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
@@ -46,7 +101,7 @@ class Parts {
     out.setAttribute('normal', g.attributes.normal.clone());
     out.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
     out.setAttribute('aMat', new THREE.Float32BufferAttribute(new Float32Array(n).fill(mat), 1));
-    out.setIndex(g.index.clone());
+    out.setIndex(g.index!.clone());
     this.list.push(out); return this;
   }
   build() { return this.list.length ? mergeGeometries(this.list, false) : null; }
@@ -54,24 +109,24 @@ class Parts {
 
 // ---------------------------------------------------------------------------------------------- helpers
 /** Lathe along +Z from [r, z] profile. */
-function latheZ(profile, seg = 16) { const g = lathe(profile, seg); g.rotateX(Math.PI / 2); return g; }
-function torus(R, r, rs = 6, ts = 16, arc = Math.PI * 2) { return torusG(R, r, rs, ts, arc); }
-function at(g, x, y, z) { g.translate(x, y, z); return g; }
+function latheZ(profile: number[][], seg = 16) { const g = lathe(profile, seg); g.rotateX(Math.PI / 2); return g; }
+function torus(R: number, r: number, rs = 6, ts = 16, arc = Math.PI * 2) { return torusG(R, r, rs, ts, arc); }
+function at<T extends THREE.BufferGeometry>(g: T, x: number, y: number, z: number) { g.translate(x, y, z); return g; }
 /** Rounded box (w, h, d = full sizes), squareness e (smaller = boxier). */
-function rbox(w, h, d, e = 0.3, ws = 12, hs = 8, deform) { return superEllipsoid(w / 2, h / 2, d / 2, e, e, ws, hs, deform); }
+function rbox(w: number, h: number, d: number, e = 0.3, ws = 12, hs = 8, deform?: Deform) { return superEllipsoid(w / 2, h / 2, d / 2, e, e, ws, hs, deform); }
 /** Orient geometry authored along +Y so that +Y → dir, then place at p. */
-function orient(g, dir, p) { g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new V3(0, 1, 0), dir.clone().normalize())); return at(g, p.x, p.y, p.z); }
+function orient(g: THREE.BufferGeometry, dir: THREE.Vector3, p: THREE.Vector3) { g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new V3(0, 1, 0), dir.clone().normalize())); return at(g, p.x, p.y, p.z); }
 /** Small screw head (dome with a slot) facing n at p. */
-function screw(P, p, n, r = 0.0032, col = C.metal) {
+function screw(P: Parts, p: THREE.Vector3, n: THREE.Vector3, r = 0.0032, col = C.metal) {
   const h = lathe([[0, 0], [r, 0], [r, 0.0006], [r * 0.72, 0.0014], [0, 0.0017]], 6);
   P.add(orient(h, n, p), col, M.metal);
 }
 /** Thin extruded decal from a 2D shape (in the XY plane), placed with basis (x, y) at p. */
-function decal(shape, depth = 0.0006) {
+function decal(shape: THREE.Shape | THREE.Shape[], depth = 0.0006) {
   const g = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments: 5 });
   return finalize(g);
 }
-function placeXY(g, xAxis, yAxis, p) {
+function placeXY(g: THREE.BufferGeometry, xAxis: THREE.Vector3, yAxis: THREE.Vector3, p: THREE.Vector3) {
   const x = xAxis.clone().normalize(), y = yAxis.clone().addScaledVector(x, -yAxis.dot(x)).normalize(), z = new V3().crossVectors(x, y);
   g.applyMatrix4(new THREE.Matrix4().makeBasis(x, y, z).setPosition(p));
   return g;
@@ -88,10 +143,11 @@ function squidShape(s = 1) {
   return sh;
 }
 /** An animated sub-part built from its own Parts, authored in weapon space; re-centred on `pivot` in getWeaponDef. */
-function part(P, pivot, mat = 'body', lamp = null) { return { src: P.build(), pivot: pivot.clone(), mat, lamp }; }
+function part(P: Parts, pivot: THREE.Vector3, mat = 'body', lamp: LampSpec | null = null): WeaponPart { return { src: P.build(), pivot: pivot.clone(), mat, lamp }; }
 
 /** Per-instance glowing material for lamp parts (LEDs, scope lenses, hot muzzle ports). */
-export function makeLampMaterial(spec = {}) {
+export function makeLampMaterial(spec: LampSpec | null = {}) {
+  spec = spec || {};
   const m = new THREE.MeshStandardMaterial({ color: spec.color ?? 0x222222, emissive: spec.emissive ?? spec.color ?? 0xffffff, emissiveIntensity: spec.intensity ?? 1, roughness: spec.roughness ?? 0.25, metalness: 0 });
   m.name = 'iw-lamp';
   return m;
@@ -124,8 +180,8 @@ export function makeCoilMaterial() {
   return m;
 }
 
-function chevronShape(w, h, n = 3, gap = 0.4) {
-  const sh = []; const step = w / n;
+function chevronShape(w: number, h: number, n = 3, gap = 0.4) {
+  const sh: THREE.Shape[] = []; const step = w / n;
   for (let i = 0; i < n; i++) {
     const s = new THREE.Shape(); const x0 = i * step, t = step * (1 - gap);
     s.moveTo(x0, 0); s.lineTo(x0 + t, 0); s.lineTo(x0 + t + h * 0.5, h * 0.5); s.lineTo(x0 + t, h); s.lineTo(x0, h); s.lineTo(x0 + h * 0.5, h * 0.5); s.lineTo(x0, 0);
@@ -134,16 +190,16 @@ function chevronShape(w, h, n = 3, gap = 0.4) {
   return sh;
 }
 /** Run fn(v) over every vertex of g in place, then refresh normals. */
-function deformG(g, fn) {
+function deformG(g: THREE.BufferGeometry, fn: Deform) {
   const p = g.attributes.position; const v = new V3();
   for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i); fn(v); p.setXYZ(i, v.x, v.y, v.z); }
   g.computeVertexNormals();
   return g;
 }
 /** Deterministic PRNG (procedural clutter such as bristles is identical on every build). */
-function rng(seed) { let s = seed >>> 0; return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296); }
+function rng(seed: number) { let s = seed >>> 0; return () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296); }
 /** Surface |x| of an undeformed superEllipsoid(rx, ry, rz, e1, e2) at local (y, z), for seating screws and decals on flanks. */
-function seX(rx, ry, rz, e1, e2, y, z) {
+function seX(rx: number, ry: number, rz: number, e1: number, e2: number, y: number, z: number) {
   const sl = Math.min(1, Math.abs(y) / ry) ** (1 / e1);
   const f = Math.sqrt(Math.max(0, 1 - sl * sl)) ** e1;
   const sw = Math.min(1, Math.abs(z) / (rz * f + 1e-9)) ** (1 / e2);
@@ -160,7 +216,7 @@ export const FIST_OFFSET = GRIP_HOLE_R.clone();
 /** Pistol grip around the handle axis A through the origin: rubber-paneled, finger-grooved front strap,
  *  beavertail over the web of the hand, trigger + guard for the index finger, flared base plate. */
 const GRIP_AXIS = new V3(0, 1, 0.25).normalize();
-function pistolGrip(P, opt = {}) {
+function pistolGrip(P: Parts, opt: { T?: Parts; baseCol?: string } = {}) {
   const A = GRIP_AXIS;
   const tilt = Math.atan2(A.z, A.y);
   // core: slim oval handle, finger grooves on the front strap
@@ -187,7 +243,7 @@ function pistolGrip(P, opt = {}) {
   const trig = superEllipsoid(0.0034, 0.0105, 0.0034, 0.7, 0.7, 6, 6, (q) => { q.z += 16 * q.y * q.y; });
   trig.rotateX(-0.25); (opt.T || P).add(at(trig, 0, 0.0215, 0.0305), C.metal, M.metal);
 }
-const GRIP_PISTOL = { pos: new V3(0, 0, 0), handZ: GRIP_AXIS.clone(), handY: new V3(0, 0.25, -1) };
+const GRIP_PISTOL: Grip = { pos: new V3(0, 0, 0), handZ: GRIP_AXIS.clone(), handY: new V3(0, 0.25, -1) };
 /** Trigger blade hinge (top of the blade, inside the frame): the trigger part squeezes back about +X here. */
 const TRIGGER_PIVOT = new V3(0, 0.0315, 0.0282);
 
@@ -383,7 +439,7 @@ function buildCharger() {
   for (let k = 0; k < 3; k++) { const a = (k / 3) * Math.PI * 2 + 0.5; const bar = superEllipsoid(0.0024, 0.0024, 0.032, 0.6, 0.6, 4, 4); P.add(at(bar, Math.cos(a) * 0.0172, 0.012 + Math.sin(a) * 0.0172, 0.118), C.dark, M.satin); }
   for (const z of [0.082, 0.154]) { const c = latheZ([[0, z - 0.004], [0.0182, z - 0.004], [0.0186, z + 0.004], [0, z + 0.004]], 12); P.add(at(c, 0, 0.012, 0), C.dark, M.gloss); }
   // coil rings light in order (rear → muzzle): per-vertex aSeg threshold for makeCoilMaterial
-  const glow = G.build();
+  const glow = G.build()!;
   {
     const pz = glow.attributes.position, seg = new Float32Array(pz.count), TH = [0.22, 0.47, 0.72, 0.96];
     for (let i = 0; i < pz.count; i++) seg[i] = TH[Math.max(0, Math.min(3, Math.round((pz.getZ(i) - 0.365) / 0.047)))];
@@ -535,7 +591,7 @@ function buildSlosher() {
   const shell = lathe(smoothProfile([[0.0, -0.078], [0.074, -0.078], [0.083, -0.071], [0.1, 0.07], [0.106, 0.088], [0.112, 0.094]], 10)
     .concat([[0.1135, 0.0985], [0.1085, 0.1025], [0.1005, 0.098], [0.0945, 0.085], [0.0785, -0.06], [0.0, -0.062]]), 28);
   P.add(at(shell, 0, BY, BZ), C.cream, M.gloss);
-  const wallR = (y) => 0.083 + (0.1 - 0.083) * ((y + 0.071) / 0.141);   // outer wall radius of the shell profile
+  const wallR = (y: number) => 0.083 + (0.1 - 0.083) * ((y + 0.071) / 0.141);   // outer wall radius of the shell profile
   for (const y of [-0.045, 0.058]) { const h = torus(wallR(y) + 0.0035, 0.0042, 5, 30); h.rotateX(Math.PI / 2); P.add(at(h, 0, BY + y, BZ), C.dark, M.gloss); }
   const band = lathe([[wallR(-0.022) + 0.0005, -0.024], [wallR(-0.02) + 0.0028, -0.02], [wallR(0.03) + 0.0028, 0.03], [wallR(0.034) + 0.0005, 0.034]], 28); I.add(at(band, 0, BY, BZ));
   // ink run down the outside from the pour lip: three drips hugging the wall, fattest at their tips
@@ -631,7 +687,7 @@ function buildSplatling() {
   fg.rotateX(-0.12); P.add(at(fg, 0, 0.0, 0.152), C.darker, M.satin);
   P.add(at(superEllipsoid(0.0124, 0.019, 0.0095, 0.5, 0.55, 8, 6).rotateX(-0.12), 0, -0.004, 0.151), C.rubber, M.rubber);
   P.add(at(superEllipsoid(0.0134, 0.0042, 0.0152, 0.5, 0.5, 10, 4), 0, -0.031, 0.155), C.dark, M.gloss);
-  const glow = G.build();
+  const glow = G.build()!;
   {
     // meter segments light clockwise from the top as the charge builds: aSeg = segment index / 8 threshold
     const pz = glow.attributes.position, seg = new Float32Array(pz.count);
@@ -661,10 +717,10 @@ function buildBucket() {
   const al = 0.3;
   const PX = new V3(1, 0, 0), PU = new V3(0, Math.cos(al), -Math.sin(al)), PA = new V3(0, Math.sin(al), Math.cos(al));
   const B0 = new V3(0, 0.03, 0.068);                                    // centre of the pail base
-  const pail = (g) => placeXY(g, PX, PU, B0);                          // pail-local (x, up, along axis) → weapon space
-  const pp = (x, y, z) => B0.clone().addScaledVector(PX, x).addScaledVector(PU, y).addScaledVector(PA, z);
-  const rOut = (z) => 0.0605 + 0.123 * (z - 0.012);                    // outer wall radius along the axis
-  const rIn = (z) => 0.056 + 0.1265 * (z - 0.028);                     // inner wall radius
+  const pail = (g: THREE.BufferGeometry) => placeXY(g, PX, PU, B0);                          // pail-local (x, up, along axis) → weapon space
+  const pp = (x: number, y: number, z: number) => B0.clone().addScaledVector(PX, x).addScaledVector(PU, y).addScaledVector(PA, z);
+  const rOut = (z: number) => 0.0605 + 0.123 * (z - 0.012);                    // outer wall radius along the axis
+  const rIn = (z: number) => 0.056 + 0.1265 * (z - 0.028);                     // inner wall radius
   // shell (thick walled, gloss cream), dark liner, rolled rim bead, metal hoops, rubber foot
   P.add(pail(latheZ([[0, 0], [0.05, 0], [0.057, 0.003], [0.0605, 0.012], [0.083, 0.192], [0.0822, 0.198], [0.0778, 0.198], [0.0765, 0.19], [0.056, 0.028], [0.05, 0.022], [0, 0.021]], 28)), C.cream, M.gloss);
   P.add(pail(latheZ([[0, 0.0228], [0.049, 0.0236], [0.0548, 0.0292], [0.0752, 0.191], [0.0738, 0.191], [0.0534, 0.0302], [0.0482, 0.0252], [0, 0.0244]], 28)), C.darker, M.satin);
@@ -675,13 +731,13 @@ function buildBucket() {
   I.add(pail(at(torus(0.0335, 0.0036, 5, 24), 0, 0, -0.0118)));
   P.add(pail(latheZ([[0, -0.0158], [0.0085, -0.0158], [0.0095, -0.013], [0.0095, -0.01], [0, -0.01]], 6)), C.metal, M.metal);  // drain plug
   // ink inside: surges up toward the mouth, then drops over the lip (wavy surface clamps a lathe that fills the liner)
-  const surf = (x, z) => (z < 0.15 ? -0.03 + 0.2 * (z - 0.03) : -0.006 - 1.4 * (z - 0.15)) + 0.0032 * Math.sin(x * 95 + z * 60) + 0.0022 * Math.sin(z * 150 - x * 40);
+  const surf = (x: number, z: number) => (z < 0.15 ? -0.03 + 0.2 * (z - 0.03) : -0.006 - 1.4 * (z - 0.15)) + 0.0032 * Math.sin(x * 95 + z * 60) + 0.0022 * Math.sin(z * 150 - x * 40);
   const fillProf = [[0, 0.027]];
   for (let k = 0; k <= 12; k++) { const z = 0.03 + k * 0.013; fillProf.push([rIn(z) - 0.0045, z]); }
   fillProf.push([0, 0.19]);
   I.add(pail(deformG(latheZ(fillProf, 24), (v) => { v.y = Math.min(v.y, surf(v.x, v.z)); })));
   // pour lip: wide curved scoop under the mouth, flaring out and slightly down; ink tongue spilling over it + drips
-  const lipR = (z) => 0.0772 + 0.42 * Math.max(0, z - 0.19);
+  const lipR = (z: number) => 0.0772 + 0.42 * Math.max(0, z - 0.19);
   const lip = superEllipsoid(0.9, 0.0034, 0.033, 0.5, 0.4, 20, 5, (q) => {
     const th = q.x, z = 0.219 + q.z, r = lipR(z) - q.y;
     q.set(r * Math.sin(th), -r * Math.cos(th), z);
@@ -704,7 +760,7 @@ function buildBucket() {
   // flank ink windows (below the waterline on both sides) + squid decal wrapped on the left flank
   for (const sx of [1, -1]) {
     const psi = sx > 0 ? -0.38 : Math.PI + 0.38, zc = 0.1, r = rOut(zc);
-    const place = (g) => { g.rotateY(0.1225); g.rotateZ(psi); return pail(at(g, r * Math.cos(psi), r * Math.sin(psi), zc)); };
+    const place = (g: THREE.BufferGeometry) => { g.rotateY(0.1225); g.rotateZ(psi); return pail(at(g, r * Math.cos(psi), r * Math.sin(psi), zc)); };
     P.add(place(superEllipsoid(0.0028, 0.0125, 0.034, 0.5, 0.45, 8, 6)), C.dark, M.gloss);
     I.add(place(superEllipsoid(0.0034, 0.0085, 0.029, 0.6, 0.5, 8, 6)));
   }
@@ -757,7 +813,7 @@ function buildSpinner() {
   P.add(at(superEllipsoid(HR[0], HR[1], HR[2], HR[3], HR[4], 14, 10), HC.x, HC.y, HC.z), C.cream, M.satin);
   P.add(at(superEllipsoid(0.0305, 0.012, 0.086, 0.4, 0.5, 12, 6), 0, 0.038, 0.03), C.dark, M.satin);
   I.add(at(superEllipsoid(0.019, 0.0065, 0.056, 0.5, 0.6, 12, 5), 0, 0.1105, 0.045));
-  const flankX = (y, z) => seX(HR[0], HR[1], HR[2], HR[3], HR[4], y - HC.y, z - HC.z);
+  const flankX = (y: number, z: number) => seX(HR[0], HR[1], HR[2], HR[3], HR[4], y - HC.y, z - HC.z);
   for (const sx of [1, -1]) for (const [y, z] of [[0.094, -0.02], [0.094, 0.085], [0.046, 0.085]]) screw(P, new V3(sx * flankX(y, z), y, z), new V3(sx, 0, 0), 0.0027);
   const sq = decal(squidShape(0.028)); placeXY(sq, new V3(0, 0, -1), new V3(0, 1, 0), new V3(flankX(0.07, 0) + 0.0002, 0.068, 0)); P.add(sq, C.decal, M.print);
   for (const s of chevronShape(0.034, 0.01, 3, 0.45)) { const g = decal(s); placeXY(g, new V3(0, 0, 1), new V3(0, 1, 0), new V3(flankX(0.048, 0.05) + 0.0002, 0.043, 0.03)); I.add(g); }
@@ -835,7 +891,7 @@ function buildTwins() {
   const RR = [0.0272, 0.036, 0.06, 0.42, 0.56], RC = new V3(0, 0.07, 0.01);
   P.add(at(superEllipsoid(RR[0], RR[1], RR[2], RR[3], RR[4], 14, 10, (q) => { if (q.z > 0.028) q.y *= 1 - 0.2 * (q.z - 0.028) / 0.032; }), RC.x, RC.y, RC.z), C.cream, M.satin);
   P.add(at(superEllipsoid(0.0242, 0.0115, 0.058, 0.4, 0.5, 12, 6), 0, 0.04, 0.012), C.dark, M.satin);
-  const flankX = (y, z) => seX(RR[0], RR[1], RR[2], RR[3], RR[4], y - RC.y, z - RC.z);
+  const flankX = (y: number, z: number) => seX(RR[0], RR[1], RR[2], RR[3], RR[4], y - RC.y, z - RC.z);
   // cross drum on top (axis X): team ink between dark end caps, two strap bands, metal hubs
   const dc = new V3(0, 0.112, -0.012);
   const drum = latheZ(smoothProfile([[0, -0.027], [0.021, -0.026], [0.0238, -0.019], [0.0238, 0.019], [0.021, 0.026], [0, 0.027]], 8), 18);
@@ -856,7 +912,7 @@ function buildTwins() {
   P.add(at(superEllipsoid(0.0245, 0.03, 0.0085, 0.45, 0.55, 10, 6), 0, 0.07, -0.05), C.dark, M.gloss);
   P.add(at(latheZ([[0, -0.011], [0.0066, -0.011], [0.0072, -0.007], [0.0072, 0.0], [0, 0.0]], 10), 0, 0.074, -0.056), C.metal, M.metal);
   // ink vial support grip (tilted like the shooter's foregrip), cage bars, foot cap, socket under the nose
-  const vial = (g) => { g.rotateX(-0.12); return at(g, 0, 0.016, 0.072); };
+  const vial = (g: THREE.BufferGeometry) => { g.rotateX(-0.12); return at(g, 0, 0.016, 0.072); };
   I.add(vial(lathe(smoothProfile([[0, -0.03], [0.0105, -0.029], [0.012, -0.022], [0.012, 0.024], [0.0105, 0.03], [0, 0.031]], 7), 14)));
   for (let k = 0; k < 4; k++) { const a = (k / 4) * Math.PI * 2 + Math.PI / 4; P.add(vial(at(superEllipsoid(0.0021, 0.025, 0.0021, 0.6, 0.6, 4, 4), Math.cos(a) * 0.0132, 0, Math.sin(a) * 0.0132)), C.dark, M.satin); }
   P.add(vial(lathe([[0, -0.038], [0.0118, -0.038], [0.0142, -0.034], [0.0146, -0.027], [0.0126, -0.023], [0, -0.023]], 14)), C.dark, M.gloss);
@@ -883,8 +939,8 @@ function buildBrush() {
   const P = new Parts(), I = new Parts();
   const KZ = 0.724, be = 0.42;                                          // hinge on the shaft axis, head cant (rad)
   const K = new V3(0, 0, KZ), HX = new V3(1, 0, 0), HY = new V3(0, Math.sin(be), -Math.cos(be)), HN = new V3(0, Math.cos(be), Math.sin(be));
-  const head = (g) => placeXY(g, HX, HY, K);
-  const hp = (x, y, z) => K.clone().addScaledVector(HX, x).addScaledVector(HY, y).addScaledVector(HN, z);
+  const head = (g: THREE.BufferGeometry) => placeXY(g, HX, HY, K);
+  const hp = (x: number, y: number, z: number) => K.clone().addScaledVector(HX, x).addScaledVector(HY, y).addScaledVector(HN, z);
   // shaft, rubber top grip with a cream ball knob (right hand), mid grip with dark collars (left hand)
   P.add(latheZ([[0, -0.07], [0.0098, -0.07], [0.0098, 0.69], [0, 0.69]], 10), C.metal, M.metal);
   P.add(latheZ(smoothProfile([[0, -0.086], [0.0116, -0.085], [0.0144, -0.076], [0.0138, -0.05], [0.0132, -0.02], [0.0136, 0.02], [0.0142, 0.046], [0.0156, 0.054], [0.0112, 0.06]], 10), 12), C.rubber, M.rubber);
@@ -975,7 +1031,7 @@ function buildZooka() {
   const P = new Parts(), I = new Parts(), S = new Parts();
   pistolGrip(P);
   const yT = 0.112, R = 0.058;
-  const T = (g) => at(g, 0, yT, 0);
+  const T = (g: THREE.BufferGeometry) => at(g, 0, yT, 0);
   // tube + joint collars
   P.add(T(latheZ([[0, -0.282], [R - 0.003, -0.282]].concat(smoothProfile([[R - 0.002, -0.28], [R, -0.27], [R, 0.25], [R + 0.001, 0.4], [R + 0.004, 0.43]], 10), [[0, 0.43]]), 26)), C.cream, M.gloss);
   P.add(T(at(torus(R + 0.003, 0.0062, 5, 26), 0, 0, 0.405)), C.dark, M.gloss);
@@ -1058,7 +1114,7 @@ function buildBlower() {
   P.add(at(superEllipsoid(BR[0], BR[1], BR[2], BR[3], BR[4], 14, 10, (q) => { if (q.z > 0.04) q.y *= 1 - 0.25 * (q.z - 0.04) / 0.05; }), BC.x, BC.y, BC.z), C.cream, M.gloss);
   P.add(at(superEllipsoid(0.027, 0.012, 0.084, 0.4, 0.5, 12, 6), 0, 0.039, 0.032), C.dark, M.satin);
   I.add(at(superEllipsoid(0.016, 0.006, 0.05, 0.5, 0.6, 10, 5), 0, 0.111, 0.045));
-  const flankX = (y, z) => seX(BR[0], BR[1], BR[2], BR[3], BR[4], y - BC.y, z - BC.z);
+  const flankX = (y: number, z: number) => seX(BR[0], BR[1], BR[2], BR[3], BR[4], y - BC.y, z - BC.z);
   P.add(at(latheZ(smoothProfile([[0, -0.104], [0.028, -0.102], [0.042, -0.092], [0.046, -0.078], [0.045, -0.062], [0.036, -0.05]], 8).concat([[0, -0.05]]), 22), 0, yB, 0), C.dark, M.gloss);
   for (const [r, z] of [[0.0335, -0.1035], [0.021, -0.1055]]) P.add(at(torus(r, 0.0021, 4, 20), 0, yB, z), C.gunmetal, M.metal);
   P.add(at(latheZ([[0, -0.109], [0.0085, -0.109], [0.0092, -0.105], [0, -0.103]], 10), 0, yB, 0), C.metal, M.metal);
@@ -1090,7 +1146,7 @@ function buildBlower() {
     I.add(at(d, c.x, c.y - 0.006 - hy * 0.7, c.z));
   }
   // upside-down soap bottle underneath: neck in a rubber sleeve (left-hand grip), cream collar, team bulb, dark foot
-  const bt = (g) => { g.rotateX(-0.12); return at(g, 0, 0.0, 0.112); };
+  const bt = (g: THREE.BufferGeometry) => { g.rotateX(-0.12); return at(g, 0, 0.0, 0.112); };
   P.add(bt(lathe(smoothProfile([[0, -0.036], [0.0112, -0.0355], [0.0134, -0.029], [0.0128, 0.0], [0.0134, 0.028], [0.0112, 0.034], [0, 0.035]], 10), 12)), C.rubber, M.rubber);
   for (let k = 0; k < 4; k++) P.add(bt(hring(0.0135, 0.0011, -0.018 + k * 0.012, 3, 12)), C.darker, M.satin);
   P.add(bt(lathe([[0, 0.032], [0.0165, 0.032], [0.0182, 0.037], [0.0165, 0.047], [0, 0.048]], 14)), C.dark, M.gloss);
@@ -1116,7 +1172,7 @@ function buildJetgun() {
   const P = new Parts(), I = new Parts();
   pistolGrip(P, { baseCol: C.dark });
   const yJ = 0.09;
-  const J = (g) => at(g, 0, yJ, 0);
+  const J = (g: THREE.BufferGeometry) => at(g, 0, yJ, 0);
   // chamber
   P.add(J(latheZ(smoothProfile([[0, -0.07], [0.036, -0.068], [0.05, -0.052], [0.054, -0.02], [0.054, 0.1], [0.049, 0.132], [0.036, 0.146], [0, 0.148]], 12), 24)), C.cream, M.gloss);
   for (const z of [-0.035, 0.12]) P.add(J(at(torus(0.0535, 0.0042, 5, 24), 0, 0, z)), C.dark, M.gloss);
@@ -1180,13 +1236,13 @@ function buildJetgun() {
 const STAMP_N = new V3(0, -0.58, 0.815).normalize();
 /** Subdivide an indexed geometry until no edge is longer than maxLen (per-edge midpoint splits, so neighbours agree and
  *  no T-junctions appear). For flat decals that get bent onto curved surfaces (the caps otherwise cut under the curve). */
-function refine(g, maxLen, maxIter = 10) {
-  const pos = Array.from(g.attributes.position.array); let idx = Array.from(g.index.array);
+function refine(g: THREE.BufferGeometry, maxLen: number, maxIter = 10) {
+  const pos: number[] = Array.from(g.attributes.position.array); let idx: number[] = Array.from(g.index!.array);
   const m2 = maxLen * maxLen;
-  const d2 = (a, b) => { const x = pos[a * 3] - pos[b * 3], y = pos[a * 3 + 1] - pos[b * 3 + 1], z = pos[a * 3 + 2] - pos[b * 3 + 2]; return x * x + y * y + z * z; };
+  const d2 = (a: number, b: number) => { const x = pos[a * 3] - pos[b * 3], y = pos[a * 3 + 1] - pos[b * 3 + 1], z = pos[a * 3 + 2] - pos[b * 3 + 2]; return x * x + y * y + z * z; };
   for (let it = 0; it < maxIter; it++) {
-    const mids = new Map(), out = []; let any = false;
-    const mid = (a, b) => {
+    const mids = new Map<number, number>(), out: number[] = []; let any = false;
+    const mid = (a: number, b: number) => {
       if (d2(a, b) <= m2) return -1;
       const k = a < b ? a * 1e7 + b : b * 1e7 + a;
       let m = mids.get(k);
@@ -1196,7 +1252,7 @@ function refine(g, maxLen, maxIter = 10) {
     for (let i = 0; i < idx.length; i += 3) {
       let a = idx[i], b = idx[i + 1], c = idx[i + 2];
       let mab = mid(a, b), mbc = mid(b, c), mca = mid(c, a);
-      const n = (mab >= 0) + (mbc >= 0) + (mca >= 0);
+      const n = +(mab >= 0) + +(mbc >= 0) + +(mca >= 0);
       if (!n) { out.push(a, b, c); continue; }
       any = true;
       if (n === 3) { out.push(a, mab, mca, mab, b, mbc, mca, mbc, c, mab, mbc, mca); continue; }
@@ -1213,7 +1269,7 @@ function refine(g, maxLen, maxIter = 10) {
   return o;
 }
 /** Rounded-rectangle Shape (w × h, corner radius r) centred on the origin. */
-function roundRect(w, h, r) {
+function roundRect(w: number, h: number, r: number) {
   const s = new THREE.Shape(), x = w / 2, y = h / 2;
   s.moveTo(-x + r, -y); s.lineTo(x - r, -y); s.quadraticCurveTo(x, -y, x, -y + r); s.lineTo(x, y - r); s.quadraticCurveTo(x, y, x - r, y);
   s.lineTo(-x + r, y); s.quadraticCurveTo(-x, y, -x, y - r); s.lineTo(-x, -y + r); s.quadraticCurveTo(-x, -y, -x + r, -y);
@@ -1224,8 +1280,8 @@ function buildStamp() {
   const HX = new V3(1, 0, 0), HU = STAMP_N.clone().negate(), HT = new V3().crossVectors(HU, HX).normalize();
   const KZ = 0.644, K = new V3(0, 0, KZ);                                // hinge pin on the shaft axis
   const F = K.clone().addScaledVector(HU, -0.262);                       // face centre (relief tips)
-  const head = (g) => placeXY(g, HX, HT, F);                             // head space: x across, y along HT, z up (HU)
-  const hp = (x, t, u) => F.clone().addScaledVector(HX, x).addScaledVector(HT, t).addScaledVector(HU, u);
+  const head = (g: THREE.BufferGeometry) => placeXY(g, HX, HT, F);                             // head space: x across, y along HT, z up (HU)
+  const hp = (x: number, t: number, u: number) => F.clone().addScaledVector(HX, x).addScaledVector(HT, t).addScaledVector(HU, u);
   // shaft, top grip (right hand) with a cream ball knob, mid grip (left hand) with dark collars, hazard band
   P.add(latheZ([[0, -0.07], [0.0105, -0.07], [0.0105, KZ - 0.03], [0, KZ - 0.03]], 10), C.metal, M.metal);
   P.add(latheZ(smoothProfile([[0, -0.086], [0.0116, -0.085], [0.0144, -0.076], [0.0138, -0.05], [0.0132, -0.02], [0.0136, 0.02], [0.0142, 0.046], [0.0156, 0.054], [0.0112, 0.06]], 10), 12), C.rubber, M.rubber);
@@ -1286,8 +1342,8 @@ function buildStamp() {
   };
 }
 
-const _cache = new Map();
-const BUILDERS = {
+const _cache = new Map<string, WeaponDef>();
+const BUILDERS: Record<string, WeaponBuilder> = {
   shooter: buildShooter, roller: buildRoller, charger: buildCharger, blaster: buildBlaster,
   dualies: buildDualies, slosher: buildSlosher, splatling: buildSplatling,
   bucket: buildBucket, spinner: buildSpinner, twins: buildTwins, brush: buildBrush,
@@ -1298,14 +1354,15 @@ export const WEAPON_KINDS = Object.keys(BUILDERS).filter((k) => !k.startsWith('s
 export const SPECIAL_WEAPON_KINDS = Object.keys(BUILDERS).filter((k) => k.startsWith('sp_'));
 // Kit weapons (src/game/kits/*.js) bring their own model + part animation: build() returns the same shape as the
 // builders above ({ kind, body, ink, parts?, gripR, gripL, … }); animate(w, st) runs after the built-in part animation.
-const KIT_ANIM = {};
-export function registerWeaponModel(kind, build, animate) {
-  BUILDERS[kind] = build; if (animate) KIT_ANIM[kind] = animate; _cache.delete(kind);
+const KIT_ANIM: Record<string, WeaponAnimator> = {};
+// I: 그 키트의 인스턴스 형태(정의 고유 필드·키트 상태). 등록한 kind의 인스턴스에만 불리므로 저장 때 한 번 넓힌다.
+export function registerWeaponModel<I extends WeaponInst = WeaponInst>(kind: string, build: WeaponBuilder, animate?: (w: I, st: WeaponAnimState) => void) {
+  BUILDERS[kind] = build; if (animate) KIT_ANIM[kind] = animate as unknown as WeaponAnimator; _cache.delete(kind);
   if (!kind.startsWith('sp_') && !WEAPON_KINDS.includes(kind)) WEAPON_KINDS.push(kind);
 }
 
 /** Hand bone frame (wrist origin) expressed in weapon space, from a grip spec and that hand's grip-hole offset. */
-function handInWeapon(grip, hole) {
+function handInWeapon(grip: Grip, hole: THREE.Vector3): HandFrame {
   const Y = grip.handY.clone().normalize();
   const Z = grip.handZ.clone().addScaledVector(Y, -grip.handZ.dot(Y)).normalize();
   const X = new V3().crossVectors(Y, Z).normalize();
@@ -1331,10 +1388,10 @@ function handInWeapon(grip, hole) {
 // hand should ride it) + w.trig (0..1 trigger squeeze — the index finger can follow).
 const _aq = new THREE.Quaternion(), _aq2 = new THREE.Quaternion(), _av = new V3(), _av2 = new V3(), _aw = new THREE.Color(1, 1, 1);
 const _UPV = new V3(0, 1, 0);
-const pulseE = (t, atk, dec) => (t < 0 ? 0 : t < atk ? t / atk : Math.exp(-(t - atk) * dec));
-const mjE = (t) => { t = Math.min(1, Math.max(0, t)); return t * t * t * (10 + t * (6 * t - 15)); };
-const dampE = (a, b, l, dt) => a + (b - a) * (1 - Math.exp(-l * dt));
-function sprE(S, i, target, hz, zeta, dt) {   // exact damped spring (stable for any damping / step)
+const pulseE = (t: number, atk: number, dec: number) => (t < 0 ? 0 : t < atk ? t / atk : Math.exp(-(t - atk) * dec));
+const mjE = (t: number) => { t = Math.min(1, Math.max(0, t)); return t * t * t * (10 + t * (6 * t - 15)); };
+const dampE = (a: number, b: number, l: number, dt: number) => a + (b - a) * (1 - Math.exp(-l * dt));
+function sprE(S: Float32Array, i: number, target: number, hz: number, zeta: number, dt: number) {   // exact damped spring (stable for any damping / step)
   const w = Math.PI * 2 * hz, x0 = S[i] - target, v0 = S[i + 1];
   let x, v;
   if (zeta < 0.999) {
@@ -1344,7 +1401,7 @@ function sprE(S, i, target, hz, zeta, dt) {   // exact damped spring (stable for
   S[i] = x + target; S[i + 1] = v; return S[i];
 }
 
-export function animateWeapon(w, st) {
+export function animateWeapon(w: WeaponInst, st: WeaponAnimState) {
   if (KIT_ANIM[w.def.kind]) { KIT_ANIM[w.def.kind](w, st); return; }   // kit weapons animate themselves
   const d = w.def, P = w.parts || {}, kind = d.kind, t = st.t, dt = Math.min(0.1, Math.max(0, st.dt || 0)), col = st.color;
   if (!w.ps) { w.ps = new Float32Array(12); w.ps[0] = 1.3; w.pump = 0; w.trig = 0; w.heat = 0; w.drumW = 0; w.drumA = 0; w.spinW = 0; w.spinA = 0; w.near = true; }
@@ -1458,9 +1515,9 @@ export function animateWeapon(w, st) {
     P.barrels.position.z = P.barrels.userData.rest.z - 0.004 * shotK;   // each round nudges the cluster back
   }
 }
-function ledShot(g, st, k, t) {
+function ledShot(g: THREE.Group | undefined, st: WeaponAnimState, k: number, t: number) {
   if (!g) return;
-  const m = g.userData.mesh.material;
+  const m = (g.userData.mesh as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>).material;
   if ((st.lowInk || 0) > 0.5) { m.emissive.setRGB(1, 0.16, 0.1); m.emissiveIntensity = 0.4 + 2.2 * (0.5 + 0.5 * Math.sin(t * Math.PI * 6.4)); }
   else { m.emissive.setRGB(0.24, 1, 0.48); m.emissiveIntensity = 1.1 + 4 * k; }
 }
@@ -1489,46 +1546,46 @@ function buildBomb() {
 // lit (render with an emissive team material); the body always has an opaque socket behind them.
 /** Grip frames. BOMB: as the splat bomb — the thumb runs toward prop +Y, so with the arm cocked for the throw the prop
  *  rides on top of the fist (upside down). UP: thumb toward prop -Y, the prop stays upright in the cocked fist. */
-const HOLD_BOMB = { handZ: new V3(0, 1, 0), handY: new V3(0.3, 0.1, -1) };
-const HOLD_UP = { handZ: new V3(0, -1, 0), handY: new V3(-0.3, -0.1, -1) };
-const gripAt = (hold, x, y, z) => ({ pos: new V3(x, y, z), handZ: hold.handZ.clone(), handY: hold.handY.clone() });
+const HOLD_BOMB: Omit<Grip, 'pos'> = { handZ: new V3(0, 1, 0), handY: new V3(0.3, 0.1, -1) };
+const HOLD_UP: Omit<Grip, 'pos'> = { handZ: new V3(0, -1, 0), handY: new V3(-0.3, -0.1, -1) };
+const gripAt = (hold: Omit<Grip, 'pos'>, x: number, y: number, z: number): Grip => ({ pos: new V3(x, y, z), handZ: hold.handZ.clone(), handY: hold.handY.clone() });
 /** Horizontal ring (axis +Y): radius R, tube r, at height y. */
-function hring(R, r, y, rs = 5, ts = 24) { const g = torus(R, r, rs, ts); g.rotateX(Math.PI / 2); return at(g, 0, y, 0); }
+function hring(R: number, r: number, y: number, rs = 5, ts = 24) { const g = torus(R, r, rs, ts); g.rotateX(Math.PI / 2); return at(g, 0, y, 0); }
 /** Wrap a flat part around the +Y axis. Authored with x = along the surface, y = up, z = outward (decals: shape in XY,
  *  extruded +Z); lands on the cylinder of radius r at azimuth az (0 = +Z, π/2 = +X), lifted by y0. */
-function wrapY(g, r, az, y0 = 0) {
+function wrapY(g: THREE.BufferGeometry, r: number, az: number, y0 = 0) {
   return deformG(g, (v) => { const R = r + v.z, a = az + v.x / r; v.set(R * Math.sin(a), y0 + v.y, R * Math.cos(a)); });
 }
 /** Same around the +Z axis: x runs back along -Z, y around the axis (az 0 = +X side, π/2 = top), z outward; axis at height yc. */
-function wrapZ(g, r, az, z0, yc) {
+function wrapZ(g: THREE.BufferGeometry, r: number, az: number, z0: number, yc: number) {
   return deformG(g, (v) => { const R = r + v.z, a = az + v.y / r; v.set(R * Math.cos(a), yc + R * Math.sin(a), z0 - v.x); });
 }
 /** Radius of a lathe profile [[r, h], ...] at height h (first profile segment spanning h, linear). */
-function profR(prof, h) {
+function profR(prof: number[][], h: number) {
   for (let i = 1; i < prof.length; i++) { const [r0, h0] = prof[i - 1], [r1, h1] = prof[i]; if (h1 !== h0 && (h - h0) * (h - h1) <= 0) return r0 + (r1 - r0) * (h - h0) / (h1 - h0); }
   return prof[h < prof[0][1] ? 0 : prof.length - 1][0];
 }
 /** wrapY onto a lathe wall of profile prof: the part's inner face follows the wall, `lift` off it. */
-function wrapLathe(g, prof, az, y0, lift = 0.0003) {
+function wrapLathe(g: THREE.BufferGeometry, prof: number[][], az: number, y0: number, lift = 0.0003) {
   const r0 = profR(prof, y0);
   return deformG(g, (v) => { const R = profR(prof, y0 + v.y) + lift + v.z, a = az + v.x / r0; v.set(R * Math.sin(a), y0 + v.y, R * Math.cos(a)); });
 }
 /** Bend a flat decal placed on the tangent plane at c + n·R onto that sphere (each vertex keeps its height off the plane). */
-function onSphere(g, c, n, R) {
+function onSphere(g: THREE.BufferGeometry, c: THREE.Vector3, n: THREE.Vector3, R: number) {
   const p0 = c.clone().addScaledVector(n, R), d = new V3();
-  return deformG(g, (v) => { const h = d.subVectors(v, p0).dot(n); d.subVectors(v, c).normalize(); v.copy(c).addScaledVector(d, R + h); });
+  return deformG(g, (v: THREE.Vector3) => { const h = d.subVectors(v, p0).dot(n); d.subVectors(v, c).normalize(); v.copy(c).addScaledVector(d, R + h); });
 }
 /** Unit direction at azimuth az (0 = +Z) and elevation el on a sphere. */
-const sphDir = (az, el) => new V3(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el));
+const sphDir = (az: number, el: number) => new V3(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el));
 /** Sphere-zone lathe profile between elevations e0 < e1 (closed to the axis at both ends). */
-function sphZone(R, yc, e0, e1, n = 8) {
+function sphZone(R: number, yc: number, e0: number, e1: number, n = 8) {
   const pr = [[0, yc + R * Math.sin(e0)]];
   for (let i = 0; i <= n; i++) { const e = e0 + (e1 - e0) * i / n; pr.push([R * Math.cos(e), yc + R * Math.sin(e)]); }
   pr.push([0, yc + R * Math.sin(e1)]);
   return pr;
 }
 /** Swirl arms (comma-shaped Shapes) of radius ~r about the origin. */
-function swirlShapes(r, arms = 2, turns = 0.62) {
+function swirlShapes(r: number, arms = 2, turns = 0.62) {
   const out = [];
   for (let k = 0; k < arms; k++) {
     const a0 = (k / arms) * Math.PI * 2, n = 16, outer = [], inner = [];
@@ -1542,16 +1599,16 @@ function swirlShapes(r, arms = 2, turns = 0.62) {
   return out;
 }
 /** Chevrons centred on the origin, pointing along +x, or +y when up. */
-function chevrons(w, h, n, up = false, gap = 0.45) {
+function chevrons(w: number, h: number, n: number | undefined, up = false, gap = 0.45) {
   return chevronShape(w, h, n, gap).map((s) => { const g = decal(s); g.translate(-w / 2 - h * 0.25, -h / 2, 0); if (up) g.rotateZ(Math.PI / 2); return g; });
 }
 /** Knurled rubber knob / grip sleeve along +Y from y0 to y1 (radius ≈ 1.25 cm). */
-function gripSleeve(y0, y1, r = 0.0126) {
+function gripSleeve(y0: number, y1: number, r = 0.0126) {
   const L = y1 - y0;
   return lathe(smoothProfile([[0, y0], [r - 0.0014, y0 + 0.0006], [r, y0 + 0.005], [r - 0.0004, y0 + L * 0.5], [r, y1 - 0.005], [r - 0.0014, y1 - 0.0006], [0, y1]], 10), 14);
 }
 /** Small LED dome facing n at p. */
-function led(P, p, n, col, r = 0.0034) { P.add(orient(superEllipsoid(r, r * 0.55, r, 1, 1, 8, 5), n, p), col, M.led); }
+function led(P: Parts, p: THREE.Vector3, n: THREE.Vector3, col: string, r = 0.0034) { P.add(orient(superEllipsoid(r, r * 0.55, r, 1, 1, 8, 5), n, p), col, M.led); }
 
 /** Cling Charge: a squat cream charge on a big soft rubber suction pad, team goo squeezed out around the rim; ink windows
  *  on both flanks, knurled knob on top (the fist's handle) capped by the red fuse light. ~0.21 wide, 0.16 tall. */
@@ -1594,7 +1651,7 @@ function buildSticky() {
  *  nub with a metal plunger on the nose (+Z), swept tail fins and a knurled tail stub (the fist's handle). ~0.15 long. */
 function buildBurst() {
   const P = new Parts(), I = new Parts();
-  const yc = 0.0345, Z = (g) => at(g, 0, yc, 0);                     // capsule axis height (the gaskets touch the ground)
+  const yc = 0.0345, Z = (g: THREE.BufferGeometry) => at(g, 0, yc, 0);                     // capsule axis height (the gaskets touch the ground)
   const rear = smoothProfile([[0.001, -0.047], [0.016, -0.0455], [0.026, -0.04], [0.0318, -0.031], [0.0334, -0.024], [0.0334, -0.018]], 9);
   P.add(Z(latheZ([[0, -0.047]].concat(rear, [[0, -0.018]]), 20)), C.cream, M.gloss);
   P.add(Z(latheZ([[0, 0.027]].concat(smoothProfile([[0.0334, 0.027], [0.0334, 0.033], [0.031, 0.042], [0.0245, 0.0498], [0.0165, 0.0545]], 8), [[0, 0.055]]), 20)), C.cream, M.gloss);
@@ -1691,7 +1748,7 @@ function buildScan() {
   L.add(lathe([[0, yc - bh], [0.0902, yc - bh], [0.0935, yc - bh * 0.5], [0.0938, yc], [0.0935, yc + bh * 0.5], [0.0902, yc + bh], [0, yc + bh]], 36));
   for (const s of [1, -1]) P.add(hring(Math.sqrt(R * R - (bh + 0.0012) ** 2), 0.0029, yc + s * (bh + 0.0012), 5, 32), C.dark, M.gloss);
   // crown: team ring + two sonar grooves; bottom: rubber foot
-  for (const [el, col] of [[0.66, null], [0.92, C.darker], [1.14, C.darker]]) {
+  for (const [el, col] of [[0.66, null], [0.92, C.darker], [1.14, C.darker]] as Array<[number, string | null]>) {
     const g = hring(R * Math.cos(el), col ? 0.0019 : 0.0034, yc + R * Math.sin(el), 4, 28);
     if (col) P.add(g, col, M.satin); else I.add(g);
   }
@@ -1717,7 +1774,7 @@ function buildCurtain() {
   P.add(at(superEllipsoid(0.178, 0.034, 0.04, 0.35, 0.4, 22, 8), 0, 0.044, 0), C.cream, M.satin);
   for (const sx of [1, -1]) {
     P.add(at(superEllipsoid(0.022, 0.044, 0.05, 0.4, 0.5, 8, 8), sx * 0.189, 0.046, 0), C.dark, M.gloss);
-    for (const [x, col] of [[0.155, C.hazard], [0.1605, C.dark], [0.166, C.hazard]]) P.add(at(superEllipsoid(0.0027, 0.0357, 0.0418, 0.35, 0.4, 4, 8), sx * x, 0.044, 0), col, M.print);
+    for (const [x, col] of [[0.155, C.hazard], [0.1605, C.dark], [0.166, C.hazard]] as Array<[number, string]>) P.add(at(superEllipsoid(0.0027, 0.0357, 0.0418, 0.35, 0.4, 4, 8), sx * x, 0.044, 0), col, M.print);
     for (const y of [0.028, 0.064]) screw(P, new V3(sx * 0.2108, y, 0), new V3(sx, 0, 0), 0.003);
     led(P, new V3(sx * 0.189, 0.07, 0.0496), new V3(0, 0, 1), C.green, 0.0036);
   }
@@ -1743,8 +1800,8 @@ function buildCurtain() {
   for (const y of [0.066, 0.02]) P.add(at(superEllipsoid(0.013, 0.0095, 0.0055, 0.5, 0.6, 8, 5), 0, y, -0.0418), C.dark, M.gloss);
   const sq = decal(squidShape(0.034)); placeXY(sq, new V3(-1, 0, 0), new V3(0, 1, 0), new V3(0.095, 0.0425, -0.0399)); P.add(sq, C.dark, M.print);
   for (const g of chevrons(0.036, 0.014, 3, true)) { placeXY(g, new V3(-1, 0, 0), new V3(0, 1, 0), new V3(-0.095, 0.0425, -0.0399)); I.add(g); }
-  const body = P.build(); body.computeBoundingBox();
-  return { kind: 'curtain', body, ink: I.build(), width: +(body.boundingBox.max.x - body.boundingBox.min.x).toFixed(3), grip: gripAt(HOLD_UP, 0, 0.043, -0.077) };
+  const body = P.build()!; body.computeBoundingBox();
+  return { kind: 'curtain', body, ink: I.build(), width: +(body.boundingBox!.max.x - body.boundingBox!.min.x).toFixed(3), grip: gripAt(HOLD_UP, 0, 0.043, -0.077) };
 }
 
 /** Twirl Sprinkler: a cream mounting base (rubber foot, team ring, three bolted lugs) with a riser whose knurled sleeve is
@@ -1774,7 +1831,7 @@ function buildSprinkler() {
   const ay = hy + 0.0095;
   for (let k = 0; k < 3; k++) {
     const a = k * Math.PI * 2 / 3, u = new V3(Math.cos(a), 0, Math.sin(a)), t = new V3(-Math.sin(a), 0, Math.cos(a));
-    const pt = (r, s, dy = 0) => new V3(0, ay + dy, 0).addScaledVector(u, r).addScaledVector(t, s);
+    const pt = (r: number, s: number, dy = 0) => new V3(0, ay + dy, 0).addScaledVector(u, r).addScaledVector(t, s);
     const pts = [pt(0.018, 0), pt(0.042, 0.002, 0.0015), pt(0.063, 0.009, 0.002), pt(0.0735, 0.022, 0.001), pt(0.0712, 0.034)];
     S.add(sweep(pts, { seg: 14, radial: 6, capSteps: 2, radius: () => 0.0054, flat: 1, outward: (Pp, o) => o.set(0, 1, 0) }).geo, C.gunmetal, M.metal);
     const dir = pts[4].clone().sub(pts[3]).normalize(), tip = pts[4].clone().addScaledVector(dir, 0.002);
@@ -1797,7 +1854,7 @@ function buildMine() {
   const P = new Parts(), I = new Parts();
   P.add(lathe([[0, 0], [0.1365, 0], [0.1412, 0.003], [0.1395, 0.0075], [0, 0.0075]], 40), C.rubber, M.rubber);
   P.add(lathe(smoothProfile([[0, 0.0052], [0.1405, 0.0052], [0.1486, 0.0105], [0.15, 0.021], [0.1472, 0.0305], [0.1385, 0.0365], [0.122, 0.0392]], 10).concat([[0, 0.0395]]), 40), C.dark, M.gloss);
-  const deckY = (r) => 0.0502 - 0.078 * Math.max(0, r - 0.062) ** 1.6;
+  const deckY = (r: number) => 0.0502 - 0.078 * Math.max(0, r - 0.062) ** 1.6;
   const dk = [[0, 0.038]]; for (const r of [0.132, 0.1335, 0.13, 0.12, 0.1, 0.08, 0.062]) dk.push([r, r > 0.131 ? 0.0405 : deckY(r)]);
   dk.splice(1, 0, [0.128, 0.0378]); dk.push([0, 0.0502]);
   P.add(lathe(dk, 40), C.cream, M.satin);
@@ -1906,14 +1963,14 @@ function buildMist() {
   return { kind: 'mist', body: P.build(), ink: I.build(), grip: gripAt(HOLD_BOMB, 0, 0.2115, 0) };
 }
 
-const SUB_BUILDERS = {
+const SUB_BUILDERS: Record<string, () => SubDef> = {
   bomb: buildBomb, sticky: buildSticky, burst: buildBurst, seeker: buildSeeker, scan: buildScan,
   curtain: buildCurtain, sprinkler: buildSprinkler, mine: buildMine, beacon: buildBeacon, mist: buildMist,
 };
 export const SUB_KINDS = Object.keys(SUB_BUILDERS);
 /** Kit subs (src/game/kits/*.js): build() returns { kind, body, ink, glow?, grip, … } like the builders above. */
-export function registerSubModel(kind, build) { SUB_BUILDERS[kind] = build; _subCache.delete(kind); if (!SUB_KINDS.includes(kind)) SUB_KINDS.push(kind); }
-const _subCache = new Map();
+export function registerSubModel(kind: string, build: () => SubDef) { SUB_BUILDERS[kind] = build; _subCache.delete(kind); if (!SUB_KINDS.includes(kind)) SUB_KINDS.push(kind); }
+const _subCache = new Map<string, SubDef>();
 /** Sub-weapon prop for the LEFT hand: { body, ink, handL:{pos,quat} (hand in prop space), inHandL:{pos,quat} (prop in hand space) }
  *  plus the kind's extras (see the builders). Attach like a weapon: prop group under handL at inHandL (plastic body + team
  *  ink material). Unknown kinds fall back to the splat bomb. */
@@ -1931,7 +1988,7 @@ export function getSubDef(kind = 'bomb') {
 
 /** Split a builder's output: bodyStatic/inkStatic (never move), parts re-centred on their pivots, and body/ink = the
  *  complete weapon at rest (static + parts merged in place) for tools that render it whole. */
-function finishParts(d) {
+function finishParts(d: WeaponDef) {
   d.bodyStatic = d.body; d.inkStatic = d.ink;
   const body = [d.body], ink = [d.ink];
   const parts = d.parts || {};
@@ -1942,13 +1999,13 @@ function finishParts(d) {
     p.geo = p.src.clone().translate(-p.pivot.x, -p.pivot.y, -p.pivot.z);
     delete p.src;
   }
-  d.body = body.length > 1 ? mergeGeometries(body.filter(Boolean), false) : d.body;
-  d.ink = ink.length > 1 ? mergeGeometries(ink.filter(Boolean), false) : d.ink;
+  d.body = body.length > 1 ? mergeGeometries(body.filter((g): g is THREE.BufferGeometry => !!g), false) : d.body;
+  d.ink = ink.length > 1 ? mergeGeometries(ink.filter((g): g is THREE.BufferGeometry => !!g), false) : d.ink;
   d.parts = parts;
   return d;
 }
 
-export function getWeaponDef(kind) {
+export function getWeaponDef(kind: string) {
   if (!_cache.has(kind)) {
     const d = finishParts((BUILDERS[kind] || buildShooter)());
     d.handR = handInWeapon(d.gripR, GRIP_HOLE_R);

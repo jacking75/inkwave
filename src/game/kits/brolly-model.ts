@@ -10,11 +10,12 @@
 // Canopy space (for the launched canopy, canopyOpenGeo): crown at the origin, axis +Z, dome curving back toward -Z.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { GEO_KIT } from '../character-weapons.js';
+import { GEO_KIT, Parts } from '../character-weapons.js';
+import type { WeaponInst, WeaponDef, WeaponAnimState, WeaponPart } from '../character-weapons.js';
 import { superEllipsoid, lathe, smoothProfile, sweep } from '../character-geo.js';
 import { getPlasticMaterial } from '../character-mats.js';
 
-const { Parts, C, M, latheZ, torus, at, orient, screw, decal, placeXY, squidShape, onSphere } = GEO_KIT;
+const { C, M, latheZ, torus, at, orient, screw, decal, placeXY, squidShape, onSphere } = GEO_KIT;
 const V3 = THREE.Vector3;
 
 // ---------------------------------------------------------------------------------------------- dimensions
@@ -32,40 +33,40 @@ const TH0 = 0.075;                            // fabric starts here (the hub cov
 const FOLD_A = -1.05, FOLD_SX = 0.19, FOLD_S = 0.37;
 export const MUZZLE = new V3(0, AY, 0.678);
 const RUNNER_Z0 = 0.305, RUNNER_Z1 = 0.47;    // runner collar: furled → open
-const TEAM_GORE = (k) => (k & 1) === 1;       // odd gores wear the team ink
+const TEAM_GORE = (k: number) => (k & 1) === 1;       // odd gores wear the team ink
 
 const CREAM = '#f4efe4', CREAM_HEM = '#e0d4bd', WHITE = '#ffffff', WHITE_HEM = '#cfcfcf', HANDLE = '#c08a58', HANDLE_DK = '#8a5a33';
 
 // gore-local point on the dome: crown at the origin, axis +Z, gore centred on +Y, azimuth ps toward +X
-function gp(th, ps, off, out = new V3()) {
+function gp(th: number, ps: number, off: number, out = new V3()) {
   const r = RS + off;
   return out.set(r * Math.sin(th) * Math.sin(ps), r * Math.sin(th) * Math.cos(ps), -RS + r * Math.cos(th));
 }
-const sag = (th, ps) => -0.022 * (th / TH) * Math.cos(ps * (Math.PI / 2) / GW);        // fabric sags between ribs
-const thEnd = (ps) => TH * (1 - 0.075 * Math.cos(ps * (Math.PI / 2) / GW));              // scalloped rim
+const sag = (th: number, ps: number) => -0.022 * (th / TH) * Math.cos(ps * (Math.PI / 2) / GW);        // fabric sags between ribs
+const thEnd = (ps: number) => TH * (1 - 0.075 * Math.cos(ps * (Math.PI / 2) / GW));              // scalloped rim
 
 /** Thin sheet from a parametric surface: outer + inner skins (smooth) and flat side walls. pt(u, v, inner, out). */
-function sheet(ni, nj, pt) {
-  const W = nj + 1, outer = [], inner = [], v = new V3();
+function sheet(ni: number, nj: number, pt: (u: number, v: number, inner: number, out: THREE.Vector3) => unknown) {
+  const W = nj + 1, outer: number[] = [], inner: number[] = [], v = new V3();
   for (let i = 0; i <= ni; i++) for (let j = 0; j <= nj; j++) {
     pt(i / ni, j / nj, 0, v); outer.push(v.x, v.y, v.z);
     pt(i / ni, j / nj, 1, v); inner.push(v.x, v.y, v.z);
   }
-  const io = [], ii = [];
+  const io: number[] = [], ii: number[] = [];
   for (let i = 0; i < ni; i++) for (let j = 0; j < nj; j++) {
     const a = i * W + j, b = a + 1, c = a + W, d = c + 1;
     io.push(a, b, c, b, d, c); ii.push(a, c, b, b, c, d);
   }
-  const mk = (pos, idx) => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals(); return g; };
+  const mk = (pos: number[], idx: number[]) => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals(); return g; };
   // side walls round the boundary loop, each quad with its own vertices (flat), facing away from the sheet centre
-  const loop = [];
+  const loop: number[] = [];
   for (let j = 0; j <= nj; j++) loop.push(j);
   for (let i = 1; i <= ni; i++) loop.push(i * W + nj);
   for (let j = nj - 1; j >= 0; j--) loop.push(ni * W + j);
   for (let i = ni - 1; i >= 1; i--) loop.push(i * W);
   const cen = new V3(); for (let q = 0; q < outer.length; q += 3) cen.x += outer[q], cen.y += outer[q + 1], cen.z += outer[q + 2];
   cen.multiplyScalar(3 / outer.length);
-  const sp = [], si = [], A = new V3(), B = new V3(), Ci = new V3(), D = new V3(), n = new V3(), m = new V3();
+  const sp: number[] = [], si: number[] = [], A = new V3(), B = new V3(), Ci = new V3(), D = new V3(), n = new V3(), m = new V3();
   for (let k = 0; k < loop.length; k++) {
     const p0 = loop[k] * 3, p1 = loop[(k + 1) % loop.length] * 3;
     A.fromArray(outer, p0); B.fromArray(outer, p1); Ci.fromArray(inner, p1); D.fromArray(inner, p0);
@@ -80,18 +81,18 @@ function sheet(ni, nj, pt) {
 }
 
 /** One gore (gore-local frame): fabric, hem band, rib along its +ps edge, rib tip bead (+ the squid print on gore 0). */
-function goreLocal(P, k) {
+function goreLocal(P: Parts, k: number) {
   const team = TEAM_GORE(k);
   const fab = team ? WHITE : CREAM, hem = team ? WHITE_HEM : CREAM_HEM;
   const H0 = 0.88;   // hem starts at this share of the gore's length
-  const surf = (t0, t1) => (u, v, inner, out) => {
+  const surf = (t0: number, t1: number) => (u: number, v: number, inner: number, out: THREE.Vector3) => {
     const ps = (v * 2 - 1) * GW, th = TH0 + (thEnd(ps) - TH0) * (t0 + (t1 - t0) * u);
     return gp(th, ps, sag(th, ps) - (inner ? THICK : 0), out);
   };
   for (const g of sheet(9, 8, surf(0, H0))) P.add(g, fab, M.satin);
   for (const g of sheet(1, 8, surf(H0, 1))) P.add(g, hem, M.satin);
   // rib (under the fabric, along the seam) + tip bead just past the rim
-  const pts = [];
+  const pts: THREE.Vector3[] = [];
   for (let i = 0; i <= 10; i++) { const th = 0.05 + (TH - 0.05) * i / 10; pts.push(gp(th, GW, -THICK - 0.0038)); }
   P.add(sweep(pts, { seg: 14, radial: 6, capSteps: 1, radius: () => 0.0036 }).geo, C.gunmetal, M.metal);
   const tipP = gp(TH + 0.022, GW, -0.003), tipD = gp(TH + 0.04, GW, -0.003).sub(gp(TH, GW, -0.003)).normalize();
@@ -108,15 +109,15 @@ function goreLocal(P, k) {
 }
 
 /** A jagged tear across a gore (damage stages); both skins, dark. Gore-local frame. */
-function tearLocal(P, th0, th1, ps0, ps1, seed) {
+function tearLocal(P: Parts, th0: number, th1: number, ps0: number, ps1: number, seed: number) {
   let s = seed >>> 0; const rnd = () => ((s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 4294967296);
-  const n = 7, w = 0.011, pts = [];
+  const n = 7, w = 0.011, pts: number[][] = [];
   for (let i = 0; i <= n; i++) {
     const t = i / n, th = th0 + (th1 - th0) * t, ps = ps0 + (ps1 - ps0) * t + (i > 0 && i < n ? (rnd() - 0.5) * 0.09 : 0);
     pts.push([th, ps]);
   }
   for (const side of [0, 1]) {
-    const pos = [], idx = [];
+    const pos: number[] = [], idx: number[] = [];
     for (let i = 0; i <= n; i++) {
       const [th, ps] = pts[i], wk = w * (i === 0 || i === n ? 0.15 : 0.6 + rnd() * 0.8);
       const off = side ? -THICK - 0.0012 : 0.0012;
@@ -129,31 +130,32 @@ function tearLocal(P, th0, th1, ps0, ps1, seed) {
   }
 }
 // damage stages: [gore, th0, th1, ps0, ps1] — stage 1 below 66 % hp, stage 2 below 33 %
-const TEARS = [
+// 손상 단계별 찢김: [가닥, 시작·끝 길이 비율, 시작·끝 가로 위치]
+const TEARS: Array<Array<[number, number, number, number, number]>> = [
   [[1, 0.2, 0.62, -0.12, 0.1], [4, 0.35, 0.8, 0.14, -0.08]],
   [[6, 0.15, 0.7, 0.05, -0.15], [2, 0.4, 0.86, -0.1, 0.12], [1, 0.55, 0.85, 0.2, 0.02], [7, 0.3, 0.6, 0.02, 0.18]],
 ];
 
 // gore frame ↔ weapon (or canopy) space: rotation about +Z by the gore's azimuth; the furled fold in the gore frame
-const goreRot = (k) => new THREE.Matrix4().makeRotationZ(-k * (Math.PI * 2 / NG));
-function foldMatrix(a, sx, sy, sz, out = new THREE.Matrix4()) {
+const goreRot = (k: number) => new THREE.Matrix4().makeRotationZ(-k * (Math.PI * 2 / NG));
+function foldMatrix(a: number, sx: number, sy: number, sz: number, out = new THREE.Matrix4()) {
   const c = Math.cos(a), s = Math.sin(a);
   // Rx(a) · diag(sx, sy, sz)
   return out.set(sx, 0, 0, 0, 0, c * sy, -s * sz, 0, 0, s * sy, c * sz, 0, 0, 0, 0, 1);
 }
-const foldA = (k) => FOLD_A * (k & 1 ? 1 : 0.965);   // alternate gores fold a hair apart (they overlap, furled)
-const FOLD0 = (k) => foldMatrix(foldA(k), FOLD_SX * (k & 1 ? 1 : 1.08), FOLD_S, FOLD_S);
+const foldA = (k: number) => FOLD_A * (k & 1 ? 1 : 0.965);   // alternate gores fold a hair apart (they overlap, furled)
+const FOLD0 = (k: number) => foldMatrix(foldA(k), FOLD_SX * (k & 1 ? 1 : 1.08), FOLD_S, FOLD_S);
 
 // ---------------------------------------------------------------------------------------------- builder
-let _openGeo = null;
+let _openGeo: { ink: THREE.BufferGeometry; cream: THREE.BufferGeometry; hub: THREE.BufferGeometry | null } | null = null;
 /** The open canopy in canopy space (crown at the origin, axis +Z): { ink, cream } merged gore geometries (vertex
  *  coloured: multiply by the team colour / white) + the hub stub (plastic). For the launched canopy. */
 export function canopyOpenGeo() {
   if (_openGeo) return _openGeo;
-  const ink = [], cream = [];
+  const ink: THREE.BufferGeometry[] = [], cream: THREE.BufferGeometry[] = [];
   for (let k = 0; k < NG; k++) {
     const P = new Parts(); goreLocal(P, k);
-    const g = P.build().applyMatrix4(goreRot(k));
+    const g = P.build()!.applyMatrix4(goreRot(k));
     (TEAM_GORE(k) ? ink : cream).push(g);
   }
   const H = new Parts();
@@ -214,22 +216,22 @@ function buildBrolly() {
   P.add(noz.translate(0, AY, 0), C.gunmetal, M.metal);
   I.add(at(torus(0.0138, 0.003, 4, 14), 0, AY, CROWN_Z + 0.052));
   // ---- canopy gores (furled at rest)
-  const parts = {
+  const parts: Record<string, WeaponPart> = {
     trigger: { src: T.build(), pivot: new V3(0, 0.0315, 0.0282), mat: 'body' },
     runner: { src: RUN.build(), pivot: new V3(0, AY, RUNNER_Z0), mat: 'body' },
     lamp: { src: LAMP.build(), pivot: new V3(0, AY, CROWN_Z + 0.02), mat: 'lamp', lamp: { color: '#0f2a18', emissive: '#3dff7a', intensity: 1.4 } },
   };
-  const crown = new V3(0, AY, CROWN_Z), place = (k) => new THREE.Matrix4().makeTranslation(crown.x, crown.y, crown.z).multiply(goreRot(k)).multiply(FOLD0(k));
-  const tears = [[], []];
+  const crown = new V3(0, AY, CROWN_Z), place = (k: number) => new THREE.Matrix4().makeTranslation(crown.x, crown.y, crown.z).multiply(goreRot(k)).multiply(FOLD0(k));
+  const tears: Array<Array<{ gore: number; geo: THREE.BufferGeometry }>> = [[], []];
   for (let k = 0; k < NG; k++) {
     const G = new Parts(); goreLocal(G, k);
-    parts['g' + k] = { src: G.build().applyMatrix4(place(k)), pivot: crown.clone(), mat: TEAM_GORE(k) ? 'ink' : 'body' };
+    parts['g' + k] = { src: G.build()!.applyMatrix4(place(k)), pivot: crown.clone(), mat: TEAM_GORE(k) ? 'ink' : 'body' };
     // damage tears ride their gore: authored in the same furled frame, relative to the crown (the gore part's pivot)
     TEARS.forEach((list, stage) => {
       for (const [g, a0, a1, p0, p1] of list) {
         if (g !== k) continue;
         const TP = new Parts(); tearLocal(TP, TH0 + (TH - TH0) * a0, TH0 + (TH - TH0) * a1, p0 * GW / 0.25, p1 * GW / 0.25, k * 97 + stage * 13 + 5);
-        tears[stage].push({ gore: k, geo: TP.build().applyMatrix4(new THREE.Matrix4().multiply(goreRot(k)).multiply(FOLD0(k))) });
+        tears[stage].push({ gore: k, geo: TP.build()!.applyMatrix4(new THREE.Matrix4().multiply(goreRot(k)).multiply(FOLD0(k))) });
       }
     });
   }
@@ -245,28 +247,37 @@ function buildBrolly() {
 // ---------------------------------------------------------------------------------------------- animation
 const _M = new THREE.Matrix4(), _F = new THREE.Matrix4(), _c = new THREE.Color(), _w = new THREE.Color(1, 1, 1);
 const _lampOk = new THREE.Color('#3dff7a'), _lampMid = new THREE.Color('#ffc21a'), _lampLow = new THREE.Color('#ff3b30'), _lampRe = new THREE.Color('#9fd8ff');
-const easeOutBack = (t) => { const c1 = 1.9, c3 = c1 + 1; return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2; };
+const easeOutBack = (t: number) => { const c1 = 1.9, c3 = c1 + 1; return 1 + c3 * (t - 1) ** 3 + c1 * (t - 1) ** 2; };
 
 /** Per-instance fabric materials (vertex colour × team / white; emissive = hit flash + low-hp flicker). */
-export function makeFabric(color, team) {
+export function makeFabric(color: THREE.Color, team: boolean) {
   return new THREE.MeshPhysicalMaterial({ color: color.clone(), vertexColors: true, roughness: team ? 0.32 : 0.5, metalness: 0, clearcoat: team ? 0.7 : 0.25, clearcoatRoughness: 0.12,
     sheen: 0.5, sheenRoughness: 0.45, sheenColor: team ? color.clone().lerp(_w, 0.5) : new THREE.Color('#ffffff'), emissive: 0x000000, name: team ? 'iw-brolly-ink' : 'iw-brolly-cream' });
 }
 
 // the canopy is big enough to matter to the AO / depth-normal passes (small parts sit those out: see character.js
 // partGate) — always draw it, whatever pass is running
-function drawAlways(renderer, scene, camera, geometry) { geometry.drawRange.count = Infinity; }
+function drawAlways(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, geometry: THREE.BufferGeometry) { geometry.drawRange.count = Infinity; }
 
-function initInstance(w, st) {
+/** 우산 정의 고유 필드: 손상 단계별 찢김 형상 */
+type BrollyDef = WeaponDef & { tears?: Array<Array<{ gore: number; geo: THREE.BufferGeometry }>> };
+/** 우산 러너 상태 중 모델이 읽는 것(kits/brolly.ts가 runner.kit에 둔다) */
+interface BrollyKitView { brolly: true; open: number; grow: number; opening?: boolean; shake?: number; hp: number; hpMax: number; flash: number; state: string; regrowK?: number }
+/** 천 한 가닥: 번호, 그룹·메시·재질, 왕관 이동·회전(역), 접힘 역행렬, 접힌 각·폭 */
+interface Gore { k: number; g: THREE.Group; mesh: THREE.Mesh; mat: THREE.MeshPhysicalMaterial; T: THREE.Matrix4; R: THREE.Matrix4; Ri: THREE.Matrix4; F0i: THREE.Matrix4; a0: number; sx0: number }
+type BrollyState = ReturnType<typeof initInstance>;
+type BrollyInst = WeaponInst & { def: BrollyDef; bs?: BrollyState };
+function initInstance(w: BrollyInst, st: WeaponAnimState) {
   const d = w.def, local = !!(st.runner && st.runner.a && st.runner.a.isLocal);
-  const S = { gores: [], tears: [[], []], col: new THREE.Color().copy(st.color), inkMat: makeFabric(st.color, true), creamMat: makeFabric(_w, false), local };
+  const S = { gores: [] as Gore[], tears: [[], []] as THREE.Mesh[][], col: new THREE.Color().copy(st.color), inkMat: makeFabric(st.color, true), creamMat: makeFabric(_w, false), local,
+    struts: [] as Array<{ m: THREE.Mesh; G: Gore; ribA: THREE.Vector3; dir: THREE.Vector3 }> };
   // your own canopy turns see-through as it opens (it would otherwise fill the over-the-shoulder view)
   if (local) for (const m of [S.inkMat, S.creamMat]) m.transparent = true;
   const crown = new V3(0, AY, CROWN_Z);
   for (let k = 0; k < NG; k++) {
     const g = w.parts['g' + k]; if (!g) continue;
     g.matrixAutoUpdate = false;
-    const mesh = g.userData.mesh; mesh.castShadow = true; mesh.onBeforeRender = drawAlways;
+    const mesh = g.userData.mesh as THREE.Mesh; mesh.castShadow = true; mesh.onBeforeRender = drawAlways;
     const mat = TEAM_GORE(k) ? S.inkMat : S.creamMat;
     mesh.material = mat;
     const R = goreRot(k);
@@ -274,7 +285,7 @@ function initInstance(w, st) {
   }
   // damage tears: children of their gore (same furled authoring frame), shown by hp stage
   const plastic = getPlasticMaterial();
-  (d.tears || []).forEach((list, stage) => {
+  (d.tears || []).forEach((list, stage: number) => {
     for (const t of list) {
       const gg = w.parts['g' + t.gore]; if (!gg) continue;
       const m = new THREE.Mesh(t.geo, plastic); m.visible = false; gg.add(m); S.tears[stage].push(m);
@@ -282,7 +293,6 @@ function initInstance(w, st) {
   });
   if (w.parts.runner) w.parts.runner.userData.mesh.castShadow = true;
   // stretchers: a strut from the runner collar to each rib (re-aimed every frame; they fold flat along the shaft)
-  S.struts = [];
   const sg = strutGeo(), mat = getPlasticMaterial();
   for (const G of S.gores) {
     const m = new THREE.Mesh(sg, mat); m.matrixAutoUpdate = false; w.off.add(m);
@@ -292,17 +302,17 @@ function initInstance(w, st) {
   }
   return S;
 }
-let _strutGeo = null;
+let _strutGeo: THREE.BufferGeometry | null = null;
 function strutGeo() {
   if (_strutGeo) return _strutGeo;
   const P = new Parts(); P.add(lathe([[0, 0], [1, 0], [1, 1], [0, 1]], 6), C.gunmetal, M.metal);
-  return (_strutGeo = P.build());
+  return (_strutGeo = P.build()!);
 }
 const _sa = new V3(), _sb = new V3(), _sx = new V3(), _sy = new V3(), _sz = new V3(), _ZA = new V3(0, 0, 1);
 
 /** animate(w, st) for registerWeaponModel: drives the canopy from the runner's kit (st.runner.kit, see kits/brolly.js). */
-export function animateBrolly(w, st) {
-  const P = w.parts || {}, R = st.runner, k = R && R.kit && R.kit.brolly ? R.kit : null;
+export function animateBrolly(w: BrollyInst, st: WeaponAnimState) {
+  const P = w.parts || {}, R = st.runner, kit = R && (R.kit as BrollyKitView | null | undefined), k = kit && kit.brolly ? kit : null;
   const dt = Math.min(0.1, Math.max(0, st.dt || 0)), t = st.t || 0;
   const S = w.bs || (w.bs = initInstance(w, st));
   const open = k ? k.open : 0, grow = k ? k.grow : 1;
@@ -359,7 +369,7 @@ export function animateBrolly(w, st) {
   }
   // status lamp: hp green → amber → red; off (broken / launched) with a blue blink while it regrows
   if (P.lamp) {
-    const m = P.lamp.userData.mesh.material;
+    const m = (P.lamp.userData.mesh as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>).material;
     if (!k || k.state === 'ready') {
       if (hpf > 0.5) m.emissive.copy(_lampMid).lerp(_lampOk, (hpf - 0.5) * 2); else m.emissive.copy(_lampLow).lerp(_lampMid, hpf * 2);
       m.emissiveIntensity = (hpf < 0.25 ? 0.6 + 2.2 * (Math.sin(t * 22) > 0 ? 1 : 0.1) : 1.4) + 2.5 * (k ? k.flash : 0) + (grow < 1 ? 3 * (1 - grow) : 0);
