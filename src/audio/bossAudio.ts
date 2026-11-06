@@ -5,34 +5,42 @@
 // While a boss match is live it sets G.music.remap so main.js's generic 'battle' / 'battle_final' requests resolve to
 // the current boss track (no stray battle theme, no restart at one minute left).
 import { on, G } from '../core/ctx.js';
+import type { Boss } from '../boss/boss.js';
+import type { Vector3 as THREE_Vector3 } from 'three';
+import type { LoopHandle, PlayOpts } from './audio.js';
 
-const TRACK = { 1: 'boss', 2: 'boss_2', 3: 'boss_3' };
+// 보스 사건 페이로드에서 이 감독이 읽는 것
+type BossEvent = { boss?: Boss | null; [k: string]: unknown } | null | undefined;
+type SockLoop = LoopHandle & { _sock?: string | null };
+type Remap = ((track: string | null) => string | null | undefined) & { _boss?: boolean };
+
+const TRACK: Record<number, string> = { 1: 'boss', 2: 'boss_2', 3: 'boss_3' };
 let installed = false;
 
 export function installBossAudio() {
   if (installed) return;
   installed = true;
-  const st = { active: false, boss: null, phase: 1, dead: false, track: null, loops: new Map(), timers: new Set(), hitT: 0, critT: 0, footT: 0, sawImpact: false, sawFoot: false, posT: 0 };
+  const st = { active: false, boss: null as Boss | null, phase: 1, dead: false, track: null as string | null, loops: new Map<string, SockLoop>(), timers: new Set<ReturnType<typeof setTimeout>>(), hitT: 0, critT: 0, footT: 0, sawImpact: false, sawFoot: false, posT: 0 };
   const A = () => G.audio, M = () => G.music;
   const now = () => performance.now() / 1000;
-  const bossOf = (e) => (e && e.boss) || st.boss || (G.match && G.match.boss) || null;
-  const later = (s, fn) => { const id = setTimeout(() => { st.timers.delete(id); if (st.active) fn(); }, s * 1000); st.timers.add(id); };
+  const bossOf = (e?: BossEvent): Boss | null => (e && e.boss) || st.boss || (G.match && G.match.boss) || null;
+  const later = (s: number, fn: () => void) => { const id = setTimeout(() => { st.timers.delete(id); if (st.active) fn(); }, s * 1000); st.timers.add(id); };
   // world position of a socket (fresh plain object — audio copies it), else the body
-  const pos = (name, e) => {
+  const pos = (name: string | null | undefined, e?: BossEvent) => {
     const b = bossOf(e);
     if (!b || !b.pos) return undefined;
     const m = b.model;
-    if (name && m && m.getSocket && b.pos.constructor && b.pos.constructor.prototype.applyMatrix4) {
-      try { const v = m.getSocket(name, new b.pos.constructor()); if (Number.isFinite(v.x) && (v.x || v.y || v.z)) return { x: v.x, y: v.y, z: v.z }; } catch (err) { /* model not ready */ }
+    if (name && m && m.getSocket && b.pos.constructor && (b.pos.constructor as { prototype: { applyMatrix4?: unknown } }).prototype.applyMatrix4) {
+      try { const P = b.pos.constructor as new () => THREE_Vector3; const v = m.getSocket(name, new P()); if (Number.isFinite(v.x) && (v.x || v.y || v.z)) return { x: v.x, y: v.y, z: v.z }; } catch (err) { /* model not ready */ }
     }
     return { x: b.pos.x, y: b.pos.y + 3, z: b.pos.z };
   };
-  const play = (n, o) => { if (!st.active) return; try { A()?.play(n, o); } catch (e) { /* audio not up */ } };
-  const stopLoop = (key, fade = 0.25) => { const h = st.loops.get(key); if (h) { st.loops.delete(key); try { h.stop(fade); } catch (e) { /* */ } } };
-  const loop = (key, n, o, maxDur = 4, sock = null) => {
+  const play = (n: string, o?: PlayOpts) => { if (!st.active) return; try { A()?.play(n, o); } catch (e) { /* audio not up */ } };
+  const stopLoop = (key: string, fade = 0.25) => { const h = st.loops.get(key); if (h) { st.loops.delete(key); try { h.stop(fade); } catch (e) { /* */ } } };
+  const loop = (key: string, n: string, o: PlayOpts, maxDur = 4, sock: string | null = null) => {
     stopLoop(key, 0.08);
     if (!st.active) return;
-    let h = null;
+    let h: SockLoop | null | undefined = null;
     try { h = A()?.loop?.(n, o); } catch (e) { h = null; }
     if (!h) return;
     h._sock = sock;
@@ -41,7 +49,7 @@ export function installBossAudio() {
     follow();
   };
   // loops ride along with the boss (charge / frenzy / sweep move it)
-  let followId = 0;
+  let followId: ReturnType<typeof setInterval> | 0 = 0;
   const follow = () => {
     if (followId) return;
     followId = setInterval(() => {
@@ -50,16 +58,16 @@ export function installBossAudio() {
     }, 90);
   };
   const stopAll = (fade = 0.3) => { for (const k of [...st.loops.keys()]) stopLoop(k, fade); for (const id of st.timers) clearTimeout(id); st.timers.clear(); };
-  const music = (track, fade = 1.0) => { st.track = track; try { M()?.play(track, { fade }); } catch (e) { /* not initialised */ } };
+  const music = (track: string | null, fade = 1.0) => { st.track = track; try { M()?.play(track, { fade }); } catch (e) { /* not initialised */ } };
   const phaseTrack = () => TRACK[Math.min(3, Math.max(1, st.phase | 0))];
-  const setRemap = (onoff) => {
+  const setRemap = (onoff: boolean) => {
     const mus = M();
     if (!mus) return;
-    if (onoff) mus.remap = (t) => (t === 'battle' || t === 'battle_final') && st.active && !st.dead ? (st.track || phaseTrack()) : undefined;
-    else if (mus.remap && mus.remap._boss) mus.remap = null;
-    if (onoff) mus.remap._boss = true;
+    const remap: Remap = (t: string | null) => (t === 'battle' || t === 'battle_final') && st.active && !st.dead ? (st.track || phaseTrack()) : undefined;
+    if (onoff) { remap._boss = true; mus.remap = remap; }
+    else if (mus.remap && (mus.remap as Remap)._boss) mus.remap = null;
   };
-  const begin = (boss) => {
+  const begin = (boss: null) => {
     if (!st.active) { st.active = true; st.phase = 1; st.dead = false; st.track = null; st.sawImpact = false; st.sawFoot = false; }
     if (boss) st.boss = boss;
     setRemap(true);

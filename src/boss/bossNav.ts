@@ -4,6 +4,7 @@
 // (shell + belly) is over floor: on a narrow pier its legs may splay out over the water, but it never wades in, never
 // pushes a claw through a wall and never sets foot on a spawn pad. Paths are A* over cells with room to walk and turn,
 // string-pulled into straight legs.
+import type { Level } from '../world/level.js';
 import * as THREE from 'three';
 
 // footprints in model space (feet at y 0, facing +z)
@@ -16,7 +17,29 @@ const PAD_MARGIN = [3.5, 1.0];   // the body keeps this far outside a spawn barr
 const _p = new THREE.Vector3();
 
 export class BossNav {
-  constructor(level) {
+  declare _stamp: number;
+  declare _closed: Uint32Array<ArrayBuffer>;
+  declare _seen: Uint32Array<ArrayBuffer>;
+  declare _from: Int32Array<ArrayBuffer>;
+  declare _g: Float32Array | undefined;
+  declare _offs: number[][] | undefined;
+  declare area: number;
+  declare planIds: number[];
+  declare plan: Uint8Array<ArrayBuffer>;
+  declare Dv: Float32Array<ArrayBuffer>;
+  declare Dw: Float32Array<ArrayBuffer>;
+  declare floorY: number;
+  declare planR: number;
+  declare pads: Array<{ x: number; z: number; r: number }>;
+  declare kind: Uint8Array<ArrayBuffer>;
+  declare floor: Float32Array<ArrayBuffer>;
+  declare nz: number;
+  declare nx: number;
+  declare z0: number;
+  declare x0: number;
+  declare step: number;
+  declare level: Level;
+  constructor(level: Level) {
     this.level = level;
     const B = level.bounds, st = (this.step = 0.5);
     this.x0 = B.minX + st / 2; this.z0 = B.minZ + st / 2;
@@ -24,7 +47,7 @@ export class BossNav {
     const N = this.nx * this.nz;
     this.floor = new Float32Array(N);
     this.kind = new Uint8Array(N);   // 0 floor · 1 wall (solid / raised) · 2 drop (sea, gap) · 3 spawn pad
-    this.pads = level.spawnPads.map((p) => ({ x: p.x, z: p.z, r: level.spawnBarrier }));
+    this.pads = level.spawnPads.map((p: THREE.Vector3) => ({ x: p.x, z: p.z, r: level.spawnBarrier }));
     this.planR = PLAN_WALL;
     this._build();
   }
@@ -52,12 +75,12 @@ export class BossNav {
         this.floor[i] = g;
         for (const h of [STRIDE + 0.1, 2.6, 3.8, 5.2]) if (L.pointInside(_p.set(x, best + h, z), 0)) { k = 1; break; }
       }
-      if (k !== 1) this.pads.forEach((pd, t) => { if (Math.hypot(x - pd.x, z - pd.z) < pd.r + PAD_MARGIN[t]) k = 3; });
+      if (k !== 1) this.pads.forEach((pd, t: number) => { if (Math.hypot(x - pd.x, z - pd.z) < pd.r + PAD_MARGIN[t]) k = 3; });
       this.kind[i] = k;
       if (k) this.floor[i] = best;
     }
-    this.Dw = this._field((k) => k === 1);
-    this.Dv = this._field((k) => k >= 2, true);
+    this.Dw = this._field((k: number) => k === 1);
+    this.Dv = this._field((k: number) => k >= 2, true);
     // plannable cells; keep one connected region: the boss's home ground — big, and toward the far end of the stage from
     // the squad's spawn (team 0), so it never wanders up to the squad's pad
     const nx = this.nx, nz = this.nz;
@@ -70,7 +93,7 @@ export class BossNav {
       if (!ok[i] || comp[i] >= 0) continue;
       let size = 0, sx = 0, sz = 0; const stack = [i]; comp[i] = c;
       while (stack.length) {
-        const k = stack.pop(); size++;
+        const k = stack.pop()!; size++;
         const [kx0, kz0] = this.xz(k); sx += kx0; sz += kz0;
         const kx = k % nx, kz = (k / nx) | 0;
         for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
@@ -91,12 +114,12 @@ export class BossNav {
   }
 
   // distance from each cell centre to the nearest matching cell's edge (brute force within 7 m; off-grid counts when edge)
-  _field(match, edge = false) {
+  _field(match: (i: number) => boolean, edge = false) {
     const R = 14, N = this.nx * this.nz, nx = this.nx, nz = this.nz, st = this.step, D = new Float32Array(N);
     if (!this._offs) {
       this._offs = [];
       for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) { const d = Math.hypot(dx, dz) * st; if (d <= R * st) this._offs.push([dx, dz, d]); }
-      this._offs.sort((a, b) => a[2] - b[2]);
+      this._offs.sort((a: number[], b: number[]) => a[2] - b[2]);
     }
     for (let iz = 0; iz < nz; iz++) for (let ix = 0; ix < nx; ix++) {
       const i = iz * nx + ix;
@@ -112,21 +135,21 @@ export class BossNav {
     return D;
   }
 
-  xz(i) { return [this.x0 + (i % this.nx) * this.step, this.z0 + ((i / this.nx) | 0) * this.step]; }
-  cell(x, z) {
+  xz(i: number) { return [this.x0 + (i % this.nx) * this.step, this.z0 + ((i / this.nx) | 0) * this.step]; }
+  cell(x: number, z: number) {
     const ix = Math.round((x - this.x0) / this.step), iz = Math.round((z - this.z0) / this.step);
     if (ix < 0 || iz < 0 || ix >= this.nx || iz >= this.nz) return -1;
     return iz * this.nx + ix;
   }
-  wallClear(x, z) { const i = this.cell(x, z); return i < 0 ? 0 : this.Dw[i]; }
-  floorClear(x, z) { const i = this.cell(x, z); return i < 0 ? 0 : this.Dv[i]; }
-  kindAt(x, z) { const i = this.cell(x, z); return i < 0 ? 2 : this.kind[i]; }
-  floorAt(x, z) { const i = this.cell(x, z); const f = i < 0 || this.kind[i] ? this.floorY : this.floor[i]; return f - this.floorY < 0.45 ? f : this.floorY; }
-  inPad(x, z, margin = 0) { for (const p of this.pads) if (Math.hypot(x - p.x, z - p.z) < p.r + margin) return true; return false; }
-  isPlan(x, z) { const i = this.cell(x, z); return i >= 0 && !!this.plan[i]; }
+  wallClear(x: number, z: number) { const i = this.cell(x, z); return i < 0 ? 0 : this.Dw[i]; }
+  floorClear(x: number, z: number) { const i = this.cell(x, z); return i < 0 ? 0 : this.Dv[i]; }
+  kindAt(x: number, z: number) { const i = this.cell(x, z); return i < 0 ? 2 : this.kind[i]; }
+  floorAt(x: number, z: number) { const i = this.cell(x, z); const f = i < 0 || this.kind[i] ? this.floorY : this.floor[i]; return f - this.floorY < 0.45 ? f : this.floorY; }
+  inPad(x: number, z: number, margin = 0) { for (const p of this.pads) if (Math.hypot(x - p.x, z - p.z) < p.r + margin) return true; return false; }
+  isPlan(x: number, z: number) { const i = this.cell(x, z); return i >= 0 && !!this.plan[i]; }
 
   // the whole footprint fits: claws/legs clear of walls, body over floor
-  poseOk(x, z, yaw) {
+  poseOk(x: number, z: number, yaw: number) {
     const s = Math.sin(yaw), c = Math.cos(yaw);
     for (const b of WALL_BODY) if (this.wallClear(x + s * b.z, z + c * b.z) < b.r) return false;
     for (const b of FLOOR_BODY) if (this.floorClear(x + s * b.z, z + c * b.z) < b.r) return false;
@@ -134,14 +157,14 @@ export class BossNav {
   }
   // turning on the spot: the claws must clear the walls at the new heading and the belly stays over floor (the ends
   // may swing out over the water for a moment — a crab turning on a pier)
-  turnOk(x, z, yaw) {
+  turnOk(x: number, z: number, yaw: number) {
     const s = Math.sin(yaw), c = Math.cos(yaw);
     for (const b of WALL_BODY) if (this.wallClear(x + s * b.z, z + c * b.z) < b.r) return false;
     return this.floorClear(x, z) >= FLOOR_BODY[1].r;
   }
 
   // how far the body can travel straight along yaw before the pose stops fitting; wall = a solid is what stops it
-  cast(x, z, yaw, maxDist, stepLen = 0.25) {
+  cast(x: number, z: number, yaw: number, maxDist: number, stepLen = 0.25) {
     const s = Math.sin(yaw), c = Math.cos(yaw);
     let d = 0;
     while (d + stepLen <= maxDist && this.poseOk(x + s * (d + stepLen), z + c * (d + stepLen), yaw)) d += stepLen;
@@ -158,16 +181,16 @@ export class BossNav {
     return { dist: d, wall };
   }
 
-  _cellOk(i, slack = 0) { return i >= 0 && this.Dw[i] >= PLAN_WALL - slack && this.Dv[i] >= PLAN_FLOOR - slack; }
+  _cellOk(i: number, slack = 0) { return i >= 0 && this.Dw[i] >= PLAN_WALL - slack && this.Dv[i] >= PLAN_FLOOR - slack; }
   // straight walk between two points stays on plannable ground
-  lineOk(x0, z0, x1, z1, slack = 0.3) {
+  lineOk(x0: number, z0: number, x1: number, z1: number, slack = 0.3) {
     const d = Math.hypot(x1 - x0, z1 - z0), n = Math.max(1, Math.ceil(d / (this.step * 0.8)));
     for (let k = 0; k <= n; k++) { const t = k / n; if (!this._cellOk(this.cell(x0 + (x1 - x0) * t, z0 + (z1 - z0) * t), slack)) return false; }
     return true;
   }
 
   // the plannable cell nearest to (x, z)
-  nearestPlan(x, z) {
+  nearestPlan(x: number, z: number) {
     const ix = Math.round((x - this.x0) / this.step), iz = Math.round((z - this.z0) / this.step);
     for (let r = 0; r < 60; r++) {
       let best = -1, bd = Infinity;
@@ -186,14 +209,14 @@ export class BossNav {
   }
 
   // A* over plannable cells (prefers open floor), string-pulled into a few straight legs. Returns [[x, z], …] or null.
-  path(x0, z0, x1, z1) {
+  path(x0: number, z0: number, x1: number, z1: number) {
     const a = this.nearestPlan(x0, z0), b = this.nearestPlan(x1, z1);
     if (a < 0 || b < 0) return null;
     const N = this.nx * this.nz, nx = this.nx;
     if (!this._g) { this._g = new Float32Array(N); this._from = new Int32Array(N); this._seen = new Uint32Array(N); this._closed = new Uint32Array(N); this._stamp = 0; }
     const g = this._g, from = this._from, seen = this._seen, closed = this._closed, st = ++this._stamp;
     const [bx, bz] = this.xz(b);
-    const h = (i) => { const [x, z] = this.xz(i); return Math.hypot(x - bx, z - bz); };
+    const h = (i: number) => { const [x, z] = this.xz(i); return Math.hypot(x - bx, z - bz); };
     const heap = new MinHeap();
     g[a] = 0; from[a] = -1; seen[a] = st; heap.push(a, h(a));
     let it = 0;
@@ -230,20 +253,21 @@ export class BossNav {
   }
 
   // a plannable point: rnd() → [0,1)
-  randomPoint(rnd) { const i = this.planIds[(rnd() * this.planIds.length) | 0]; return i === undefined ? [0, 0] : this.xz(i); }
+  randomPoint(rnd: () => number) { const i = this.planIds[(rnd() * this.planIds.length) | 0]; return i === undefined ? [0, 0] : this.xz(i); }
 }
 
 class MinHeap {
-  constructor() { this.ids = []; this.pr = []; }
+  ids: number[] = [];
+  pr: number[] = [];
   get size() { return this.ids.length; }
-  push(id, p) {
+  push(id: number, p: number) {
     const ids = this.ids, pr = this.pr;
     let i = ids.length; ids.push(id); pr.push(p);
     while (i > 0) { const j = (i - 1) >> 1; if (pr[j] <= p) break; ids[i] = ids[j]; pr[i] = pr[j]; i = j; }
     ids[i] = id; pr[i] = p;
   }
   pop() {
-    const ids = this.ids, pr = this.pr, top = ids[0], lid = ids.pop(), lp = pr.pop();
+    const ids = this.ids, pr = this.pr, top = ids[0], lid = ids.pop()!, lp = pr.pop()!;
     if (ids.length) {
       let i = 0; const n = ids.length;
       for (;;) {

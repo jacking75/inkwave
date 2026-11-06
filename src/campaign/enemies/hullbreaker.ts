@@ -58,7 +58,7 @@ export function spawnSoloHull(match: unknown, o: { difficulty: string; at: reado
   const apply = b.applyDamage.bind(b);
   const floored = b as Boss & { floorHp: number };
   floored.floorHp = 0;
-  b.applyDamage = (atk: unknown, d: number, weak: boolean, point: unknown) => apply(atk, Math.min(d, Math.max(0, b.hp - floored.floorHp)), weak, point);
+  b.applyDamage = (atk: Parameters<Boss["applyDamage"]>[0], d: number, weak: boolean | undefined, point: Parameters<Boss["applyDamage"]>[3]) => apply(atk, Math.min(d, Math.max(0, b.hp - floored.floorHp)), weak, point);
   G.boss = b;
   emit('boss:spawn', { boss: b });
   return b;

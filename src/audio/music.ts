@@ -25,9 +25,22 @@
  * Shared DSP core
  * ==========================================================================================================*/
 
-export const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
 
-export function mulberry32(a) {
+// ------------------------------------------------------------------------------------------------ contracts
+// 오디오 그래프의 노드·소스(끝나는 시각 _end를 붙여 추적한다)
+type Src = (AudioScheduledSourceNode & { _end: number; connect(n: AudioNode | AudioParam): unknown });
+export type Dest = AudioNode | AudioParam;
+// v.tone / v.nz 한 줄 선택: 시각(at 절대 · t 상대), 주파수(f → f1, 스윕 sw), 포락선(a·h·d·peak), 필터(ft·q), 잡음(kind·rate)
+export interface ToneOpts { at?: number; t?: number; f: number; f1?: number; sw?: number; lin?: boolean; a?: number; h?: number; d?: number; peak?: number; type?: string | PeriodicWave; detune?: number; to?: Dest }
+export interface NoiseOpts { at?: number; t?: number; f?: number; f1?: number; sw?: number; lin?: boolean; a?: number; h?: number; d?: number; peak?: number; ft?: BiquadFilterType | null | ''; q?: number; kind?: string; rate?: number; to?: Dest }
+// 악기 공통 선택(악기마다 쓰는 키만 읽는다)
+export interface InstOpts { to?: Dest; d?: number; a?: number; r?: number; f?: number; f0?: number; f1?: number; sw?: number; x?: number; c?: number; peak?: number; h?: number; mute?: boolean; type?: string; style?: string; q?: number; glide?: number; drive?: number; detune?: number; wave?: number; vibRate?: number; vib?: number; sq?: number; ratio?: number; index?: number; fd?: number; cut?: number; bright?: number }
+// 잔향 임펄스 선택
+interface ImpulseOpts { pre?: number; bright?: number; dark?: number; seed?: number; taps?: number[][] }
+
+export const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
+
+export function mulberry32(a: number) {
   a = a >>> 0;
   return function () {
     a = (a + 0x6d2b79f5) | 0;
@@ -37,18 +50,18 @@ export function mulberry32(a) {
   };
 }
 
-const perCtx = new WeakMap();
-function cache(ctx) {
+const perCtx = new WeakMap<BaseAudioContext, Map<string, AudioBuffer | PeriodicWave>>();
+function cache(ctx: BaseAudioContext) {
   let m = perCtx.get(ctx);
   if (!m) { m = new Map(); perCtx.set(ctx, m); }
   return m;
 }
 
 // Seamlessly looping 2 s mono noise buffers: 'white' | 'pink' | 'brown'. RMS-normalised to ~0.3.
-export function noiseBuffer(ctx, kind = 'white') {
+export function noiseBuffer(ctx: BaseAudioContext, kind = 'white'): AudioBuffer {
   const c = cache(ctx);
   const key = 'noise:' + kind;
-  let b = c.get(key);
+  let b = c.get(key) as AudioBuffer | undefined;
   if (b) return b;
   const sr = ctx.sampleRate, len = Math.floor(sr * 2);
   b = ctx.createBuffer(1, len, sr);
@@ -95,7 +108,7 @@ export function noiseBuffer(ctx, kind = 'white') {
 }
 
 // Stereo reverb impulse: early reflections + exponentially decaying, darkening diffuse tail.
-export function makeImpulse(ctx, seconds = 1.6, decay = 3.2, opt = {}) {
+export function makeImpulse(ctx: BaseAudioContext, seconds = 1.6, decay = 3.2, opt: ImpulseOpts = {}) {
   const sr = ctx.sampleRate, len = Math.max(1, Math.floor(sr * seconds));
   const buf = ctx.createBuffer(2, len, sr);
   const pre = Math.floor((opt.pre ?? 0.01) * sr);
@@ -122,8 +135,8 @@ export function makeImpulse(ctx, seconds = 1.6, decay = 3.2, opt = {}) {
 }
 
 // tanh drive curve (odd length so 0 maps exactly to 0)
-const curves = new Map();
-export function driveCurve(k) {
+const curves = new Map<number, Float32Array<ArrayBuffer>>();
+export function driveCurve(k: number) {
   const key = Math.round(k * 100);
   let c = curves.get(key);
   if (c) return c;
@@ -136,9 +149,9 @@ export function driveCurve(k) {
 }
 
 // Pulse-wave PeriodicWave (duty 0..1), band-limited by construction.
-export function pulseWave(ctx, duty = 0.25) {
+export function pulseWave(ctx: BaseAudioContext, duty = 0.25): PeriodicWave {
   const c = cache(ctx), key = 'pulse:' + duty;
-  let w = c.get(key);
+  let w = c.get(key) as PeriodicWave | undefined;
   if (w) return w;
   const N = 48, re = new Float32Array(N + 1), im = new Float32Array(N + 1);
   for (let n = 1; n <= N; n++) {
@@ -151,9 +164,9 @@ export function pulseWave(ctx, duty = 0.25) {
 }
 
 // A decaying pulse train shape (for snare-roll amplitude modulation): sharp attack, exponential fall.
-export function strokeWave(ctx, sharp = 7) {
+export function strokeWave(ctx: BaseAudioContext, sharp = 7): PeriodicWave {
   const c = cache(ctx), key = 'stroke:' + sharp;
-  let w = c.get(key);
+  let w = c.get(key) as PeriodicWave | undefined;
   if (w) return w;
   const N = 40, M = 2048, re = new Float32Array(N + 1), im = new Float32Array(N + 1);
   for (let n = 1; n <= N; n++) {
@@ -171,7 +184,7 @@ export function strokeWave(ctx, sharp = 7) {
 
 const fmin = 1e-4;
 // Envelopes. All start from 0 and end at exactly 0 (never click). Return the end time.
-export function perc(p, t, a, peak, d) {
+export function perc(p: AudioParam, t: number, a: number, peak: number, d: number) {
   peak = Math.max(peak, fmin);
   p.setValueAtTime(0, t);
   p.linearRampToValueAtTime(peak, t + a);
@@ -179,7 +192,7 @@ export function perc(p, t, a, peak, d) {
   p.linearRampToValueAtTime(0, t + a + d + 0.008);
   return t + a + d + 0.008;
 }
-export function ahr(p, t, a, peak, h, r) {
+export function ahr(p: AudioParam, t: number, a: number, peak: number, h: number, r: number) {
   peak = Math.max(peak, fmin);
   p.setValueAtTime(0, t);
   p.linearRampToValueAtTime(peak, t + a);
@@ -189,7 +202,7 @@ export function ahr(p, t, a, peak, h, r) {
   return t + a + h + r + 0.008;
 }
 // gate = seconds from t until release starts.
-export function adsr(p, t, a, d, s, peak, gate, r) {
+export function adsr(p: AudioParam, t: number, a: number, d: number, s: number, peak: number, gate: number, r: number) {
   peak = Math.max(peak, fmin);
   const sus = Math.max(peak * s, 1e-5);
   const ta = t + a, tg = t + Math.max(gate, a + 0.002);
@@ -203,12 +216,12 @@ export function adsr(p, t, a, d, s, peak, gate, r) {
   return tg + r + 0.008;
 }
 // Piecewise-linear envelope from [[dt, value], ...] (first point should be [0, 0], last value 0).
-export function pts(p, t, list) {
+export function pts(p: AudioParam, t: number, list: number[][]) {
   p.setValueAtTime(list[0][1], t + list[0][0]);
   for (let i = 1; i < list.length; i++) p.linearRampToValueAtTime(list[i][1], t + list[i][0]);
   return t + list[list.length - 1][0];
 }
-export function sweep(p, t, f0, f1, dur, lin) {
+export function sweep(p: AudioParam, t: number, f0: number, f1: number, dur: number, lin?: boolean) {
   p.setValueAtTime(f0, t);
   if (lin) p.linearRampToValueAtTime(f1, t + dur);
   else p.exponentialRampToValueAtTime(Math.max(f1, 1e-3), t + dur);
@@ -216,44 +229,56 @@ export function sweep(p, t, f0, f1, dur, lin) {
 
 // Voice builder: creates + tracks nodes for one note / one sound, disposes them when the last source ends.
 export class V {
-  constructor(ctx, out, t, rng) {
+  ctx: BaseAudioContext;
+  out: AudioNode;
+  t: number;
+  rng: () => number;
+  nodes: AudioNode[] = [];
+  srcs: Src[] = [];
+  end: number;
+  dead = false;
+  endless = false;
+  nyq: number;
+  ondispose?: () => void;
+  constructor(ctx: BaseAudioContext, out: AudioNode, t: number, rng?: () => number) {
     this.ctx = ctx; this.out = out; this.t = t; this.rng = rng || Math.random;
-    this.nodes = []; this.srcs = []; this.end = t; this.dead = false; this.endless = false;
+    this.end = t;
     this.nyq = ctx.sampleRate * 0.5 - 200;
   }
   r(a = 0, b = 1) { return a + (b - a) * this.rng(); }
-  pick(arr) { return arr[Math.floor(this.rng() * arr.length) % arr.length]; }
-  gain(v = 0, to) {
+  pick<T>(arr: T[]): T { return arr[Math.floor(this.rng() * arr.length) % arr.length]; }
+  gain(v = 0, to?: Dest | null) {
     const g = this.ctx.createGain(); g.gain.value = v; this.nodes.push(g);
-    if (to) g.connect(to);
+    if (to) g.connect(to as AudioNode);
     return g;
   }
-  filter(type, f, Q = 0.707, to, gainDb) {
+  filter(type: BiquadFilterType, f: number, Q = 0.707, to?: Dest | null, gainDb?: number) {
     const b = this.ctx.createBiquadFilter(); b.type = type;
     b.frequency.value = Math.min(Math.max(f, 10), this.nyq); b.Q.value = Q;
     if (gainDb !== undefined) b.gain.value = gainDb;
     this.nodes.push(b);
-    if (to) b.connect(to);
+    if (to) b.connect(to as AudioNode);
     return b;
   }
-  shaper(k, to) {
+  shaper(k: number, to?: Dest | null) {
     const w = this.ctx.createWaveShaper(); w.curve = driveCurve(k); w.oversample = '2x'; this.nodes.push(w);
-    if (to) w.connect(to);
+    if (to) w.connect(to as AudioNode);
     return w;
   }
-  pan(p, to) {
-    const n = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : this.ctx.createGain();
+  pan(p: number, to?: Dest | null) {
+    const n: AudioNode & { pan?: AudioParam } = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : this.ctx.createGain();
     if (n.pan) n.pan.value = Math.max(-1, Math.min(1, p));
     this.nodes.push(n);
-    if (to) n.connect(to);
+    if (to) n.connect(to as AudioNode);
     return n;
   }
-  delay(time, to, max = 1) {
+  delay(time: number, to?: Dest | null, max = 1) {
     const d = this.ctx.createDelay(max); d.delayTime.value = time; this.nodes.push(d);
-    if (to) d.connect(to);
+    if (to) d.connect(to as AudioNode);
     return d;
   }
-  _src(s, t0, t1, to) {
+  _src<S extends AudioScheduledSourceNode>(s0: S, t0: number, t1: number | null, to?: Dest | null): S & Src {
+    const s = s0 as S & Src;
     if (to) s.connect(to);
     s.start(Math.max(0, t0));
     if (t1 != null) { s._end = Math.max(t1, t0 + 0.002); s.stop(s._end); this.end = Math.max(this.end, s._end); }
@@ -261,14 +286,14 @@ export class V {
     this.srcs.push(s); this.nodes.push(s);
     return s;
   }
-  osc(type, f, t0, t1, to) {
+  osc(type: string | PeriodicWave, f: number, t0: number, t1: number | null, to?: Dest | null) {
     const o = this.ctx.createOscillator();
-    if (typeof type === 'string') o.type = type; else o.setPeriodicWave(type);
+    if (typeof type === 'string') o.type = type as OscillatorType; else o.setPeriodicWave(type);
     o.frequency.value = Math.min(f, this.nyq);
     return this._src(o, t0, t1, to);
   }
-  noise(kind, t0, t1, to, rate = 1) {
-    const s = this.ctx.createBufferSource(); s.buffer = noiseBuffer(this.ctx, kind); s.loop = true;
+  noise(kind: string | undefined, t0: number, t1: number | null, to?: Dest | null, rate = 1) {
+    const s = this.ctx.createBufferSource() as AudioBufferSourceNode & Src; s.buffer = noiseBuffer(this.ctx, kind); s.loop = true;
     s.playbackRate.value = rate;
     if (to) s.connect(to);
     s.start(Math.max(0, t0), this.rng() * 1.9);
@@ -277,8 +302,8 @@ export class V {
     this.srcs.push(s); this.nodes.push(s);
     return s;
   }
-  buffer(buf, t0, t1, to, rate = 1, offset) {
-    const s = this.ctx.createBufferSource(); s.buffer = buf; s.loop = true; s.playbackRate.value = rate;
+  buffer(buf: AudioBuffer, t0: number, t1: number | null, to?: Dest | null, rate = 1, offset?: number) {
+    const s = this.ctx.createBufferSource() as AudioBufferSourceNode & Src; s.buffer = buf; s.loop = true; s.playbackRate.value = rate;
     if (to) s.connect(to);
     s.start(Math.max(0, t0), offset ?? this.rng() * buf.duration * 0.95);
     if (t1 != null) { s._end = Math.max(t1, t0 + 0.002); s.stop(s._end); this.end = Math.max(this.end, s._end); }
@@ -287,13 +312,13 @@ export class V {
     return s;
   }
   // LFO → param: returns { osc, depth(gain) }
-  lfo(rate, depth, param, t0, t1, type = 'sine') {
+  lfo(rate: number, depth: number | undefined, param: AudioParam, t0: number, t1: number | null, type: string = 'sine') {
     const g = this.gain(depth); g.connect(param);
     const o = this.osc(type, rate, t0, t1, g);
     return { osc: o, depth: g };
   }
   // ---- compound one-liners (times: `at` absolute, else `t` relative to this.t) ----
-  tone(o) {
+  tone(o: ToneOpts) {
     const T = o.at ?? this.t + (o.t || 0);
     const g = this.gain(0, o.to || this.out);
     const end = o.h != null ? ahr(g.gain, T, o.a ?? 0.002, o.peak ?? 0.5, o.h, o.d ?? 0.1)
@@ -303,7 +328,7 @@ export class V {
     if (o.detune) x.detune.value = o.detune;
     return x;
   }
-  nz(o) {
+  nz(o: NoiseOpts) {
     const T = o.at ?? this.t + (o.t || 0);
     const g = this.gain(0, o.to || this.out);
     const ft = o.ft === undefined ? 'bandpass' : o.ft;
@@ -311,11 +336,11 @@ export class V {
     const end = o.h != null ? ahr(g.gain, T, o.a ?? 0.001, o.peak ?? 0.5, o.h, o.d ?? 0.1)
       : perc(g.gain, T, o.a ?? 0.001, o.peak ?? 0.5, o.d ?? 0.1);
     this.noise(o.kind || 'white', T, end + 0.01, fl || g, o.rate || 1);
-    if (fl && o.f1 != null) sweep(fl.frequency, T, Math.min(o.f, this.nyq), Math.min(o.f1, this.nyq), o.sw ?? ((o.a ?? 0.001) + (o.d ?? 0.1)), o.lin);
+    if (fl && o.f1 != null) sweep(fl.frequency, T, Math.min(o.f ?? 1000, this.nyq), Math.min(o.f1, this.nyq), o.sw ?? ((o.a ?? 0.001) + (o.d ?? 0.1)), o.lin);
     return fl;
   }
   // bubble "plip": damped sine with rising pitch (Minnaert-style)
-  bub(T, f, peak, d = 0.03, rise = 1.7, to) {
+  bub(T: number, f: number, peak: number, d = 0.03, rise = 1.7, to?: Dest) {
     return this.tone({ at: T, f, f1: f * rise, sw: d, a: 0.0012, d, peak, to });
   }
   // cleanup when the last finite source ends
@@ -327,7 +352,7 @@ export class V {
     return this;
   }
   // stop every source at time `at` (the caller fades its output first)
-  kill(at) {
+  kill(at: number) {
     for (const s of this.srcs) {
       if (s._end > at) { try { s.stop(at); } catch (e) { /* already stopped */ } s._end = at; }
     }
@@ -347,7 +372,7 @@ export class V {
  * Instruments (shared by music + SFX). Signature: (v, T, ..., vel, opts) — T absolute time; output → opts.to || v.out
  * ==========================================================================================================*/
 
-export function kick(v, T, vel = 1, o = {}) {
+export function kick(v: V, T: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
   const end = perc(g.gain, T, 0.0015, vel, o.d ?? 0.34);
@@ -359,7 +384,7 @@ export function kick(v, T, vel = 1, o = {}) {
   return end;
 }
 
-export function snare(v, T, vel = 1, o = {}) {
+export function snare(v: V, T: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out;
   v.tone({ at: T, type: 'triangle', f: o.f ?? 205, f1: (o.f ?? 205) * 0.82, sw: 0.05, a: 0.001, d: 0.11, peak: vel * 0.5, to });
   v.tone({ at: T, type: 'sine', f: 330, f1: 290, sw: 0.03, a: 0.001, d: 0.06, peak: vel * 0.22, to });
@@ -367,7 +392,7 @@ export function snare(v, T, vel = 1, o = {}) {
   return v.nz({ at: T, ft: 'bandpass', f: 4200, q: 0.9, a: 0.001, d: 0.09, peak: vel * 0.32, to });
 }
 
-export function clap(v, T, vel = 1, o = {}) {
+export function clap(v: V, T: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
   const bp = v.filter('bandpass', 1150, 1.1, g);
@@ -386,7 +411,7 @@ export function clap(v, T, vel = 1, o = {}) {
   v.noise('white', T, t3 + (o.d ?? 0.2) + 0.02, hp);
 }
 
-export function hat(v, T, vel = 1, open = false, o = {}) {
+export function hat(v: V, T: number, vel = 1, open = false, o: InstOpts = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
   const end = perc(g.gain, T, 0.0008, vel, open ? (o.d ?? 0.32) : (o.d ?? 0.045));
@@ -396,7 +421,7 @@ export function hat(v, T, vel = 1, open = false, o = {}) {
   return g.gain;
 }
 
-export function crash(v, T, vel = 1, o = {}) {
+export function crash(v: V, T: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out;
   v.nz({ at: T, ft: 'highpass', f: 4200, q: 0.6, a: 0.001, d: o.d ?? 1.6, peak: vel * 0.55, to });
   v.nz({ at: T, ft: 'bandpass', f: 7200, q: 0.9, a: 0.001, d: (o.d ?? 1.6) * 0.5, peak: vel * 0.35, to });
@@ -405,23 +430,23 @@ export function crash(v, T, vel = 1, o = {}) {
   for (const f of [3410, 4870, 6230]) v.tone({ at: T, type: 'square', f, a: 0.001, d: 0.5, peak: vel * 0.02, to: hp });
 }
 
-export function rim(v, T, vel = 1, o = {}) {
+export function rim(v: V, T: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out;
   v.tone({ at: T, type: 'triangle', f: 1750, f1: 1500, sw: 0.02, a: 0.0005, d: 0.03, peak: vel * 0.45, to });
   v.nz({ at: T, ft: 'bandpass', f: 2600, q: 2, a: 0.0005, d: 0.02, peak: vel * 0.45, to });
 }
 
-export function shaker(v, T, vel = 1, o = {}) {
+export function shaker(v: V, T: number, vel = 1, o: InstOpts = {}) {
   v.nz({ at: T, ft: 'bandpass', f: 7000, q: 1.2, a: 0.006, d: 0.05, peak: vel * 0.5, to: o.to || v.out });
 }
 
-export function tom(v, T, f, vel = 1, o = {}) {
+export function tom(v: V, T: number, f: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out;
   v.tone({ at: T, f: f * 1.5, f1: f, sw: 0.06, a: 0.001, d: o.d ?? 0.35, peak: vel * 0.8, to });
   v.nz({ at: T, ft: 'lowpass', f: 1800, q: 0.8, a: 0.001, d: 0.05, peak: vel * 0.25, to, kind: 'pink' });
 }
 
-export function bass(v, T, f, gate, vel = 1, o = {}) {
+export function bass(v: V, T: number, f: number, gate: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out, style = o.style || 'punk';
   const g = v.gain(0, to);
   if (style === 'funk') {
@@ -453,7 +478,7 @@ export function bass(v, T, f, gate, vel = 1, o = {}) {
   return end;
 }
 
-export function guitar(v, T, fs, gate, vel = 1, o = {}) {
+export function guitar(v: V, T: number, fs: number[], gate: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
   const end = adsr(g.gain, T, 0.003, 0.35, o.mute ? 0.25 : 0.7, vel, gate, o.mute ? 0.04 : 0.09);
@@ -467,7 +492,7 @@ export function guitar(v, T, fs, gate, vel = 1, o = {}) {
 }
 
 // FM electric piano
-export function keys(v, T, f, gate, vel = 1, o = {}) {
+export function keys(v: V, T: number, f: number, gate: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
   const end = adsr(g.gain, T, 0.003, 1.3, 0.3, vel, gate, o.r ?? 0.3);
@@ -480,7 +505,7 @@ export function keys(v, T, f, gate, vel = 1, o = {}) {
   return end;
 }
 
-export function pad(v, T, f, gate, vel = 1, o = {}) {
+export function pad(v: V, T: number, f: number, gate: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
   const end = adsr(g.gain, T, o.a ?? 0.25, 0.6, 0.8, vel, gate, o.r ?? 0.5);
@@ -489,7 +514,7 @@ export function pad(v, T, f, gate, vel = 1, o = {}) {
   return end;
 }
 
-export function pluck(v, T, f, gate, vel = 1, o = {}) {
+export function pluck(v: V, T: number, f: number, gate: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
   const end = perc(g.gain, T, 0.002, vel, o.d ?? 0.3);
@@ -500,7 +525,7 @@ export function pluck(v, T, f, gate, vel = 1, o = {}) {
   return end;
 }
 
-export function bell(v, T, f, vel = 1, o = {}) {
+export function bell(v: V, T: number, f: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out;
   const d = o.d ?? 0.9;
   const g = v.gain(0, to);
@@ -514,7 +539,7 @@ export function bell(v, T, f, vel = 1, o = {}) {
   return end;
 }
 
-export function brass(v, T, f, gate, vel = 1, o = {}) {
+export function brass(v: V, T: number, f: number, gate: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
   const end = adsr(g.gain, T, o.a ?? 0.022, 0.3, 0.72, vel / 2.2, gate, o.r ?? 0.2);
@@ -531,7 +556,7 @@ export function brass(v, T, f, gate, vel = 1, o = {}) {
 }
 
 // lead: 'pulse' | 'saw' | 'soft' (flute/whistle) | 'square'
-export function lead(v, T, f, gate, vel = 1, o = {}) {
+export function lead(v: V, T: number, f: number, gate: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out, style = o.style || 'pulse';
   const g = v.gain(0, to);
   const soft = style === 'soft';
@@ -555,7 +580,7 @@ export function lead(v, T, f, gate, vel = 1, o = {}) {
   return end;
 }
 
-export function riser(v, T, dur, vel = 1, o = {}) {
+export function riser(v: V, T: number, dur: number, vel = 1, o: InstOpts = {}) {
   const to = o.to || v.out;
   const g = v.gain(0, to);
   const bp = v.filter('bandpass', 400, 2.5, g);
@@ -580,20 +605,44 @@ export function riser(v, T, dur, vel = 1, o = {}) {
  *  - arp: { rate: 1|2 (16th|8th), pattern: 'up'|'down'|'updown', oct: 1..3, lo: midi }
  * ==========================================================================================================*/
 
-const PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
-const QUAL = {
+
+// ------------------------------------------------------------------------------------------------ song contracts
+// 화음: 기호·근음(음높이 류)·구성음 간격·베이스 음 류
+export interface Chord { sym: string; root: number; iv: number[]; bass: number }
+// 패턴: 한 마디 16칸 문자열 또는 마디마다 다른 문자열 목록
+type Pat = string | string[];
+// 곡 한 구간: 마디 수, 화음 줄, 드럼·베이스·스탭 패턴과 마지막 마디 필, 패드·아르페지오·선율(lead·lead2·riff)·화성·크래시·라이저
+export interface SongSection {
+  bars: number; chords?: string[]; drums?: Record<string, Pat>; fills?: Record<string, string>; bass?: Pat; stabs?: Pat; pad?: boolean;
+  arp?: { rate?: number; lo?: number; oct?: number; pattern?: string }; lead?: string; lead2?: string; riff?: string; harmony?: boolean; crash?: boolean; riser?: number | boolean;
+  [k: string]: unknown;
+}
+// 곡 정의(SONGS 항목): 이름·박자·구간·순서·반복 시작, 악기·음역·펌핑·강도 기본값
+export interface SongDef {
+  name: string; bpm: number; sections: Record<string, SongSection>; order: string[]; loopFrom?: number; inst: Record<string, string>;
+  bassLo?: number; keysLo?: number; padLo?: number; guitarLo?: number; pump?: number; swing?: number; bassGate?: number; riffBass?: boolean;
+  mix?: Record<string, number>; layers?: Record<string, number[]>; sendDly?: Record<string, number>; sendRev?: Record<string, number>; key?: string; [k: string]: unknown;
+}
+// 마디 안 사건: 악기(i)·세기(v)와 음높이(m)·화음(ms)·길이(len)·열린 하이햇·뮤트
+export interface NoteEvent { i: string; v: number; m?: number; ms?: number[]; len?: number; open?: boolean; mute?: boolean }
+export interface SongBar { sec: string; bar: number; ev: NoteEvent[][]; chords: string[] }
+export type CompiledSong = SongDef & { bars: SongBar[]; loopFrom: number; warnings: string[] };
+interface PhraseNote { s: number; len: number; m: number | null; acc: boolean }
+
+const PC: Record<string, number> = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+const QUAL: Record<string, number[]> = {
   '': [0, 4, 7], m: [0, 3, 7], 5: [0, 7], 6: [0, 4, 7, 9], m6: [0, 3, 7, 9], 7: [0, 4, 7, 10], m7: [0, 3, 7, 10],
   maj7: [0, 4, 7, 11], 9: [0, 4, 7, 10, 14], m9: [0, 3, 7, 10, 14], maj9: [0, 4, 7, 11, 14], add9: [0, 4, 7, 14],
   sus2: [0, 2, 7], sus4: [0, 5, 7], '7sus4': [0, 5, 7, 10], dim: [0, 3, 6], m7b5: [0, 3, 6, 10], aug: [0, 4, 8],
 };
-function pcOf(s) { return (PC[s[0]] + (s[1] === '#' ? 1 : s[1] === 'b' ? -1 : 0) + 12) % 12; }
-export function parseNote(s) {
+function pcOf(s: string) { return (PC[s[0]] + (s[1] === '#' ? 1 : s[1] === 'b' ? -1 : 0) + 12) % 12; }
+export function parseNote(s: string) {
   const m = /^([A-G])([#b]?)(-?\d)$/.exec(s);
   if (!m) return null;
   return 12 * (+m[3] + 1) + PC[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0);
 }
-const chordCache = new Map();
-export function parseChord(sym) {
+const chordCache = new Map<string, Chord>();
+export function parseChord(sym: string): Chord {
   let c = chordCache.get(sym);
   if (c) return c;
   const m = /^([A-G][#b]?)([^/]*)(?:\/([A-G][#b]?))?$/.exec(sym);
@@ -605,16 +654,16 @@ export function parseChord(sym) {
   chordCache.set(sym, c);
   return c;
 }
-function inRange(pc, lo) { let n = lo + ((pc - lo) % 12 + 12) % 12; return n; }
+function inRange(pc: number, lo: number) { let n = lo + ((pc - lo) % 12 + 12) % 12; return n; }
 // close voicing of chord tones within [lo, lo+maxSpan)
-function voice(ch, lo, hi) {
+function voice(ch: Chord, lo: number, hi: number) {
   const r = inRange(ch.root, lo);
-  const out = [];
+  const out: number[] = [];
   for (const i of ch.iv) { let n = r + i; while (n > hi) n -= 12; if (!out.includes(n)) out.push(n); }
   return out.sort((a, b) => a - b);
 }
-function powerChord(ch, lo) { const r = inRange(ch.root, lo); return [r, r + 7, r + 12]; }
-function harmBelow(m, ch) {
+function powerChord(ch: Chord, lo: number) { const r = inRange(ch.root, lo); return [r, r + 7, r + 12]; }
+function harmBelow(m: number, ch: Chord) {
   for (let d = 3; d <= 9; d++) {
     const pc = (((m - d) % 12) + 12) % 12;
     if (ch.iv.some((i) => (ch.root + i) % 12 === pc)) return m - d;
@@ -622,9 +671,9 @@ function harmBelow(m, ch) {
   return m - 12;
 }
 
-function parsePhrase(str, warn, label) {
-  const ev = [];
-  let pos = 0, lastNote = null;
+function parsePhrase(str: string, warn: string[], label: string) {
+  const ev: PhraseNote[] = [];
+  let pos = 0, lastNote: PhraseNote | null = null;
   for (const tok of str.trim().split(/\s+/)) {
     if (tok === '|') { if (pos % 16) warn.push(`${label}: bar line at step ${pos} (not a bar boundary)`); continue; }
     const m = /^(r|_|[A-G][#b]?-?\d)\/(\d+)(!?)$/.exec(tok);
@@ -640,41 +689,41 @@ function parsePhrase(str, warn, label) {
 }
 
 const DRUMS = [['k', 'kick'], ['s', 'snare'], ['c', 'clap'], ['h', 'hat'], ['x', 'crash'], ['p', 'rim'], ['sh', 'shaker'], ['t', 'tom']];
-function patFor(src, b, nbars, fill) {
+function patFor(src: Pat | undefined | null, b: number, nbars: number, fill?: string) {
   if (fill !== undefined && b === nbars - 1) return fill;
   if (src == null) return null;
   return typeof src === 'string' ? src : src[b % src.length];
 }
-const VEL = { X: 1, O: 1, x: 0.8, o: 0.8, c: 0.55, g: 0.35, m: 0.6, r: 0.45 };
+const VEL: Record<string, number> = { X: 1, O: 1, x: 0.8, o: 0.8, c: 0.55, g: 0.35, m: 0.6, r: 0.45 };
 
-export function compileSong(def) {
-  const warn = [];
-  const bars = [];
-  const secStart = {};
+export function compileSong(def: SongDef): CompiledSong {
+  const warn: string[] = [];
+  const bars: SongBar[] = [];
+  const secStart: Record<number, number> = {};
   // phrases per section
-  const phr = {};
+  const phr: Record<string, Record<string, ReturnType<typeof parsePhrase>>> = {};
   for (const [name, sec] of Object.entries(def.sections)) {
     phr[name] = {};
-    for (const k of ['lead', 'lead2', 'riff']) if (sec[k]) phr[name][k] = parsePhrase(sec[k], warn, `${def.name}.${name}.${k}`);
+    for (const k of ['lead', 'lead2', 'riff'] as const) if (sec[k]) phr[name][k] = parsePhrase(sec[k]!, warn, `${def.name}.${name}.${k}`);
   }
-  def.order.forEach((secName, oi) => {
+  def.order.forEach((secName: string, oi: number) => {
     const sec = def.sections[secName];
     if (!sec) { warn.push('missing section ' + secName); return; }
     if (!(oi in secStart)) secStart[oi] = bars.length;
     const nb = sec.bars;
-    const chordRow = (b) => {
+    const chordRow = (b: number) => {
       const syms = (sec.chords ? sec.chords[b % sec.chords.length] : 'C').split(/\s+/);
-      return syms.map((s, i) => ({ ch: parseChord(s), s0: Math.floor((i * 16) / syms.length), s1: Math.floor(((i + 1) * 16) / syms.length) }));
+      return syms.map((s: string, i: number) => ({ ch: parseChord(s), s0: Math.floor((i * 16) / syms.length), s1: Math.floor(((i + 1) * 16) / syms.length) }));
     };
     for (let b = 0; b < nb; b++) {
-      const ev = Array.from({ length: 16 }, () => []);
+      const ev = Array.from({ length: 16 }, (): NoteEvent[] => []);
       const row = chordRow(b);
       const nextRow = b + 1 < nb ? chordRow(b + 1) : (() => {
         const ns = def.sections[def.order[oi + 1] ?? def.order[def.loopFrom ?? 0]];
         const sym = ns?.chords ? ns.chords[0].split(/\s+/)[0] : row[0].ch.sym;
         return [{ ch: parseChord(sym), s0: 0, s1: 16 }];
       })();
-      const chordAt = (s) => (row.find((r) => s >= r.s0 && s < r.s1) || row[0]).ch;
+      const chordAt = (s: number) => (row.find((r) => s >= r.s0 && s < r.s1) || row[0]).ch;
       // drums
       for (const [k, inst] of DRUMS) {
         const p = patFor(sec.drums?.[k], b, nb, sec.fills?.[k]);
@@ -683,7 +732,7 @@ export function compileSong(def) {
         for (let s = 0; s < 16; s++) {
           const ch = p[s];
           if (ch === '.' || ch === undefined || ch === '-') continue;
-          const e = { i: inst, v: VEL[ch] ?? 0.8 };
+          const e: NoteEvent = { i: inst, v: VEL[ch] ?? 0.8 };
           if (inst === 'hat') { e.open = ch === 'o' || ch === 'O'; }
           if (inst === 'tom') e.m = 45 + (s % 3) * 4;
           ev[s].push(e);
@@ -701,7 +750,7 @@ export function compileSong(def) {
           const r = inRange(ch.bass, lo);
           const third = ch.iv.includes(3) ? 3 : ch.iv.includes(4) ? 4 : 7;
           const sev = ch.iv.includes(11) ? 11 : 10;
-          let m;
+          let m: number;
           switch (c) {
             case 'R': case 'r': m = r; break;
             case 'O': case 'o': m = r + 12; break;
@@ -743,7 +792,7 @@ export function compileSong(def) {
         for (let s = 0; s < 16; s += rate) {
           const ch = chordAt(s);
           const tones = voice(ch, a.lo ?? 64, (a.lo ?? 64) + 11);
-          let seq = [];
+          let seq: number[] = [];
           for (let o = 0; o < (a.oct || 1); o++) for (const t of tones) seq.push(t + 12 * o);
           if (a.pattern === 'down') seq.reverse();
           else if (a.pattern === 'updown') seq = seq.concat(seq.slice(1, -1).reverse());
@@ -760,16 +809,16 @@ export function compileSong(def) {
           for (const n of ph.ev) {
             const at = base + n.s;
             if (at >= from && at < to) {
-              ev[at - from].push({ i: k, m: n.m, len: n.len, v: n.acc ? 1 : 0.85 });
+              ev[at - from].push({ i: k, m: n.m!, len: n.len, v: n.acc ? 1 : 0.85 });
               // harmony layer: nearest chord tone 3..9 semitones below the melody
-              if (k === 'lead' && sec.harmony) ev[at - from].push({ i: 'lead2', m: harmBelow(n.m, chordAt(at - from)), len: n.len, v: 0.8 });
+              if (k === 'lead' && sec.harmony) ev[at - from].push({ i: 'lead2', m: harmBelow(n.m!, chordAt(at - from)), len: n.len, v: 0.8 });
             }
           }
         }
       }
       // fx
       if (sec.crash && b === 0) ev[0].push({ i: 'crash', v: 0.75 });
-      if (sec.riser && b === nb - (sec.riser | 0 || 1)) ev[0].push({ i: 'riser', len: 16 * (sec.riser | 0 || 1), v: 0.9 });
+      if (sec.riser && b === nb - (+sec.riser | 0 || 1)) ev[0].push({ i: 'riser', len: 16 * (+sec.riser | 0 || 1), v: 0.9 });
       bars.push({ sec: secName, bar: b, ev, chords: row.map((r) => r.ch.sym) });
     }
   });
@@ -815,7 +864,7 @@ const BOSS_C_LEAD =
   'D6/2 C6/2 A5/2 F5/2 A5/4 D6/4 | Eb6/3 D6/3 Bb5/2 G5/4 Bb5/4 | A5/2 F5/2 D5/2 F5/2 A5/2 D6/2 F6/4 | E6/4 C#6/4 Bb5/4 G5/4 | ' +
   'D6/2 C6/2 A5/2 F5/2 A5/4 D6/4 | Eb6/3 G6/3 F6/2 Eb6/4 D6/4 | C6/2 A5/2 F5/2 A5/2 D6/4 C#6/4 | E6/6 D6/2 C#6/8';
 
-export const SONGS = {
+export const SONGS: Record<string, SongDef> = {
   title: {
     name: 'Splash Attitude', bpm: 128, swing: 0.05, key: 'D minor', pump: 0.22,
     inst: { bass: 'punk', chords: 'guitar', lead: 'saw', arp: 'pluck' }, riffBass: true,
@@ -1066,27 +1115,27 @@ export const SONGS = {
  * ==========================================================================================================*/
 
 const GROUPS = ['kick', 'snare', 'hats', 'bass', 'chords', 'pad', 'arp', 'lead', 'lead2', 'fx'];
-const GROUP_OF = {
+const GROUP_OF: Record<string, string> = {
   kick: 'kick', snare: 'snare', clap: 'snare', tom: 'snare', hat: 'hats', rim: 'hats', shaker: 'hats', crash: 'fx', riser: 'fx',
   bass: 'bass', chords: 'chords', riff: 'chords', pad: 'pad', arp: 'arp', lead: 'lead', lead2: 'lead2',
 };
-const MIX = { kick: 0.6, snare: 0.5, hats: 0.22, bass: 0.36, chords: 0.3, pad: 0.1, arp: 0.1, lead: 0.28, lead2: 0.13, fx: 0.22 };
-const SEND_DLY = { lead: 0.26, lead2: 0.2, arp: 0.2 };
-const SEND_REV = { snare: 0.16, lead: 0.14, lead2: 0.14, pad: 0.35, chords: 0.07, arp: 0.2, fx: 0.25, hats: 0.04 };
-const PUMPED = { chords: true, pad: true, arp: true };
+const MIX: Record<string, number> = { kick: 0.6, snare: 0.5, hats: 0.22, bass: 0.36, chords: 0.3, pad: 0.1, arp: 0.1, lead: 0.28, lead2: 0.13, fx: 0.22 };
+const SEND_DLY: Record<string, number> = { lead: 0.26, lead2: 0.2, arp: 0.2 };
+const SEND_REV: Record<string, number> = { snare: 0.16, lead: 0.14, lead2: 0.14, pad: 0.35, chords: 0.07, arp: 0.2, fx: 0.25, hats: 0.04 };
+const PUMPED: Record<string, boolean> = { chords: true, pad: true, arp: true };
 // intensity → layer weight (smoothstep lo..hi). At 0 only hats remain; drums/lead come in above ~0.4.
-const LAYERS = {
+const LAYERS: Record<string, number[]> = {
   hats: [0, 0.02], bass: [0.08, 0.28], pad: [0.12, 0.32], arp: [0.28, 0.48], chords: [0.32, 0.52], kick: [0.38, 0.52],
   fx: [0.38, 0.55], snare: [0.48, 0.62], lead: [0.62, 0.78], lead2: [0.8, 0.95],
 };
-const smooth = (a, b, x) => {
+const smooth = (a: number, b: number, x: number) => {
   if (b <= a) return x >= a ? 1 : 0;
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 };
 
-const compiled = new Map();
-export function getSong(id) {
+const compiled = new Map<string, CompiledSong>();
+export function getSong(id: string): CompiledSong | null {
   let s = compiled.get(id);
   if (!s) {
     const def = SONGS[id];
@@ -1099,51 +1148,64 @@ export function getSong(id) {
 }
 
 class Player {
-  constructor(eng, id, t0, opts = {}) {
-    const ctx = (this.ctx = eng.ctx);
+  ctx: BaseAudioContext;
+  eng: MusicEngine;
+  id: string;
+  song: CompiledSong;
+  stepDur: number; barDur: number;
+  t0: number; n = 0; step = 0; bar: number;
+  stopAt = Infinity; disposed = false;
+  rng: () => number;
+  fades: GainNode[];
+  pumpG: GainNode;
+  mix: Record<string, number>;
+  layers: Record<string, number[]>;
+  groups: Record<string, GainNode> = {};
+  extra: GainNode[] = [];
+  openHat: { p: AudioParam; t: number } | null = null;
+  fadeSeg?: { t0: number; v0: number; t1: number; v1: number };
+  constructor(eng: MusicEngine, id: string, t0: number, opts: { startBar?: number; seed?: number } = {}) {
+    const ctx = (this.ctx = eng.ctx!);
     this.eng = eng; this.id = id;
-    const song = (this.song = getSong(id));
+    const song = (this.song = getSong(id)!);
     this.stepDur = 60 / song.bpm / 4; this.barDur = this.stepDur * 16;
-    this.t0 = t0; this.n = 0; this.step = 0;
+    this.t0 = t0;
     this.bar = Math.max(0, Math.min(opts.startBar ?? 0, song.bars.length - 1));
-    this.stopAt = Infinity; this.disposed = false;
     this.rng = mulberry32(opts.seed ?? ((Math.random() * 2 ** 31) | 0));
     this.fades = [ctx.createGain(), ctx.createGain(), ctx.createGain()];
-    this.fades[0].connect(eng.mix); this.fades[1].connect(eng.dlyIn); this.fades[2].connect(eng.revIn);
+    this.fades[0].connect(eng.mix!); this.fades[1].connect(eng.dlyIn!); this.fades[2].connect(eng.revIn!);
     for (const f of this.fades) f.gain.value = 0;
     this.pumpG = ctx.createGain(); this.pumpG.connect(this.fades[0]);
-    this.mix = { ...MIX, ...song.mix }; this.layers = { ...LAYERS, ...song.layers };
-    this.groups = {}; this.extra = [];
+    this.mix = { ...MIX, ...(song.mix as Record<string, number>) }; this.layers = { ...LAYERS, ...(song.layers as Record<string, number[]>) };
     for (const g of GROUPS) {
       const n = ctx.createGain();
       n.gain.value = this.mix[g] * this.weight(g, eng.intensity);
       n.connect(PUMPED[g] && song.pump ? this.pumpG : this.fades[0]);
-      const sd = (song.sendDly ?? SEND_DLY)[g], sr = (song.sendRev ?? SEND_REV)[g];
+      const sd = ((song.sendDly as Record<string, number>) ?? SEND_DLY)[g], sr = ((song.sendRev as Record<string, number>) ?? SEND_REV)[g];
       if (sd) { const s = ctx.createGain(); s.gain.value = sd; n.connect(s); s.connect(this.fades[1]); this.extra.push(s); }
       if (sr) { const s = ctx.createGain(); s.gain.value = sr; n.connect(s); s.connect(this.fades[2]); this.extra.push(s); }
       this.groups[g] = n;
     }
-    this.openHat = null;
   }
-  weight(g, x) { const l = this.layers[g]; return l ? smooth(l[0], l[1], x) : 1; }
-  setIntensity(x, now) {
+  weight(g: string, x: number) { const l = this.layers[g]; return l ? smooth(l[0], l[1], x) : 1; }
+  setIntensity(x: number, now: number) {
     for (const g of GROUPS) this.groups[g].gain.setTargetAtTime(this.mix[g] * this.weight(g, x), now, 0.35);
   }
   // fade level is tracked in JS (linear segments) so a fade-out always starts from the exact current value
-  fadeAt(t) { const f = this.fadeSeg; if (!f) return 0; if (t <= f.t0) return f.v0; if (t >= f.t1) return f.v1; return f.v0 + ((f.v1 - f.v0) * (t - f.t0)) / (f.t1 - f.t0); }
-  fadeIn(t, dur) {
+  fadeAt(t: number) { const f = this.fadeSeg; if (!f) return 0; if (t <= f.t0) return f.v0; if (t >= f.t1) return f.v1; return f.v0 + ((f.v1 - f.v0) * (t - f.t0)) / (f.t1 - f.t0); }
+  fadeIn(t: number, dur: number) {
     dur = Math.max(0.005, dur);
     for (const f of this.fades) { f.gain.setValueAtTime(0, t); f.gain.linearRampToValueAtTime(1, t + dur); }
     this.fadeSeg = { t0: t, v0: 0, t1: t + dur, v1: 1 };
   }
-  fadeOut(t, dur) {
+  fadeOut(t: number, dur: number) {
     dur = Math.max(0.01, dur);
     const v = this.fadeAt(t);
     for (const f of this.fades) { f.gain.cancelScheduledValues(t); f.gain.setValueAtTime(v, t); f.gain.linearRampToValueAtTime(0, t + dur); }
     this.fadeSeg = { t0: t, v0: v, t1: t + dur, v1: 0 };
     this.stopAt = Math.min(this.stopAt, t + dur + 0.02);
   }
-  nextBarTime(after) {
+  nextBarTime(after: number) {
     const k = Math.max(0, Math.ceil((after - this.t0) / this.barDur - 1e-6));
     return this.t0 + k * this.barDur;
   }
@@ -1151,7 +1213,7 @@ class Player {
     this.n++; this.step++;
     if (this.step >= 16) { this.step = 0; this.bar++; if (this.bar >= this.song.bars.length) this.bar = this.song.loopFrom; }
   }
-  pump(until, now) {
+  pump(until: number, now: number) {
     if (this.disposed) return;
     // timer starved (background tab): skip ahead on the grid instead of firing a pile-up
     while (this.t0 + this.n * this.stepDur < now - 0.03 && this.t0 + this.n * this.stepDur < this.stopAt) this.advance();
@@ -1164,17 +1226,17 @@ class Player {
       this.advance();
     }
   }
-  pumpDuck(T) {
-    const p = this.pumpG.gain, d = this.song.pump;
+  pumpDuck(T: number) {
+    const p = this.pumpG.gain, d = this.song.pump ?? 0;
     p.setTargetAtTime(1 - d, T, 0.004);
     p.setTargetAtTime(1, T + 0.03, 0.075);
   }
-  fire(e, T) {
+  fire(e: NoteEvent, T: number) {
     const g = GROUP_OF[e.i];
     if (this.weight(g, this.eng.intensity) < 0.02) {
       if (e.i === 'riff' && this.song.riffBass && this.weight('bass', this.eng.intensity) > 0.02) {
         const v2 = new V(this.ctx, this.groups.bass, T, this.rng);
-        bass(v2, T, mtof(e.m) / 2, e.len * this.stepDur * 0.85, e.v, { style: this.song.inst.bass });
+        bass(v2, T, mtof(e.m!) / 2, e.len! * this.stepDur * 0.85, e.v, { style: this.song.inst.bass });
         v2.finish();
       }
       return;
@@ -1186,7 +1248,7 @@ class Player {
       case 'kick': kick(v, T, vel); if (song.pump) this.pumpDuck(T); break;
       case 'snare': snare(v, T, vel); break;
       case 'clap': clap(v, T, vel); break;
-      case 'tom': tom(v, T, mtof(e.m), vel); break;
+      case 'tom': tom(v, T, mtof(e.m!), vel); break;
       case 'rim': rim(v, T, vel); break;
       case 'shaker': shaker(v, T, vel); break;
       case 'crash': crash(v, T, vel); break;
@@ -1199,24 +1261,24 @@ class Player {
         if (e.open) this.openHat = { p, t: T };
         break;
       }
-      case 'riser': riser(v, T, e.len * sd, vel); break;
-      case 'bass': bass(v, T, mtof(e.m), e.len * sd * (song.bassGate ?? 0.82), vel, { style: song.inst.bass }); break;
+      case 'riser': riser(v, T, e.len! * sd, vel); break;
+      case 'bass': bass(v, T, mtof(e.m!), e.len! * sd * (song.bassGate ?? 0.82), vel, { style: song.inst.bass }); break;
       case 'riff': {
-        const f = mtof(e.m);
-        guitar(v, T, [f, f * 1.4983, f * 2], e.len * sd * 0.85, vel);
+        const f = mtof(e.m!);
+        guitar(v, T, [f, f * 1.4983, f * 2], e.len! * sd * 0.85, vel);
         if (song.riffBass && this.weight('bass', this.eng.intensity) > 0.02) {
           const v2 = new V(this.ctx, this.groups.bass, T, this.rng);
-          bass(v2, T, f / 2, e.len * sd * 0.85, vel, { style: song.inst.bass });
+          bass(v2, T, f / 2, e.len! * sd * 0.85, vel, { style: song.inst.bass });
           v2.finish();
         }
         break;
       }
       case 'chords': {
-        const gate = e.len * sd * 0.9, inst = song.inst.chords, n = e.ms.length;
-        if (inst === 'guitar') guitar(v, T, e.ms.map(mtof), gate, vel, { mute: e.mute });
+        const gate = e.len! * sd * 0.9, inst = song.inst.chords, n = e.ms!.length;
+        if (inst === 'guitar') guitar(v, T, e.ms!.map(mtof), gate, vel, { mute: e.mute });
         else {
           const nv = vel / Math.sqrt(n);
-          for (const m of e.ms) {
+          for (const m of e.ms!) {
             if (inst === 'keys') keys(v, T, mtof(m), gate, nv * 0.7);
             else if (inst === 'brass') brass(v, T, mtof(m), gate, nv * 0.7);
             else pluck(v, T, mtof(m), gate, nv * 0.7, { d: 0.28, f0: 3800, f1: 700, q: 2 });
@@ -1224,13 +1286,13 @@ class Player {
         }
         break;
       }
-      case 'pad': { const nv = vel / Math.sqrt(e.ms.length); for (const m of e.ms) pad(v, T, mtof(m), e.len * sd, nv * 0.6); break; }
-      case 'arp': pluck(v, T, mtof(e.m), e.len * sd, vel * 0.6, { d: 0.2 }); break;
+      case 'pad': { const nv = vel / Math.sqrt(e.ms!.length); for (const m of e.ms!) pad(v, T, mtof(m), e.len! * sd, nv * 0.6); break; }
+      case 'arp': pluck(v, T, mtof(e.m!), e.len! * sd, vel * 0.6, { d: 0.2 }); break;
       case 'lead': case 'lead2': {
         const style = e.i === 'lead' ? song.inst.lead : (song.inst.lead2 || 'saw');
-        const gate = e.len * sd * 0.92;
-        if (style === 'bell') bell(v, T, mtof(e.m), vel * 0.8, { d: Math.min(1.4, 0.35 + gate) });
-        else lead(v, T, mtof(e.m), gate, vel * 0.7, { style });
+        const gate = e.len! * sd * 0.92;
+        if (style === 'bell') bell(v, T, mtof(e.m!), vel * 0.8, { d: Math.min(1.4, 0.35 + gate) });
+        else lead(v, T, mtof(e.m!), gate, vel * 0.7, { style });
         break;
       }
     }
@@ -1248,32 +1310,44 @@ const OVERTIME_RATE = 1.06;       // Zone Control overtime: recordings run ~1 se
 const MANIFEST_URL = 'songs/manifest.json';
 
 // One recording, streamed by an <audio> element through Web Audio (gain = loudness match from the manifest × fades).
+// songs/manifest.json의 녹음 한 곡: 주소·제목·음량 보정
+interface FileEntry { url: string; title?: string; gainDb?: number }
+export interface PlayOpts { fade?: number; startBar?: number; seed?: number; sync?: boolean }
+
 class FileTrack {
-  constructor(eng, id, entry) {
-    this.eng = eng; this.id = id; this.entry = entry; this.stopped = false;
+  eng: MusicEngine;
+  id: string;
+  entry: FileEntry;
+  stopped = false;
+  el: HTMLAudioElement;
+  src: MediaElementAudioSourceNode;
+  gain: GainNode;
+  level: number;
+  constructor(eng: MusicEngine, id: string, entry: FileEntry) {
+    this.eng = eng; this.id = id; this.entry = entry;
     const el = (this.el = new Audio());
     el.preload = 'auto';
     el.src = entry.url;
-    this.src = eng.ctx.createMediaElementSource(el);
-    this.gain = eng.ctx.createGain(); this.gain.gain.value = 0;
-    this.src.connect(this.gain); this.gain.connect(eng.fileOut);
+    this.src = (eng.ctx as AudioContext).createMediaElementSource(el);
+    this.gain = eng.ctx!.createGain(); this.gain.gain.value = 0;
+    this.src.connect(this.gain); this.gain.connect(eng.fileOut!);
     this.level = Math.pow(10, (entry.gainDb || 0) / 20);
     el.addEventListener('ended', () => eng._ended(this));
   }
-  start(now, fadeIn) {
+  start(now: number, fadeIn: number) {
     const g = this.gain.gain;
     g.cancelScheduledValues(now); g.setValueAtTime(0, now); g.linearRampToValueAtTime(this.level, now + Math.max(0.01, fadeIn));
     this.resume();
   }
   pause() { this.el.pause(); }
   // playback speed (Zone Control overtime); pitch rides with it, like a tape running fast
-  setRate(r) { this.el.preservesPitch = false; this.el.playbackRate = r; }
+  setRate(r: number) { this.el.preservesPitch = false; this.el.playbackRate = r; }
   resume() {
     if (this.stopped) return;
     const p = this.el.play();
-    if (p && p.catch) p.catch((e) => { if (e.name !== 'AbortError') console.warn('[music] could not play', this.entry.title, e.message); });   // AbortError: we paused it ourselves (a quick track change)
+    if (p && p.catch) p.catch((e: Error) => { if (e.name !== 'AbortError') console.warn('[music] could not play', this.entry.title, e.message); });   // AbortError: we paused it ourselves (a quick track change)
   }
-  fadeOut(now, dur) {
+  fadeOut(now: number, dur: number) {
     if (this.stopped) return;
     this.stopped = true;
     const g = this.gain.gain;
@@ -1288,23 +1362,34 @@ class FileTrack {
 }
 
 export class MusicEngine {
-  constructor() {
-    this.ctx = null; this.players = []; this.current = null; this.intensity = 1; this._want = undefined;
-    this.files = null; this._bags = {}; this._last = {}; this._preloaded = {};
-  }
+  ctx: BaseAudioContext | null = null;
+  players: Player[] = [];
+  current: Player | FileTrack | null = null;
+  intensity = 1;
+  _want: { track: string | null; opts: PlayOpts } | undefined = undefined;
+  files: Record<string, FileEntry[]> | null = null;
+  _bags: Record<string, number[]> = {}; _last: Record<string, number> = {}; _preloaded: Record<string, FileTrack> = {};
+  offline = false; vnow = 0;
+  mix: GainNode | null = null; out: GainNode | null = null; dlyIn: GainNode | null = null; dA: DelayNode | null = null; dB: DelayNode | null = null;
+  revIn: GainNode | null = null; fileOut: GainNode | null = null;
+  _nodes: AudioNode[] = [];
+  worker: Worker | null = null;
+  timer: ReturnType<typeof setInterval> | null = null;
+  remap: ((track: string | null) => string | null | undefined) | null = null;
+  overtime = false;
   // true when songs/manifest.json lists recordings for this track id
-  hasFile(id) { return !!(this.files && this.files[id] && this.files[id].length); }
+  hasFile(id: string) { return !!(this.files && this.files[id] && this.files[id].length); }
   // id of the recording now playing (null for synth / silence)
   get fileTrack() { return this.current instanceof FileTrack ? this.current.id : null; }
   get track() { return this.current ? this.current.id : null; }
   get tracks() { return Object.keys(SONGS); }
-  now() { return this.offline ? this.vnow : this.ctx.currentTime; }
+  now() { return this.offline ? this.vnow : this.ctx!.currentTime; }
 
   // dest = the music bus (audio.js). opt.offline → no timer; drive with advance(t).
-  _init(ctx, dest, opt = {}) {
+  _init(ctx: BaseAudioContext, dest: AudioNode, opt: { offline?: boolean; level?: number } = {}) {
     if (this.ctx) return this;
     this.ctx = ctx; this.offline = !!opt.offline; this.vnow = 0;
-    const g = (v) => { const n = ctx.createGain(); n.gain.value = v; return n; };
+    const g = (v: number) => { const n = ctx.createGain(); n.gain.value = v; return n; };
     this.mix = g(1);
     const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 30; hp.Q.value = 0.7;
     const comp = ctx.createDynamicsCompressor();
@@ -1373,9 +1458,9 @@ export class MusicEngine {
   }
 
   // offline driving (tests): move the virtual clock and schedule
-  advance(t) { this.vnow = t; this._tick(); }
+  advance(t: number) { this.vnow = t; this._tick(); }
 
-  play(track, opts = {}) {
+  play(track: string | null, opts: PlayOpts = {}) {
     // a mode director (e.g. src/audio/bossAudio.js) can re-route requests: remap(track) → track to play instead
     if (this.remap) { try { const r = this.remap(track); if (r !== undefined) track = r; } catch (e) { /* keep the request */ } }
     const fade = Math.max(0, opts.fade ?? 1.0);
@@ -1395,18 +1480,18 @@ export class MusicEngine {
     }
     const song = getSong(track);
     let t0 = now + 0.06, sync = false;
-    if (cur && fade > 0 && cur.song && cur.song.bpm === song.bpm) { t0 = cur.nextBarTime(now + 0.12); sync = true; }
+    if (cur instanceof Player && fade > 0 && cur.song && cur.song.bpm === song!.bpm) { t0 = cur.nextBarTime(now + 0.12); sync = true; }
     const p = new Player(this, track, t0, opts);
     this.players.push(p);
-    const beat = 60 / song.bpm;
-    this.dA.delayTime.setTargetAtTime(beat * 0.75, t0, 0.05); this.dB.delayTime.setTargetAtTime(beat * 0.75, t0, 0.05);
+    const beat = 60 / song!.bpm;
+    this.dA!.delayTime.setTargetAtTime(beat * 0.75, t0, 0.05); this.dB!.delayTime.setTargetAtTime(beat * 0.75, t0, 0.05);
     if (cur) {
       if (sync) {
         // beat-matched escalation: old track plays to the bar line with a riser, new one lands on the downbeat
         cur.fadeOut(t0, Math.min(0.25, fade));
         p.fadeIn(t0, 0.008);
         const span = t0 - now;
-        if (span > 0.3) { const v = new V(this.ctx, cur.groups.fx, now + 0.02, p.rng); riser(v, now + 0.02, span - 0.03, 1); v.finish(); }
+        if (span > 0.3 && cur instanceof Player) { const v = new V(this.ctx, cur.groups.fx, now + 0.02, p.rng); riser(v, now + 0.02, span - 0.03, 1); v.finish(); }
       } else {
         cur.fadeOut(now, Math.max(0.03, fade));
         p.fadeIn(t0, fade > 0 ? fade * 0.5 : 0.01);
@@ -1417,30 +1502,30 @@ export class MusicEngine {
   }
 
   // Buffer the next pick for a file-backed id so play() starts without a gap.
-  preload(id) {
+  preload(id: string) {
     if (!this.ctx || !this.hasFile(id) || this._preloaded[id]) return;
     this._preloaded[id] = new FileTrack(this, id, this._pick(id));
   }
-  _take(id) {
+  _take(id: string) {
     const ft = this._preloaded[id] || new FileTrack(this, id, this._pick(id));
     delete this._preloaded[id];
     return ft;
   }
   // shuffle bag: every song plays once before any repeats, and a new round never opens with the song just heard
-  _pick(id) {
-    const list = this.files[id];
+  _pick(id: string) {
+    const list = this.files![id];   // (hasFile(id)를 확인한 뒤에만 부른다)
     let bag = this._bags[id];
     if (!bag || !bag.length) {
       bag = this._bags[id] = list.map((_, i) => i);
       for (let i = bag.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [bag[i], bag[j]] = [bag[j], bag[i]]; }
-      if (bag.length > 1 && bag[bag.length - 1] === this._last[id]) bag.unshift(bag.pop());
+      if (bag.length > 1 && bag[bag.length - 1] === this._last[id]) bag.unshift(bag.pop()!);
     }
-    const i = bag.pop();
+    const i = bag.pop()!;
     this._last[id] = i;
     return list[i];
   }
   // a match song ran out: roll straight into the next one ('battle_final' plays once and stops)
-  _ended(ft) {
+  _ended(ft: FileTrack) {
     if (this.current !== ft || ft.stopped) return;
     // overtime outlasts the one-shot final-minute song: roll into the match shuffle (still hurried) instead of silence
     const id = ft.id === 'battle_final' && this.overtime && this.hasFile('battle') ? 'battle' : ft.id;
@@ -1453,14 +1538,14 @@ export class MusicEngine {
   }
   // Zone Control overtime: the playing recording runs a touch fast (the hurry-up), and a song that ends during overtime
   // rolls on instead of leaving silence. setOvertime(false) only ends the roll-over (new tracks start at normal speed).
-  setOvertime(on) {
+  setOvertime(on: boolean) {
     this.overtime = !!on;
     if (this.overtime && this.current instanceof FileTrack) this.current.setRate(OVERTIME_RATE);
   }
   pause() { if (this.current instanceof FileTrack) this.current.pause(); }
   resume() { if (this.current instanceof FileTrack) this.current.resume(); }
 
-  setIntensity(x) {
+  setIntensity(x: string | number) {
     this.intensity = Math.min(1, Math.max(0, +x || 0));
     if (!this.ctx) return;
     const now = this.now();

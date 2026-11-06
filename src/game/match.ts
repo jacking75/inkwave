@@ -4,32 +4,66 @@ import { G, emit, on, clamp } from '../core/ctx.js';
 import { MATCH, PLAYER, WEAPON_ORDER, SUB_ORDER, SPECIAL_ORDER, BOT_NAMES, TEAM_NAMES, ZONES } from '../config.js';
 import { ZoneControl } from './zones.js';
 import { randomStyle } from './character-style.js';
-import { Actor } from './actor.js';
+import { Actor, type ActorOptions } from './actor.js';
+import type { Input } from '../core/input.js';
+import type { CameraRig } from './cameraRig.js';
+import type { Boss } from '../boss/boss.js';
 import { BotBrain } from './bots.js';
 import { PlayerController } from './player.js';
 import { BossMode, BOSS_MODE } from '../boss/bossMode.js';
 
 const _v = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
 
+// 대전 모드와 옵션(main·메뉴·온라인이 넘긴다)
+export type MatchMode = 'turf' | 'zones' | 'boss';
+export interface RosterEntry { team: number; slot: number; weapon: string; sub?: string | null; special?: string | null; owner: string; bot: boolean; name: string; style?: object; nid: number }
+export interface MatchOptions {
+  duration?: number; difficulty?: string; attract?: boolean; practice?: boolean; playerName?: string; weapon?: string; sub?: string | null; special?: string | null;
+  style?: object; CharacterClass: ActorOptions['CharacterClass']; input?: Input; rig?: CameraRig; mode?: string;
+  roster?: RosterEntry[]; myId?: string; host?: boolean; autopilot?: boolean; noBots?: boolean; mannequins?: boolean;
+}
+// 판정 결과: 영역(점유율·승자) · 구역(점수·벌점·연장) · 보스(보스 결과)
+export interface MatchResult {
+  mode?: string; winner: number; coverage: number[]; reason?: string; overtime?: boolean;
+  counts?: number[]; penalty?: number[]; log?: unknown;
+  boss?: { name: string; win: boolean; time: number; hp: number; maxHp: number; phase: number };
+}
+export interface SplatEvent { victim: Actor; attacker: Actor | null; cause: string }
+interface MatchEvent { t: number; victim: Actor; attacker: Actor | null; cause: string }
+// 구역 정의(zones-data): 외곽선 여러 개 또는 하나, 높이 범위
+interface ZoneDef { polys?: number[][][]; poly?: number[][]; y0?: number; y1?: number }
+
 export class Match {
-  constructor(opts) {
+  opts: MatchOptions;
+  attract: boolean;
+  practice: boolean;
+  mode: MatchMode;
+  duration: number;
+  zones: ZoneControl | null = null;   // ZoneControl (Zone Control mode)
+  time: number;
+  state = 'init';
+  stateT = 0;
+  actors: Actor[] = [];
+  controller: PlayerController | null = null;
+  result: MatchResult | null = null;
+  paused = false;
+  lastMinuteFired = false;
+  lastCount = 99;
+  events: MatchEvent[] = [];
+  local: Actor | null = null;
+  unsubs: Array<() => void> = [];
+  bossMode: BossMode | null = null;
+  boss: Boss | null = null;
+  follower = false;
+  zoneResult?: { winner: number; reason: string };
+  constructor(opts: MatchOptions) {
     this.opts = opts;          // { duration, difficulty, attract, practice, playerName, weapon, CharacterClass, input, rig, mode }
     this.attract = !!opts.attract;
     this.practice = !!opts.practice;   // solo on an empty stage: no enemies, no teammates, no clock
     // turf | zones (Zone Control) | boss (one squad, team 0, vs HULLBREAKER); attract backdrops and practice are turf
     this.mode = this.attract || this.practice ? 'turf' : opts.mode === 'boss' ? 'boss' : opts.mode === 'zones' ? 'zones' : 'turf';
     this.duration = opts.duration || (this.mode === 'zones' ? ZONES.duration : this.mode === 'boss' ? BOSS_MODE.duration : MATCH.defaultDuration);
-    this.zones = null;             // ZoneControl (Zone Control mode)
     this.time = this.duration;
-    this.state = 'init';
-    this.stateT = 0;
-    this.actors = [];
-    this.controller = null;
-    this.result = null;
-    this.paused = false;
-    this.lastMinuteFired = false;
-    this.lastCount = 99;
-    this.events = [];
   }
 
   playing() { return this.state === 'playing' && !this.paused; }
@@ -40,9 +74,9 @@ export class Match {
     const CharacterClass = o.CharacterClass;
     if (o.roster) { this._setupRoster(o, CharacterClass); return; }
     // weapons: each team gets a balanced mix
-    const pickTeam = (first) => {
-      const pool = [...WEAPON_ORDER];
-      const out = [];
+    const pickTeam = (first: string | null) => {
+      const pool: string[] = [...WEAPON_ORDER];
+      const out: string[] = [];
       if (first) { out.push(first); pool.splice(pool.indexOf(first), 1); }
       while (out.length < MATCH.teamSize) {
         if (!pool.length) pool.push(...WEAPON_ORDER);
@@ -57,14 +91,14 @@ export class Match {
     // (o.mannequins: idle, brainless kids for the render audits)
     const noBots = !!o.noBots;
     for (let team = 0; team < (boss || this.practice ? 1 : 2); team++) {
-      const weapons = pickTeam(team === 0 && !this.attract ? o.weapon : null);
+      const weapons = pickTeam(team === 0 && !this.attract ? o.weapon ?? null : null);
       if (boss) weapons.push(...pickTeam(null));   // the whole squad on one side: 8 kids, every weapon kind
       for (let s = 0; s < (this.practice ? 1 : boss ? BOSS_MODE.squad : MATCH.teamSize); s++) {
         const isLocal = team === 0 && s === 0 && !this.attract;
         if (noBots && !isLocal && !(this.attract && o.mannequins)) continue;
         // subs: yours from the loadout; bots carry a random one (about half keep their weapon's default)
-        const sub = isLocal ? o.sub : Math.random() < 0.5 ? null : SUB_ORDER[(Math.random() * SUB_ORDER.length) | 0];
-        const special = isLocal ? o.special : Math.random() < 0.5 ? null : SPECIAL_ORDER[(Math.random() * SPECIAL_ORDER.length) | 0];
+        const sub = isLocal ? o.sub ?? null : Math.random() < 0.5 ? null : SUB_ORDER[(Math.random() * SUB_ORDER.length) | 0];
+        const special = isLocal ? o.special ?? null : Math.random() < 0.5 ? null : SPECIAL_ORDER[(Math.random() * SPECIAL_ORDER.length) | 0];
         const a = new Actor({
           team, slot: s, weapon: weapons[s], sub, special, isLocal, isBot: !isLocal,
           name: isLocal ? (o.playerName || 'You') : names[ni++ % names.length],
@@ -72,7 +106,7 @@ export class Match {
           style: isLocal ? { ...(o.style || {}) } : randomStyle(), CharacterClass,
         });
         if (isLocal && o.style) { /* reserved for future customisation */ }
-        G.scene.add(a.character.root);
+        G.scene!.add(a.character.root);
         if ((!isLocal || o.autopilot) && !(noBots && !isLocal)) a.bot = new BotBrain(a, o.difficulty);
         this.actors.push(a);
       }
@@ -80,10 +114,10 @@ export class Match {
     G.actors = this.actors;
     this.local = this.actors.find((a) => a.isLocal) || null;
     G.local = this.local;
-    if (this.local && !o.autopilot) this.controller = new PlayerController(this.local, o.rig, o.input);
+    if (this.local && !o.autopilot) this.controller = new PlayerController(this.local, o.rig!, o.input!);
     // initial placement on the spawn decks (standing, no drop)
     for (const a of this.actors) {
-      const pad = G.level.spawnPads[a.team];
+      const pad = G.level!.spawnPads[a.team];
       const ang = (a.slot / (this.mode === 'boss' ? BOSS_MODE.squad : 4)) * Math.PI * 2 + 0.6, rr = this.mode === 'boss' ? 1.7 : 1.2;
       _v.set(pad.x + Math.cos(ang) * rr, pad.y, pad.z + Math.sin(ang) * rr);
       a.spawnAt(_v, a.team === 0 ? 0 : Math.PI);
@@ -91,57 +125,57 @@ export class Match {
       if (a.bot) { a.bot.aimYaw = a.yaw; a.bot.aimPitch = 0; }
     }
     this.unsubs = [
-      on('splatted', (e) => this._onSplatted(e)),
+      on('splatted', (e: SplatEvent) => this._onSplatted(e)),
     ];
     if (this.mode === 'zones') {
       this.zones = new ZoneControl(this);
-      this.unsubs.push(on('turf', (e) => this._zoneTurf(e)));
+      this.unsubs.push(on('turf', (e: { actor: Actor | null; area: number }) => this._zoneTurf(e)));
     }
     if (this.mode === 'boss') { this.bossMode = new BossMode(this); this.boss = this.bossMode.boss; }
   }
 
   // Online: the host's roster — who owns which squidkid (players their own, the host the bots).
-  _setupRoster(o, CharacterClass) {
+  _setupRoster(o: MatchOptions, CharacterClass: MatchOptions['CharacterClass']) {
     const me = o.myId;
     this.follower = !o.host;
-    for (const r of o.roster) {
+    for (const r of o.roster!) {
       const mine = r.owner === me;
       const a = new Actor({ team: r.team, slot: r.slot, weapon: r.weapon, sub: r.sub || null, special: r.special || null, isLocal: mine && !r.bot, isBot: r.bot, name: r.name, style: r.style || undefined, CharacterClass });
       a.nid = r.nid; a.owner = r.owner; a.remote = !mine;
-      G.scene.add(a.character.root);
+      G.scene!.add(a.character.root);
       if (mine && (r.bot || o.autopilot)) a.bot = new BotBrain(a, o.difficulty);
       this.actors.push(a);
     }
     G.actors = this.actors;
     this.local = this.actors.find((a) => a.isLocal) || null;
     G.local = this.local;
-    if (this.local && !o.autopilot) this.controller = new PlayerController(this.local, o.rig, o.input);
+    if (this.local && !o.autopilot) this.controller = new PlayerController(this.local, o.rig!, o.input!);
     for (const a of this.actors) {
-      const pad = G.level.spawnPads[a.team];
+      const pad = G.level!.spawnPads[a.team];
       const ang = (a.slot / (this.mode === 'boss' ? BOSS_MODE.squad : 4)) * Math.PI * 2 + 0.6, rr = this.mode === 'boss' ? 1.7 : 1.2;
       _v.set(pad.x + Math.cos(ang) * rr, pad.y, pad.z + Math.sin(ang) * rr);
       a.spawnAt(_v, a.team === 0 ? 0 : Math.PI);
       a.invuln = 0;
       if (a.bot) { a.bot.aimYaw = a.yaw; a.bot.aimPitch = 0; }
     }
-    this.unsubs = [on('splatted', (e) => this._onSplatted(e))];
+    this.unsubs = [on('splatted', (e: SplatEvent) => this._onSplatted(e))];
     if (this.mode === 'zones') {   // Zone Control online: the host runs the rules, guests follow (zones.js netEvent)
       this.zones = new ZoneControl(this);
-      this.unsubs.push(on('turf', (e) => this._zoneTurf(e)));
+      this.unsubs.push(on('turf', (e: { actor: Actor | null; area: number }) => this._zoneTurf(e)));
     }
     if (this.mode === 'boss') { this.bossMode = new BossMode(this); this.boss = this.bossMode.boss; }
   }
 
   // Zone Control: ink laid while standing on (or aiming into) the live zone counts as objective play (results / XP)
-  _zoneTurf({ actor, area }) {
+  _zoneTurf({ actor, area }: { actor: Actor | null; area: number }) {
     const Z = this.zones;
     if (!Z || this.state !== 'playing' || !actor || !(area > 0)) return;
-    const on = (p) => p && Z.active.zones.some((z) => inZone(z.def, p));
+    const on = (p: THREE.Vector3 | null | undefined) => p && Z.active.zones.some((z: { def: ZoneDef }) => inZone(z.def, p));
     if (on(actor.pos) || on(actor.aimPoint)) actor.stats.zoneTurf = (actor.stats.zoneTurf || 0) + area;
   }
 
   // Zone Control decided the match (knockout / overtime result): straight to time's up
-  endZones(winner, reason) {
+  endZones(winner: number, reason: string) {
     this.zoneResult = { winner, reason };
     if (this.state === 'playing') { this.time = Math.max(0, this.time); this.setState('finish'); }
   }
@@ -150,14 +184,14 @@ export class Match {
     this.setState(this.attract || this.practice ? 'playing' : 'intro');
   }
 
-  setState(s) {
+  setState(s: string) {
     this.state = s; this.stateT = 0;
     emit('match:state', { state: s, match: this });
   }
 
   dispose() {
     this.bossMode?.dispose(); this.bossMode = null; this.boss = null;
-    for (const a of this.actors) { G.scene.remove(a.character.root); a.weaponRunner.reset(); a.character.dispose?.(); }
+    for (const a of this.actors) { G.scene!.remove(a.character.root); a.weaponRunner.reset(); a.character.dispose?.(); }
     this.unsubs?.forEach((u) => u());
     G.actors = [];
     G.local = null;
@@ -166,7 +200,8 @@ export class Match {
   // Online, humans-only stage (config noBots): a player left, and nobody takes over their squidkid — it bursts into its
   // own ink and is gone. HUD squads, the minimap, specials / weapons and the judge all read this.actors (G.actors is the
   // same array), so dropping it here is all they need.
-  removeActor(a) {
+  removeActor(a: Actor | null | undefined) {
+    if (!a) return;
     const i = this.actors.indexOf(a);
     if (i < 0) return;
     if (a.alive && a.character.root.visible) {
@@ -177,15 +212,15 @@ export class Match {
     }
     this.actors.splice(i, 1);
     if (G.rig?.spectate?.actor === a) G.rig.spectate.actor = null;   // a death cam watching them looks on at the spot
-    G.scene.remove(a.character.root); a.weaponRunner.reset(); a.character.dispose?.();
+    G.scene!.remove(a.character.root); a.weaponRunner.reset(); a.character.dispose?.();
     emit('actor:removed', { actor: a });
   }
 
-  _onSplatted({ victim, attacker, cause }) {
+  _onSplatted({ victim, attacker, cause }: SplatEvent) {
     this.events.push({ t: this.duration - this.time, victim, attacker, cause });
   }
 
-  update(dt) {
+  update(dt: number) {
     if (this.paused) return;
     this.stateT += dt;
     switch (this.state) {
@@ -244,16 +279,16 @@ export class Match {
     }
   }
 
-  updateController(dt) {
+  updateController(dt: number) {
     if (!this.controller) return;
-    this.controller.enabled = this.state === 'playing' && !this.paused && this.local.alive;
+    this.controller.enabled = this.state === 'playing' && !this.paused && !!this.local?.alive;
     this.controller.update(dt);
   }
 
   _judge() {
     if (this.zones) {
       const Z = this.zones;
-      this.result = { mode: 'zones', coverage: G.paint.coverage(), winner: Z.winner ?? (Math.random() < 0.5 ? 0 : 1), reason: Z.reason,
+      this.result = { mode: 'zones', coverage: G.paint!.coverage(), winner: Z.winner ?? (Math.random() < 0.5 ? 0 : 1), reason: Z.reason,
         counts: [Math.ceil(Z.count[0]), Math.ceil(Z.count[1])], penalty: [...Z.penalty], overtime: Z.overtime, log: Z.log };
       G.netm?.sendResult(this.result);        // online: every client shows the host's result
       this.setState('judge');
@@ -265,7 +300,7 @@ export class Match {
       this.setState('judge');
       return;
     }
-    const cov = G.paint.coverage();
+    const cov = G.paint!.coverage();
     const win = cov[0] === cov[1] ? (Math.random() < 0.5 ? 0 : 1) : cov[0] > cov[1] ? 0 : 1;
     this.result = { coverage: cov, winner: win };
     G.netm?.sendResult(this.result);        // online: every client shows the host's count
@@ -283,9 +318,9 @@ export class Match {
 }
 
 // a point on (or just above) a zone: inside one of its outlines, near its floor heights
-function inZone(def, p) {
+function inZone(def: ZoneDef, p: THREE.Vector3) {
   if (p.y < (def.y0 ?? -2) - 1 || p.y > (def.y1 ?? 6) + 2.5) return false;
-  for (const poly of def.polys || [def.poly]) {
+  for (const poly of def.polys || [def.poly!]) {
     let inside = false;
     for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
       const [xi, zi] = poly[i], [xj, zj] = poly[j];
@@ -296,4 +331,4 @@ function inZone(def, p) {
   return false;
 }
 
-function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; }
+function shuffle<T>(a: T[]): T[] { for (let i = a.length - 1; i > 0; i--) { const j = (Math.random() * (i + 1)) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; }

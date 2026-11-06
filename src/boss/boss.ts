@@ -11,6 +11,12 @@ import { BossModel } from './bossModel.js';
 import { BossNav, FLOOR_BODY } from './bossNav.js';
 import { BossHazards, movePhaseAt, moveTimes, beamAngle, HZ } from './bossHazards.js';
 import { BossBrain } from './bossBrain.js';
+import type { Match } from '../game/match.js';
+import type { Actor } from '../game/actor.js';
+import type { Level } from '../world/level.js';
+import type { BossMove } from './bossHazards.js';
+import type { BossAnimState } from './bossAnim.js';
+import type { HitShape, Crablet } from './bossModel.js';
 
 export const BOSS = {
   name: 'HULLBREAKER',
@@ -23,49 +29,78 @@ export const BOSS = {
   phases: [0.66, 0.33],
   introAt: 1.8, introLen: 3.4, roarLen: 1.9,
 };
+
+// 꽃게(소형 적): 위치·방향·체력, 표시 모델과 터짐 상태(손님은 스냅샷에서 위치를 받는다)
+export interface Crab { id: number; x: number; y: number; z: number; yaw: number; hp: number; dead: boolean; speed?: number; model?: CrabletView; popped?: boolean; popT?: number; missT?: number; [k: string]: unknown }
+// 호스트가 보내는 보스 스냅샷(pack/unpack): 시계·위치·속도·체력·단계·깃발·동작 t0·연출·회전·피격 수·처치자·꽃게·최대 체력·동작 기록
+export interface BossSnap { t: number; bt: number; x: number; y: number; z: number; yaw: number; vx: number; vz: number; hp: number; phase: number; f: number; mv: number; anim: number; turn: number; fl: number; wk: number; killer: number; crabs: number[][]; maxHp: number; move: BossMove | null }
+// 분대원이 맞을 때 '공격자'로 쓰는 가짜 액터(이름·팀·위치·색·통계만): Actor 자리에 덕 타이핑으로 들어간다
+export interface BossAttacker { name: string; team: number; pos: THREE.Vector3; boss: true; isLocal: false; isBot: true; stats: { splats: number; turf: number; deaths: number }; addTurf(): void; readonly color: THREE.Color; _nearCamera(): boolean; readonly vel: THREE.Vector3 }
+type HitTarget = HitShape | Crab | null;
+// 꽃게 표시 모델(만들기에 실패하면 빈 대체물)
+type CrabletView = Pick<Crablet, 'root' | 'update' | 'pop' | 'dispose'>;
+
 const SELF = 'boss';                                    // hit bookkeeping key for "the boss" (vs a crablet)
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _aim = new THREE.Vector3();
-const _hs = { t: 0, target: null, weak: false, point: new THREE.Vector3(), dist: 0 };
+const _hs: { t: number; target: HitTarget; weak: boolean; point: THREE.Vector3; dist: number } = { t: 0, target: null, weak: false, point: new THREE.Vector3(), dist: 0 };
 
 export class Boss {
-  constructor(match, { maxHp, difficulty = 'normal', sim = true }) {
+  match: Match;
+  name: string;
+  difficulty: string;
+  sim: boolean;
+  dmgMul: number;
+  nav: BossNav;
+  bt = 0;
+  pos = new THREE.Vector3(); vel = new THREE.Vector3(); yaw = 0; turn = 0;
+  maxHp: number; hp: number; phase = 1;
+  dead = false; killer = -1; stunned = false; invuln = false; visible = false;
+  anim = 0; animT0 = 0;                     // set pieces: 1 intro, 2 roar
+  move: BossMove | null = null;             // the move record being played (null between moves)
+  target = -1;                              // nid it's focused on
+  flashN = 0; weakN = 0; hurt = 0;
+  crabs = new Map<number, Crab>();          // id → { id, x, y, z, yaw, hp, model, … }
+  log: { moves: Array<[number, string]>; sent: number; sentDmg: number; recv: number; recvDmg: number } = { moves: [], sent: 0, sentDmg: 0, recv: 0, recvDmg: 0 };
+  declare home: { x: number; z: number };
+  attacker: BossAttacker;
+  hz: BossHazards;
+  model: BossModel;
+  st: BossAnimState;
+  brain: BossBrain | null;
+  net: { buf: BossSnap[]; err: THREE.Vector3; errV: THREE.Vector3; prev: BossSnap | null; ready: boolean; handoff: boolean; cur?: BossSnap | null; fl?: number; wk?: number; crabSeen?: Set<number> };
+  _ev = { key: '', phase: 1, stun: false, dead: false, anim: 0, hp: -1, intro: false };
+  _paintBt = 0;
+  _rain = new Map<Actor, number>();
+  unsubs: Array<() => void>;
+  _roll?: { target: HitTarget; point: THREE.Vector3; boss: boolean };
+  _rainT?: number;
+  constructor(match: Match, { maxHp, difficulty = 'normal', sim = true }: { maxHp: number; difficulty?: string; sim?: boolean }) {
     this.match = match;
     this.name = BOSS.name;
     this.difficulty = difficulty;
     this.sim = sim;
-    this.dmgMul = BOSS.dmgDiff[difficulty] ?? 1;
-    this.nav = G.level._bossNav || (G.level._bossNav = new BossNav(G.level));
+    this.dmgMul = BOSS.dmgDiff[difficulty as keyof typeof BOSS.dmgDiff] ?? 1;
+    const lv = G.level! as Level & { _bossNav?: BossNav };   // (지도마다 한 번 만든 길찾기를 레벨에 붙여 둔다)
+    this.nav = lv._bossNav || (lv._bossNav = new BossNav(lv));
     // state (replicated)
-    this.bt = 0;
-    this.pos = new THREE.Vector3(); this.vel = new THREE.Vector3(); this.yaw = 0; this.turn = 0;
-    this.maxHp = maxHp; this.hp = maxHp; this.phase = 1;
-    this.dead = false; this.killer = -1; this.stunned = false; this.invuln = false; this.visible = false;
-    this.anim = 0; this.animT0 = 0;                     // set pieces: 1 intro, 2 roar
-    this.move = null;                                   // the move record being played (null between moves)
-    this.target = -1;                                   // nid it's focused on
-    this.flashN = 0; this.weakN = 0; this.hurt = 0;
-    this.crabs = new Map();                             // id → { id, x, y, z, yaw, hp, model, … }
-    this.log = { moves: [], sent: 0, sentDmg: 0, recv: 0, recvDmg: 0 };   // audits (tools/net-test.mjs --mode boss)
+    this.maxHp = maxHp; this.hp = maxHp;
     this._spawnPoint();
     // pseudo attacker for squidkid damage ('damage' / 'splatted' events, death cam, kill feed)
     const self = this;
-    this.attacker = { name: BOSS.name, team: 1, pos: this.pos, boss: true, isLocal: false, isBot: true, stats: { splats: 0, turf: 0, deaths: 0 }, addTurf() {}, get color() { return G.teamColors[1]; }, _nearCamera: () => true, get vel() { return self.vel; } };
+    this.attacker = { name: BOSS.name, team: 1 as const, pos: this.pos, boss: true, isLocal: false, isBot: true, stats: { splats: 0, turf: 0, deaths: 0 }, addTurf() {}, get color() { return G.teamColors[1]!; }, _nearCamera: () => true, get vel() { return self.vel; } };
     this.hz = new BossHazards(this);
-    this.hz.fx.setColor(G.teamColors[1]);
+    this.hz.fx.setColor(G.teamColors[1]!);
     this.model = new BossModel({ ink: G.teamColors[1], weak: G.teamColors[0], quality: G.settings?.quality || 'high' });
     this.model.root.visible = false;
     this.model.root.position.copy(this.pos); this.model.root.rotation.y = this.yaw;
-    G.scene.add(this.model.root);
-    this.model.onFoot = (i, pos, s) => { emit('boss:foot', { pos: pos.clone(), strength: s, leg: i }); if (s > 0.5) emit('shake', { amount: 0.12 * s, pos: pos.clone() }); };
-    this.model.onImpact = (socket, pos, s) => { emit('boss:impact', { socket, pos: pos.clone(), strength: s }); emit('shake', { amount: 0.5 * s, pos: pos.clone() }); };
-    this.model.onEvent = (name, data) => emit('boss:fx', { name, data });
+    G.scene!.add(this.model.root);
+    this.model.onFoot = (i: number, pos: THREE.Vector3, s: number) => { emit('boss:foot', { pos: pos.clone(), strength: s, leg: i }); if (s > 0.5) emit('shake', { amount: 0.12 * s, pos: pos.clone() }); };
+    this.model.onImpact = (socket: string, pos: THREE.Vector3, s: number) => { emit('boss:impact', { socket, pos: pos.clone(), strength: s }); emit('shake', { amount: 0.5 * s, pos: pos.clone() }); };
+    this.model.onEvent = (name: string, data: Record<string, unknown>) => emit('boss:fx', { name, data });
     this.st = { speed: 0, turn: 0, move: null, moveT: 0, movePhase: null, phaseDur: 0, phase: 1, stunned: false, hurt: 0, dead: false, aim: null };
     this.brain = sim ? new BossBrain(this) : null;
     this.net = { buf: [], err: new THREE.Vector3(), errV: new THREE.Vector3(), prev: null, ready: false, handoff: false };
-    this._ev = { key: '', phase: 1, stun: false, dead: false, anim: 0, hp: -1, intro: false };
-    this._paintBt = 0;
-    this._rain = new Map();
-    this.unsubs = [on('special:slam', ({ actor, pos, radius }) => {
+    this.unsubs = [on('special:slam', ({ actor, pos, radius }: { actor: Actor | null; pos: THREE.Vector3; radius: number }) => {
       // Tidal Slam is actor.js's; the slammer's own client deals it to the boss (remote slams are replays)
       if (actor && !actor.remote && actor.team === 0) this.splash(actor, pos, radius, 180, 55, 'slam');
     })];
@@ -97,10 +132,10 @@ export class Boss {
   live() { return this.match.state === 'playing' && !this.dead; }
 
   // ---------------------------------------------------------------------------------------------- per frame
-  update(dt) {
+  update(dt: number) {
     if (this.match.state === 'init') { this.model.root.visible = false; return; }   // loading: the clock starts with the intro
     const bt0 = this.bt;
-    if (this.sim) this.brain.update(dt);
+    if (this.sim) this.brain!.update(dt);
     else this._follow(dt);
     const live = this.live() && this.visible;
     if (!live && this.hz.dead < 0 && (this.dead || this.match.state === 'finish' || this.match.state === 'judge' || this.match.state === 'results')) this.hz.fizzle(this.bt);
@@ -116,7 +151,7 @@ export class Boss {
   }
 
   // what the model plays: the current move and its phase (or a set piece), from state alone — identical everywhere
-  _modelUpdate(dt) {
+  _modelUpdate(dt: number) {
     const st = this.st, m = this.move, root = this.model.root;
     root.visible = this.visible;
     root.position.copy(this.pos); root.rotation.y = this.yaw;
@@ -139,13 +174,13 @@ export class Boss {
     this.model.update(dt, st);
   }
 
-  _moveAim(m, u, out) {
+  _moveAim(m: BossMove, u: number, out: THREE.Vector3) {
     const p = m.p;
     switch (m.id) {
       case 'slam': return out.set(p.x, p.y, p.z);
       case 'sweep': { const a = u < m.d[0] ? p.a0 : beamAngle(m, u); return out.set(p.ox + Math.sin(a) * 12, p.y, p.oz + Math.cos(a) * 12); }
       case 'charge': return out.set(p.x + Math.sin(p.yaw) * (p.L + 3), p.y + 1, p.z + Math.cos(p.yaw) * (p.L + 3));
-      case 'barrage': { const b = p.b.find((x) => x[3] + 0.2 > u) || p.b[p.b.length - 1]; return out.set(b[0], b[1], b[2]); }
+      case 'barrage': { const b = p.b.find((x: number[]) => x[3] + 0.2 > u) || p.b[p.b.length - 1]; return out.set(b[0], b[1], b[2]); }
       default: return null;
     }
   }
@@ -160,17 +195,17 @@ export class Boss {
       if (this.anim === 1 && !E.intro) { E.intro = true; emit('boss:intro', { boss: this, dur: BOSS.introLen }); }
     }
     const m = this.move, ph = m && !this.dead ? movePhaseAt(m, this.bt - m.t0) : null;
-    const key = ph ? m.t0 + ph : '';
+    const key = ph ? m!.t0 + ph : '';
     if (key !== E.key) {
       E.key = key;
       if (ph) {
-        const T = moveTimes(m);
-        emit('boss:move', { id: m.id, phase: ph, dur: ph === 'tele' ? T.tele : ph === 'act' ? T.act : T.rec, boss: this });
+        const T = moveTimes(m!);
+        emit('boss:move', { id: m!.id, phase: ph, dur: ph === 'tele' ? T.tele : ph === 'act' ? T.act : T.rec, boss: this });
       }
     }
     if (this.stunned !== E.stun) {
       E.stun = this.stunned;
-      if (this.stunned) { const T = m ? moveTimes(m) : null; emit('boss:stun', { dur: T ? Math.max(0.5, m.t0 + T.end - this.bt) : 1.5, boss: this }); }
+      if (this.stunned) { const T = m ? moveTimes(m) : null; emit('boss:stun', { dur: T ? Math.max(0.5, m!.t0 + T.end - this.bt) : 1.5, boss: this }); }
     }
     if (this.phase !== E.phase) { E.phase = this.phase; this.model.setPhase?.(this.phase); emit('boss:phase', { phase: this.phase, boss: this }); }
     if (Math.abs(this.hp - E.hp) > 0.01) { E.hp = this.hp; emit('boss:hp', { hp: this.hp, max: this.maxHp }); }
@@ -202,9 +237,9 @@ export class Boss {
 
   // ---------------------------------------------------------------------------------------------- damage intake
   // Nearest hit shape (or crablet) along the segment a→b, within `pad` of its surface → _hs or null.
-  segHit(a, b, pad = 0) {
+  segHit(a: THREE.Vector3, b: THREE.Vector3, pad = 0) {
     if (!this.visible || this.dead) return this._segCrabs(a, b, pad, null);
-    let best = null;
+    let best: { key: number; t: number; target: HitShape; weak: boolean } | null = null;
     const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z, L2 = abx * abx + aby * aby + abz * abz || 1e-9;
     for (const h of this.model.hitShapes) {
       if (!h.active) continue;
@@ -229,8 +264,8 @@ export class Boss {
     _hs.dist = Math.sqrt(L2) * best.t;
     return _hs;
   }
-  _segCrabs(a, b, pad, best) {
-    let hit = null;
+  _segCrabs(a: THREE.Vector3, b: THREE.Vector3, pad: number, best: { t: number } | null) {
+    let hit: { t: number; target: Crab } | null = null;
     const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z, L2 = abx * abx + aby * aby + abz * abz || 1e-9;
     for (const c of this.crabs.values()) {
       if (c.dead) continue;
@@ -249,7 +284,7 @@ export class Boss {
     return _hs;
   }
   // a roller's drum (pos + forward): the lowest shapes it can reach — claws, belly — or a crablet → { target, point, boss }
-  rollHit(pos, fx, fz, width) {
+  rollHit(pos: THREE.Vector3, fx: number, fz: number, width: number) {
     const cx = pos.x + fx * 0.8, cz = pos.z + fz * 0.8, cy = pos.y + 0.45, R = width / 2 + 0.35;
     const out = this._roll || (this._roll = { target: null, point: new THREE.Vector3(), boss: false });
     for (const c of this.crabs.values()) {
@@ -257,7 +292,7 @@ export class Boss {
       out.target = c; out.boss = false; out.point.set(c.x, c.y + 0.35, c.z); return out;
     }
     if (!this.visible || this.dead) return null;
-    let best = null, bd = Infinity;
+    let best: HitShape | null = null, bd = Infinity;
     for (const h of this.model.hitShapes) {
       if (!h.active || h.pos.y - h.r > cy + 0.7) continue;
       const d = Math.hypot(h.pos.x - cx, h.pos.z - cz) - h.r;
@@ -269,7 +304,7 @@ export class Boss {
   }
 
   // exact ray vs the hit spheres (the local player's crosshair) → distance or -1
-  rayDist(o, d, max) {
+  rayDist(o: THREE.Vector3, d: THREE.Vector3, max: number) {
     if (!this.visible || this.dead) return -1;
     let best = -1;
     for (const h of this.model.hitShapes) {
@@ -285,11 +320,11 @@ export class Boss {
 
   // A shot / blob / beam connected (target from segHit). Routing: ghosts never hurt; offline + host apply, guests send
   // the hit to the host (shooter-authoritative) and show the marker now.
-  hit(attacker, dmg, target, wid, point) {
+  hit(attacker: Actor | null | undefined, dmg: number, target: HitTarget, wid: string, point: THREE.Vector3 | null) {
     if (!attacker || attacker.remote || dmg <= 0 || this.dead) return;
-    if (target && target.hp !== undefined && target.id !== undefined) { this._hitCrab(attacker, target, dmg); return; }
-    const weak = !!(target && target.weak);
-    const d = dmg * (weak ? BOSS.weak : 1) * (this.stunned ? BOSS.stunned : 1) * (BOSS.weapon[wid] ?? 1);
+    if (target && 'hp' in target && target.hp !== undefined && target.id !== undefined) { this._hitCrab(attacker, target as Crab, dmg); return; }
+    const weak = !!(target && 'weak' in target && target.weak);
+    const d = dmg * (weak ? BOSS.weak : 1) * (this.stunned ? BOSS.stunned : 1) * (BOSS.weapon[wid as keyof typeof BOSS.weapon] ?? 1);
     if (point) G.fx?.burst(point, _v2.copy(point).sub(this.pos).setY(0.4).normalize(), attacker.color, { count: weak ? 10 : 5, speed: weak ? 5 : 3, size: 0.08 });
     if (this.invuln || !this.visible) { if (attacker.isLocal) emit('boss:hit', { damage: 0, weak, attacker, local: true, blocked: true, pos: point || null }); return; }
     if (G.netm && !G.netm.isHost) {
@@ -301,7 +336,7 @@ export class Boss {
     this.applyDamage(attacker, d, weak, point);
   }
   // splash damage (blaster burst, slosh splash, bombs, Tidal Slam): falloff from the nearest body sphere, cover blocks
-  splash(attacker, c, R, dmax, dmin, wid) {
+  splash(attacker: Actor | null | undefined, c: THREE.Vector3, R: number, dmax: number, dmin: number, wid: string) {
     if (!attacker || attacker.remote || this.dead) return;
     for (const cr of this.crabs.values()) {
       if (cr.dead) continue;
@@ -309,23 +344,23 @@ export class Boss {
       if (d < R + 0.4) this._hitCrab(attacker, cr, dmax);
     }
     if (!this.visible) return;
-    let best = null, bd = Infinity;
+    let best: HitShape | null = null, bd = Infinity;
     for (const h of this.model.hitShapes) {
       if (!h.active || h.weak) continue;
       const d = Math.max(0, h.pos.distanceTo(c) - h.r);
       if (d < bd) { bd = d; best = h; }
     }
     if (!best || bd > R) return;
-    if (!G.physics.los(_v.copy(c).setY(c.y + 0.3), _v2.copy(best.pos).lerp(c, Math.min(0.9, best.r / Math.max(best.r, best.pos.distanceTo(c)))))) return;
+    if (!G.physics!.los(_v.copy(c).setY(c.y + 0.3), _v2.copy(best.pos).lerp(c, Math.min(0.9, best.r / Math.max(best.r, best.pos.distanceTo(c)))))) return;
     this.hit(attacker, dmax + (dmin - dmax) * clamp(bd / R, 0, 1), best, wid, null);
   }
   // Ink Tempest rain: small per-frame amounts, batched so a guest sends a few messages a second, not sixty
-  rain(owner, cx, cz, R, dmg) {
+  rain(owner: Actor | null | undefined, cx: number, cz: number, R: number, dmg: number) {
     if (!owner || owner.remote || this.dead || !this.visible) return;
     if (Math.hypot(this.pos.x - cx, this.pos.z - cz) > R + 2.4) return;
     this._rain.set(owner, (this._rain.get(owner) || 0) + dmg);
   }
-  _flushRain(dt) {
+  _flushRain(dt: number) {
     this._rainT = (this._rainT || 0) - dt;
     if (this._rainT > 0 || !this._rain.size) return;
     this._rainT = 0.3;
@@ -334,7 +369,7 @@ export class Boss {
   }
 
   // host / offline: the damage lands
-  applyDamage(attacker, d, weak, point) {
+  applyDamage(attacker: Actor | null | undefined, d: number, weak: boolean | undefined, point: THREE.Vector3 | null) {
     if (this.dead || this.invuln || !this.visible || this.match.state !== 'playing') return 0;
     d = Math.min(d, this.hp);
     this.hp -= d;
@@ -349,7 +384,7 @@ export class Boss {
     return d;
   }
   // host: a guest's hit arrived ({k:'bhit'})
-  remoteHit(d) {
+  remoteHit(d: { a: number; d: number; c: number; weak?: boolean | number }) {
     if (!this.sim) return;
     const atk = G.netm?.byNid.get(d.a);
     if (!atk) return;
@@ -358,7 +393,7 @@ export class Boss {
     this.applyDamage(atk, Math.min(+d.d || 0, 2000), !!d.weak, null);
   }
 
-  _defeat(attacker) {
+  _defeat(attacker: Actor | null | undefined) {
     if (this.dead) return;
     this.dead = true; this.stunned = false; this.anim = 0;
     this.killer = attacker ? (attacker.nid ?? attacker.slot) : -1;
@@ -368,7 +403,7 @@ export class Boss {
   }
 
   // ---------------------------------------------------------------------------------------------- crablets
-  _hitCrab(attacker, c, dmg, fromNet = false) {
+  _hitCrab(attacker: Actor, c: Crab, dmg: number, fromNet = false) {
     if (c.dead) return;
     if (G.netm && !G.netm.isHost && !fromNet) {
       G.netm.sendBossHit(attacker, dmg, false, 'crab', c.id);
@@ -380,14 +415,14 @@ export class Boss {
     if (c.hp <= 0) { if (attacker.stats) attacker.stats.splats++; this.crabPop(c, true); }
   }
   // host: a crablet bursts (killed: harmless, into the squad's ink · otherwise: a boss-ink burst that hurts)
-  crabPop(c, killed) {
+  crabPop(c: Crab, killed: boolean) {
     if (c.dead) return;
     c.dead = true;
     G.netm?.recBoss(['bc', c.id, r2(c.x), r2(c.y), r2(c.z), killed ? 1 : 0]);
     this._crabBurst(c.id, c.x, c.y, c.z, killed);
   }
   // everyone: the burst itself (guests get it on the host's timeline)
-  _crabBurst(id, x, y, z, killed) {
+  _crabBurst(id: number, x: number, y: number, z: number, killed: boolean) {
     const c = this.crabs.get(id);
     if (c) { c.dead = true; this._crabPopFx(c, killed); }
     _v.set(x, y + 0.3, z);
@@ -396,47 +431,49 @@ export class Boss {
     if (!killed && this.live()) this.hz.crabBurst(x, y, z, id);
     if (this.sim && (!G.netm || G.netm.isHost)) {
       // painted once, by the host
-      const g = G.level.groundHeight(x, z, y + 0.8);
+      const g = G.level!.groundHeight(x, z, y + 0.8);
       if (g > -5 && !this.nav.inPad(x, z, 0.3)) G.paint?.splat(_v.set(x, g + 0.1, z), killed ? 1.3 : 1.7, killed ? 0 : 1, { seed: Math.random() });
     }
   }
-  _crabPopFx(c, killed) {
+  _crabPopFx(c: Crab, killed: boolean) {
     if (c.model && !c.popped) { c.popped = true; c.model.pop?.(); c.popT = 0; }
   }
   // crablet model per live crablet; guests position them from the snapshots
-  _crabVisuals(dt) {
+  _crabVisuals(dt: number) {
     for (const [id, c] of this.crabs) {
       if (!c.model) {
         emit('boss:crablet', { phase: 'spawn', pos: new THREE.Vector3(c.x, c.y + 0.3, c.z) });
-        try { c.model = BossModel.makeCrablet({ ink: G.teamColors[1], weak: G.teamColors[0], quality: G.settings?.quality }); G.scene.add(c.model.root); } catch (e) { console.warn('[boss] crablet', e); c.model = { root: new THREE.Group(), update() {}, pop() {}, dispose() {} }; }
+        try { c.model = BossModel.makeCrablet({ ink: G.teamColors[1], weak: G.teamColors[0], quality: G.settings?.quality }); G.scene!.add(c.model.root); } catch (e) { console.warn('[boss] crablet', e); c.model = { root: new THREE.Group(), update() {}, pop() {}, dispose() {} }; }
       }
-      const r = c.model.root;
+      const model = c.model!, r = model.root;
       r.position.set(c.x, c.y, c.z); r.rotation.y = c.yaw;
-      c.model.update(dt, { speed: c.speed || 0, turn: 0, dead: c.dead });
-      if (c.dead) { c.popT = (c.popT || 0) + dt; if (c.popT > 1.2) { c.model.dispose?.(); r.removeFromParent(); this.crabs.delete(id); } }
+      model.update(dt, { speed: c.speed || 0, turn: 0, dead: c.dead });
+      if (c.dead) { c.popT = (c.popT || 0) + dt; if (c.popT > 1.2) { model.dispose?.(); r.removeFromParent(); this.crabs.delete(id); } }
     }
   }
 
   // ---------------------------------------------------------------------------------------------- netcode (see netmatch.js)
   // host → every tick: [bt, x, y, z, yaw, vx, vz, hp, phase, flags, move t0, anim, turn, flashN, weakN, killer, crabs, maxHp]
-  pack(full) {
+  pack(full?: boolean) {
     let f = 0;
     if (this.stunned) f |= 1; if (this.dead) f |= 2; if (this.invuln) f |= 4; if (this.visible) f |= 8;
-    const crabs = [];
+    const crabs: number[][] = [];
     for (const c of this.crabs.values()) if (!c.dead) crabs.push([c.id, r2(c.x), r2(c.y), r2(c.z), r2(c.yaw), Math.round(c.hp)]);
-    const s = [r3(this.bt), r2(this.pos.x), r2(this.pos.y), r2(this.pos.z), r3(this.yaw), r2(this.vel.x), r2(this.vel.z), Math.round(this.hp * 10) / 10, this.phase, f,
+    const s: unknown[] = [r3(this.bt), r2(this.pos.x), r2(this.pos.y), r2(this.pos.z), r3(this.yaw), r2(this.vel.x), r2(this.vel.z), Math.round(this.hp * 10) / 10, this.phase, f,
       this.move ? this.move.t0 : -1, this.anim, r2(this.turn), this.flashN, this.weakN, this.killer, crabs, Math.round(this.maxHp)];
     if (full && this.move) s.push(this.move);
     return s;
   }
-  static unpack(s, ts) {
-    return { t: ts, bt: s[0], x: s[1], y: s[2], z: s[3], yaw: s[4], vx: s[5], vz: s[6], hp: s[7], phase: s[8], f: s[9], mv: s[10], anim: s[11], turn: s[12], fl: s[13], wk: s[14], killer: s[15], crabs: s[16], maxHp: s[17], move: s[18] || null };
+  static unpack(s: unknown[], ts: number): BossSnap {
+    // (pack()이 만든 배열: 순서대로 숫자, 16번은 꽃게 목록, 18번은 동작 기록)
+    const n = s as number[];
+    return { t: ts, bt: n[0], x: n[1], y: n[2], z: n[3], yaw: n[4], vx: n[5], vz: n[6], hp: n[7], phase: n[8], f: n[9], mv: n[10], anim: n[11], turn: n[12], fl: n[13], wk: n[14], killer: n[15], crabs: s[16] as number[][], maxHp: n[17], move: (s[18] as BossMove | undefined) || null };
   }
   // a move record from the host's timeline (or a snapshot's copy): idempotent by t0
-  onMove(m) { if (m && typeof m.t0 === 'number') this.hz.add(m); }
+  onMove(m: BossMove | null | undefined) { if (m && typeof m.t0 === 'number') this.hz.add(m); }
 
   // guest: apply this frame's sample (netmatch._sampleBoss fills this.net.cur)
-  _follow(dt) {
+  _follow(dt: number) {
     const n = this.net, S = n.cur;
     if (!S) return;
     const px = this.pos.x, pz = this.pos.z;
@@ -493,5 +530,5 @@ export class Boss {
   }
 }
 
-const r2 = (x) => Math.round(x * 100) / 100;
-const r3 = (x) => Math.round(x * 1000) / 1000;
+const r2 = (x: number) => Math.round(x * 100) / 100;
+const r3 = (x: number) => Math.round(x * 1000) / 1000;

@@ -3,6 +3,13 @@
 // moment, faces its mark before any aimed move, and turns each into a move record the hazards and the guests replay.
 // Phases: 66 % / 33 % → a roar (invulnerable beat, never mid-move) and a nastier move set; crablets from phase 2,
 // Shell Frenzy + an exposed belly in phase 3.
+// 다음 동작 계획: 동작 이름, 돌아설 방향(또는 그 함수), 돌진 길, 정렬에 쓴 시간
+interface MovePlan { id: string; face: number | null; faceFn?: () => number; lane?: Lane; t: number }
+interface Lane { yaw: number; L: number; wall: boolean }
+type BrainCrab = Crab & { age: number; tgt: number; retgt: number };
+import type { Boss, Crab } from './boss.js';
+import type { Actor } from '../game/actor.js';
+import type { BossMove, MoveParams } from './bossHazards.js';
 import * as THREE from 'three';
 import { G, clamp, angleDiff, rng } from '../core/ctx.js';
 import { PLAYER } from '../config.js';
@@ -14,21 +21,31 @@ const TURN = [0, 1.25, 1.45, 1.75];        // turn rate (rad/s)
 const COOL = [0, 1.05, 0.8, 0.6];          // gap between moves (+ up to COOL_RND)
 const COOL_RND = [0, 0.8, 0.6, 0.45];
 const PREF = [0, 10, 9, 8];                // preferred distance to its mark
-const r3 = (x) => Math.round(x * 1000) / 1000;
+const r3 = (x: number) => Math.round(x * 1000) / 1000;
 const _v = new THREE.Vector3();
 
 export class BossBrain {
-  constructor(boss, { adopt = false } = {}) {
+  b: Boss;
+  rnd: () => number;
+  cool: number;
+  path: number[][] | null = null; pi = 0;
+  goal: number[] | null = null; goalT = 0; stuckT = 0;
+  attn = new Map<number, number>(); dmgBy = new Map<number, number>();
+  last: string | null = null;
+  cd = { crablets: 0, frenzy: 0 };
+  retarget = 0;
+  plan: MovePlan | null = null;
+  speed = 0;
+  pendingPhase = 0;
+  crabSeq: number;
+  _spawned: boolean;
+  force: string | null = null;   // audits: __G.boss.brain.force = 'slam'
+  constructor(boss: Boss, { adopt = false }: { adopt?: boolean } = {}) {
     this.b = boss;
     this.rnd = rng((Math.random() * 2 ** 31) >>> 0);
     this.cool = adopt ? 1.0 : 2.4;
-    this.path = null; this.pi = 0; this.goal = null; this.goalT = 0; this.stuckT = 0;
-    this.attn = new Map(); this.dmgBy = new Map();
-    this.last = null; this.cd = { crablets: 0, frenzy: 0 };
-    this.retarget = 0; this.plan = null; this.speed = 0;
-    this.pendingPhase = 0;
     let maxId = 0;
-    for (const c of boss.crabs.values()) { maxId = Math.max(maxId, c.id); if (c.age === undefined) { c.age = 0; c.tgt = -1; c.retgt = 0; c.speed = c.speed || 0; } }
+    for (const c of boss.crabs.values() as Iterable<BrainCrab>) { maxId = Math.max(maxId, c.id); if (c.age === undefined) { c.age = 0; c.tgt = -1; c.retgt = 0; c.speed = c.speed || 0; } }
     this.crabSeq = maxId + 1;
     // adopted mid-move (host migration): a brood already out isn't spilled twice
     const m = boss.move;
@@ -36,8 +53,8 @@ export class BossBrain {
     if (adopt) this.checkPhase();
   }
 
-  get pace() { return BOSS.paceDiff[this.b.difficulty] ?? 1; }
-  noteDamage(atk, d) { if (atk) { const k = atk.nid ?? atk.slot; this.dmgBy.set(k, (this.dmgBy.get(k) || 0) + d); } }
+  get pace() { return BOSS.paceDiff[this.b.difficulty as keyof typeof BOSS.paceDiff] ?? 1; }
+  noteDamage(atk: Actor | null | undefined, d: number) { if (atk) { const k = atk.nid ?? atk.slot; this.dmgBy.set(k, (this.dmgBy.get(k) || 0) + d); } }
   checkPhase() {
     const f = this.b.hpFrac(), want = f <= BOSS.phases[1] ? 3 : f <= BOSS.phases[0] ? 2 : 1;
     if (want > this.b.phase && want > this.pendingPhase) this.pendingPhase = want;
@@ -45,7 +62,7 @@ export class BossBrain {
   onDefeat() { this.b.move = null; this.path = null; this.plan = null; }
 
   // ---------------------------------------------------------------------------------------------- per frame
-  update(dt) {
+  update(dt: number) {
     const b = this.b, st = b.match.state;
     b.bt += dt;
     const px = b.pos.x, pz = b.pos.z, pyaw = b.yaw;
@@ -81,13 +98,13 @@ export class BossBrain {
   }
 
   // ---------------------------------------------------------------------------------------------- between moves
-  _idle(dt) {
+  _idle(dt: number) {
     const b = this.b;
     this.retarget -= dt; this.goalT -= dt; this.cool -= dt;
     if (this.retarget <= 0 || !b.targetActor()) this._pickTarget();
     const t = b.targetActor();
     if (this.cool <= 0 && t) {
-      if (!this.plan) { this.plan = this._choose(t); if (this.plan) this.plan.t = 0; }
+      if (!this.plan) { this.plan = this._choose(t); this.plan.t = 0; }
       const P = this.plan;
       if (P) {
         P.t += dt;
@@ -119,7 +136,7 @@ export class BossBrain {
     else b.target = -1;
   }
 
-  _walk(dt, t) {
+  _walk(dt: number, t: Actor | null) {
     const b = this.b, nav = b.nav, ph = b.phase;
     if (!this.goal || this.goalT <= 0 || (this.path && this.pi >= this.path.length && this.goalT < 1.5)) this._pickGoal(t);
     let want = b.yaw, go = false;
@@ -143,12 +160,12 @@ export class BossBrain {
   }
   // turn toward yaw at the phase's rate, only through headings its body fits. Hemmed in (a claw would meet a wall), it
   // sidles toward open floor while it turns — up the clearance field, never off it → false when it can't do either
-  _turn(want, dt) {
+  _turn(want: number, dt: number) {
     const b = this.b, nav = b.nav, dy = angleDiff(b.yaw, want);
     if (Math.abs(dy) < 1e-3) return true;
     const ny = b.yaw + clamp(dy, -TURN[b.phase] * dt, TURN[b.phase] * dt);
     if (nav.turnOk(b.pos.x, b.pos.z, ny)) { b.yaw = ny; return true; }
-    const room = (x, z) => nav.wallClear(x, z) + Math.min(nav.floorClear(x, z), 3) * 0.5;
+    const room = (x: number, z: number) => nav.wallClear(x, z) + Math.min(nav.floorClear(x, z), 3) * 0.5;
     const r = SPEED[b.phase] * 0.55 * dt, here = room(b.pos.x, b.pos.z);
     let best = null, bs = here + 1e-3;
     for (let k = 0; k < 8; k++) {
@@ -163,10 +180,10 @@ export class BossBrain {
     return true;
   }
 
-  _pickGoal(t) {
+  _pickGoal(t: Actor | null) {
     const b = this.b, nav = b.nav, pad = nav.pads[0];
     this.goalT = 3 + this.rnd() * 2.5;
-    let best = null, bs = -Infinity;
+    let best: number[] | null = null, bs = -Infinity;
     for (let i = 0; i < 16; i++) {
       const [x, z] = nav.randomPoint(this.rnd);
       const ci = nav.cell(x, z);
@@ -183,7 +200,7 @@ export class BossBrain {
   }
 
   // ---------------------------------------------------------------------------------------------- choosing a move
-  _choose(t) {
+  _choose(t: Actor): MovePlan {
     const b = this.b, nav = b.nav, ph = b.phase;
     const fx = b.pos.x + Math.sin(b.yaw) * 2, fz = b.pos.z + Math.cos(b.yaw) * 2;
     const d = Math.hypot(t.pos.x - fx, t.pos.z - fz);
@@ -191,7 +208,7 @@ export class BossBrain {
     const near = kids.filter((a) => Math.hypot(a.pos.x - b.pos.x, a.pos.z - b.pos.z) < 10.5).length;
     const far = kids.filter((a) => Math.hypot(a.pos.x - b.pos.x, a.pos.z - b.pos.z) > 13).length;
     const aimAt = () => Math.atan2(t.pos.x - b.pos.x, t.pos.z - b.pos.z);
-    const W = [];
+    const W: Array<[string, number]> = [];
     W.push(['slam', d < 11 ? 3 + near * 0.6 : 0.25]);
     W.push(['barrage', 1.3 + far * 0.45 + (d > 12 ? 1 : 0)]);
     W.push(['sweep', d > 5 && d < 17 ? 2.1 : 0.4]);
@@ -206,15 +223,15 @@ export class BossBrain {
     for (const w of W) { r -= w[1]; if (r <= 0) { id = w[0]; break; } }
     if (this.force) { id = this.force; this.force = null; if (id === 'charge' && !lane) id = 'barrage'; }   // audits: __G.boss.brain.force = 'slam'
     switch (id) {
-      case 'slam': case 'sweep': return { id, face: aimAt(), faceFn: aimAt };
-      case 'charge': return { id, face: lane.yaw, lane };
-      default: return { id, face: null };
+      case 'slam': case 'sweep': return { id, face: aimAt(), faceFn: aimAt, t: 0 };
+      case 'charge': return { id, face: lane!.yaw, lane: lane!, t: 0 };   // (lane이 없으면 위에서 barrage로 바꿨다)
+      default: return { id, face: null, t: 0 };
     }
   }
   // a charge lane: roughly toward its mark, long enough to be worth it (longer is better; a wall at the end best)
-  _lane(yaw) {
+  _lane(yaw: number): Lane | null {
     const b = this.b;
-    let best = null, bs = -Infinity;
+    let best: Lane | null = null, bs = -Infinity;
     for (const o of [0, 0.25, -0.25, 0.5, -0.5, 0.8, -0.8, 1.1, -1.1, 1.45, -1.45, 1.8, -1.8]) {   // (piers: along the pier)
       const y = yaw + o;
       if (!b.nav.turnOk(b.pos.x, b.pos.z, y)) continue;
@@ -227,12 +244,12 @@ export class BossBrain {
   }
 
   // build the record: everything a client needs to reproduce the move from its start time
-  _start(P, t) {
+  _start(P: MovePlan, t: Actor) {
     const b = this.b, ph = b.phase, pace = PACE[ph], M = MOVES[P.id];
     this.plan = null; this.speed = 0; this.path = null;
     const fwx = Math.sin(b.yaw), fwz = Math.cos(b.yaw), y = b.pos.y;
     const tele = Math.max(MIN_TELE, M.tele * pace);
-    let act = M.act * pace, rec = M.rec * pace, p;
+    let act = M.act * pace, rec = M.rec * pace, p: Partial<MoveParams>;
     switch (P.id) {
       case 'slam': {
         const x = b.pos.x + fwx * 4.3, z = b.pos.z + fwz * 4.3;
@@ -241,7 +258,7 @@ export class BossBrain {
         break;
       }
       case 'barrage': {
-        const n = [0, 4, 5, 7][ph], pts = [];
+        const n = [0, 4, 5, 7][ph], pts: number[][] = [];
         const cands = G.actors.filter((a) => a.alive && a.team === 0 && !a.superJumpState && !b.nav.inPad(a.pos.x, a.pos.z, HZ.barrelR + 1));
         // spread: every kid gets one before anyone gets two; far ones first (the barrage is its long-range answer)
         cands.sort((a1, a2) => Math.hypot(a2.pos.x - b.pos.x, a2.pos.z - b.pos.z) - Math.hypot(a1.pos.x - b.pos.x, a1.pos.z - b.pos.z) + (this.rnd() - 0.5) * 6);
@@ -249,9 +266,9 @@ export class BossBrain {
           const a = cands[i % cands.length], extra = i >= cands.length;
           const ang = this.rnd() * Math.PI * 2, off = extra ? 3 + this.rnd() * 2.5 : 0;
           let x = a.pos.x + a.vel.x * 0.3 + Math.cos(ang) * off, z = a.pos.z + a.vel.z * 0.3 + Math.sin(ang) * off;
-          const g = G.level.groundHeight(x, z, a.pos.y + 1);
+          const g = G.level!.groundHeight(x, z, a.pos.y + 1);
           if (!(g > PLAYER.waterY) || b.nav.inPad(x, z, HZ.barrelR + 0.5)) { x = a.pos.x; z = a.pos.z; }
-          const gy = G.level.groundHeight(x, z, a.pos.y + 1);
+          const gy = G.level!.groundHeight(x, z, a.pos.y + 1);
           if (!(gy > PLAYER.waterY) || b.nav.inPad(x, z, HZ.barrelR + 0.5)) continue;
           pts.push([r3(x), r3(gy), r3(z), r3(tele + pts.length * HZ.barrelGap)]);
         }
@@ -271,7 +288,7 @@ export class BossBrain {
         const c = b.nav.cast(b.pos.x, b.pos.z, b.yaw, 34);   // re-cast from where it actually stands now
         if (c.dist < HZ.chargeMin) { this.cool = 0.4; this.last = 'charge'; return; }
         p = { x: r3(b.pos.x), y: r3(y), z: r3(b.pos.z), yaw: r3(b.yaw), L: r3(c.dist), wall: c.wall ? 1 : 0, v: HZ.chargeSpeed[ph], stun: 1 };
-        act = chargeTime(p);
+        act = chargeTime(p as MoveParams);
         rec = HZ.stun[ph];
         break;
       }
@@ -288,7 +305,7 @@ export class BossBrain {
         break;
       }
     }
-    const rec0 = { id: P.id, t0: r3(b.bt), s: (this.rnd() * 1e9) >>> 0, d: [r3(tele), r3(act), r3(rec)], p };
+    const rec0: BossMove = { id: P.id, t0: r3(b.bt), s: (this.rnd() * 1e9) >>> 0, d: [r3(tele), r3(act), r3(rec)], p: p! as MoveParams };   // (switch가 동작마다 p를 채운다)
     b.move = rec0;
     b.hz.add(rec0);
     G.netm?.recBoss(['bm', rec0]);
@@ -296,8 +313,8 @@ export class BossBrain {
   }
 
   // ---------------------------------------------------------------------------------------------- playing a move
-  _runMove(dt) {
-    const b = this.b, m = b.move, u = b.bt - m.t0, T = moveTimes(m), p = m.p;
+  _runMove(dt: number) {
+    const b = this.b, m = b.move!, u = b.bt - m.t0, T = moveTimes(m), p = m.p;   // (update가 b.move가 있을 때만 부른다)
     if (u >= T.end) {
       b.move = null; this.last = m.id;
       this.cool = (COOL[b.phase] + this.rnd() * COOL_RND[b.phase]) * this.pace;
@@ -327,11 +344,11 @@ export class BossBrain {
   }
 
   // ---------------------------------------------------------------------------------------------- crablets (host)
-  _spawnCrabs(n) {
+  _spawnCrabs(n: number) {
     const b = this.b, bx = -Math.sin(b.yaw), bz = -Math.cos(b.yaw);
     for (let i = 0; i < n; i++) {
       const side = (i - (n - 1) / 2) * 1.1, x0 = b.pos.x + bx * 3.6 + bz * side, z0 = b.pos.z + bz * 3.6 - bx * side;
-      let x = x0, z = z0, g = G.level.groundHeight(x, z, b.pos.y + 1.5);
+      let x = x0, z = z0, g = G.level!.groundHeight(x, z, b.pos.y + 1.5);
       if (!(g > PLAYER.waterY) || b.nav.inPad(x, z, 0.8)) { x = b.pos.x + bz * side; z = b.pos.z - bx * side; g = b.pos.y; }
       const c = { id: this.crabSeq++, x, y: g, z, yaw: b.yaw + Math.PI + side * 0.4, hp: HZ.crabHp, age: 0, tgt: -1, speed: 0, dead: false, retgt: 0 };
       b.crabs.set(c.id, c);
@@ -339,9 +356,9 @@ export class BossBrain {
     }
   }
 
-  _crabs(dt) {
-    const b = this.b, nav = b.nav, L = G.level, sp = HZ.crabSpeed[b.phase] || HZ.crabSpeed[2];
-    for (const c of b.crabs.values()) {
+  _crabs(dt: number) {
+    const b = this.b, nav = b.nav, L = G.level!, sp = HZ.crabSpeed[b.phase] || HZ.crabSpeed[2];
+    for (const c of b.crabs.values() as Iterable<BrainCrab>) {
       if (c.dead) continue;
       c.age += dt; c.retgt -= dt;
       if (c.age > HZ.crabLife) { b.crabPop(c, false); continue; }
@@ -370,7 +387,7 @@ export class BossBrain {
           moved = true; break;
         }
       }
-      c.speed += ((moved ? sp : 0) - c.speed) * Math.min(1, dt * 8);
+      c.speed = (c.speed ?? 0) + ((moved ? sp : 0) - (c.speed ?? 0)) * Math.min(1, dt * 8);
     }
   }
 }

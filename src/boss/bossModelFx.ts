@@ -6,7 +6,7 @@ import * as THREE from 'three';
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _p = new THREE.Vector3(), _d = new THREE.Vector3();
 const Z = new THREE.Vector3(0, 0, 1);
 
-function rng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function rng(seed: number) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 
 const STEAM_VS = /* glsl */`
 attribute float aSize; attribute float aAlpha; attribute float aSeed; varying float vA; varying float vSeed;
@@ -19,8 +19,30 @@ void main(){ vec2 c = gl_PointCoord - 0.5; float r = length(c) * 2.0; if (r > 1.
   gl_FragColor = vec4(uTint, a * vA * n); }`;
 
 export class BossFX {
-  constructor({ quality = 'high', ink }) {
-    const k = { low: 0.4, medium: 0.7, high: 1, ultra: 1.2 }[quality] ?? 1;
+  declare geyserDur: number;
+  declare accG: number;
+  declare accS: number;
+  declare geyserPos: THREE.Vector3;
+  declare geyserT: number;
+  declare rnd: () => number;
+  declare ns: number;
+  declare S: { v: Float32Array<ArrayBuffer>; life: Float32Array; max: Float32Array; s0: Float32Array; };
+  declare steam: THREE.Points<THREE.BufferGeometry<THREE.NormalBufferAttributes, THREE.BufferGeometryEventMap>, any, THREE.Object3DEventMap>;
+  declare steamMat: THREE.ShaderMaterial;
+  declare sseed: Float32Array;
+  declare sal: Float32Array;
+  declare ssz: Float32Array;
+  declare sp: Float32Array<ArrayBuffer>;
+  declare NS: number;
+  declare ni: number;
+  declare I: { p: Float32Array<ArrayBuffer>; v: Float32Array<ArrayBuffer>; life: Float32Array; max: Float32Array; size: Float32Array; gy: Float32Array; splat: Uint8Array; };
+  declare inkMesh: THREE.InstancedMesh<THREE.IcosahedronGeometry, any, THREE.Object3DEventMap>;
+  declare inkMat: THREE.MeshPhysicalMaterial;
+  declare NI: number;
+  declare group: THREE.Group<THREE.Object3DEventMap>;
+  declare k: number;
+  constructor({ quality = 'high', ink }: { quality?: string; ink: THREE.Color }) {
+    const k = ({ low: 0.4, medium: 0.7, high: 1, ultra: 1.2 } as Record<string, number>)[quality] ?? 1;
     this.k = k;
     this.group = new THREE.Group(); this.group.name = 'hullbreaker-fx';
     this.group.matrixAutoUpdate = false; this.group.matrixWorldAutoUpdate = false; this.group.matrixWorld.identity();
@@ -50,11 +72,11 @@ export class BossFX {
     this.rnd = rng(9001);
     this.geyserT = -1; this.geyserPos = new THREE.Vector3(); this.accS = 0; this.accG = 0;
   }
-  setInk(c) { this.inkMat.color.copy(c); }
-  setViewportHeight(h, fov = 50) { this.steamMat.uniforms.uScale.value = h / (2 * Math.tan((fov * Math.PI) / 360)); }
+  setInk(c: THREE.Color) { this.inkMat.color.copy(c); }
+  setViewportHeight(h: number, fov = 50) { this.steamMat.uniforms.uScale.value = h / (2 * Math.tan((fov * Math.PI) / 360)); }
 
   /** n glossy ink blobs from pos: dir (unit) * speed ± spread, sizes in metres */
-  ink(pos, n, dir, speed, spread = 0.6, size = 0.18, groundY = 0, life = 2.2) {
+  ink(pos: THREE.Vector3, n: number, dir: THREE.Vector3, speed: number, spread = 0.6, size = 0.18, groundY = 0, life = 2.2) {
     const I = this.I, r = this.rnd;
     n = Math.max(1, Math.round(n * this.k));
     for (let c = 0; c < n; c++) {
@@ -69,7 +91,7 @@ export class BossFX {
       I.life[i] = 0; I.max[i] = life * (0.7 + r() * 0.5); const rs = r(); I.size[i] = size * (0.3 + rs * rs * 1.3); I.gy[i] = groundY; I.splat[i] = 0;
     }
   }
-  steamPuff(pos, n, dir, speed, size = 1.2, life = 1.6) {
+  steamPuff(pos: THREE.Vector3, n: number, dir: THREE.Vector3, speed: number, size = 1.2, life = 1.6) {
     const S = this.S, r = this.rnd;
     n = Math.max(1, Math.round(n * this.k));
     for (let c = 0; c < n; c++) {
@@ -84,9 +106,9 @@ export class BossFX {
     }
     this.steam.geometry.attributes.aSeed.needsUpdate = true;
   }
-  geyser(pos, dur = 3.6) { this.geyserT = dur; this.geyserDur = dur; this.geyserPos.copy(pos); }
+  geyser(pos: THREE.Vector3Like, dur = 3.6) { this.geyserT = dur; this.geyserDur = dur; this.geyserPos.copy(pos); }
 
-  update(dt) {
+  update(dt: number) {
     // continuous geyser (death)
     if (this.geyserT > 0) {
       this.geyserT -= dt;

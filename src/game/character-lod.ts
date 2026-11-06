@@ -23,7 +23,7 @@ export const LOD_QUALITY = {
 };
 export const HYST = 0.12;
 /** Tier for a screen height `px` given the current tier `cur` (hysteresis), quality row `Q` and hero threshold `H`. */
-export function pickTier(px, cur, Q, H = Q.hero) {
+export function pickTier(px: number, cur: number, Q: { hero: number; far: number }, H = Q.hero) {
   const up = 1 + HYST, dn = 1 - HYST;
   let t = cur < 0 ? (px >= H ? T_HERO : px < Q.far ? T_FAR : T_GAME) : cur;
   if (t === T_HERO && px < H * dn) t = px < Q.far ? T_FAR : T_GAME;
@@ -43,14 +43,14 @@ const DITHER_TEST = '\n  if (uLodFade.x > 0.0) { float iwLodN = iwLodIGN(floor(g
 const MAIN_RE = /void\s+main\s*\(\s*\)\s*\{/;
 
 /** A clone of `base` whose fragment shader dithers against `fadeU` ({ value: Vector2 }). Same program for every kid. */
-export function ditherMaterial(base, fadeU) {
+export function ditherMaterial<M extends THREE.Material>(base: M, fadeU: { value: THREE.Vector2 }): M {
   const m = base.clone();
   const prev = base.onBeforeCompile;
   const key = (base.customProgramCacheKey ? base.customProgramCacheKey() : '') + '|iwLodZ';
-  m.onBeforeCompile = function (sh, r) {
+  m.onBeforeCompile = function (sh: THREE.WebGLProgramParametersWithUniforms, r: THREE.WebGLRenderer) {
     if (prev) prev.call(this, sh, r);
     sh.uniforms.uLodFade = fadeU;
-    if (MAIN_RE.test(sh.fragmentShader)) sh.fragmentShader = sh.fragmentShader.replace(MAIN_RE, (s) => DITHER_PARS + s + DITHER_TEST);
+    if (MAIN_RE.test(sh.fragmentShader)) sh.fragmentShader = sh.fragmentShader.replace(MAIN_RE, (s: string) => DITHER_PARS + s + DITHER_TEST);
   };
   m.customProgramCacheKey = () => key;
   return m;
@@ -59,7 +59,7 @@ export function ditherMaterial(base, fadeU) {
 // ------------------------------------------------------------------------------------------------
 // Far tier: bone-aware vertex clustering
 // ------------------------------------------------------------------------------------------------
-const _farCache = new WeakMap();
+const _farCache = new WeakMap<THREE.BufferGeometry, THREE.BufferGeometry>();
 
 /**
  * Decimate an (indexed or not) skinned geometry by vertex clustering. Cluster key = grid cell + dominant bone + discrete
@@ -67,13 +67,13 @@ const _farCache = new WeakMap();
  * shells keep both faces). Each cluster keeps its most central vertex (attributes incl. skin
  * weights copied from it — the surface never shrinks) with the members' averaged normal.
  */
-export function clusterDecimate(src, cell) {
+export function clusterDecimate(src: THREE.BufferGeometry, cell: number) {
   const A = src.attributes, P = A.position, n = P.count;
   const N = A.normal, SI = A.skinIndex, SW = A.skinWeight, EX = A.aEx, CL = A.aCloth, TI = A.aTint;
   const inv = 1 / cell;
   const key2c = new Map(), vc = new Int32Array(n);
-  const sx = [], sy = [], sz = [], cn = [], rx = [], ry = [], rz = [];
-  const newC = (key, i) => {
+  const sx: number[] = [], sy: number[] = [], sz: number[] = [], cn: number[] = [], rx: number[] = [], ry: number[] = [], rz: number[] = [];
+  const newC = (key: string, i: number) => {
     const c = cn.length; key2c.set(key, c); sx.push(0); sy.push(0); sz.push(0); cn.push(0);
     rx.push(N ? N.getX(i) : 0); ry.push(N ? N.getY(i) : 0); rz.push(N ? N.getZ(i) : 0);
     return c;
@@ -104,7 +104,7 @@ export function clusterDecimate(src, cell) {
   }
   const out = new THREE.BufferGeometry();
   for (const name in A) {
-    const a = A[name], s = a.itemSize, arr = new a.array.constructor(nc * s);
+    const a = A[name], s = a.itemSize, arr = new (a.array.constructor as new (n: number) => THREE.TypedArray)(nc * s);
     for (let c = 0; c < nc; c++) { const r = rep[c]; for (let k = 0; k < s; k++) arr[c * s + k] = a.getComponent(r, k); }
     out.setAttribute(name, new THREE.BufferAttribute(arr, s, a.normalized));
   }
@@ -133,10 +133,10 @@ export function clusterDecimate(src, cell) {
   return out;
 }
 
-const triCount = (g) => (g.index ? g.index.count : g.attributes.position.count) / 3;
+const triCount = (g: THREE.BufferGeometry) => (g.index ? g.index.count : g.attributes.position.count) / 3;
 
 /** Far-tier version of `geo`, decimated to ≲ `target` triangles (cached per source geometry). */
-export function farGeometry(geo, target) {
+export function farGeometry(geo: THREE.BufferGeometry, target: number) {
   if (!geo || !geo.attributes || !geo.attributes.position) return geo;
   let c = _farCache.get(geo);
   if (c) return c;

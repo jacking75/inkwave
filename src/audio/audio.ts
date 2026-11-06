@@ -18,29 +18,50 @@
 // Every builder works on any BaseAudioContext so tools/audio-test.mjs renders them through OfflineAudioContext.
 
 import { DEFAULT_SETTINGS } from '../config.js';
+import type { MusicEngine, Dest } from './music.js';
 import {
   V, music as musicSingleton, makeImpulse, mulberry32, mtof, perc, ahr, adsr, pts, sweep, strokeWave, pulseWave,
   kick, snare, crash, tom, brass, bell, pad, bass,
 } from './music.js';
 
+
+// ------------------------------------------------------------------------------------------------ contracts
+type Pos = { x: number; y: number; z: number };
+// 재생 선택: 위치(3D), 음량·음높이, 예약 시각(at 절대 · delay 상대), 반복 소리의 추가 조절(params)
+export interface PlayOpts { pos?: Pos | null; volume?: number; pitch?: number; at?: number; delay?: number; params?: Record<string, unknown>; [k: string]: unknown }
+// 반복 소리 제어(loop 빌더가 돌려준다): 음높이·추가 조절을 지금 시각에 반영
+export interface LoopCtl { pitch?(q: number, now: number): void; params?(p: Record<string, unknown>, now: number): void }
+// 효과음 정의: 음량·같은 이름 동시 수·음높이 흔들림·잔향·병합 간격·기준 거리·단발 길이 + build(한 번) 또는 loop(반복)
+export interface SfxDef {
+  gain?: number; max?: number; jitter?: number; reverb?: number; minGap?: number; ref?: number; oneShot?: number;
+  build?(v: V, p: number, o: PlayOpts): void;
+  loop?(v: V, p: number, o: PlayOpts): LoopCtl | void;
+}
+// 재생 중인 음성 하나: 빌더, 출력·페이드·거리 필터·패너·잔향 송신, 상태
+interface Voice {
+  v: V; out: GainNode; def: SfxDef; t: number; vol: number; panner: PannerNode | null; lp: BiquadFilterNode | null; send: GainNode | null; rev: number;
+  fade: GainNode | null; dk?: number; stolen?: boolean; burst?: boolean; done?: boolean;
+}
+export interface LoopHandle { name?: string; readonly playing: boolean; set(p?: { volume?: number; pitch?: number; params?: Record<string, unknown>; pos?: Pos | null }): void; stop(fade?: number): void }
+
 const MAX_VOICES = 48;   // one-shots alive at once (oldest stolen beyond this)
 const MAX_LOOPS = 24;
-const taper = (v) => Math.pow(Math.min(1, Math.max(0, +v || 0)), 1.5);
-const validPos = (p) => !!p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z);
-const distCut = (d) => (d < 10 ? 22000 : Math.max(900, 22000 * Math.pow(0.5, (d - 10) / 13)));
+const taper = (v: number) => Math.pow(Math.min(1, Math.max(0, +v || 0)), 1.5);
+const validPos = (p: Pos | null | undefined): p is Pos => !!p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z);
+const distCut = (d: number) => (d < 10 ? 22000 : Math.max(900, 22000 * Math.pow(0.5, (d - 10) / 13)));
 
 /* ------------------------------------------------------------------------------------------------------------
  * Grain textures for wet loops (bubbles, squelch, rain, sizzle): JS-rendered, seamlessly looping buffers.
  * ----------------------------------------------------------------------------------------------------------*/
-const TEX = {
+const TEX: Record<string, { dur: number; rate: number; f?: number[]; d: number[]; amp: number[]; rise?: number[]; crackle?: boolean }> = {
   bubbles: { dur: 3, rate: 46, f: [230, 950], d: [0.018, 0.065], amp: [0.25, 1], rise: [1.35, 2.3] },
   bubbles_bright: { dur: 2.5, rate: 60, f: [650, 2300], d: [0.01, 0.035], amp: [0.2, 1], rise: [1.4, 2.4] },
   squelch: { dur: 2.5, rate: 75, f: [110, 460], d: [0.03, 0.09], amp: [0.3, 1], rise: [1.1, 1.7] },
   rain: { dur: 3, rate: 280, f: [1500, 5500], d: [0.004, 0.016], amp: [0.05, 1], rise: [1.2, 1.9] },
   sizzle: { dur: 2, rate: 450, crackle: true, d: [0.0006, 0.003], amp: [0.05, 1] },
 };
-const texCache = new WeakMap();
-export function texture(ctx, kind) {
+const texCache = new WeakMap<BaseAudioContext, Map<string, AudioBuffer>>();
+export function texture(ctx: BaseAudioContext, kind: string) {
   let m = texCache.get(ctx);
   if (!m) { m = new Map(); texCache.set(ctx, m); }
   let buf = m.get(kind);
@@ -51,7 +72,7 @@ export function texture(ctx, kind) {
   let seed = 0;
   for (const c of kind) seed = (seed * 31 + c.charCodeAt(0)) | 0;
   const rnd = mulberry32(seed);
-  const lerp = (r, x) => r[0] + (r[1] - r[0]) * x;
+  const lerp = (r: number[], x: number) => r[0] + (r[1] - r[0]) * x;
   const n = Math.floor(s.rate * s.dur), atk = 0.0012 * sr;
   for (let k = 0; k < n; k++) {
     const start = Math.floor(rnd() * len);
@@ -60,7 +81,7 @@ export function texture(ctx, kind) {
     if (s.crackle) {
       for (let i = 0; i < L; i++) d[(start + i) % len] += amp * (rnd() * 2 - 1) * Math.exp(-i / dec);
     } else {
-      const f0 = lerp(s.f, rnd()), f1 = f0 * lerp(s.rise, rnd());
+      const f0 = lerp(s.f!, rnd()), f1 = f0 * lerp(s.rise!, rnd());   // (crackle이 아닌 결은 f·rise가 있다)
       let ph = rnd() * 0.2;
       for (let i = 0; i < L; i++) {
         const f = f0 * Math.pow(f1 / f0, Math.min(1, i / (dec * 2)));
@@ -82,21 +103,39 @@ export function texture(ctx, kind) {
 /* ------------------------------------------------------------------------------------------------------------
  * Engine
  * ----------------------------------------------------------------------------------------------------------*/
-const NOOP_HANDLE = Object.freeze({ set() {}, stop() {}, playing: false });
+const NOOP_HANDLE: LoopHandle = Object.freeze({ set() {}, stop() {}, playing: false });
+
+// 엔진 선택: 기존 문맥(오프라인 시험), 결정적 난수 씨앗, 음악 연결 여부, 원시 출력, HRTF
+interface EngineOpts { context?: BaseAudioContext; seed?: number; music?: boolean; raw?: boolean; hrtf?: boolean }
 
 export class AudioEngine {
+  opts: EngineOpts;
+  ctx: BaseAudioContext | null = null;
+  ready = false;
+  offline = false;
+  hrtf: boolean;
+  vol: { master: number; music: number; sfx: number };
+  byName = new Map<string, Voice[]>();
+  voices: Voice[] = [];
+  loops = new Set<LoopHandle>();
+  last = new Map<string, number>();
+  L = { x: 0, y: 0, z: 0 };
+  rng: () => number;
+  counts = { played: 0, dropped: 0, stolen: 0 };
+  _warned = new Set<string>();
+  _duck: { target: number; until: number } | null = null;
+  _duckPts: number[][] | null = null;
+  music: MusicEngine;
+  declare master: GainNode; declare sfxBus: GainNode; declare musicBus: GainNode; declare duckG: GainNode; declare sfxIn: GainNode;
+  declare revSend: GainNode; declare conv: ConvolverNode; declare revRet: GainNode;
+  glue: DynamicsCompressorNode | null = null; limiter: DynamicsCompressorNode | null = null;
   // opts: { context (use an existing/offline ctx), seed (deterministic randomness), music: false (don't attach
   //         the music singleton), raw: true (no master dynamics — used by the test to measure raw levels), hrtf }
-  constructor(opts = {}) {
+  constructor(opts: EngineOpts = {}) {
     this.opts = opts;
-    this.ctx = null; this.ready = false; this.offline = false;
     this.hrtf = opts.hrtf ?? true;
     this.vol = { master: DEFAULT_SETTINGS.master ?? 0.8, music: DEFAULT_SETTINGS.music ?? 0.6, sfx: DEFAULT_SETTINGS.sfx ?? 0.85 };
-    this.byName = new Map(); this.voices = []; this.loops = new Set(); this.last = new Map();
-    this.L = { x: 0, y: 0, z: 0 };
     this.rng = opts.seed != null ? mulberry32(opts.seed) : Math.random;
-    this.counts = { played: 0, dropped: 0, stolen: 0 };
-    this._warned = new Set(); this._duck = null;
     this.music = musicSingleton;
   }
 
@@ -104,13 +143,14 @@ export class AudioEngine {
     if (this.ctx) { this.resume(); return this; }
     let ctx = this.opts.context;
     if (!ctx) {
-      const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
+      const AC = typeof window !== 'undefined' && (window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
       if (!AC) return this;
       try { ctx = new AC({ latencyHint: 'interactive' }); } catch (e) { try { ctx = new AC(); } catch (e2) { return this; } }
     }
     this.ctx = ctx;
+    const c = ctx;
     this.offline = typeof OfflineAudioContext !== 'undefined' && ctx instanceof OfflineAudioContext;
-    const g = (v) => { const n = ctx.createGain(); n.gain.value = v; return n; };
+    const g = (v: number) => { const n = c.createGain(); n.gain.value = v; return n; };
     this.master = g(taper(this.vol.master));
     this.sfxBus = g(taper(this.vol.sfx));
     this.musicBus = g(taper(this.vol.music));
@@ -120,32 +160,32 @@ export class AudioEngine {
     this.musicBus.connect(this.duckG); this.duckG.connect(this.master);
     // shared plaza reverb
     this.revSend = g(1);
-    this.conv = ctx.createConvolver();
-    this.conv.buffer = makeImpulse(ctx, 1.5, 3.4, { pre: 0.012, seed: 3 });
+    this.conv = c.createConvolver();
+    this.conv.buffer = makeImpulse(c, 1.5, 3.4, { pre: 0.012, seed: 3 });
     this.revRet = g(0.6);
     this.revSend.connect(this.conv); this.conv.connect(this.revRet); this.revRet.connect(this.sfxBus);
     // master dynamics: gentle glue then a safety limiter
     // sub-sonic / DC safety high-pass on everything
-    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 25; hp.Q.value = 0.707;
+    const hp = c.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 25; hp.Q.value = 0.707;
     this.master.connect(hp);
-    if (this.opts.raw) hp.connect(ctx.destination);
+    if (this.opts.raw) hp.connect(c.destination);
     else {
-      const glue = ctx.createDynamicsCompressor();
+      const glue = c.createDynamicsCompressor();
       glue.threshold.value = -12; glue.knee.value = 8; glue.ratio.value = 3; glue.attack.value = 0.003; glue.release.value = 0.18;
-      const lim = ctx.createDynamicsCompressor();
+      const lim = c.createDynamicsCompressor();
       lim.threshold.value = -2; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = 0.001; lim.release.value = 0.08;
-      hp.connect(glue); glue.connect(lim); lim.connect(ctx.destination);
+      hp.connect(glue); glue.connect(lim); lim.connect(c.destination);
       this.glue = glue; this.limiter = lim;
     }
     this.ready = true;
-    if (this.opts.music !== false && this.music) this.music._init(ctx, this.musicBus, { offline: this.offline });
+    if (this.opts.music !== false && this.music) this.music._init(c, this.musicBus, { offline: this.offline });
     if (!this.offline) { this._installUnlock(); this._warm(); this.resume(); }
     return this;
   }
 
   resume() {
     const c = this.ctx;
-    if (c && !this.offline && c.state !== 'running' && c.state !== 'closed' && c.resume) c.resume().catch(() => {});
+    if (c && !this.offline && c.state !== 'running' && c.state !== 'closed' && (c as AudioContext).resume) (c as AudioContext).resume().catch(() => {});
   }
 
   _installUnlock() {
@@ -162,8 +202,8 @@ export class AudioEngine {
     setTimeout(step, 60);
   }
 
-  setVolumes(v = {}) {
-    for (const k of ['master', 'music', 'sfx']) if (v[k] != null && Number.isFinite(+v[k])) this.vol[k] = Math.min(1, Math.max(0, +v[k]));
+  setVolumes(v: { master?: number; music?: number; sfx?: number } = {}) {
+    for (const k of ['master', 'music', 'sfx'] as const) if (v[k] != null && Number.isFinite(+v[k]!)) this.vol[k] = Math.min(1, Math.max(0, +v[k]!));
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     this.master.gain.setTargetAtTime(taper(this.vol.master), t, 0.04);
@@ -171,7 +211,7 @@ export class AudioEngine {
     this.sfxBus.gain.setTargetAtTime(taper(this.vol.sfx), t, 0.04);
   }
 
-  setListener(pos, forward, up) {
+  setListener(pos: Pos, forward: Pos, up: Pos) {
     if (!this.ctx || !validPos(pos)) return;
     this.L.x = pos.x; this.L.y = pos.y; this.L.z = pos.z;
     const l = this.ctx.listener, t = this.ctx.currentTime;
@@ -189,11 +229,11 @@ export class AudioEngine {
     }
   }
 
-  _dist(p) { const dx = p.x - this.L.x, dy = p.y - this.L.y, dz = p.z - this.L.z; return Math.sqrt(dx * dx + dy * dy + dz * dz); }
+  _dist(p: Pos) { const dx = p.x - this.L.x, dy = p.y - this.L.y, dz = p.z - this.L.z; return Math.sqrt(dx * dx + dy * dy + dz * dz); }
 
   // ref: the def's reference distance (m) — giant sources (the boss) stay loud across the arena
-  _panner(pos, ref = 3) {
-    const ctx = this.ctx;
+  _panner(pos: Pos, ref = 3) {
+    const ctx = this.ctx!;
     const p = ctx.createPanner();
     p.panningModel = this.hrtf ? 'HRTF' : 'equalpower';
     p.distanceModel = 'inverse'; p.refDistance = ref; p.maxDistance = Math.max(60, ref * 20); p.rolloffFactor = 1.2;
@@ -203,25 +243,25 @@ export class AudioEngine {
     return p;
   }
 
-  _setPos(voice, pos, t) {
+  _setPos(voice: Voice, pos: Pos | null | undefined, t: number) {
     if (!voice.panner || !validPos(pos)) return;
     const p = voice.panner;
     if (p.positionX) { p.positionX.setTargetAtTime(pos.x, t, 0.02); p.positionY.setTargetAtTime(pos.y, t, 0.02); p.positionZ.setTargetAtTime(pos.z, t, 0.02); }
     else p.setPosition(pos.x, pos.y, pos.z);
     const d = this._dist(pos) * (voice.dk || 1);
-    voice.lp.frequency.setTargetAtTime(distCut(d), t, 0.05);
+    voice.lp!.frequency.setTargetAtTime(distCut(d), t, 0.05);
     if (voice.send) voice.send.gain.setTargetAtTime(voice.rev * this._sendScale(d), t, 0.05);
   }
 
-  _sendScale(d) { return Math.sqrt(3 / (3 + 1.2 * Math.max(0, d - 3))); }
+  _sendScale(d: number) { return Math.sqrt(3 / (3 + 1.2 * Math.max(0, d - 3))); }
 
-  _voice(def, t, pos, vol, withFade) {
-    const ctx = this.ctx;
+  _voice(def: SfxDef, t: number, pos: Pos | null | undefined, vol: number, withFade?: boolean): Voice {
+    const ctx = this.ctx!;
     const out = ctx.createGain(); out.gain.value = vol;
     const v = new V(ctx, out, t, this.rng);
     v.nodes.push(out);
-    const voice = { v, out, def, t, vol, panner: null, lp: null, send: null, rev: def.reverb ?? 0.08, fade: null };
-    let head = out;
+    const voice: Voice = { v, out, def, t, vol, panner: null, lp: null, send: null, rev: def.reverb ?? 0.08, fade: null };
+    let head: AudioNode = out;
     if (withFade) { voice.fade = ctx.createGain(); out.connect(voice.fade); head = voice.fade; v.nodes.push(voice.fade); }
     let scale = 1;
     if (validPos(pos)) {
@@ -241,7 +281,7 @@ export class AudioEngine {
     return voice;
   }
 
-  _steal(voice, now) {
+  _steal(voice: Voice | undefined, now: number) {
     if (!voice || voice.v.dead || voice.stolen) return;
     voice.stolen = true; this.counts.stolen++;
     const p = voice.out.gain;
@@ -249,13 +289,13 @@ export class AudioEngine {
     voice.v.kill(now + 0.03);
   }
 
-  _def(name) {
+  _def(name: string) {
     const d = SFX[name];
     if (!d && !this._warned.has(name)) { this._warned.add(name); console.warn('[audio] unknown sound', name); }
     return d;
   }
 
-  play(name, o = {}) {
+  play(name: string, o: PlayOpts = {}): Voice | null {
     if (!this.ctx) return null;
     const d = this._def(name);
     if (!d) return null;
@@ -303,24 +343,24 @@ export class AudioEngine {
     return voice;
   }
 
-  loop(name, o = {}) {
+  loop(name: string, o: PlayOpts = {}): LoopHandle {
     if (!this.ctx) return NOOP_HANDLE;
     const d = this._def(name);
     if (!d) return NOOP_HANDLE;
     o = o || {};
     for (const h of this.loops) if (!h.playing) this.loops.delete(h);
-    if (this.loops.size >= MAX_LOOPS) this.loops.values().next().value.stop(0.05);
+    if (this.loops.size >= MAX_LOOPS) this.loops.values().next().value!.stop(0.05);
     const t = this.ctx.currentTime;
     const gain = d.gain ?? 0.5;
     const voice = this._voice(d, t, o.pos, Math.max(0, +(o.volume ?? 1) || 0) * gain, true);
-    const v = voice.v, outG = voice.out.gain, fadeG = voice.fade.gain;
+    const v = voice.v, outG = voice.out.gain, fadeG = voice.fade!.gain;
     fadeG.setValueAtTime(0, t);
     fadeG.linearRampToValueAtTime(1, t + 0.06);
-    const fadeNow = (now) => Math.min(1, Math.max(0, (now - t) / 0.06));
-    let ctl = {};
+    const fadeNow = (now: number) => Math.min(1, Math.max(0, (now - t) / 0.06));
+    let ctl: LoopCtl = {};
     try {
       if (d.loop) ctl = d.loop(v, Math.max(0.05, o.pitch ?? 1), o) || {};
-      else { d.build(v, Math.max(0.05, o.pitch ?? 1), o); v.finish(); }
+      else { d.build!(v, Math.max(0.05, o.pitch ?? 1), o); v.finish(); }
     } catch (e) {
       console.error('[audio] loop build failed', name, e);
       v.dispose();
@@ -328,12 +368,12 @@ export class AudioEngine {
     }
     const eng = this;
     let stopped = false;
-    const h = {
+    const h: LoopHandle = {
       name,
       get playing() { return !stopped && !v.dead; },
       set(p = {}) {
         if (stopped || v.dead || !p) return;
-        const now = eng.ctx.currentTime;
+        const now = eng.ctx!.currentTime;
         if (p.volume != null && Number.isFinite(+p.volume)) outG.setTargetAtTime(Math.max(0, +p.volume) * gain, now, 0.04);
         if (p.pitch != null && Number.isFinite(+p.pitch) && ctl.pitch) ctl.pitch(Math.max(0.05, +p.pitch), now);
         if (p.params && ctl.params) ctl.params(p.params, now);
@@ -344,7 +384,7 @@ export class AudioEngine {
         stopped = true;
         eng.loops.delete(h);
         if (v.dead) return;
-        const now = eng.ctx.currentTime, f = Math.max(0.01, +fade || 0.01);
+        const now = eng.ctx!.currentTime, f = Math.max(0.01, +fade || 0.01);
         fadeG.cancelScheduledValues(now); fadeG.setValueAtTime(fadeNow(now), now); fadeG.linearRampToValueAtTime(0, now + f);
         v.kill(now + f + 0.02);
       },
@@ -354,7 +394,7 @@ export class AudioEngine {
   }
 
   // duck envelope is tracked in JS (linear points) so overlapping ducks always continue from the exact current value
-  _duckAt(t) {
+  _duckAt(t: number) {
     const P = this._duckPts;
     if (!P || !P.length || t >= P[P.length - 1][0]) return P && P.length ? P[P.length - 1][1] : 1;
     if (t <= P[0][0]) return P[0][1];
@@ -396,27 +436,27 @@ export class AudioEngine {
  * v.t = start time, v.out = voice output. gain = voice level, max = voices per name, jitter = random pitch ±,
  * reverb = plaza send, minGap = merge window.
  * ----------------------------------------------------------------------------------------------------------*/
-export const SFX = {};
-const def = (name, o) => { SFX[name] = o; };
+export const SFX: Record<string, SfxDef> = {};
+const def = (name: string, o: SfxDef) => { SFX[name] = o; };
 
 // shared wet layers
-function bloops(v, t0, n, spread, fr, peak, p = 1) {
+function bloops(v: V, t0: number, n: number, spread: number, fr: number[], peak: number, p = 1) {
   for (let i = 0; i < n; i++) {
     const f = v.r(fr[0], fr[1]) * p;
     v.tone({ t: t0 + v.r(0, spread), f, f1: f * v.r(0.3, 0.45), sw: v.r(0.04, 0.07), a: 0.0015, d: v.r(0.05, 0.09), peak: peak * v.r(0.6, 1) });
   }
 }
-function plips(v, t0, n, spread, fr, peak, p = 1) {
+function plips(v: V, t0: number, n: number, spread: number, fr: number[], peak: number, p = 1) {
   for (let i = 0; i < n; i++) v.bub(v.t + t0 + v.r(0, spread), v.r(fr[0], fr[1]) * p, peak * v.r(0.5, 1), v.r(0.02, 0.04), v.r(1.4, 2.0));
 }
-function bigSplat(v, t, p, s) {
+function bigSplat(v: V, t: number, p: number, s: number) {
   v.tone({ t, f: 120 * p, f1: 40 * p, sw: 0.15, a: 0.002, d: 0.28, peak: 1 * s });
   v.nz({ t, kind: 'pink', ft: 'lowpass', f: 2500, f1: 300, sw: 0.25, q: 1.5, a: 0.002, d: 0.28, peak: 0.9 * s });
   v.nz({ t: t + 0.01, f: 1600 * p, f1: 320 * p, sw: 0.3, q: v.r(5, 8), a: 0.003, d: 0.32, peak: 0.9 * s });
   bloops(v, t + 0.02, 3, 0.12, [400, 650], 0.35 * s, p);
   v.nz({ t, ft: 'highpass', f: 3500, a: 0.005, d: 0.35, peak: 0.3 * s });
 }
-function uiNote(v, t, m, p, peak) {
+function uiNote(v: V, t: number, m: number, p: number, peak: number) {
   const f = mtof(m) * p;
   v.tone({ t, f: f * 0.5, f1: f, sw: 0.018, a: 0.002, d: 0.2, peak });
   v.tone({ t, type: 'triangle', f: f * 2, a: 0.001, d: 0.07, peak: peak * 0.18 });
@@ -504,7 +544,7 @@ def('shoot_blaster', {
 def('blaster_pump', {
   gain: 0.62, max: 3, jitter: 0.03, reverb: 0.06,
   build(v, p) {
-    const clack = (t, hard) => {
+    const clack = (t: number, hard: number) => {
       v.nz({ t, f: 3100 * p, q: 2.4, a: 0.0003, d: 0.009, peak: 0.8 * hard });                          // click
       v.tone({ t, f: 1870 * p, a: 0.0005, d: 0.045, peak: 0.12 * hard });                               // metal ring
       v.tone({ t, f: 3050 * p, a: 0.0005, d: 0.03, peak: 0.07 * hard });
@@ -545,7 +585,7 @@ def('charger_charge', {
     const sh = v.gain(0.05 * p, v.out);
     v.noise('white', T, null, v.filter('highpass', 7000, 0.7, sh));
     return {
-      pitch(q, now) {
+      pitch(q: number, now) {
         const k = 0.03;
         o1.frequency.setTargetAtTime(base * q, now, k); o2.frequency.setTargetAtTime(base * 2 * q, now, k);
         o3.frequency.setTargetAtTime(base * 3.01 * q, now, k); bp.frequency.setTargetAtTime(Math.min(base * 4 * q, 16000), now, k);
@@ -557,7 +597,7 @@ def('charger_charge', {
 def('charger_full', {
   gain: 0.24, max: 2, jitter: 0, reverb: 0.2,
   build(v, p) {
-    const ding = (t, f, k) => {
+    const ding = (t: number, f: number, k: number) => {
       for (const [r, a, d] of [[1, 0.5, 0.9], [2.0, 0.22, 0.6], [3.01, 0.14, 0.4], [4.2, 0.09, 0.28], [5.43, 0.05, 0.2]]) v.tone({ t, f: f * r, a: 0.001, d: d * k, peak: a });
     };
     ding(0, 1568 * p, 1); ding(0.065, 2349 * p, 0.8);
@@ -604,7 +644,7 @@ def('roll', {
     v.noise('pink', T, null, v.filter('bandpass', 750, 3, sq));
     const l = v.lfo(5 * p, 0.09, sq.gain, T, null);                                                      // drum rotation squish
     return {
-      pitch(q, now) {
+      pitch(q: number, now) {
         tex.playbackRate.setTargetAtTime(q, now, 0.05); l.osc.frequency.setTargetAtTime(5 * q, now, 0.05);
         lp.frequency.setTargetAtTime(1200 + 600 * q, now, 0.05);
       },
@@ -680,7 +720,7 @@ def('splatling_spin', {
     const trem = v.lfo(base * p / 6, 0.05, rat.gain, T, null, 'square');                                  // barrel/gear rattle
     const air = v.gain(0.04 * p, v.out); v.noise('pink', T, null, v.filter('highpass', 3000, 0.7, air));
     return {
-      pitch(q, now) {
+      pitch(q: number, now) {
         const k = 0.05;
         o1.frequency.setTargetAtTime(base * q, now, k); o2.frequency.setTargetAtTime(base * 2.02 * q, now, k);
         lp.frequency.setTargetAtTime(Math.min(1800 * q * q, 12000), now, k); trem.osc.frequency.setTargetAtTime(base * q / 6, now, k);
@@ -810,7 +850,7 @@ def('climb', {
     const sc = v.gain(0.12, v.out);
     v.noise('pink', T, null, v.filter('bandpass', 1200, 2, sc));
     const l = v.lfo(7 * p, 0.1, sc.gain, T, null);
-    return { pitch(q, now) { tex.playbackRate.setTargetAtTime(q, now, 0.05); l.osc.frequency.setTargetAtTime(7 * q, now, 0.05); } };
+    return { pitch(q: number, now) { tex.playbackRate.setTargetAtTime(q, now, 0.05); l.osc.frequency.setTargetAtTime(7 * q, now, 0.05); } };
   },
 });
 def('swim_splash', {
@@ -1042,13 +1082,13 @@ def('super_jump', {
  * booyah_charge pitch = 1 + charge (1..2, rises an octave); crab_move / crab_roll pitch ≈ speed factor (≈0.5..1.6);
  * wail_blast / jet_loop pitch ≈ 1 (small variations ok). */
 // struck metal: inharmonic free-bar partials + a contact click
-function clank(v, t, f, peak, d, p = 1, n = 4, to) {
+function clank(v: V, t: number, f: number, peak: number, d: number, p = 1, n = 4, to?: Dest) {
   const P = [[1, 1, 1], [2.76, 0.55, 0.65], [5.4, 0.3, 0.4], [8.93, 0.15, 0.25]];
   for (let i = 0; i < n; i++) { const [r, a, k] = P[i]; v.tone({ t, f: f * r * p, a: 0.0006, d: d * k, peak: peak * a, to }); }
   v.nz({ t, ft: 'highpass', f: 3000, a: 0.0004, d: 0.01, peak: peak * 0.5, to });
 }
 // band-passed noise whoosh: centre f0 → fm (at `mid` of dur) → f1, level follows env ([[frac, level], ...])
-function whoosh(v, t, dur, f0, fm, f1, peak, o = {}) {
+function whoosh(v: V, t: number, dur: number, f0: number, fm: number, f1: number, peak: number, o: { to?: Dest; q?: number; mid?: number; env?: number[][]; kind?: string } = {}) {
   const T = v.t + t, g = v.gain(0, o.to || v.out), bp = v.filter('bandpass', f0, o.q ?? 1.5, g);
   bp.frequency.setValueAtTime(f0, T);
   bp.frequency.exponentialRampToValueAtTime(fm, T + dur * (o.mid ?? 0.55));
@@ -1058,7 +1098,7 @@ function whoosh(v, t, dur, f0, fm, f1, peak, o = {}) {
   return bp;
 }
 // big wet explosion core shared by the heavy impacts (sub drop, crack, driven noise burst, wash, bloops, hiss tail)
-function inkBoom(v, t, p, s, o = {}) {
+function inkBoom(v: V, t: number, p: number, s: number, o: { len?: number; f?: number; f1?: number; crack?: number; bright?: number; bloops?: number; plips?: number } = {}) {
   const len = o.len ?? 1;
   v.tone({ t, f: (o.f ?? 85) * p, f1: (o.f1 ?? 26) * p, sw: 0.75 * len, a: 0.002, d: 0.95 * len, peak: s });
   v.tone({ t, type: 'triangle', f: 180 * p, f1: 55 * p, sw: 0.14, a: 0.001, d: 0.18, peak: 0.45 * s });
@@ -1071,7 +1111,7 @@ function inkBoom(v, t, p, s, o = {}) {
   plips(v, t + 0.2, o.plips ?? 5, 0.6 * len, [800, 1700], 0.1 * s, p);                                  // droplets raining back
 }
 // sawtooth "voice" through parallel band-pass formants → to; returns the source oscillators
-function vox(v, T, t1, f0, formants, to, detune = 8) {
+function vox(v: V, T: number, t1: number | null, f0: number, formants: number[][], to?: Dest, detune = 8) {
   const mix = v.gain(1);
   const srcs = [-detune, detune].map((dt) => { const o = v.osc('sawtooth', f0, T, t1, mix); o.detune.value = dt; return o; });
   const fs = formants.map(([f, q, a]) => { const bp = v.filter('bandpass', f, q, v.gain(a, to)); mix.connect(bp); return bp; });
@@ -1117,10 +1157,10 @@ def('shield_up', {
   build(v, p) {
     const T = v.t;
     const g = v.gain(0, v.out), end = pts(g.gain, T, [[0, 0], [0.05, 0.22], [0.26, 0.32], [0.5, 0.06], [0.62, 0]]);
-    const wob = { depth: v.gain(45) };                                                                    // wobble, speeding up
-    wob.osc = v.osc('sine', 8, T, end, wob.depth);
+    const depth = v.gain(45);                                                                              // wobble, speeding up
+    const wob = { depth, osc: v.osc('sine', 8, T, end, depth) };
     sweep(wob.osc.frequency, T, 8, 17, 0.3);
-    [[1, 'triangle', 1], [1.5, 'sine', 0.5], [2.005, 'sine', 0.35]].forEach(([r, type, a], i) => {
+    ([[1, 'triangle', 1], [1.5, 'sine', 0.5], [2.005, 'sine', 0.35]] as Array<[number, string, number]>).forEach(([r, type, a], i) => {
       const o = v.osc(type, 300 * r * p, T, end + 0.01, v.gain(a, g));
       sweep(o.frequency, T, 300 * r * p, 900 * r * p, 0.28);
       o.detune.value = (i - 1) * 7; wob.depth.connect(o.detune);
@@ -1253,7 +1293,7 @@ def('tornado', {
     const rlp = v.filter('lowpass', 170 * p, 1, v.gain(0.55, v.out));                                  // low rumble
     v.noise('brown', T, null, rlp);
     return {
-      pitch(q, now) {
+      pitch(q: number, now) {
         const k = 0.08;
         bp1.frequency.setTargetAtTime(650 * q, now, k); s1.osc.frequency.setTargetAtTime(1.2 * q, now, k); s1.depth.gain.setTargetAtTime(380 * q, now, k);
         bp2.frequency.setTargetAtTime(2200 * q, now, k); s2.osc.frequency.setTargetAtTime(1.9 * q, now, k); s2.depth.gain.setTargetAtTime(1100 * q, now, k);
@@ -1313,7 +1353,7 @@ def('wail_blast', {
   loop(v, p) {
     const T = v.t, W = 5.2;
     const bg = v.gain(0.55, v.out), sh = v.shaper(2.2, bg), lp = v.filter('lowpass', 420, 5, sh);       // wub bass
-    const bass = [[1, -12, 'sawtooth'], [1, 12, 'sawtooth'], [0.5, 0, 'square']].map(([r, dt, type]) => {
+    const bass = ([[1, -12, 'sawtooth'], [1, 12, 'sawtooth'], [0.5, 0, 'square']] as Array<[number, number, string]>).map(([r, dt, type]): [OscillatorNode, number] => {
       const o = v.osc(type, 55 * r * p, T, null, r < 1 ? v.gain(0.5, lp) : lp); o.detune.value = dt; return [o, r];
     });
     const wub = v.lfo(W * p, 320, lp.frequency, T, null);
@@ -1328,7 +1368,7 @@ def('wail_blast', {
     const wo = v.osc('triangle', 220 * p, T, null, v.filter('lowpass', 1800, 0.7, wg));
     const wv = v.lfo(W * p, 60, wo.detune, T, null);
     return {
-      pitch(q, now) {
+      pitch(q: number, now) {
         const k = 0.05;
         for (const [o, r] of bass) o.frequency.setTargetAtTime(55 * r * q, now, k);
         sub.frequency.setTargetAtTime(55 * q, now, k); wo.frequency.setTargetAtTime(220 * q, now, k);
@@ -1399,7 +1439,7 @@ def('blower_inflate', {
     const bg = v.gain(0.35, v.out);                                                                       // wet soap film
     const tex = v.buffer(texture(v.ctx, 'bubbles'), T, null, v.filter('lowpass', 1600, 0.7, bg), 0.8 * p);
     return {
-      pitch(q, now) {
+      pitch(q: number, now) {
         const k = 0.05;
         o1.frequency.setTargetAtTime(f0 * q, now, k); o2.frequency.setTargetAtTime(f0 * 2.01 * q, now, k);
         lp.frequency.setTargetAtTime(700 * q, now, k); wah.depth.gain.setTargetAtTime(250 * q, now, k);
@@ -1453,7 +1493,7 @@ def('jet_loop', {
     const gbp = v.filter('bandpass', 500 * p, 1.2, v.gain(3, gsh));
     v.noise('pink', T, null, gbp);
     return {
-      pitch(q, now) {
+      pitch(q: number, now) {
         const k = 0.06;
         lp.frequency.setTargetAtTime(1400 * q, now, k); flut.osc.frequency.setTargetAtTime(24 * q, now, k);
         hbp.frequency.setTargetAtTime(4200 * q, now, k); gbp.frequency.setTargetAtTime(500 * q, now, k);
@@ -1542,7 +1582,7 @@ def('booyah_charge', {
     const mix = v.gain(0.35);                                                                             // "ah" choir: saws through formants
     for (const [f, q, a] of [[750, 5, 1], [1150, 6, 0.55], [2600, 8, 0.25]]) mix.connect(v.filter('bandpass', f, q, v.gain(a, am)));
     const vib = v.gain(12); v.osc('sine', 5.2, T, null, vib);
-    const oscs = [];
+    const oscs: Array<[OscillatorNode, number]> = [];
     for (const m of notes) for (const dt of [-9, 9]) {
       const o = v.osc('sawtooth', mtof(m) * p, T, null, mix); o.detune.value = dt; vib.connect(o.detune); oscs.push([o, mtof(m)]);
     }
@@ -1552,7 +1592,7 @@ def('booyah_charge', {
     v.noise('white', T, null, shp);
     const sl = v.lfo(9 * p, 0.012, sg.gain, T, null);
     return {
-      pitch(q, now) {
+      pitch(q: number, now) {
         const k = 0.06;
         for (const [o, f] of oscs) o.frequency.setTargetAtTime(f * q, now, k);
         lp.frequency.setTargetAtTime(2400 * q, now, k); trem.osc.frequency.setTargetAtTime(4 * q, now, k); lvl.gain.setTargetAtTime(0.75 + 0.25 * q, now, k);
@@ -1649,7 +1689,7 @@ def('crab_move', {
     const s1 = v.osc('sawtooth', 115 * p, T, null, sbp);
     const s2 = v.osc('triangle', 231 * p, T, null, v.gain(0.5, sg));
     const sv = v.lfo(step * p, 60, s1.detune, T, null); sv.depth.connect(s2.detune);
-    const legs = [[0, [640, 1730, 2980]], [0.5, [540, 1490, 2610]]].map(([ph, fs]) => {                 // clanky legs, alternating
+    const legs = ([[0, [640, 1730, 2980]], [0.5, [540, 1490, 2610]]] as Array<[number, number[]]>).map(([ph, fs]) => {                 // clanky legs, alternating
       const lg = v.gain(0.12, v.out);
       const st = v.osc(strokeWave(v.ctx, 9), step * p, T + ph / (step * p), null);
       const dp = v.gain(0.9); st.connect(dp); dp.connect(lg.gain);
@@ -1660,7 +1700,7 @@ def('crab_move', {
       return st;
     });
     return {
-      pitch(q, now) {
+      pitch(q: number, now) {
         const k = 0.05;
         s1.frequency.setTargetAtTime(115 * q, now, k); s2.frequency.setTargetAtTime(231 * q, now, k); sbp.frequency.setTargetAtTime(900 * q, now, k);
         sv.osc.frequency.setTargetAtTime(step * q, now, k);
@@ -1707,7 +1747,7 @@ def('crab_roll', {
     for (const f of [410, 1130, 2210]) v.osc('sine', f, T, null, mg);
     v.noise('pink', T, null, v.filter('bandpass', 1800, 2, v.gain(0.3, pg)));
     return {
-      pitch(q, now) {
+      pitch(q: number, now) {
         const k = 0.05;
         rlp.frequency.setTargetAtTime(200 * q, now, k); o.frequency.setTargetAtTime(62 * q, now, k); rl.osc.frequency.setTargetAtTime(rev * q, now, k);
         cbp.frequency.setTargetAtTime(900 * q, now, k); tex.playbackRate.setTargetAtTime(0.6 * q, now, k); st.frequency.setTargetAtTime(2 * rev * q, now, k);
@@ -1815,7 +1855,7 @@ def('times_up', {
 /* ---- Zone Control (src/ui/hud.js plays the control / penalty / shift / overtime cues on the zones:* events;
  *      src/fx/zoneMarks.js plays the zones' own positional sounds: the hum, the flood / wipe, the contested warnings) ---- */
 // shared: a wet ink-flood burst (low slosh swelling into a bright spray) under the control cues
-function floodBurst(v, T, p, s) {
+function floodBurst(v: V, T: number, p: number, s: number) {
   const g = v.gain(0, v.out), lp = v.filter('lowpass', 500, 1.2, g);
   sweep(lp.frequency, T, 420 * p, 3600 * p, 0.2); lp.frequency.exponentialRampToValueAtTime(900 * p, T + 0.55);
   pts(g.gain, T, [[0, 0], [0.03, 0.75 * s], [0.22, 0.5 * s], [0.6, 0]]);
@@ -1824,7 +1864,7 @@ function floodBurst(v, T, p, s) {
   v.tone({ at: T, f: 95 * p, f1: 44 * p, sw: 0.2, a: 0.003, d: 0.3, peak: 0.75 * s });
 }
 // glass-and-ink crack: a hard transient with inharmonic, falling metal partials (a hold breaking)
-function crack(v, T, p, s, dir = -1) {
+function crack(v: V, T: number, p: number, s: number, dir = -1) {
   v.nz({ at: T, ft: 'highpass', f: 2200, a: 0.0006, d: 0.05, peak: 0.8 * s });
   v.nz({ at: T, f: 4200 * p, f1: (dir < 0 ? 1400 : 7000) * p, sw: 0.18, q: 6, a: 0.001, d: 0.2, peak: 0.45 * s });
   for (const [r, a, d] of [[1, 0.3, 0.3], [2.43, 0.18, 0.2], [3.87, 0.11, 0.14], [5.61, 0.07, 0.09]]) {
@@ -1943,7 +1983,7 @@ def('zone_final', {
     const T = v.t, c = v.gain(0, v.out);
     pts(c.gain, T, [[0, 0], [0.05, 0.12], [0.55, 0.7], [0.6, 0]]);
     snareRoll(v, T, T + 0.62, p, c);
-    [[0.62, [62, 69]], [0.8, [64, 71]], [0.98, [67, 74, 79]]].forEach(([t, ms]) => {
+    ([[0.62, [62, 69]], [0.8, [64, 71]], [0.98, [67, 74, 79]]] as Array<[number, number[]]>).forEach(([t, ms]) => {
       for (const m of ms) brass(v, T + t, mtof(m) * p, t > 0.9 ? 0.6 : 0.12, 0.3, { to: v.pan(m % 2 ? 0.25 : -0.25, v.out), bright: 4200, a: 0.008, r: t > 0.9 ? 0.45 : 0.08 });
       tom(v, T + t, mtof(ms[0] - 24) * p, 0.6);
     });
@@ -1954,7 +1994,7 @@ def('zone_final', {
 // neutral: an open fifth, airy; ours: a warm major third, brighter; theirs: a buzzy, beating tritone, darker — and
 // tension (0..1, a flip coming) quickens the pulse, lifts the pitch and opens the filter.
 //   h = audio.loop('zone_hum', { pos, volume }); h.set({ pos, volume, params: { mode: 'neutral'|'ours'|'theirs', tension } })
-const HUM = {
+const HUM: Record<string, { f: number; [k: string]: number }> = {
   neutral: { f: 196, iv: 1.5, hard: 0, det: 4, cut: 1300, rate: 0.7, depth: 0.18, air: 0.05 },
   ours: { f: 220, iv: 1.26, hard: 0.1, det: 5, cut: 2300, rate: 1.1, depth: 0.2, air: 0.02 },
   theirs: { f: 185, iv: 1.414, hard: 0.26, det: 24, cut: 950, rate: 1.1, depth: 0.28, air: 0.02 },
@@ -1975,7 +2015,7 @@ def('zone_hum', {
     const air = v.gain(H.air, v.out);
     v.noise('pink', T, null, v.filter('bandpass', 2600, 1.1, air));
     let q = p, st = { mode: 'neutral', tension: 0 };
-    const apply = (now, k = 0.22) => {
+    const apply = (now: number, k = 0.22) => {
       const S = HUM[st.mode] || H, x = Math.min(1, Math.max(0, +st.tension || 0));
       const f = S.f * q * Math.pow(2, (2.5 * x) / 12);
       o1.frequency.setTargetAtTime(f, now, k); o2.frequency.setTargetAtTime(f * S.iv, now, k);
@@ -1988,8 +2028,8 @@ def('zone_hum', {
       air.gain.setTargetAtTime(S.air + 0.06 * x, now, k);
     };
     return {
-      pitch(np, now) { q = np; apply(now); },
-      params(o, now) { if (!o) return; if (o.mode) st.mode = o.mode; if (o.tension != null) st.tension = o.tension; apply(now); },
+      pitch(np: number, now) { q = np; apply(now); },
+      params(o: { mode?: string; tension?: number }, now: number) { if (!o) return; if (o.mode) st.mode = o.mode; if (o.tension != null) st.tension = o.tension; apply(now); },
     };
   },
 });
@@ -2041,7 +2081,7 @@ def('zone_tick', {
   },
 });
 // snare roll: noise + body amplitude-modulated by a decaying-stroke waveform (~22 strokes/s), hand accents at half rate
-function snareRoll(v, T, t1, p, to) {
+function snareRoll(v: V, T: number, t1: number | null, p: number, to?: Dest) {
   const am = v.gain(0, to);
   const st = v.osc(strokeWave(v.ctx, 7), 22 * p, T, t1);
   const depth = v.gain(0.85); st.connect(depth); depth.connect(am.gain);
@@ -2060,7 +2100,7 @@ def('judge_drumroll', {
   },
   loop(v, p) {
     const st = snareRoll(v, v.t, null, p, v.gain(0.8, v.out));
-    return { pitch(q, now) { st.frequency.setTargetAtTime(22 * q, now, 0.05); } };
+    return { pitch(q: number, now) { st.frequency.setTargetAtTime(22 * q, now, 0.05); } };
   },
 });
 def('judge_reveal', {
@@ -2081,8 +2121,8 @@ def('victory_fanfare', {
       brass(v, T + bt * b, mtof(m) * p, len * b, 0.5, { bright: 4500, a: 0.012, r: 0.25 });
     }
     // harmony: C | Am | F G | C
-    for (const [bt, ms, len] of [[1, [60, 64, 67], 0.9], [2, [57, 60, 64], 0.9], [3, [53, 57, 60], 0.45], [3.5, [55, 59, 62], 0.45], [4, [48, 55, 60, 64, 67], 2.6]]) {
-      ms.forEach((m, i) => brass(v, T + bt * b, mtof(m) * p, len * b, 0.2, { to: v.pan(i % 2 ? 0.35 : -0.35, v.out), bright: 2600, a: 0.02, r: 0.3 }));
+    for (const [bt, ms, len] of [[1, [60, 64, 67], 0.9], [2, [57, 60, 64], 0.9], [3, [53, 57, 60], 0.45], [3.5, [55, 59, 62], 0.45], [4, [48, 55, 60, 64, 67], 2.6]] as Array<[number, number[], number]>) {
+      ms.forEach((m: number, i: number) => brass(v, T + bt * b, mtof(m) * p, len * b, 0.2, { to: v.pan(i % 2 ? 0.35 : -0.35, v.out), bright: 2600, a: 0.02, r: 0.3 }));
     }
     for (const [bt, m] of [[1, 36], [2, 33], [3, 29], [3.5, 31], [4, 36]]) {
       bass(v, T + bt * b, mtof(m) * p, (bt === 4 ? 2.4 : 0.8) * b, 0.7, { style: 'sub' });
@@ -2231,7 +2271,7 @@ def('boss_roar', {
     sweep(f2.frequency, T, 900, 1500, 0.5); f2.frequency.exponentialRampToValueAtTime(700, T + D);
     const mix = v.gain(1); mix.connect(f1); mix.connect(f2);
     const lp = v.filter('lowpass', 2600, 0.8, mix);
-    for (const [det, type, lv] of [[-14, 'sawtooth', 0.5], [9, 'sawtooth', 0.5], [0, 'square', 0.3]]) {
+    for (const [det, type, lv] of [[-14, 'sawtooth', 0.5], [9, 'sawtooth', 0.5], [0, 'square', 0.3]] as Array<[number, string, number]>) {
       const o = v.osc(type, 52 * p, T, T + D + 0.05, v.gain(lv, lp));
       o.detune.value = det;
       o.frequency.setValueAtTime(50 * p, T); o.frequency.linearRampToValueAtTime(80 * p, T + 0.45);
@@ -2319,7 +2359,7 @@ def('boss_cannon_sweep', {
     v.noise('brown', T, null, v.filter('lowpass', 260, 1, v.gain(0.6, v.out)));
     const tex = v.buffer(texture(v.ctx, 'squelch'), T, null, v.gain(0.7, v.filter('lowpass', 1400, 0.8, v.out)), p);
     const o = v.osc('sawtooth', 55 * p, T, null, v.gain(0.12, v.filter('lowpass', 300, 1, v.out)));
-    return { pitch(q, now) { tex.playbackRate.setTargetAtTime(q, now, 0.05); o.frequency.setTargetAtTime(55 * q, now, 0.05); } };
+    return { pitch(q: number, now) { tex.playbackRate.setTargetAtTime(q, now, 0.05); o.frequency.setTargetAtTime(55 * q, now, 0.05); } };
   },
 });
 def('boss_gallop', {
@@ -2333,7 +2373,7 @@ def('boss_gallop', {
     v.noise('brown', T, null, v.filter('lowpass', 500, 1, v.gain(1.2, am)));
     v.noise('white', T, null, v.filter('bandpass', 420 * p, 5, v.gain(0.35, am)));
     v.noise('pink', T, null, v.filter('bandpass', 900, 0.7, v.gain(0.12, v.out)));
-    return { pitch(q, now) { st.frequency.setTargetAtTime(8.5 * q, now, 0.05); } };
+    return { pitch(q: number, now) { st.frequency.setTargetAtTime(8.5 * q, now, 0.05); } };
   },
 });
 def('boss_crash', {
@@ -2374,7 +2414,7 @@ def('boss_frenzy', {
     v.lfo(3.2 * p, 0.2, hs.gain, T, null);
     v.buffer(texture(v.ctx, 'squelch'), T, null, v.gain(0.5, v.out), 1.3 * p);
     v.osc('sawtooth', 70 * p, T, null, v.gain(0.1, v.filter('lowpass', 240, 1, v.out)));
-    return { pitch(q, now) { l.osc.frequency.setTargetAtTime(3.2 * q, now, 0.1); } };
+    return { pitch(q: number, now) { l.osc.frequency.setTargetAtTime(3.2 * q, now, 0.1); } };
   },
 });
 def('crablet_chitter', {
@@ -2466,8 +2506,8 @@ def('boss_sunk', {
   build(v, p) {
     const T = v.t, b = 60 / 140;
     // short triumphant brass flourish (major), the squad won
-    for (const [bt, ms, len] of [[0, [62, 66, 69, 74], 0.4], [0.5, [64, 67, 71, 76], 0.4], [1, [66, 69, 74, 78], 2.2]]) {
-      ms.forEach((m, i) => brass(v, T + bt * b, mtof(m) * p, len * b, i === ms.length - 1 ? 0.5 : 0.24, { to: v.pan((i - 1.5) * 0.25, v.out), bright: 4200, a: 0.012, r: 0.4 }));
+    for (const [bt, ms, len] of [[0, [62, 66, 69, 74], 0.4], [0.5, [64, 67, 71, 76], 0.4], [1, [66, 69, 74, 78], 2.2]] as Array<[number, number[], number]>) {
+      ms.forEach((m: number, i: number) => brass(v, T + bt * b, mtof(m) * p, len * b, i === ms.length - 1 ? 0.5 : 0.24, { to: v.pan((i - 1.5) * 0.25, v.out), bright: 4200, a: 0.012, r: 0.4 }));
     }
     kick(v, T, 0.7); snare(v, T + 0.5 * b, 0.5); kick(v, T + b, 0.9); crash(v, T + b, 0.7, { d: 2 });
     bass(v, T + b, mtof(38) * p, 2 * b, 0.7, { style: 'sub' });

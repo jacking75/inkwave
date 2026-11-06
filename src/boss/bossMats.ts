@@ -12,12 +12,14 @@
 //   junk  (double-sided) 0 tyre rubber · 1 rope · 2 plastic (param 0 buoy, 1 life ring) · 3 strap · 4 kelp · 5 flag · 6 lamp
 import * as THREE from 'three';
 
+// 보스·소형 게 재질이 함께 쓰는 uniform 표
+export type BossUniforms = ReturnType<typeof makeUniforms>;
 export function makeUniforms() {
   return {
     uTime: { value: 0 }, uInk: { value: new THREE.Color('#2f5bff') }, uWeak: { value: new THREE.Color('#ff8a14') },
     uFlash: { value: 0 }, uWeakFlash: { value: 0 }, uCrack: { value: 0 }, uOpen: { value: 0 }, uEnrage: { value: 0 },
     uGlowL: { value: 0 }, uCannon: { value: 0 }, uBelly: { value: 0 }, uEyeMode: { value: 0 }, uEyeSpin: { value: 0 },
-    uEyeGlow: { value: 1 }, uDrip: { value: 0.6 }, uStencil: { value: null }, uLamp: { value: 1 }, uHeat: { value: 0 },
+    uEyeGlow: { value: 1 }, uDrip: { value: 0.6 }, uStencil: { value: null as THREE.Texture | null }, uLamp: { value: 1 }, uHeat: { value: 0 },
     uContInv: { value: new THREE.Matrix4() }, uAO: { value: 1 },
   };
 }
@@ -68,7 +70,7 @@ const PRE = /* glsl */`
   float bAO = mix(1.0, bMassAO(vB) * mix(1.0, vM.z, 0.85), uAO);
   vec3 bRimC = vec3(0.0); float bRimP = 3.0;
 `;
-function patch(mat, U, body, { extraFrag = '' } = {}) {
+function patch(mat: THREE.MeshPhysicalMaterial, U: BossUniforms, body: string, { extraFrag = '' } = {}) {
   mat.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, U);
     sh.vertexShader = VERT_DECL + sh.vertexShader.replace('#include <begin_vertex>', VERT_BODY);
@@ -449,8 +451,8 @@ const JUNK = /* glsl */`
 ` + FLASH;
 
 // ------------------------------------------------------------------------------------------------ factory
-export function makeBossMaterials(U) {
-  const phys = (name, o) => { const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0, clearcoat: 0.01, clearcoatRoughness: 0.3, ...o }); m.name = name; return m; };
+export function makeBossMaterials(U: BossUniforms) {
+  const phys = (name: string, o: THREE.MeshPhysicalMaterialParameters | undefined) => { const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0, clearcoat: 0.01, clearcoatRoughness: 0.3, ...o }); m.name = name; return m; };
   const steel = patch(phys('steel', { side: THREE.DoubleSide, shadowSide: THREE.DoubleSide }), U, STEEL);
   const cara = patch(phys('cara', { sheen: 1, sheenRoughness: 0.55, sheenColor: new THREE.Color(1, 1, 1) }), U, CARA);
   const flesh = patch(phys('flesh', { sheen: 1, sheenRoughness: 0.4, sheenColor: new THREE.Color(1, 1, 1) }), U, FLESH);
@@ -483,7 +485,7 @@ const CRAB = /* glsl */`
   bEmis += vec3(1.0) * uFlash * 1.2;
   diffuseColor.rgb = c;
 `;
-export function makeCrabletMaterial(U) {
+export function makeCrabletMaterial(U: BossUniforms) {
   const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.5, clearcoat: 0.01, sheen: 1, sheenRoughness: 0.5, sheenColor: new THREE.Color(1, 1, 1) });
   m.name = 'crablet';
   return patch(m, U, CRAB);
@@ -492,7 +494,7 @@ export function makeCrabletMaterial(U) {
 // ------------------------------------------------------------------------------------------------ stencil atlas
 // 1024 × 1024 alpha atlas: top half = side-wall logo; bottom-left = container code; bottom 3rd quarter = placard;
 // bottom-right = sprayed warning. All original art (the DEEPTIDE line is fictional).
-let _fontP = null;
+let _fontP: Promise<void> | null = null;
 const FD = 'HullbreakerDisplay', FT = 'HullbreakerText';
 function loadFonts() {
   if (_fontP) return _fontP;
@@ -502,14 +504,14 @@ function loadFonts() {
   _fontP = Promise.all([d.load(), t.load()]).then((f) => { f.forEach((x) => document.fonts.add(x)); }).catch(() => {});
   return _fontP;
 }
-function stencilBridges(x, x0, y0, w, h, every, bw) {
+function stencilBridges(x: CanvasRenderingContext2D, x0: number, y0: number, w: number, h: number, every: number, bw: number) {
   // stencil-cut bridges: thin vertical gaps punched through the letters
   x.globalCompositeOperation = 'destination-out';
   for (let px = x0 + every * 0.5; px < x0 + w; px += every) x.fillRect(px, y0, bw, h);
   x.globalCompositeOperation = 'source-over';
 }
-function drawStencils(cv) {
-  const x = cv.getContext('2d'); const W = cv.width, H = cv.height;
+function drawStencils(cv: HTMLCanvasElement) {
+  const x = cv.getContext('2d')!; const W = cv.width, H = cv.height;
   x.clearRect(0, 0, W, H);
   x.fillStyle = '#fff'; x.strokeStyle = '#fff';
   // --- logo (top half: 1024 × 512 → 4 m × 1 m on the wall; flip y because the shader v runs up)

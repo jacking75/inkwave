@@ -4,28 +4,35 @@
 // ripple (their envelope opens into the V-wake) and pushes a glossy mound up over the submerged body.
 import * as THREE from 'three';
 import { G, clamp, damp } from '../core/ctx.js';
+import type { Actor } from '../game/actor.js';
 
 const SLOTS = 4, PTS = 12, LIFE = 1.15, SPACING = 0.75;
 const BREAK = -9;
 
+// 물살 자리 하나: 추적 중인 헤엄 주체, 궤적 점(x, y, z, 시각 t — t = BREAK면 끊김), 세기·방향
+interface WakePoint { x: number; y: number; z: number; t: number }
+interface WakeSlot { actor: WakeActor | null; pts: WakePoint[]; k: number; speedK: number; fwd: THREE.Vector3; head: THREE.Vector3; last: THREE.Vector3 | null; swimming: boolean }
+type WakeActor = Actor & { _wakeD2?: number };
+
 export class SwimWake {
+  _cand: WakeActor[] = [];
+  declare slots: WakeSlot[];
   constructor() {
     this.slots = Array.from({ length: SLOTS }, () => ({
-      actor: null, pts: [], k: 0, speedK: 0, fwd: new THREE.Vector3(0, 0, 1), head: new THREE.Vector3(), last: null, swimming: false,
+      actor: null, pts: [] as WakePoint[], k: 0, speedK: 0, fwd: new THREE.Vector3(0, 0, 1), head: new THREE.Vector3(), last: null, swimming: false,
     }));
-    this._cand = [];
   }
 
   reset() { for (const s of this.slots) { s.actor = null; s.pts.length = 0; s.k = 0; s.last = null; s.swimming = false; } }
 
-  update(dt, U, camPos) {
+  update(dt: number, U: { uWake?: { value: THREE.Vector4[] }; uWakeB: { value: THREE.Vector4[] }; uSwimH: { value: THREE.Vector4[] }; uSwimF: { value: THREE.Vector4[] } } | null | undefined, camPos: THREE.Vector3Like) {
     if (!U || !U.uWake) return;
     const now = G.time;
     const m = G.match;
     // who is in the ink near the camera
     const cand = this._cand; cand.length = 0;
     if (m && m.state !== 'results') {
-      for (const a of m.actors || G.actors || []) {
+      for (const a of (m.actors || G.actors || []) as WakeActor[]) {
         if (!a.alive) continue;
         const f = a.anim?.form;
         if (f !== 'swim' && f !== 'climb') continue;
@@ -33,14 +40,14 @@ export class SwimWake {
         if (!a.isLocal && d2 > 38 * 38) continue;
         cand.push(a); a._wakeD2 = a.isLocal ? -1 : d2;
       }
-      cand.sort((x, y) => x._wakeD2 - y._wakeD2);
+      cand.sort((x, y) => x._wakeD2! - y._wakeD2!);
     }
     for (const s of this.slots) s.swimming = false;
     for (const a of cand) {
       let s = this.slots.find((o) => o.actor === a);
       if (!s) s = this.slots.find((o) => !o.actor);
       if (!s && a.isLocal) {   // the local player always gets one: take the farthest bot's
-        s = this.slots.reduce((w, o) => (!w || (o.actor && (o.actor._wakeD2 ?? 0) > (w.actor._wakeD2 ?? 0)) ? o : w), null);
+        s = this.slots.reduce<WakeSlot | null>((w, o) => (!w || (o.actor && (o.actor._wakeD2 ?? 0) > (w.actor!._wakeD2 ?? 0)) ? o : w), null) ?? undefined;
         if (s) { s.pts.length = 0; s.last = null; s.k = 0; }
       }
       if (!s) continue;

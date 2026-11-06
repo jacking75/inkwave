@@ -7,10 +7,10 @@
 //   bow_thunk  1-shot an arrow driving into a surface: thwack + the shaft's buzz
 //   bow_tick   1-shot a lodged arrow counting down (played a few times, faster toward the burst)
 //   bow_burst  1-shot a lodged arrow bursting: a tight ink pop, smaller than a blaster boom
-import { SFX } from '../../audio/audio.js';
+import { SFX, type SfxDef } from '../../audio/audio.js';
 import { mtof, pts, sweep } from '../../audio/music.js';
 
-const def = (name, o) => { SFX[name] = o; };
+const def = (name: string, o: SfxDef) => { SFX[name] = o; };
 
 def('bow_draw', {
   gain: 0.3, max: 3, jitter: 0, reverb: 0.04, oneShot: 1.1,
@@ -28,7 +28,7 @@ def('bow_draw', {
     const air = v.gain(0.05, v.out);
     v.noise('white', T, null, v.filter('highpass', 5200, 0.7, air));
     return {
-      pitch(q, now) {
+      pitch(q: number, now: number) {
         const k = 0.04;
         lf.osc.frequency.setTargetAtTime(9 + 16 * q, now, k); crBp.frequency.setTargetAtTime(420 + 520 * q, now, k);
         o1.frequency.setTargetAtTime(95 * q, now, k); o2.frequency.setTargetAtTime(190 * q, now, k);

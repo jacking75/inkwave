@@ -8,24 +8,52 @@ import * as THREE from 'three';
 import { G } from '../core/ctx.js';
 import { buildRig, buildParts, buildCrablet, CONT, HEAD, MC } from './bossModelGeo.js';
 import { makeUniforms, makeBossMaterials, makeCrabletMaterial, makeStencilTexture } from './bossMats.js';
-import { BossAnimator, C } from './bossAnim.js';
+import { BossAnimator, C, type BossAnimState } from './bossAnim.js';
+import type { Rig } from './bossModelGeo.js';
+import type { BossUniforms } from './bossMats.js';
+import type { Physics } from '../game/physics.js';
 import { BossFX } from './bossModelFx.js';
 
-const HIT = [
+// 맞는 부위: 소켓 이름, 반지름, 약점 여부
+const HIT: Array<[string, number, boolean]> = [
   // socket, radius, weak
   ['shellF', 1.8, false], ['shellR', 1.8, false], ['body', 1.05, false], ['clawL', 0.85, false], ['clawR', 0.55, false],
   ['eyeL', 0.4, true], ['eyeR', 0.4, true], ['belly', 0.8, true], ['crackL', 0.7, true], ['crackR', 0.7, true],
 ];
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
 
-function rivalOf(c) { const h = { h: 0, s: 0, l: 0 }; c.getHSL(h); return new THREE.Color().setHSL((h.h + 0.5) % 1, Math.max(0.7, h.s), 0.5); }
+function rivalOf(c: THREE.Color) { const h = { h: 0, s: 0, l: 0 }; c.getHSL(h); return new THREE.Color().setHSL((h.h + 0.5) % 1, Math.max(0.7, h.s), 0.5); }
+
+// 맞는 부위 하나: 소켓·반지름·약점·지금 맞을 수 있는지·월드 위치(c는 pos 별칭)
+export interface HitShape { socket: string; r: number; weak: boolean; active: boolean; pos: THREE.Vector3; c: THREE.Vector3 }
 
 export class BossModel {
-  constructor({ ink = null, weak = null, quality = 'high' } = {}) {
+  quality: string;
+  root: THREE.Group;
+  onFoot: ((i: number, pos: THREE.Vector3, s: number) => void) | null = null;
+  onImpact: ((socket: string, pos: THREE.Vector3, s: number) => void) | null = null;
+  onEvent: ((name: string, data: Record<string, unknown>) => void) | null = null;
+  phase = 1;
+  physics: Physics | null = null;
+  rig: Rig;
+  tris: number;
+  U: BossUniforms;
+  _stencil: THREE.Texture | null;
+  mats: ReturnType<typeof makeBossMaterials>;
+  skeleton: THREE.Skeleton;
+  meshes: THREE.SkinnedMesh[] = [];
+  _sock: Record<string, { bone: THREE.Bone; off: THREE.Vector3 }> = {};
+  _vents: Array<{ bone: THREE.Bone; off: THREE.Vector3 }>;
+  hitShapes: HitShape[];
+  anim: BossAnimator;
+  fx: BossFX;
+  _flash = 0; _weakFlash = 0; _lastFlashT = -9; _t = 0;
+  _crack = 0; _enrage = 0; _ventAcc = 0;
+  _st: BossAnimState | null = null;
+  ready: Promise<BossModel>;
+  constructor({ ink = null, weak = null, quality = 'high' }: { ink?: THREE.ColorRepresentation | null; weak?: THREE.ColorRepresentation | null; quality?: string } = {}) {
     this.quality = quality;
     this.root = new THREE.Group(); this.root.name = 'HULLBREAKER';
-    this.onFoot = null; this.onImpact = null; this.onEvent = null;
-    this.phase = 1; this.physics = null;
     const inkC = ink ? new THREE.Color(ink) : G.teamColors?.[1] ? G.teamColors[1].clone() : new THREE.Color('#2f5bff');
     const weakC = weak ? new THREE.Color(weak) : G.teamColors?.[0] ? G.teamColors[0].clone() : rivalOf(inkC);
     // ---- rig + geometry
@@ -39,11 +67,10 @@ export class BossModel {
     this.skeleton = new THREE.Skeleton(this.rig.bones);
     this.root.add(this.rig.by.base);
     this.root.updateMatrixWorld(true);
-    this.meshes = [];
     const shadowOK = quality !== 'low';
     for (const k of ['steel', 'cara', 'flesh', 'eye', 'junk']) {
-      const b = parts.buckets[k]; if (!b.nv) continue;
-      const mesh = new THREE.SkinnedMesh(b.geometry(), this.mats[k]);
+      const b = parts.buckets[k as keyof typeof parts.buckets]; if (!b.nv) continue;
+      const mesh = new THREE.SkinnedMesh(b.geometry(), this.mats[k as keyof typeof this.mats]);
       mesh.name = 'hullbreaker:' + k;
       mesh.castShadow = shadowOK && k !== 'eye'; mesh.receiveShadow = true;
       mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 2.6, 0), 8.6);
@@ -52,20 +79,17 @@ export class BossModel {
       this.meshes.push(mesh);
     }
     // ---- sockets (bone + bone-local offset)
-    this._sock = {};
     for (const [name, [bone, p]] of Object.entries(parts.sockets)) this._sock[name] = { bone: this.rig.by[bone], off: p.clone().sub(this.rig.rest[bone]) };
     this._sock.shellF = { bone: this.rig.by.shell, off: new THREE.Vector3(0, 0.05, 1.5).applyMatrix4(new THREE.Matrix4().makeRotationX(CONT.pitch)).add(CONT.pos).sub(this.rig.rest.shell) };
     this._sock.shellR = { bone: this.rig.by.shell, off: new THREE.Vector3(0, 0.1, -1.55).applyMatrix4(new THREE.Matrix4().makeRotationX(CONT.pitch)).add(CONT.pos).sub(this.rig.rest.shell) };
     this._sock.body = { bone: this.rig.by.head, off: new THREE.Vector3(0, 2.2, 2.3).sub(this.rig.rest.head) };
     this._vents = parts.vents.map(([bone, p]) => ({ bone: this.rig.by[bone], off: p.clone().sub(this.rig.rest[bone]) }));
-    this.hitShapes = HIT.map(([socket, r, weak]) => { const h = { socket, r, weak, active: !weak || socket.startsWith('eye'), pos: new THREE.Vector3() }; h.c = h.pos; return h; });
+    this.hitShapes = HIT.map(([socket, r, weak]) => { const pos = new THREE.Vector3(); return { socket, r, weak, active: !weak || socket.startsWith('eye'), pos, c: pos }; });
     // ---- animation + fx
     this.anim = new BossAnimator(this, this.rig);
     this.fx = new BossFX({ quality, ink: inkC });
     this.root.add(this.fx.group);
     // ---- state
-    this._flash = 0; this._weakFlash = 0; this._lastFlashT = -9; this._t = 0;
-    this._crack = 0; this._enrage = 0; this._ventAcc = 0; this._st = null;
     this.setInk(inkC); this.setWeak(weakC);
     this.ready = st.ready.then(() => this);
     this.update(0, { speed: 0, turn: 0, move: null, moveT: 0, movePhase: null, phase: 1, stunned: false, hurt: 0, dead: false, aim: null });
@@ -73,7 +97,7 @@ export class BossModel {
   }
 
   // ---------------------------------------------------------------- per frame
-  update(dt, st = {}) {
+  update(dt: number, st: BossAnimState = {}) {
     this._t += dt; this._st = st;
     if (!this.physics && G.physics) this.physics = G.physics;
     if (st.phase && st.phase !== this.phase) this.setPhase(st.phase);
@@ -123,8 +147,8 @@ export class BossModel {
   }
 
   // hooks (called by the animator on exact frames); the Vector3 passed out is reused
-  _emitFoot(i, pos, s) { if (this.onFoot) this.onFoot(i, pos, s); if (this.onEvent) this.onEvent('step', { leg: i, pos, strength: s }); }
-  _emitImpact(socket, s) {
+  _emitFoot(i: number, pos: THREE.Vector3, s: number) { if (this.onFoot) this.onFoot(i, pos, s); if (this.onEvent) this.onEvent('step', { leg: i, pos, strength: s }); }
+  _emitImpact(socket: string, s: number) {
     const p = this.getSocket(socket, _v);
     const gy = this.root.matrixWorld.elements[13];
     if (socket === 'clawL') { p.y = gy + 0.05; this.fx.ink(p, 26, _v2.set(0, 1, 0), 7, 0.9, 0.2, gy); }
@@ -132,7 +156,7 @@ export class BossModel {
     if (socket === 'body') this.fx.ink(p.setY(gy + 0.2), 30, _v2.set(0, 1, 0), 6, 1.0, 0.2, gy);
     if (this.onImpact) this.onImpact(socket, p, s);
   }
-  _emitEvent(name, socket, data) {
+  _emitEvent(name: string, socket: string, data?: unknown) {
     const p = this.getSocket(socket, _v);
     const gy = this.root.matrixWorld.elements[13];
     if (name === 'burst') { _v.setFromMatrixPosition(this.root.matrixWorld); _v.y += 0.3; this.fx.ink(_v, 90, _v2.set(0, 1, 0), 13, 0.75, 0.3, gy, 2.6); this.fx.steamPuff(_v, 14, _v2.set(0, 1, 0), 4, 2.5, 2.0); }
@@ -148,32 +172,43 @@ export class BossModel {
     if (this._t - this._lastFlashT > 0.09) this.anim.flinch(Math.min(1, 0.3 + k * 0.7) * (weak ? 1.2 : 1));
     this._lastFlashT = this._t;
   }
-  getSocket(name, out = new THREE.Vector3()) {
+  getSocket(name: string, out = new THREE.Vector3()) {
     const s = this._sock[name];
     if (!s) return out.setFromMatrixPosition(this.root.matrixWorld);
     return out.copy(s.off).applyMatrix4(s.bone.matrixWorld);
   }
-  setInk(color) { this.U.uInk.value.set(color); this.fx?.setInk(this.U.uInk.value); }
-  setWeak(color) { this.U.uWeak.value.set(color); }
-  setPhase(p) { this.phase = p; }
+  setInk(color: THREE.ColorRepresentation) { this.U.uInk.value.set(color); this.fx?.setInk(this.U.uInk.value); }
+  setWeak(color: THREE.ColorRepresentation) { this.U.uWeak.value.set(color); }
+  setPhase(p: number) { this.phase = p; }
   /** one-shots: 'intro' | 'roar' | 'hurt' */
-  trigger(name) { this.anim.trigger(name); }
+  trigger(name: string) { this.anim.trigger(name); }
   get sockets() { return Object.keys(this._sock); }
   dispose() {
     for (const m of this.meshes) m.geometry.dispose();
-    for (const k in this.mats) this.mats[k].dispose();
+    for (const mt of Object.values(this.mats)) mt.dispose();
     this._stencil?.dispose(); this.skeleton.dispose(); this.fx.dispose();
     this.root.removeFromParent();
   }
 
   /** the minion: small container-lid crab. { root, ready, update(dt, st), pop(), setInk, dispose } */
-  static makeCrablet(opts = {}) { return new Crablet(opts); }
+  static makeCrablet(opts: { ink?: THREE.ColorRepresentation | null; weak?: THREE.ColorRepresentation | null; quality?: string } = {}) { return new Crablet(opts); }
 }
 
 // ------------------------------------------------------------------------------------------------ crablet
 const _cq = new THREE.Quaternion(), _ce = new THREE.Euler(0, 0, 0, 'YXZ');
 export class Crablet {
-  constructor({ ink = null, weak = null, quality = 'high' } = {}) {
+  root: THREE.Group;
+  R: ReturnType<typeof buildCrablet>;
+  tris: number;
+  U: BossUniforms;
+  mat: ReturnType<typeof makeCrabletMaterial>;
+  skel: THREE.Skeleton;
+  mesh: THREE.SkinnedMesh;
+  t = 0; phi = Math.random(); popped = false; popT = -1;
+  fx: BossFX | null = null;
+  seed = Math.random() * 10;
+  ready: Promise<Crablet>;
+  constructor({ ink = null, weak = null, quality = 'high' }: { ink?: THREE.ColorRepresentation | null; weak?: THREE.ColorRepresentation | null; quality?: string } = {}) {
     this.root = new THREE.Group(); this.root.name = 'crablet';
     const inkC = ink ? new THREE.Color(ink) : G.teamColors?.[1] ? G.teamColors[1].clone() : new THREE.Color('#2f5bff');
     const weakC = weak ? new THREE.Color(weak) : G.teamColors?.[0] ? G.teamColors[0].clone() : rivalOf(inkC);
@@ -186,11 +221,10 @@ export class Crablet {
     this.mesh = new THREE.SkinnedMesh(R.geo, this.mat); this.mesh.castShadow = true; this.mesh.receiveShadow = true;
     this.mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.3, 0), 0.9);
     this.root.add(this.mesh); this.mesh.bind(this.skel);
-    this.t = 0; this.phi = Math.random(); this.popped = false; this.popT = -1; this.fx = null; this.seed = Math.random() * 10;
     this.ready = Promise.resolve(this);
     this.update(0, {});
   }
-  update(dt, st = {}) {
+  update(dt: number, st: BossAnimState = {}) {
     this.t += dt;
     const by = this.R.by, t = this.t;
     if (st.dead && !this.popped) this.pop();
@@ -237,6 +271,6 @@ export class Crablet {
   }
   hit() { this.U.uFlash.value = 1; }
   pop() { if (this.popped) return; this.popped = true; this.popT = 0; }
-  setInk(c) { this.U.uInk.value.set(c); }
+  setInk(c: THREE.ColorRepresentation) { this.U.uInk.value.set(c); }
   dispose() { this.mesh.geometry.dispose(); this.mat.dispose(); this.skel.dispose(); this.fx?.dispose(); this.root.removeFromParent(); }
 }

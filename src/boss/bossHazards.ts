@@ -11,10 +11,26 @@ import { G, clamp, smoothstep } from '../core/ctx.js';
 import { PLAYER } from '../config.js';
 import { Hit } from '../game/physics.js';
 import { WALL_BODY } from './bossNav.js';
+import type { Boss } from './boss.js';
+import type { Actor } from '../game/actor.js';
+
+
+// ------------------------------------------------------------------------------------------------ move record
+// 동작 기록 { id, t0, s, d: [tele, act, rec], p }: 네트로도 그대로 간다. p는 동작마다 자기 필드만 채운다 —
+//   slam: x·y·z·rings / barrage: sx·sy·sz·b([x, y, z, 던지는 시각]…) / sweep: ox·oy·oz·y·a0·a1·c / charge: x·y·z·yaw·L·wall·v·stun
+//   crablets: n / frenzy: x·y·z·rot0·spin·stun. 읽는 쪽은 id로 고른 분기에서 그 동작의 필드만 읽는다.
+export interface MoveParams {
+  x: number; y: number; z: number; rings: number[]; sx: number; sy: number; sz: number; b: number[][];
+  ox: number; oy: number; oz: number; a0: number; a1: number; c: number; yaw: number; L: number; wall: number; v: number; stun: number;
+  n: number; rot0: number; spin: number;
+}
+export interface BossMove { id: string; t0: number; s: number; d: number[]; p: MoveParams }
+// 봇이 읽는 위협: 수준·피할 방향·고리 도달까지 남은 시간·엄폐/광선/돌진 길 여부
+export interface Threat { level: number; ax: number; az: number; ringIn: number; cover: boolean; lane: boolean; beam: boolean }
 
 // ------------------------------------------------------------------------------------------------ tuning
 // Seconds per move phase at phase 1 (scaled by PACE[phase]); telegraphs never go below MIN_TELE.
-export const MOVES = {
+export const MOVES: Record<string, { tele: number; act: number; rec: number }> = {
   slam: { tele: 1.15, act: 1.9, rec: 1.0 },
   barrage: { tele: 0.85, act: 0, rec: 0.8 },    // act = last throw + flight
   sweep: { tele: 1.15, act: 2.1, rec: 0.9 },
@@ -35,8 +51,8 @@ export const HZ = {
 const SAFE_PAD = 0.6;      // squidkids standing on a spawn pad (+ this) are out of reach of every hazard
 const REACH_N = 96;        // headings for the floor-clipped extent of rings / danger zones
 
-export function moveTimes(m) { const [tele, act, rec] = m.d; return { tele, act, rec, end: tele + act + rec }; }
-export function movePhaseAt(m, u) {
+export function moveTimes(m: BossMove) { const [tele, act, rec] = m.d; return { tele, act, rec, end: tele + act + rec }; }
+export function movePhaseAt(m: BossMove, u: number) {
   const [tele, act, rec] = m.d;
   if (u < 0) return null;
   if (u < tele) return 'tele';
@@ -45,47 +61,50 @@ export function movePhaseAt(m, u) {
   return null;
 }
 // charge: distance along the lane at time u (accelerates over chargeRamp, then full speed), and when it arrives
-export function chargeDist(p, u, tele) {
+export function chargeDist(p: MoveParams, u: number, tele: number) {
   const t = u - tele;
   if (t <= 0) return 0;
   const v = p.v, a = v / HZ.chargeRamp, r = HZ.chargeRamp;
   const s = t < r ? 0.5 * a * t * t : 0.5 * a * r * r + v * (t - r);
   return Math.min(p.L, s);
 }
-export function chargeTime(p) { const v = p.v, r = HZ.chargeRamp, s0 = 0.5 * v * r; return p.L <= s0 ? Math.sqrt((2 * p.L * r) / v) : r + (p.L - s0) / v; }
+export function chargeTime(p: Pick<MoveParams, 'v' | 'L'>) { const v = p.v, r = HZ.chargeRamp, s0 = 0.5 * v * r; return p.L <= s0 ? Math.sqrt((2 * p.L * r) / v) : r + (p.L - s0) / v; }
 // a lobbed barrel in flight (k 0..1 of its flight): a high arc from the shell to its circle
-export function barrelPos(p, b, k, out) {
+export function barrelPos(p: MoveParams, b: number[], k: number, out: THREE.Vector3) {
   const peak = 5 + 0.35 * Math.hypot(b[0] - p.sx, b[2] - p.sz);
   return out.set(p.sx + (b[0] - p.sx) * k, p.sy + (b[1] - p.sy) * k + peak * 4 * k * (1 - k), p.sz + (b[2] - p.sz) * k);
 }
-export function beamAngle(m, u) { const p = m.p, k = clamp((u - m.d[0]) / m.d[1], 0, 1); return p.a0 + (p.a1 - p.a0) * smoothstep(0, 1, k); }
-const ringStart = (m, k) => m.d[0] + m.p.rings[k];
-const ringRadius = (m, k, u) => HZ.ringR0 + HZ.ringSpeed * (u - ringStart(m, k));
+export function beamAngle(m: BossMove, u: number) { const p = m.p, k = clamp((u - m.d[0]) / m.d[1], 0, 1); return p.a0 + (p.a1 - p.a0) * smoothstep(0, 1, k); }
+const ringStart = (m: BossMove, k: number) => m.d[0] + m.p.rings[k];
+const ringRadius = (m: BossMove, k: number, u: number) => HZ.ringR0 + HZ.ringSpeed * (u - ringStart(m, k));
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0);
 const _hit = new Hit(), _hit2 = new Hit();
 
 export class BossHazards {
-  constructor(boss) {
+  boss: Boss;
+  moves: BossMove[] = [];       // active + recently finished records (hazards can outlive their move: barrels in flight)
+  hits = new Set<string>();     // one-shot hits already dealt on this client: `${t0}|${kind}|${i}|${actor id}`
+  cache = new WeakMap<BossMove, { beam: Map<number, number>; reach: Float32Array | null }>(); // per move record: derived geometry
+  prevBt = 0;
+  dead = -1;                    // boss time of the defeat: nothing lands after it
+  fx: HazardFX;
+  _thr?: Threat;
+  constructor(boss: Boss) {
     this.boss = boss;
-    this.moves = [];            // active + recently finished records (hazards can outlive their move: barrels in flight)
-    this.hits = new Set();      // one-shot hits already dealt on this client: `${t0}|${kind}|${i}|${actor id}`
-    this.cache = new WeakMap(); // per move record: derived geometry (never stored on the record — it goes over the wire)
-    this.prevBt = 0;
-    this.dead = -1;             // boss time of the defeat: nothing lands after it
     this.fx = new HazardFX();
   }
 
-  add(m) {
+  add(m: BossMove) {
     if (this.moves.some((x) => x.t0 === m.t0)) return false;   // idempotent by t0 (net replays, host migration)
     this.moves.push(m);
     this.boss.log.moves.push([m.t0, m.id]);
     return true;
   }
-  current(bt) { for (let i = this.moves.length - 1; i >= 0; i--) { const m = this.moves[i]; if (bt >= m.t0 && bt < m.t0 + moveTimes(m).end) return m; } return null; }
+  current(bt: number) { for (let i = this.moves.length - 1; i >= 0; i--) { const m = this.moves[i]; if (bt >= m.t0 && bt < m.t0 + moveTimes(m).end) return m; } return null; }
   // defeat / time's up: every pending hazard stops here; barrels still in the air burst harmlessly where they are
-  fizzle(bt) {
+  fizzle(bt: number) {
     if (this.dead >= 0) return;
     this.dead = bt;
     for (const m of this.moves) {
@@ -98,13 +117,13 @@ export class BossHazards {
   }
 
   // hazards still able to hurt at boss time bt (a move stays listed until its last barrel / ring is spent)
-  _live(m, bt) {
+  _live(m: BossMove, bt: number) {
     const u = bt - m.t0, T = moveTimes(m);
     const extra = m.id === 'slam' ? (HZ.ringMax - HZ.ringR0) / HZ.ringSpeed + (m.p.rings.at(-1) || 0) : 0;
     return u >= 0 && u < T.end + extra + 0.2 && (this.dead < 0 || bt < this.dead);
   }
 
-  update(dt, bt, { live }) {
+  update(dt: number, bt: number, { live }: { live: boolean }) {
     for (let i = this.moves.length - 1; i >= 0; i--) {
       const m = this.moves[i];
       if (bt - m.t0 > moveTimes(m).end + 4) { this.moves.splice(i, 1); for (const k of [...this.hits]) if (k.startsWith(m.t0 + '|')) this.hits.delete(k); }
@@ -116,7 +135,7 @@ export class BossHazards {
   }
 
   // ------------------------------------------------------------------------------------ victim-side damage
-  _hurtLocal(bt0, bt1, dt) {
+  _hurtLocal(bt0: number, bt1: number, dt: number) {
     const boss = this.boss, mul = boss.dmgMul;
     for (const a of G.actors) {
       if (a.remote || !a.alive || a.team === 1) continue;
@@ -124,8 +143,8 @@ export class BossHazards {
       for (const m of this.moves) {
         if (!this._live(m, bt1)) continue;
         const u0 = bt0 - m.t0, u1 = bt1 - m.t0;
-        const key = (kind, i) => `${m.t0}|${kind}|${i}|${a.nid ?? a.slot}`;
-        const once = (kind, i, dmg) => { const k = key(kind, i); if (this.hits.has(k)) return; this.hits.add(k); this._damage(a, dmg * mul); };
+        const key = (kind: string, i: number) => `${m.t0}|${kind}|${i}|${a.nid ?? a.slot}`;
+        const once = (kind: string, i: number, dmg: number) => { const k = key(kind, i); if (this.hits.has(k)) return; this.hits.add(k); this._damage(a, dmg * mul); };
         const p = m.p, [tele] = m.d;
         switch (m.id) {
           case 'slam': {
@@ -142,7 +161,7 @@ export class BossHazards {
             break;
           }
           case 'barrage':
-            p.b.forEach((b, i) => {
+            p.b.forEach((b: number[], i: number) => {
               const land = b[3] + HZ.barrelFlight;
               if (u0 < land && u1 >= land && hDist(a.pos, b[0], b[2]) < HZ.barrelR + 0.35 && Math.abs(a.pos.y - b[1]) < 2.2) once('barrel', i, HZ.barrelDmg);
             });
@@ -186,20 +205,20 @@ export class BossHazards {
     }
   }
   // a crablet burst (net: played on the host's timeline) — the owner of each squidkid nearby takes the hit
-  crabBurst(x, y, z, id) {
+  crabBurst(x: number, y: number, z: number, id: number) {
     for (const a of G.actors) {
       if (a.remote || !a.alive || a.team === 1 || this.boss.nav.inPad(a.pos.x, a.pos.z, SAFE_PAD)) continue;
       if (Math.hypot(a.pos.x - x, a.pos.z - z) < HZ.crabR && Math.abs(a.pos.y - y) < 1.6) this._damage(a, HZ.crabDmg * this.boss.dmgMul);
     }
   }
-  _damage(a, dmg) { if (dmg > 0) a.damage(dmg, this.boss.attacker, 'boss'); }
-  _los(x0, y0, z0, x1, y1, z1) { return G.physics.los(_v.set(x0, y0, z0), _v2.set(x1, y1, z1)); }
+  _damage(a: Actor, dmg: number) { if (dmg > 0) a.damage(dmg, this.boss.attacker as unknown as Actor, 'boss'); }   // (가짜 공격자: 이름·팀·위치·색만 읽힌다)
+  _los(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number) { return G.physics!.los(_v.set(x0, y0, z0), _v2.set(x1, y1, z1)); }
 
   // How far a ground hazard centred on (x, z) spreads along each of REACH_N headings before its floor ends — a wall, a
   // drop (sea, trench), a spawn pad. The shockwave stops there, and the drawn rings / danger zones are clipped to it,
   // so nothing floats over a gap or runs through a wall. Cached on the move (the stage doesn't change).
-  _c(m) { let c = this.cache.get(m); if (!c) this.cache.set(m, (c = { beam: new Map(), reach: null })); return c; }
-  reach(m, x, z, R) {
+  _c(m: BossMove) { let c = this.cache.get(m); if (!c) this.cache.set(m, (c = { beam: new Map(), reach: null })); return c; }
+  reach(m: BossMove, x: number, z: number, R: number) {
     const C = this._c(m);
     if (C.reach) return C.reach;
     const nav = this.boss.nav, out = new Float32Array(REACH_N);
@@ -211,18 +230,18 @@ export class BossHazards {
     }
     return (C.reach = out);
   }
-  reachAt(m, x, z, px, pz, R) {
+  reachAt(m: BossMove, x: number, z: number, px: number, pz: number, R: number) {
     const a = Math.atan2(px - x, pz - z), k = Math.floor(((a < 0 ? a + Math.PI * 2 : a) / (Math.PI * 2)) * REACH_N) % REACH_N;
     return this.reach(m, x, z, R)[k];
   }
 
   // the beam stops at the first wall along it (cached per move + angle bucket; walls don't move)
-  beamLen(m, ang) {
+  beamLen(m: BossMove, ang: number) {
     const c = this._c(m).beam, key = Math.round(ang * 90);
     let L = c.get(key);
     if (L === undefined) {
       const p = m.p, a = key / 90;
-      const h = G.physics.raycast(_v.set(p.ox, p.y + 1.0, p.oz), _v2.set(Math.sin(a), 0, Math.cos(a)), HZ.beamLen, _hit, true);
+      const h = G.physics!.raycast(_v.set(p.ox, p.y + 1.0, p.oz), _v2.set(Math.sin(a), 0, Math.cos(a)), HZ.beamLen, _hit, true);
       L = h.hit ? h.dist : HZ.beamLen;
       c.set(key, L);
     }
@@ -230,23 +249,23 @@ export class BossHazards {
   }
 
   // ------------------------------------------------------------------------------------ host: paint the boss ink
-  paint(bt0, bt1) {
+  paint(bt0: number, bt1: number) {
     const P = G.paint; if (!P) return;
     const nav = this.boss.nav;
-    const splat = (x, y, z, r) => {
+    const splat = (x: number, y: number, z: number, r: number) => {
       if (nav.inPad(x, z, 0.3)) return;
-      const g = G.physics.raycast(_v.set(x, y + 1.5, z), DOWN, 4, _hit2, true);
+      const g = G.physics!.raycast(_v.set(x, y + 1.5, z), DOWN, 4, _hit2, true);
       if (!g.hit || g.point.y < PLAYER.waterY) return;
       P.splat(_v3.copy(g.point).addScaledVector(g.normal, 0.08), r, 1, { seed: Math.random() });
     };
-    const steps = (u0, u1, start, every, fn) => { const k0 = Math.floor((u0 - start) / every), k1 = Math.floor((u1 - start) / every); for (let k = Math.max(0, k0 + 1); k <= k1; k++) fn(k, start + k * every); };
+    const steps = (u0: number, u1: number, start: number, every: number, fn: (k: number, t: number) => void) => { const k0 = Math.floor((u0 - start) / every), k1 = Math.floor((u1 - start) / every); for (let k = Math.max(0, k0 + 1); k <= k1; k++) fn(k, start + k * every); };
     for (const m of this.moves) {
       if (!this._live(m, bt1)) continue;
       const u0 = bt0 - m.t0, u1 = bt1 - m.t0, p = m.p, [tele, act] = m.d;
       switch (m.id) {
         case 'slam':
           if (u0 < tele && u1 >= tele) { splat(p.x, p.y, p.z, 2.8); for (let i = 0; i < 7; i++) { const a = i * 0.9; splat(p.x + Math.cos(a) * 2.6, p.y, p.z + Math.sin(a) * 2.6, 1.3); } }
-          for (let k = 0; k < p.rings.length; k++) steps(u0, u1, ringStart(m, k), 2.2 / HZ.ringSpeed, (j) => {
+          for (let k = 0; k < p.rings.length; k++) steps(u0, u1, ringStart(m, k), 2.2 / HZ.ringSpeed, (j: number) => {
             const r = HZ.ringR0 + 2.2 * (j + 1);
             if (r > HZ.ringMax - 1) return;
             const n = Math.round(r * 1.4);
@@ -258,26 +277,26 @@ export class BossHazards {
           });
           break;
         case 'barrage':
-          p.b.forEach((b) => {
+          p.b.forEach((b: number[]) => {
             const land = b[3] + HZ.barrelFlight;
             if (u0 < land && u1 >= land) { splat(b[0], b[1], b[2], 2.2); for (let i = 0; i < 4; i++) { const a = i * 1.6 + b[0]; splat(b[0] + Math.cos(a) * 1.8, b[1], b[2] + Math.sin(a) * 1.8, 1.0); } }
           });
           break;
         case 'sweep':
-          steps(u0, Math.min(u1, tele + act), tele, 0.06, (k, t) => {
+          steps(u0, Math.min(u1, tele + act), tele, 0.06, (k: number, t: number) => {
             const ang = beamAngle(m, t), L = this.beamLen(m, ang);
             splat(p.ox + Math.sin(ang) * L, p.y, p.oz + Math.cos(ang) * L, 1.05);
             if (k % 2) { const f = 0.45 + 0.4 * ((k * 0.37) % 1); splat(p.ox + Math.sin(ang) * L * f, p.y, p.oz + Math.cos(ang) * L * f, 0.8); }
           });
           break;
         case 'charge':
-          steps(u0, Math.min(u1, tele + act), tele, 0.09, (k, t) => {
+          steps(u0, Math.min(u1, tele + act), tele, 0.09, (k: number, t: number) => {
             const s = chargeDist(p, t, tele), sx = Math.sin(p.yaw), sz = Math.cos(p.yaw), side = k % 2 ? 1.3 : -1.3;
             splat(p.x + sx * (s - 1) + sz * side, p.y, p.z + sz * (s - 1) - sx * side, 1.0);
           });
           break;
         case 'frenzy':
-          steps(u0, Math.min(u1, tele + act), tele, 0.07, (k) => {
+          steps(u0, Math.min(u1, tele + act), tele, 0.07, (k: number) => {
             for (let j = 0; j < 2; j++) {
               const a = p.rot0 + (k * 0.07) * 2.6 + (j * Math.PI) + (k % 3) * 0.7, r = HZ.frenzyR * (0.35 + 0.6 * ((k * 0.618 + j * 0.3) % 1));
               splat(p.x + Math.sin(a) * r, p.y, p.z + Math.cos(a) * r, 0.9);
@@ -291,10 +310,10 @@ export class BossHazards {
   // ------------------------------------------------------------------------------------ bots: what's coming for (x, z)?
   // → { level 0..1, ax, az (unit escape direction), ringIn (s until a slam ring reaches here, or -1), cover (a beam / spray
   //   that cover beats), beam (the sweep: diving under your own ink beats it too), lane (a charge is coming down it) }
-  threat(x, y, z, horizon = 1.2) {
-    const bt = this.boss.bt, out = this._thr || (this._thr = {});
+  threat(x: number, y: number, z: number, horizon = 1.2): Threat {
+    const bt = this.boss.bt, out = this._thr || (this._thr = { level: 0, ax: 0, az: 0, ringIn: -1, cover: false, lane: false, beam: false });
     out.level = 0; out.ax = 0; out.az = 0; out.ringIn = -1; out.cover = false; out.lane = false; out.beam = false;
-    const push = (lvl, dx, dz) => {
+    const push = (lvl: number, dx: number, dz: number) => {
       const l = Math.hypot(dx, dz) || 1;
       out.ax += (dx / l) * lvl; out.az += (dz / l) * lvl;
       out.level = Math.max(out.level, lvl);
@@ -351,8 +370,8 @@ export class BossHazards {
   dispose() { this.fx.dispose(); }
 }
 
-const hDist = (p, x, z) => Math.hypot(p.x - x, p.z - z);
-const hDist3 = (x0, z0, x1, z1) => Math.hypot(x0 - x1, z0 - z1);
+const hDist = (p: THREE.Vector3, x: number, z: number) => Math.hypot(p.x - x, p.z - z);
+const hDist3 = (x0: number, z0: number, x1: number, z1: number) => Math.hypot(x0 - x1, z0 - z1);
 
 // ================================================================================================= visuals
 // Ground telegraphs and the hazards themselves, in the boss's ink. Everything that lies on the floor is clipped to the
@@ -408,11 +427,21 @@ void main() {
 }`;
 
 class HazardFX {
+  group: THREE.Group;
+  color: THREE.Color;
+  mat: (vert: string, frag: string, extra?: THREE.ShaderMaterialParameters) => THREE.ShaderMaterial;
+  geo: { lane: THREE.BufferGeometry; beam: THREE.BufferGeometry; barrel: THREE.BufferGeometry };
+  declare ringAttr: { position: THREE.BufferAttribute; aA: THREE.BufferAttribute; aSide: THREE.BufferAttribute; index: THREE.BufferAttribute | number[] };
+  pools: Record<string, { list: THREE.Mesh<THREE.BufferGeometry, THREE.Material>[]; n: number }> = {};
+  beamMat: THREE.MeshBasicMaterial;
+  barrelMat: THREE.MeshStandardMaterial;
+  _per = new Map<string, THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>>();
+  t = 0;
   constructor() {
     this.group = new THREE.Group(); this.group.name = 'BossHazards';
     G.scene?.add(this.group);
     this.color = new THREE.Color(1, 0.3, 0.3);
-    this.mat = (vert, frag, extra = {}) => new THREE.ShaderMaterial({
+    this.mat = (vert: string, frag: string, extra: THREE.ShaderMaterialParameters = {}) => new THREE.ShaderMaterial({
       uniforms: { uColor: { value: this.color }, uAlpha: { value: 1 }, uTime: { value: 0 }, uK: { value: 0 }, uC: { value: new THREE.Vector3() }, uR: { value: 0 }, uW: { value: 0 } },
       vertexShader: vert, fragmentShader: frag, transparent: true, depthWrite: false, side: THREE.DoubleSide, fog: false,
       polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, ...extra,
@@ -432,19 +461,16 @@ class HazardFX {
       }
       this.ringAttr = { position: new THREE.BufferAttribute(new Float32Array(n * 12), 3), aA: new THREE.BufferAttribute(aA, 1), aSide: new THREE.BufferAttribute(aSide, 1), index: idx };
     }
-    this.pools = {};
     this.beamMat = new THREE.MeshBasicMaterial({ color: this.color, transparent: true, opacity: 0.92, depthWrite: false, fog: false });
     this.barrelMat = new THREE.MeshStandardMaterial({ color: 0x8a4a32, roughness: 0.55, metalness: 0.35, emissive: this.color, emissiveIntensity: 0.18 });
-    this._per = new Map();    // per-move meshes (rings, fans), keyed `${t0}:${what}`
-    this.t = 0;
   }
-  setColor(c) { this.color.copy(c); this.barrelMat.emissive.copy(c); }
-  _pool(name) { return this.pools[name] || (this.pools[name] = { list: [], n: 0 }); }
-  _take(name) {
+  setColor(c: THREE.Color) { this.color.copy(c); this.barrelMat.emissive.copy(c); }
+  _pool(name: string) { return this.pools[name] || (this.pools[name] = { list: [], n: 0 }); }
+  _take(name: string) {
     const P = this._pool(name);
     let m = P.list[P.n];
     if (!m) {
-      m = new THREE.Mesh(this.geo[name], name === 'beam' ? this.beamMat : name === 'barrel' ? this.barrelMat : this.mat(DECAL_VERT, LANE_FRAG));
+      m = new THREE.Mesh(this.geo[name as keyof HazardFX['geo']], name === 'beam' ? this.beamMat : name === 'barrel' ? this.barrelMat : this.mat(DECAL_VERT, LANE_FRAG));
       m.frustumCulled = false; m.renderOrder = name === 'beam' ? 9 : 7;
       if (name === 'barrel') { m.castShadow = true; m.renderOrder = 0; }
       P.list.push(m); this.group.add(m);
@@ -452,14 +478,14 @@ class HazardFX {
     P.n++; m.visible = true;
     return m;
   }
-  _perMove(key, make) {
+  _perMove(key: string, make: () => THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>) {
     let o = this._per.get(key);
     if (!o) { o = make(); o.frustumCulled = false; o.renderOrder = 7; this.group.add(o); this._per.set(key, o); }
     o.visible = true; o.userData.used = true;
     return o;
   }
   // a shockwave band sharing the template, with this move's reach per segment
-  _ring(key, reach) {
+  _ring(key: string, reach: ArrayLike<number>) {
     return this._perMove(key, () => {
       const R = this.ringAttr, g = new THREE.BufferGeometry(), r4 = new Float32Array(REACH_N * 4);
       for (let k = 0; k < REACH_N; k++) r4.fill(reach[k], k * 4, k * 4 + 4);
@@ -469,10 +495,10 @@ class HazardFX {
     });
   }
   // a fan on the floor at (x, y, z) from heading a0 to a1 (full circle when a1 − a0 = 2π) out to radius(angle)
-  _fan(key, x, y, z, a0, a1, radius) {
+  _fan(key: string, x: number, y: number, z: number, a0: number, a1: number, radius: (a: number) => number) {
     return this._perMove(key, () => {
       const n = Math.max(8, Math.ceil(Math.abs(a1 - a0) / (Math.PI * 2) * REACH_N));
-      const pos = [x, y, z], aR = [0], idx = [];
+      const pos = [x, y, z], aR = [0], idx: number[] = [];
       for (let i = 0; i <= n; i++) {
         const a = a0 + (a1 - a0) * (i / n), r = radius(a);
         pos.push(x + Math.sin(a) * r, y, z + Math.cos(a) * r); aR.push(1);
@@ -484,9 +510,9 @@ class HazardFX {
     });
   }
 
-  draw(hz, bt, dt, live) {
+  draw(hz: BossHazards, bt: number, dt: number, live: boolean) {
     this.t += dt;
-    for (const k in this.pools) this.pools[k].n = 0;
+    for (const P of Object.values(this.pools)) P.n = 0;
     for (const o of this._per.values()) { o.visible = false; o.userData.used = false; }
     const fx = G.fx, col = this.color, T = this.t;
     for (const m of hz.moves) {
@@ -529,7 +555,7 @@ class HazardFX {
           if (u > tele + act) break;
           // the fan the beam will cross, out to where it hits a wall (or the floor runs out)
           const reach = hz.reach(m, p.ox, p.oz, HZ.beamLen), lo = Math.min(p.a0, p.a1), hi = Math.max(p.a0, p.a1);
-          const fan = this._fan(m.t0 + ':fan', p.ox, p.y + 0.05, p.oz, lo, hi, (a) => {
+          const fan = this._fan(m.t0 + ':fan', p.ox, p.y + 0.05, p.oz, lo, hi, (a: number) => {
             const k = Math.floor((((a % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2) * REACH_N) % REACH_N;
             return Math.max(2, Math.min(hz.beamLen(m, a), reach[k]));
           });
@@ -551,13 +577,13 @@ class HazardFX {
           const lane = this._take('lane'), k = clamp(u / tele, 0, 1);
           const s = chargeDist(p, u, tele), len = Math.max(0.5, p.L + 4.2 - s);
           lane.position.set(p.x + Math.sin(p.yaw) * s, p.y + 0.05, p.z + Math.cos(p.yaw) * s); lane.rotation.set(0, p.yaw, 0); lane.scale.set(5.0, 1, len);
-          const U = lane.material.uniforms; U.uK.value = k; U.uTime.value = T; U.uAlpha.value = u < tele ? 0.35 + 0.65 * k : 0.9;
+          const U = (lane.material as THREE.ShaderMaterial).uniforms; U.uK.value = k; U.uTime.value = T; U.uAlpha.value = u < tele ? 0.35 + 0.65 * k : 0.9;
           break;
         }
         case 'frenzy':
           if (u < tele + act) {
             const reach = hz.reach(m, p.x, p.z, HZ.frenzyR);
-            const zone = this._fan(m.t0 + ':zone', p.x, p.y + 0.05, p.z, 0, Math.PI * 2, (a) => reach[Math.floor(((a % (Math.PI * 2)) / (Math.PI * 2)) * REACH_N) % REACH_N]);
+            const zone = this._fan(m.t0 + ':zone', p.x, p.y + 0.05, p.z, 0, Math.PI * 2, (a: number) => reach[Math.floor(((a % (Math.PI * 2)) / (Math.PI * 2)) * REACH_N) % REACH_N]);
             const U = zone.material.uniforms, k = u < tele ? clamp(u / tele, 0, 1) : 1;
             U.uK.value = k; U.uAlpha.value = 0.5 + 0.5 * k; U.uTime.value = T * (u < tele ? 1 : 2.5);
           }
@@ -573,7 +599,7 @@ class HazardFX {
           break;
       }
     }
-    for (const k in this.pools) { const P = this.pools[k]; for (let i = P.n; i < P.list.length; i++) P.list[i].visible = false; }
+    for (const P of Object.values(this.pools)) { for (let i = P.n; i < P.list.length; i++) P.list[i].visible = false; }
     // per-move meshes whose move has gone
     for (const [key, o] of this._per) {
       const t0 = +key.split(':')[0];
@@ -592,8 +618,8 @@ class HazardFX {
 
   dispose() {
     this.group.removeFromParent();
-    for (const k in this.geo) this.geo[k].dispose();
-    for (const k in this.pools) for (const m of this.pools[k].list) if (m.material !== this.beamMat && m.material !== this.barrelMat) m.material.dispose();
+    for (const g of Object.values(this.geo)) g.dispose();
+    for (const P of Object.values(this.pools)) for (const m of P.list) if (m.material !== this.beamMat && m.material !== this.barrelMat) m.material.dispose();
     for (const o of this._per.values()) { o.geometry.dispose(); o.material.dispose(); }
     this.beamMat.dispose(); this.barrelMat.dispose();
   }

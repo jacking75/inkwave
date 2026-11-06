@@ -81,6 +81,8 @@ import type { ScreenFX } from './fx/screenfx.js';
 import type { createTextureLibrary } from './world/texlib.js';
 import type { AudioEngine } from './audio/audio.js';
 import type { NetMatch } from './net/netmatch.js';
+import type { MatchResult, RosterEntry } from './game/match.js';
+import type { PlayOpts } from './audio/audio.js';
 import type { NetSession } from './net/session.js';
 import type { Boss } from './boss/boss.js';
 
@@ -180,10 +182,6 @@ type GameHUD = HUD & {
 type ResultsData = NonNullable<Parameters<Menus['showResults']>[0]>;
 type BossResultsData = ResultsData & { boss: { maxHp?: number } };
 // Match.result의 세 형태(영역 판정·Zone Control·Boss Battle)를 함께 읽는 보기이다.
-interface MatchResult {
-  mode?: string; winner: number; coverage: number[]; reason?: string; overtime?: boolean;
-  boss?: { name: string; win: boolean; time: number; hp: number; maxHp: number; phase: number };
-}
 // 호스트가 방송한 온라인 대전 시작 설정(net/session.js의 'start' 메시지) 중 이 파일이 읽는 부분이다.
 interface NetMatchConfig { map: string; time: string; mode: string; duration: number; difficulty: string; palette: number; roster: unknown }
 // 메뉴(ui/menus)가 호출하는 게임 API이다(_menuApi()가 만든다).
@@ -438,7 +436,7 @@ class Game {
     // UI first so the loading screen shows immediately
     const [menusMod, hudMod] = await Promise.all([loadModule('./ui/menus.js'), loadModule('./ui/hud.js')]);
     this.menus = G.menus = menusMod.Menus ? new menusMod.Menus(this.uiRoot, this._menuApi()) : null;
-    this.hud = G.hud = hudMod.HUD ? new hudMod.HUD(this.uiRoot, { playSound: (n: string, o?: object) => G.audio?.play(n, o) }) : null;
+    this.hud = G.hud = hudMod.HUD ? new hudMod.HUD(this.uiRoot, { playSound: (n: string, o?: object) => G.audio?.play(n, o as PlayOpts | undefined) }) : null;
     // map diorama pins/finish live inside the HUD layer (under every other HUD element)
     try { const { DioramaOverlay } = await import('./ui/diorama.js'); this.diorama = new DioramaOverlay(this.hud ? this.hud.el : this.uiRoot); } catch (e) { console.error('[inkwave] diorama', e); this.diorama = null; }
     this.hud?.setVisible(false);
@@ -1089,7 +1087,7 @@ class Game {
       const local = this.match.local;
       if (attacker?.isLocal) {
         G.audio?.play('splat_enemy', { volume: 0.9 });
-        this.hud?.feed({ text: `You splatted ${victim.name}!`, color: G.teamHex[local.team], kind: 'kill' });
+        this.hud?.feed({ text: `You splatted ${victim.name}!`, color: G.teamHex[local!.team], kind: 'kill' });   // (공격자가 내 액터면 local이 있다)
       } else if (victim.isLocal) {
         G.audio?.play('splatted_self');
         G.audio?.duck?.(0.45, 2.2);
@@ -1294,7 +1292,7 @@ class Game {
     const m = (this.match = G.match = new Match({
       attract: false, practice, duration: opts.duration, mode: opts.mode, difficulty: opts.difficulty, weapon: wpn, sub: this._subFor(wpn), special: this._specialFor(wpn),
       playerName: this.profile.name || 'Player', CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
-      autopilot: params.has('autopilot'), style: this.profile.style || null, noBots: mapNoBots(map.id),   // (devstage: a solo walk)
+      autopilot: params.has('autopilot'), style: this.profile.style || undefined, noBots: mapNoBots(map.id),   // (devstage: a solo walk)
     }));
     window.inkwaveNative?.performance?.mark('actors:setup:start');
     m.setup();
@@ -1619,7 +1617,7 @@ class Game {
     this._setPalette(this.settings.colorblind ? COLORBLIND_PALETTE : TEAM_PALETTES[cfg.palette] || TEAM_PALETTES[0]);
     const m = (this.match = G.match = new Match({
       attract: false, duration: cfg.duration, difficulty: cfg.difficulty, mode: cfg.mode, CharacterClass: this.CharacterClass, rig: this.rig, input: this.input,
-      roster: cfg.roster, myId: G.net!.myId, host: G.net!.isHost, autopilot: params.has('autopilot'),
+      roster: cfg.roster as RosterEntry[], myId: G.net!.myId, host: G.net!.isHost, autopilot: params.has('autopilot'),
     }));
     m.setup();
     await this._warmCharacters(m);   // before 'ready': nobody starts until every shader a squidkid can use is compiled
@@ -1643,7 +1641,7 @@ class Game {
       await policy.warmVisible(m.actors.map(a => a.character.root), new THREE.Group(), G.renderer!, G.camera!, G.scene!, G.post!.composer.readBuffer);
       return;
     }
-    const jobs = m.actors.map((a) => a.character?.warmAll ? Promise.resolve(a.character.warmAll()).catch((e) => console.warn('[inkwave] warm', e)) : null).filter(Boolean);
+    const jobs: Array<Promise<unknown> | null> = m.actors.map((a) => a.character?.warmAll ? Promise.resolve(a.character.warmAll()).catch((e) => console.warn('[inkwave] warm', e)) : null).filter(Boolean);
     if (m.boss) jobs.push(Promise.resolve(m.boss.model.ready).then(() => Promise.all(m.boss!.warm().map((o) => G.renderer!.compileAsync(o, G.camera!, G.scene)))).catch((e) => console.warn('[inkwave] boss warm', e)));
     if (jobs.length) await Promise.race([Promise.all(jobs), new Promise((r) => setTimeout(r, 8000))]);   // never hang a load
   }
@@ -1783,7 +1781,7 @@ class Game {
     const won = !!bo.win, cov = R.coverage || G.paint!.coverage();
     m.setState('results');
     this.hud?.setVisible(false);
-    const local = m.local, p = this.profile;
+    const local = m.local!, p = this.profile;   // (결과 화면은 내 액터가 있는 대전에서만 연다)
     const turf = Math.round(local.stats.turf), dmg = Math.round(local.stats.bossDmg || 0);
     const gained = Math.round((won ? PROGRESSION.xpWin : PROGRESSION.xpLose) + turf * PROGRESSION.xpPerTurfPoint + local.stats.splats * PROGRESSION.xpPerSplat + dmg * 0.04);
     const before = { level: p.level, xp: p.xp, toNext: PROGRESSION.xpForLevel(p.level) };
@@ -1829,7 +1827,7 @@ class Game {
     m.setState('results');
     this.hud?.setVisible(false);
     // profile / XP
-    const local = m.local;
+    const local = m.local!;   // (결과는 내 액터가 있는 대전에서만)
     const p = this.profile;
     const turf = Math.round(local.stats.turf);
     let gained = Math.round((won ? PROGRESSION.xpWin : PROGRESSION.xpLose) + turf * PROGRESSION.xpPerTurfPoint + local.stats.splats * PROGRESSION.xpPerSplat);
@@ -1994,7 +1992,7 @@ class Game {
     if (m && m.controller && m.state === 'playing') m.controller.computeAim?.();
     // bomb arc preview
     const loc = m?.local;
-    const orbReady = !!(loc && loc.specialActive && loc.specialActive.id === 'booyah' && loc.specialActive.charge >= 1);
+    const orbReady = !!(loc && loc.specialActive && loc.specialActive.id === 'booyah' && (loc.specialActive.charge ?? 0) >= 1);
     G.projectiles!.updateArc(loc, !!(loc && loc.alive && (loc.weaponRunner.aimingSub || orbReady) && m.state === 'playing' && !m.paused));
     const tB = performance.now();
     // paint → atlas, shader uniforms
@@ -2016,7 +2014,7 @@ class Game {
     if (m && !m.paused && !m.attract && G.mode === 'match' && (this._musicHealT = (this._musicHealT || 0) + dt) > 1) {
       this._musicHealT = 0;
       const ct = G.music?.current;
-      if (ct && ct.el && ct.el.paused && !ct.stopped && !ct.el.ended && (m.state === 'playing' || m.state === 'intro')) G.music!.resume();
+      if (ct && 'el' in ct && ct.el && ct.el.paused && !ct.stopped && !ct.el.ended && (m.state === 'playing' || m.state === 'intro')) G.music!.resume();
     }
     this.showcase.update(dt);
     this._updateLocalLoops(dt);
@@ -2380,7 +2378,7 @@ class Game {
     const frame = {
       time: m.practice ? null : m.time,
       teams,   // HUD: [your team, theirs]
-      ink: a.ink / (a.tune?.inkMax ?? PLAYER.inkMax), inkLow: a.ink < 18 || (this._lowInkFlash > 0), subCost: a.specialActive?.kind === 'barrage' ? 0 : (a.sub || SUB.bomb).inkCost / PLAYER.inkMax, subKind: (a.specialActive?.kind === 'barrage' ? a.specialActive.bomb : a.sub || SUB.bomb).kind,
+      ink: a.ink / (a.tune?.inkMax ?? PLAYER.inkMax), inkLow: a.ink < 18 || (this._lowInkFlash > 0), subCost: a.specialActive?.kind === 'barrage' ? 0 : (a.sub || SUB.bomb).inkCost / PLAYER.inkMax, subKind: (a.specialActive?.kind === 'barrage' ? a.specialActive.bomb! : a.sub || SUB.bomb).kind,
       poisoned: a.status.poison > 0, tracked: a.status.track > 0,
       special: a.specialActive ? G.specials!.remaining(a) : a.specialFrac(), specialReady: a.specialReady(), specialActive: !!a.specialActive, specialId: a.specialId,
       hp: a.hp / (a.tune?.hp ?? PLAYER.hp),

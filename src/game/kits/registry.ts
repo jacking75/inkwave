@@ -1,3 +1,4 @@
+import type { Actor } from '../actor.js';
 import { G } from '../../core/ctx.js';
 // Registries for main-weapon and sub-weapon kinds that live in their own modules (src/game/kits/<kind>.js). Each kit
 // module registers itself when imported (kits/index.js imports them all); the core systems look a kind up here after
@@ -59,18 +60,18 @@ export const MAIN_KITS = {};
 export const SUB_KITS = {};
 export const KIT_GHOSTS = {};
 // the local owner records a spawn for the other players (no-op offline / for remote actors)
-export function netRec(actor, kind, data) { G.netm?.recKit?.(actor, kind, data); }
+export function netRec(actor: Actor, kind: string, data: object) { G.netm?.recKit?.(actor, kind, data); }
 // a network id for an owner's world object (its ghosts carry the same id): owner nid × 1e5 + a per-session sequence
 let _seq = 0;
-export function netId(owner) { return owner && owner.nid !== undefined ? owner.nid * 100000 + (++_seq % 100000) : 0; }
+export function netId(owner: Actor | null | undefined) { return owner && owner.nid !== undefined ? owner.nid * 100000 + (++_seq % 100000) : 0; }
 // a non-owner damaged a ghost device (a remote player's sprinkler, curtain, waddle …): the owner's copy takes it.
 // (kind: 'subs' for SubSystem items, else the kit kind — its netHurt(id, dmg) applies it on the owner's screen)
-export function netHurt(owner, kind, id, dmg) { if (id && dmg > 0) G.netm?.sendDevHit?.(owner, kind, id, dmg); }
+export function netHurt(owner: Actor | null | undefined, kind: string, id: number, dmg: number) { if (id && dmg > 0) G.netm?.sendDevHit?.(owner, kind, id, dmg); }
 // run fn with paint muted when obj is a ghost (a remote player's copy): its splats are the owner's to send
 // true while a ghost (a remote player's replayed shot / bomb / sub) is being simulated: its damage to devices counts for
 // nothing here — the owner's own copy hits our ghost of the device and that hit arrives by netHurt
-export function netMuted() { return (G.netm?.mute | 0) > 0; }
-export function ghostMute(obj, fn) {
+export function netMuted() { return (G.netm?.mute ?? 0) > 0; }
+export function ghostMute<T>(obj: { ghost?: unknown } | null | undefined, fn: () => T): T {
   const nm = obj && obj.ghost ? G.netm : null;
   if (nm) nm.mute++;
   try { return fn(); } finally { if (nm) nm.mute--; }

@@ -1,6 +1,7 @@
 // Sponge Mitts — icon + sounds (registered into the shared tables on import; kits/mitts.js imports this).
 import { WEAPON_ICONS } from '../../ui/ui-icons.js';
-import { SFX, texture } from '../../audio/audio.js';
+import { SFX, texture, type SfxDef } from '../../audio/audio.js';
+import type { V } from '../../audio/music.js';
 import { pts } from '../../audio/music.js';
 
 // ---------------------------------------------------------------------------------------------- icon
@@ -24,8 +25,8 @@ WEAPON_ICONS.mitts = `<svg class="iw-ico " viewBox="0 0 64 64" aria-hidden="true
 
 // ---------------------------------------------------------------------------------------------- sounds
 // one-shots: build(v, pitch); loops: loop(v, pitch) → { pitch(q, now) }. See audio.js for the voice kit.
-const def = (name, o) => { SFX[name] = o; };
-function bloop(v, t, f, peak) { v.tone({ t, f, f1: f * 0.35, sw: 0.06, a: 0.0015, d: 0.08, peak }); }
+const def = (name: string, o: SfxDef) => { SFX[name] = o; };
+function bloop(v: V, t: number, f: number, peak: number) { v.tone({ t, f, f1: f * 0.35, sw: 0.06, a: 0.0015, d: 0.08, peak }); }
 // punch: a short rubbery whoosh with a soft thwup as the glove snaps out
 def('mitts_punch', {
   gain: 0.5, max: 4, jitter: 0.06, reverb: 0.04, minGap: 0.03,
@@ -58,7 +59,7 @@ def('mitts_charge', {
     const o1 = v.osc('sawtooth', 210 * p, T, null, bp), o2 = v.osc('sine', 420 * p, T, null, v.gain(0.4, amp));
     const vib = v.lfo(9 * p, 6, o1.frequency, T, null);
     return {
-      pitch(q, now) {
+      pitch(q: number, now: number) {
         const k = 0.04;
         tex.playbackRate.setTargetAtTime(0.8 * q, now, k); lp.frequency.setTargetAtTime(900 * q, now, k);
         o1.frequency.setTargetAtTime(210 * q, now, k); o2.frequency.setTargetAtTime(420 * q, now, k); bp.frequency.setTargetAtTime(420 * q * q, now, k);
@@ -126,7 +127,7 @@ def('mitts_drain', {
     const sq = v.gain(0.05, v.out);
     v.noise('pink', T, null, v.filter('bandpass', 520 * p, 4, sq));
     v.lfo(3.1, 0.04, sq.gain, T, null);
-    return { pitch(q, now) { tex.playbackRate.setTargetAtTime(0.6 * q, now, 0.05); lp.frequency.setTargetAtTime(1100 * q, now, 0.05); } };
+    return { pitch(q: number, now: number) { tex.playbackRate.setTargetAtTime(0.6 * q, now, 0.05); lp.frequency.setTargetAtTime(1100 * q, now, 0.05); } };
   },
 });
 // letting go: a sticky pop-off

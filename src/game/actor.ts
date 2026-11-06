@@ -11,6 +11,8 @@
 //  · horizontal: S-curve accel, eased braking, heading slew (turns carve at full speed), plant-and-reverse
 //  · facing: angular spring with a rate cap (turnRate is fed to the animation)
 //  · jump buffer + coyote time, apex hang, hard-landing recovery, fire buffer across form changes
+import type { BotBrain } from './bots.js';
+import type { EnemyBrain } from '../campaign/enemies/brain.js';
 import * as THREE from 'three';
 import { G, emit, clamp, damp, angleDiff, smoothstep } from '../core/ctx.js';
 import { PLAYER, WEAPONS, SPECIALS, SUBS } from '../config.js';
@@ -32,7 +34,7 @@ export interface ActiveSpecial {
   id: string; t: number; phase?: string; startY?: number;
   armor?: boolean; body?: boolean; inkProof?: boolean; noSquid?: boolean; faceMove?: boolean; aimFace?: boolean; raise?: boolean; aiming?: boolean;
   speed?: number | null; accel?: number; faceYaw?: number | null; firing?: number; seat?: number; hang?: number;
-  jumpBack?: boolean; origin?: THREE.Vector3;
+  jumpBack?: boolean; origin?: THREE.Vector3; kind?: string; charge?: number; bomb?: { kind: string; inkCost: number };
   [key: string]: unknown;
 }
 export interface SuperJumpState {
@@ -46,7 +48,7 @@ export interface ActorOptions {
 }
 // weapons.js가 Object.assign으로 더하는 회피 구르기 메서드와 kit 상태(형식만)
 type Runner = WeaponRunner & {
-  dodgeVelocity(out: THREE.Vector3): THREE.Vector3 | null; tryDodge(intent: ActorIntent): boolean; endDodge(): void;
+  dodgeVelocity(out: THREE.Vector3): THREE.Vector3 | null; tryDodge(intent: ActorIntent): boolean; endDodge(): void; rollsLeft(): number;
   kit?: { hang?: boolean } | null;
 };
 interface KitHooks {
@@ -82,7 +84,7 @@ export class Actor {
   declare contacts: ReturnType<typeof makeContacts>; declare groundHit: Hit; declare wallHit: Hit; declare ground: GroundHit;
   declare groundN: THREE.Vector3; declare wallN: THREE.Vector3; declare _ledgeHit: Hit;
   declare character: Character; declare weaponRunner: Runner;
-  declare stats: { turf: number; splats: number; deaths: number; specials: number; zoneTurf?: number };
+  declare stats: { turf: number; splats: number; deaths: number; specials: number; zoneTurf?: number; bossDmg?: number; weakHits?: number; bossKill?: number };
   declare anim: {
     time: number; speed: number; localMove: { x: number; z: number }; grounded: boolean; vy: number; aimPitch: number; firing: boolean;
     charge: number | undefined; rolling: boolean; form: string; wallNormal: THREE.Vector3; ink: number; lowInk: boolean; special: number; invuln: boolean;
@@ -103,7 +105,7 @@ export class Actor {
   declare roofDir: THREE.Vector3 | null; declare roofP: THREE.Vector3; declare roofStall: number; declare roofT: number;
   declare _railIds?: number[]; declare _wakeT?: number;
   // 다른 모듈이 붙이는 값(경기·온라인·봇)
-  declare bot?: unknown; declare nid?: number; declare owner?: string; declare remote?: boolean; declare netTp?: number; declare netTurnRate?: number;
+  declare bot?: BotBrain | EnemyBrain; declare nid?: number; declare owner?: string; declare remote?: boolean; declare netTp?: number; declare netTurnRate?: number;   // (bot: 대전 봇 또는 캠페인 적 두뇌)
   declare hitH?: number; declare hitR?: number;
 
   constructor({ team, name, weapon = 'shooter', sub = null, special = null, isLocal = false, isBot = false, style = { hair: 0, skin: 0 }, slot = 0, CharacterClass }: ActorOptions) {

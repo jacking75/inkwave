@@ -11,6 +11,8 @@
 // Pose channels are a flat Float32Array so blending is trivial and nothing allocates per frame.
 import * as THREE from 'three';
 import { LEGS, ARMS, HEAD, BODY, CONT, MC, UP, frameQuat, ik2, ankleFor, legPole } from './bossModelGeo.js';
+import type { BossModel } from './bossModel.js';
+import type { Rig, Chain, Leg } from './bossModelGeo.js';
 
 const NAMES = ['bx', 'by', 'bz', 'bp', 'br', 'byaw', 'sp', 'sr', 'sy', 'hp', 'hy', 'hr',
   'lx', 'ly', 'lz', 'lp', 'lyw', 'lr', 'lo', 'rx', 'ry', 'rz', 'rp', 'ryw', 'rr', 'ro',
@@ -19,26 +21,30 @@ const NAMES = ['bx', 'by', 'bz', 'bp', 'br', 'byaw', 'sp', 'sr', 'sy', 'hp', 'hy
 export const C = Object.fromEntries(NAMES.map((n, i) => [n, i]));
 const NC = NAMES.length;
 // default phase lengths (the sim passes st.phaseDur; these are the fallbacks, = bossHazards MOVES)
-const DUR = { slam: [1.15, 1.2, 1.0], barrage: [0.85, 2.0, 0.8], sweep: [1.15, 2.1, 0.9], charge: [1.15, 1.5, 0.9], crablets: [0.9, 0.8, 0.6], frenzy: [1.2, 3.0, 1.7] };
-const PH = { tele: 0, act: 1, rec: 2 };
+const DUR: Record<string, number[]> = { slam: [1.15, 1.2, 1.0], barrage: [0.85, 2.0, 0.8], sweep: [1.15, 2.1, 0.9], charge: [1.15, 1.5, 0.9], crablets: [0.9, 0.8, 0.6], frenzy: [1.2, 3.0, 1.7] };
+const PH: Record<string, number> = { tele: 0, act: 1, rec: 2 };
 const ARM_CH = [[C.lx, C.ly, C.lz, C.lp, C.lyw, C.lr, C.lo], [C.rx, C.ry, C.rz, C.rp, C.ryw, C.rr, C.ro]];
 
 const PI = Math.PI, TAU = PI * 2;
-const cl = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
-const k01 = (t, a, b) => cl((t - a) / (b - a));
-const sm = (x) => x * x * (3 - 2 * x);
-const eo = (x) => 1 - (1 - x) * (1 - x) * (1 - x);
-const ei = (x) => x * x * x;
-const eob = (x) => { const c1 = 1.9, c3 = c1 + 1; return 1 + c3 * (x - 1) ** 3 + c1 * (x - 1) ** 2; };
-const bump = (t, a, b) => (t <= a || t >= b ? 0 : Math.sin(((t - a) / (b - a)) * PI));
-const mix = (a, b, t) => a + (b - a) * t;
-const dampK = (l, dt) => 1 - Math.exp(-l * dt);
-function hashN(i) { const s = Math.sin(i * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
-function vnoise(t, seed = 0) { const i = Math.floor(t), f = t - i, u = f * f * (3 - 2 * f); return mix(hashN(i + seed * 57), hashN(i + 1 + seed * 57), u) * 2 - 1; }
+const cl = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
+const k01 = (t: number, a: number, b: number) => cl((t - a) / (b - a));
+const sm = (x: number) => x * x * (3 - 2 * x);
+const eo = (x: number) => 1 - (1 - x) * (1 - x) * (1 - x);
+const ei = (x: number) => x * x * x;
+const eob = (x: number) => { const c1 = 1.9, c3 = c1 + 1; return 1 + c3 * (x - 1) ** 3 + c1 * (x - 1) ** 2; };
+const bump = (t: number, a: number, b: number) => (t <= a || t >= b ? 0 : Math.sin(((t - a) / (b - a)) * PI));
+const mix = (a: number, b: number, t: number) => a + (b - a) * t;
+const dampK = (l: number, dt: number) => 1 - Math.exp(-l * dt);
+function hashN(i: number) { const s = Math.sin(i * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
+function vnoise(t: number, seed = 0) { const i = Math.floor(t), f = t - i, u = f * f * (3 - 2 * f); return mix(hashN(i + seed * 57), hashN(i + 1 + seed * 57), u) * 2 - 1; }
 
 class Spring {
-  constructor(k, d) { this.k = k; this.d = d; this.x = 0; this.v = 0; }
-  step(dt, target = 0) { const n = dt > 1 / 90 ? 2 : 1, h = dt / n; for (let i = 0; i < n; i++) { this.v += (this.k * (target - this.x) - this.d * this.v) * h; this.x += this.v * h; } return this.x; }
+  declare v: number;
+  declare x: number;
+  declare d: number;
+  declare k: number;
+  constructor(k: number, d: number) { this.k = k; this.d = d; this.x = 0; this.v = 0; }
+  step(dt: number, target = 0) { const n = dt > 1 / 90 ? 2 : 1, h = dt / n; for (let i = 0; i < n; i++) { this.v += (this.k * (target - this.x) - this.d * this.v) * h; this.x += this.v * h; } return this.x; }
 }
 
 // scratch
@@ -53,23 +59,23 @@ const _ray = { hit: false, dist: 0, point: new THREE.Vector3(), normal: new THRE
 // ------------------------------------------------------------------------------------------------ clips
 // Each clip phase: fn(P, t, D, A) adds onto the locomotion pose P (t = seconds into the phase, D = its length).
 // Shared key poses are functions so tele → act → rec stay continuous.
-const slamUp = (P, u) => {           // crusher raised high over its shoulder (clear of the face), pincer braced, body leaning back
+const slamUp = (P: Pose, u: number) => {           // crusher raised high over its shoulder (clear of the face), pincer braced, body leaning back
   P[C.lx] += 0.55 * u; P[C.ly] += 2.45 * u; P[C.lz] += -1.25 * u; P[C.lp] += 1.65 * u; P[C.lyw] += 0.35 * u; P[C.lr] += -0.5 * u; P[C.lo] = mix(P[C.lo], 0.95, u);
   P[C.bp] += -0.13 * u; P[C.br] += 0.07 * u; P[C.by] += 0.2 * u; P[C.bz] += -0.28 * u; P[C.byaw] += -0.14 * u; P[C.hp] += -0.08 * u;
   P[C.rx] += -0.5 * u; P[C.ry] += 0.35 * u; P[C.rz] += -0.4 * u; P[C.ro] = mix(P[C.ro], 0.55, u); P[C.rp] += 0.3 * u;
   P[C.splay] += 0.06 * u; P[C.ep] += 0.12 * u; P[C.ey] += 0.1 * u;
 };
-const slamHit = (P, f) => {          // claw on the ground in front, body lunged into it
+const slamHit = (P: Pose, f: number) => {          // claw on the ground in front, body lunged into it
   P[C.lx] += -0.95 * f; P[C.ly] += -0.62 * f; P[C.lz] += 0.35 * f; P[C.lp] += -0.32 * f; P[C.lyw] += -0.42 * f; P[C.lo] = mix(P[C.lo], 0.08, f);
   P[C.bp] += 0.15 * f; P[C.br] += -0.06 * f; P[C.by] += -0.3 * f; P[C.bz] += 0.32 * f; P[C.byaw] += 0.16 * f; P[C.hp] += 0.1 * f;
   P[C.rx] += -0.2 * f; P[C.ry] += -0.35 * f; P[C.rz] += 0.25 * f; P[C.splay] += 0.1 * f;
 };
 // fallbacks mirror bossBrain's current tuning when st.params isn't passed
 const RINGS = [[0], [0], [0, 0.9], [0, 0.6]], BARRELS = [0, 3, 4, 6];
-function slamRings(A) { const r = A.params?.rings; return Array.isArray(r) && r.length ? r : RINGS[Math.min(3, A.phaseNow)]; }
-const CLIPS = {
+function slamRings(A: BossAnimator) { const r = A.params?.rings; return Array.isArray(r) && r.length ? r : RINGS[Math.min(3, A.phaseNow)]; }
+const CLIPS: Record<string, Partial<Record<'tele' | 'act' | 'rec', Clip>>> = {
   slam: {
-    tele(P, t, D, A) {
+    tele(P: Pose, t: number, D: number, A: BossAnimator) {
       // raise (ease out), hold with a tremble while the claw glows, then the downswing lands exactly at act start
       const down0 = Math.max(0.35, D - 0.13);
       const u = eo(k01(t, 0, Math.min(0.62, down0 * 0.85)));
@@ -80,7 +86,7 @@ const CLIPS = {
       P[C.glowL] = Math.max(P[C.glowL], sm(k01(t, 0.1, down0)) * (0.85 + 0.15 * Math.sin(t * 20)));
       P[C.ed] += 0.25 * d;
     },
-    act(P, t, D, A) {
+    act(P: Pose, t: number, D: number, A: BossAnimator) {
       const R = slamRings(A);
       // which slam are we in: each ring k lands at R[k]; between slams the claw re-raises
       let k = 0; while (k + 1 < R.length && t >= R[k + 1] - 0.4) k++;
@@ -96,7 +102,7 @@ const CLIPS = {
       P[C.ed] += 0.5 * bump(dt0, -0.02, 0.4);
       P[C.mouth] += 0.5 * bump(dt0, 0, 0.5);
     },
-    rec(P, t, D, A) {
+    rec(P: Pose, t: number, D: number, A: BossAnimator) {
       const u = sm(k01(t, 0.05, Math.min(0.8, D * 0.85)));
       slamHit(P, 0.7 * (1 - u));
       // drag the claw back out of the crater, a shake to fling off the ink
@@ -106,7 +112,7 @@ const CLIPS = {
     },
   },
   barrage: {
-    tele(P, t, D, A) {
+    tele(P: Pose, t: number, D: number, A: BossAnimator) {
       const u = eo(k01(t, 0, 0.5));
       P[C.by] += -0.22 * u; P[C.sp] += -0.12 * u; P[C.bp] += -0.06 * u; P[C.bz] += -0.1 * u;
       // lids rattle with the pressure building inside
@@ -118,7 +124,7 @@ const CLIPS = {
       P[C.lx] += -0.1 * u; P[C.ly] += -0.35 * u; P[C.lz] += 0.2 * u; P[C.lp] += -0.2 * u;
       P[C.ep] += 0.3 * u; P[C.splay] += 0.1 * u;
     },
-    act(P, t, D, A) {
+    act(P: Pose, t: number, D: number, A: BossAnimator) {
       const tele = A.teleDur || 0.85;
       const B = A.params?.b;
       let n = 0, last = -1;
@@ -151,14 +157,14 @@ const CLIPS = {
       P[C.lx] += -0.1 * hold; P[C.ly] += -0.35 * hold + 0.1 * pump; P[C.lz] += 0.2 * hold; P[C.lp] += -0.2 * hold;
       P[C.ep] += 0.35 * hold; P[C.splay] += 0.1 * hold; P[C.mouth] += 0.3 * pump;
     },
-    rec(P, t, D, A) {
+    rec(P: Pose, t: number, D: number, A: BossAnimator) {
       const u = 1 - sm(k01(t, 0, Math.min(0.6, D)));
       P[C.by] += -0.05 * u; P[C.sy] += -0.04 * bump(t, 0, 0.2);
       if (A.cross(0.02)) A.kickShell(0.4);
     },
   },
   sweep: {
-    tele(P, t, D, A) {
+    tele(P: Pose, t: number, D: number, A: BossAnimator) {
       const u = eo(k01(t, 0, 0.6));
       P[C.by] += -0.28 * u; P[C.bz] += -0.35 * u; P[C.bp] += 0.05 * u; P[C.hp] += 0.1 * u;
       // claws spread wide to brace, siphon swells and glows
@@ -169,7 +175,7 @@ const CLIPS = {
       A.aimBlend(P, 0.7 * u);
       P[C.splay] += 0.16 * u; P[C.ed] += 0.2 * u; P[C.steam] = Math.max(P[C.steam], 0.3 * c);
     },
-    act(P, t, D, A) {
+    act(P: Pose, t: number, D: number, A: BossAnimator) {
       const u = 1;
       P[C.by] += -0.28; P[C.bz] += -0.35 + 0.25 * eo(k01(t, 0, 0.2)); P[C.bp] += 0.05; P[C.hp] += 0.1;
       P[C.lx] += 0.55; P[C.lz] += -0.55; P[C.lyw] += 0.4; P[C.rx] += -0.55; P[C.rz] += -0.5; P[C.ryw] += -0.4; P[C.lo] = 0.4; P[C.ro] = 0.4;
@@ -179,7 +185,7 @@ const CLIPS = {
       A.aimBlend(P, u);
       P[C.splay] += 0.16; P[C.ed] += 0.25; P[C.mouth] += 0.35;
     },
-    rec(P, t, D, A) {
+    rec(P: Pose, t: number, D: number, A: BossAnimator) {
       const u = 1 - sm(k01(t, 0, Math.min(0.55, D)));
       P[C.by] += -0.28 * u; P[C.bz] += -0.1 * u; P[C.lx] += 0.55 * u; P[C.lz] += -0.55 * u; P[C.rx] += -0.55 * u; P[C.rz] += -0.5 * u;
       P[C.cannon] = Math.max(0, 1 - k01(t, 0, 0.35));
@@ -190,7 +196,7 @@ const CLIPS = {
     },
   },
   charge: {
-    tele(P, t, D, A) {
+    tele(P: Pose, t: number, D: number, A: BossAnimator) {
       const u = eo(k01(t, 0, 0.5));
       // low crouch, nose down, claws locked forward like a ram, eyes narrowed; front-left leg paws the ground
       P[C.by] += -0.55 * u; P[C.bp] += 0.2 * u; P[C.bz] += -0.3 * u; P[C.hp] += 0.1 * u;
@@ -201,14 +207,14 @@ const CLIPS = {
       P[C.sy] += Math.sin(t * 45) * 0.01 * k01(t, 0.4, D); P[C.sr] += Math.sin(t * 17) * 0.015 * k01(t, 0.4, D);
       P[C.splay] += 0.15 * u;
     },
-    act(P, t, D, A) {
+    act(P: Pose, t: number, D: number, A: BossAnimator) {
       const u = 1;
       P[C.by] += -0.35; P[C.bp] += 0.2; P[C.hp] += 0.12;
       P[C.lx] += -1.0; P[C.ly] += -0.1; P[C.lz] += 0.35; P[C.lyw] += -0.5; P[C.lo] = 0.05;
       P[C.rx] += 0.7; P[C.ry] += -0.1; P[C.rz] += 0.2; P[C.ryw] += 0.45; P[C.ro] = 0.05;
       P[C.ed] += 0.3; P[C.mouth] += 0.4;
     },
-    rec(P, t, D, A) {
+    rec(P: Pose, t: number, D: number, A: BossAnimator) {
       // (no wall) skid to a stop and straighten up
       const s = bump(t, 0, 0.5), u = 1 - sm(k01(t, 0.1, Math.min(0.8, D)));
       P[C.by] += -0.35 * u; P[C.bp] += 0.2 * u - 0.22 * s; P[C.bz] += -0.35 * s;
@@ -218,7 +224,7 @@ const CLIPS = {
     },
   },
   crablets: {
-    tele(P, t, D, A) {
+    tele(P: Pose, t: number, D: number, A: BossAnimator) {
       const u = eo(k01(t, 0, 0.5));
       // rear squats (nose up), brood hatch strains
       P[C.bp] += -0.2 * u; P[C.by] += -0.1 * u; P[C.bz] += 0.1 * u; P[C.sp] += 0.06 * u;
@@ -227,7 +233,7 @@ const CLIPS = {
       P[C.ly] += 0.35 * u; P[C.ry] += 0.35 * u; P[C.lo] = mix(P[C.lo], 0.6, u); P[C.ro] = mix(P[C.ro], 0.6, u);
       P[C.ep] += -0.1 * u; P[C.ey] += Math.sin(t * 5) * 0.2 * u;
     },
-    act(P, t, D, A) {
+    act(P: Pose, t: number, D: number, A: BossAnimator) {
       if (A.cross(0.02)) { A.event('crablets', 'hatch', A.params?.n || 3); A.kickShell(0.8); }
       const o = eob(k01(t, 0, 0.14));
       P[C.hC] += o * (1 - 0.1 * bump(t, 0.2, 0.5));
@@ -237,7 +243,7 @@ const CLIPS = {
       P[C.bp] += -0.28; P[C.by] += -0.12 + 0.08 * sh; P[C.bz] += 0.1;
       P[C.ly] += 0.35; P[C.ry] += 0.35; P[C.lo] = 0.6; P[C.ro] = 0.6; P[C.mouth] += 0.4 * sh;
     },
-    rec(P, t, D, A) {
+    rec(P: Pose, t: number, D: number, A: BossAnimator) {
       const c = ei(k01(t, 0, 0.18));
       P[C.hC] += 1 - c;
       if (A.cross(0.18)) A.kickShell(0.6);
@@ -246,7 +252,7 @@ const CLIPS = {
     },
   },
   frenzy: {
-    tele(P, t, D, A) {
+    tele(P: Pose, t: number, D: number, A: BossAnimator) {
       const u = eo(k01(t, 0, 0.7));
       // coil: twist against the spin, claws flung wide and open, cannon glowing
       P[C.byaw] += -0.55 * u; P[C.by] += -0.35 * u; P[C.br] += 0.05 * u; P[C.bp] += 0.05 * u;
@@ -255,7 +261,7 @@ const CLIPS = {
       P[C.cannon] = Math.max(P[C.cannon], sm(k01(t, 0.2, D)) * 0.7);
       P[C.sy] += Math.sin(t * 40) * 0.015 * k01(t, 0.3, D); P[C.ed] += 0.2 * u;
     },
-    act(P, t, D, A) {
+    act(P: Pose, t: number, D: number, A: BossAnimator) {
       const u = 1 - sm(k01(t, D - 0.3, D)) * 0.5;
       // the sim spins the root (params.spin); otherwise the body thrashes back and forth on its own
       const rootSpin = Math.abs(A.yawRate) > 1.2;
@@ -267,7 +273,7 @@ const CLIPS = {
       P[C.cannon] = 1; P[C.mouth] += 0.6; P[C.sipY] += Math.sin(t * 11) * 0.3;
       P[C.sy] += Math.sin(t * 43) * 0.012;
     },
-    rec(P, t, D, A) {
+    rec(P: Pose, t: number, D: number, A: BossAnimator) {
       // (dizzy handled by the stun clip when the sim marks the rec as stunned)
       const u = 1 - sm(k01(t, 0, 0.6));
       P[C.by] += -0.3 * u; P[C.lx] += 1.1 * u; P[C.lz] += -0.8 * u; P[C.rx] += -1.1 * u; P[C.rz] += -0.8 * u;
@@ -277,7 +283,7 @@ const CLIPS = {
 };
 
 // stun: optional wall bonk, collapse nose-up with the belly out, legs splayed, eyes spiralling
-function stunClip(P, t, D, A) {
+function stunClip(P: Pose, t: number, D: number, A: BossAnimator) {
   const bonk = A.stunKind === 'bonk';
   const t0 = bonk ? 0.34 : 0.12;
   if (bonk) {
@@ -300,14 +306,14 @@ function stunClip(P, t, D, A) {
   P[C.sipP] += 0.3 * c;
 }
 // after a stun: shake it off and stand
-function recoverClip(P, t, D, A) {
+function recoverClip(P: Pose, t: number, D: number, A: BossAnimator) {
   const u = 1 - eo(k01(t, 0, 0.7));
   P[C.by] += -0.7 * u; P[C.bp] += -0.15 * u; P[C.splay] += 0.3 * u; P[C.slide] = Math.max(P[C.slide], u);
   const sh = bump(t, 0.35, 1.0);
   P[C.hy] += Math.sin(t * 24) * 0.2 * sh; P[C.br] += Math.sin(t * 24 + 0.8) * 0.06 * sh; P[C.sr] += Math.sin(t * 24 + 1.6) * 0.06 * sh;
   P[C.ey] += Math.sin(t * 24 + 0.4) * 0.25 * sh; P[C.belly] = Math.max(P[C.belly], u);
 }
-function roarClip(P, t, D, A) {
+function roarClip(P: Pose, t: number, D: number, A: BossAnimator) {
   const k = D > 0 ? D / 1.9 : 1, T = t / k;
   const an = eo(k01(T, 0, 0.32)) * (1 - k01(T, 0.32, 0.5));
   const up = eob(k01(T, 0.35, 0.72)) * (1 - sm(k01(T, 1.45, 1.9)));
@@ -321,7 +327,7 @@ function roarClip(P, t, D, A) {
   P[C.splay] += 0.1 * up; P[C.steam] = Math.max(P[C.steam], bump(T, 0.4, 1.6));
   P[C.cannon] = Math.max(P[C.cannon], 0.2 * up);
 }
-function introClip(P, t, D, A) {
+function introClip(P: Pose, t: number, D: number, A: BossAnimator) {
   const k = D > 0 ? D / 3.4 : 1, T = t / k;
   // underground → burst → airborne → land → shake off → roar → settle
   if (A.cross(0.5 * k)) A.event('burst', 'shellTop', 1);
@@ -350,7 +356,7 @@ function introClip(P, t, D, A) {
   P[C.sy] += Math.sin(t * 57) * 0.02 * up;
   P[C.slide] = Math.max(P[C.slide], T < 1.2 ? 1 : 0);
 }
-function deadClip(P, t, D, A) {
+function deadClip(P: Pose, t: number, D: number, A: BossAnimator) {
   // stagger → collapse → shell bursts (ink geyser) → X eyes, twitching legs
   const st = bump(t, 0, 0.9);
   P[C.bz] += -0.35 * st; P[C.bp] += -0.2 * st; P[C.br] += 0.1 * Math.sin(t * 7) * st; P[C.by] += 0.1 * st;
@@ -374,8 +380,86 @@ function deadClip(P, t, D, A) {
 }
 
 // ------------------------------------------------------------------------------------------------ animator
+
+// 자세 채널 배열(C의 이름 순)과 클립: (자세, 단계 안 시각 t, 단계 길이 D, 애니메이터)
+type Pose = Float32Array | number[];
+type Clip = (P: Pose, t: number, D: number, A: BossAnimator) => void;
+// 동작 조정값(bossBrain이 넘긴다): 고리 수, 벽 충돌, 회전, 통 개수 등
+export interface BossMoveParams { rings?: number[]; wall?: number; spin?: number; b?: number[][]; [k: string]: unknown }
+// 모델이 매 프레임 받는 보스 상태(boss._modelUpdate가 채운다)
+export interface BossAnimState {
+  speed?: number; turn?: number; move?: string | null; moveT?: number; movePhase?: string | null; phaseDur?: number; phase?: number;
+  stunned?: boolean; hurt?: number; dead?: boolean; aim?: THREE.Vector3 | null; params?: BossMoveParams | null; shell?: number;
+}
+interface ChainSim { ch: Chain; n: number; P: Float32Array; Q: Float32Array; L: Float32Array; bones: THREE.Bone[]; parent: THREE.Bone; restLocal: THREE.Vector3[]; restDir: THREE.Vector3[]; [k: string]: unknown }
+
 export class BossAnimator {
-  constructor(model, rig) {
+  declare _lvz: number;
+  declare _lvx: number;
+  events: unknown[] = [];
+  declare acc: number;
+  declare contRot: THREE.Quaternion;
+  declare contInv: THREE.Matrix4;
+  declare chains: ChainSim[];
+  declare armRest: { n: THREE.Vector3; du: THREE.Vector3; df: THREE.Vector3; sOff: THREE.Vector3; wOff: THREE.Vector3; side: THREE.Vector3; D: THREE.Vector3; U: THREE.Vector3; }[];
+  declare legRest: { n: THREE.Vector3; dm: THREE.Vector3; dt: THREE.Vector3; dd: THREE.Vector3; coxOff: THREE.Vector3; hipOff: THREE.Vector3; maxYaw: number }[];
+  declare aimLocal: THREE.Vector3;
+  declare hasAim: boolean;
+  declare aimW: number;
+  declare aimPitch: number;
+  declare aimYaw: number;
+  declare legs: { L: Leg; i: number; foot: THREE.Vector3; from: THREE.Vector3; to: THREE.Vector3; home: THREE.Vector3; swing: boolean; s: number; off: number; err: number; restXZ: THREE.Vector2; }[];
+  declare resetFeet: boolean;
+  declare cad: number;
+  declare gaitOn: boolean;
+  declare phi: number;
+  declare headW: THREE.Vector3[];
+  declare bodyQ: THREE.Quaternion;
+  declare bodyPos: THREE.Vector3;
+  declare rootQi: THREE.Quaternion;
+  declare rootQ: THREE.Quaternion;
+  declare rootInv: THREE.Matrix4;
+  declare first: boolean;
+  declare yawRate: number;
+  declare yawPrev: number;
+  declare yaw: number;
+  declare vel: THREE.Vector3;
+  declare rootPrev: THREE.Vector3;
+  declare rootPos: THREE.Vector3;
+  declare sp: { shP: Spring; shR: Spring; shY: Spring; lagP: Spring; lagR: Spring; flP: Spring; flR: Spring; flE: Spring; door: Spring; eLY: Spring; eLP: Spring; eRY: Spring; eRP: Spring; tear: Spring; };
+  declare prevHurt: number;
+  declare autoRoarT: number;
+  declare prevPhase: number;
+  declare deadT: number;
+  declare oneT: number;
+  declare oneShot: string | null;
+  declare wasStunned: boolean;
+  declare recoverT: number;
+  declare lastMoveKey: string;
+  declare lastMove: string | null;
+  declare stunKind: string;
+  declare teleDur: number;
+  declare phaseNow: number;
+  declare params: BossMoveParams | null;
+  declare time: number;
+  declare xfDur: number;
+  declare xf: number;
+  declare curT: number;
+  declare prevT: number;
+  declare clipT: number;
+  declare key: string;
+  declare Pprev: Float32Array<ArrayBuffer>;
+  declare Px: Float32Array<ArrayBuffer>;
+  declare Pb: Float32Array<ArrayBuffer>;
+  declare P: Float32Array<ArrayBuffer>;
+  declare eyeBones: THREE.Bone[][];
+  declare armBones: THREE.Bone[][];
+  declare legBones: THREE.Bone[][];
+  declare rest: Rig['rest'];
+  declare by: Rig['by'];
+  declare rig: Rig;
+  declare m: BossModel;
+  constructor(model: BossModel, rig: Rig) {
     this.m = model; this.rig = rig; this.by = rig.by; this.rest = rig.rest;
     this.legBones = LEGS.map((L, i) => ['c', 'm', 't', 'd'].map((x) => rig.by['leg' + i + x]));
     this.armBones = ['L', 'R'].map((s) => [rig.by['arm' + s + '0'], rig.by['arm' + s + '1'], rig.by['claw' + s], rig.by['dact' + s]]);
@@ -421,14 +505,14 @@ export class BossAnimator {
   }
 
   // ---------------------------------------------------------------- hooks used by clips
-  cross(t) { return this.prevT < t && this.curT >= t; }
-  impact(socket, s) { this.m._emitImpact(socket, s); }
-  event(name, socket, data) { this.m._emitEvent(name, socket, data); }
-  kickShell(a) { this.sp.shY.v += -1.6 * a; this.sp.shP.v += (Math.sin(this.time * 13.1) > 0 ? 1 : -1) * 1.1 * a; this.sp.shR.v += (Math.sin(this.time * 7.7) > 0 ? 1 : -1) * 1.3 * a; this.sp.door.v += 2.5 * a; }
-  flinch(a) { this.sp.flP.v += -3.6 * a; this.sp.flR.v += (Math.sin(this.time * 91.7) > 0 ? 1 : -1) * 1.6 * a; this.sp.flE.v += 6 * a; this.sp.shY.v += -0.8 * a; }
-  trigger(name) { if (name === 'hurt') this.flinch(0.8); else { this.oneShot = name; this.oneT = 0; } }
+  cross(t: number) { return this.prevT < t && this.curT >= t; }
+  impact(socket: string, s: number) { this.m._emitImpact(socket, s); }
+  event(name: string, socket: string, data?: unknown) { this.m._emitEvent(name, socket, data); }
+  kickShell(a: number) { this.sp.shY.v += -1.6 * a; this.sp.shP.v += (Math.sin(this.time * 13.1) > 0 ? 1 : -1) * 1.1 * a; this.sp.shR.v += (Math.sin(this.time * 7.7) > 0 ? 1 : -1) * 1.3 * a; this.sp.door.v += 2.5 * a; }
+  flinch(a: number) { this.sp.flP.v += -3.6 * a; this.sp.flR.v += (Math.sin(this.time * 91.7) > 0 ? 1 : -1) * 1.6 * a; this.sp.flE.v += 6 * a; this.sp.shY.v += -0.8 * a; }
+  trigger(name: string | null) { if (name === 'hurt') this.flinch(0.8); else { this.oneShot = name; this.oneT = 0; } }
   // sweep aim → body twist + head yaw + nozzle yaw/pitch
-  aimBlend(P, w) {
+  aimBlend(P: Pose, w: number) {
     if (!this.hasAim) return;
     const y = this.aimYaw, p = this.aimPitch;
     const by = Math.max(-0.28, Math.min(0.28, y * 0.22));
@@ -439,7 +523,7 @@ export class BossAnimator {
   }
 
   // ---------------------------------------------------------------- main
-  update(dt, st) {
+  update(dt: number, st: BossAnimState) {
     dt = Math.min(dt, 1 / 15);
     this.time += dt;
     const m = this.m, root = m.root;
@@ -461,7 +545,7 @@ export class BossAnimator {
     // aim (model space) for the cannon / eyes
     this.hasAim = !!st.aim && !st.dead;
     if (this.hasAim) {
-      this.aimLocal.copy(st.aim).applyMatrix4(this.rootInv);
+      this.aimLocal.copy(st.aim!).applyMatrix4(this.rootInv);
       const dx = this.aimLocal.x - HEAD.nozzleTip.x, dyy = this.aimLocal.y - HEAD.nozzleTip.y, dz = this.aimLocal.z - HEAD.nozzle.z;
       const ty = Math.atan2(dx, Math.max(0.5, dz)), tp = Math.atan2(dyy, Math.max(1, Math.hypot(dx, dz)));
       this.aimYaw = mix(this.aimYaw, Math.max(-1.4, Math.min(1.4, ty)), dampK(10, dt)); this.aimPitch = mix(this.aimPitch, tp, dampK(10, dt));
@@ -486,7 +570,7 @@ export class BossAnimator {
     else if (st.stunned) { key = 'stun'; fn = stunClip; own = true; D = st.phaseDur || 3; }
     else if (st.move === 'roar' || this.oneShot === 'roar' || (this.autoRoarT < 1.9 && !st.move)) { key = 'roar'; fn = roarClip; D = st.move === 'roar' ? (st.phaseDur || 1.9) : 1.9; if (st.move === 'roar' && typeof st.moveT === 'number') t = st.moveT; else if (this.oneShot === 'roar') own = true; else t = this.autoRoarT; }
     else if (st.move && CLIPS[st.move] && st.movePhase && PH[st.movePhase] !== undefined) {
-      key = st.move + ':' + st.movePhase; fn = CLIPS[st.move][st.movePhase];
+      key = st.move + ':' + st.movePhase; fn = CLIPS[st.move][st.movePhase as 'tele' | 'act' | 'rec'];
       D = st.phaseDur || DUR[st.move][PH[st.movePhase]];
       if (typeof st.moveT === 'number') t = st.moveT; else own = true;
       if (st.movePhase === 'tele') this.teleDur = D;
@@ -543,12 +627,12 @@ export class BossAnimator {
   }
 
   // ---------------------------------------------------------------- locomotion base pose
-  _loco(P, dt, st) {
+  _loco(P: Pose, dt: number, st: BossAnimState) {
     P.fill(0);
     const t = this.time;
     const v = Math.hypot(this.vel.x, this.vel.z), yr = this.yawRate;
     const wv = cl(v / 3), gal = cl((v - 5) / 6);
-    const br = t * (1.55 + 0.4 * (st.phase >= 3 ? 1 : 0));
+    const br = t * (1.55 + 0.4 * ((st.phase ?? 0) >= 3 ? 1 : 0));
     // breathing: body rises, shell lifts a hair after it, belly swells (bone scale in _apply)
     P[C.by] += Math.sin(br) * 0.04 * (1 - wv * 0.5); P[C.sp] += Math.sin(br - 0.7) * 0.012; P[C.hp] += Math.sin(br - 0.3) * 0.015;
     // gait bob: two dips per cycle (tripods landing), sway, lean into travel
@@ -578,21 +662,21 @@ export class BossAnimator {
   }
 
   // ---------------------------------------------------------------- body transform (model space)
-  _bodyTransform(P) {
+  _bodyTransform(P: Pose | Float32Array<ArrayBuffer>) {
     _e.set(P[C.bp], P[C.byaw], -P[C.br], 'YXZ');
     this.bodyQ.setFromEuler(_e);
     this.bodyPos.set(BODY.pivot.x + P[C.bx], BODY.pivot.y + P[C.by], BODY.pivot.z + P[C.bz]);
   }
 
   // ---------------------------------------------------------------- gait
-  _groundY(x, z, fallback) {
+  _groundY(x: number, z: number, fallback: number) {
     const ph = this.m.physics;
     if (!ph || !ph.raycast) return fallback;
     _v6.set(x, fallback + 2.5, z);
     const r = ph.raycast(_v6, DOWN, 5, _ray);
     return r && r.hit ? r.point.y : fallback;
   }
-  _home(l, P, out, tAhead = 0) {
+  _home(l: BossAnimator['legs'][number], P: Pose, out: THREE.Vector3, tAhead = 0) {
     // home = rest foot rotated with the body's yaw, splayed; world space (optionally predicted tAhead seconds)
     const sw = [1, 0.75, 0.55][l.i % 3], sp = 1 + P[C.splay] * sw, yaw = P[C.byaw] + this.yawRate * tAhead;
     const x = l.restXZ.x * sp, z = l.restXZ.y * (1 + P[C.splay] * 0.3 * sw);
@@ -602,7 +686,7 @@ export class BossAnimator {
     if (tAhead) { _v5.copy(this.vel).multiplyScalar(tAhead); out.add(_v5); }
     return out;
   }
-  _gait(dt, P, st) {
+  _gait(dt: number, P: Pose, st: BossAnimState) {
     const RW = this.m.root.matrixWorld, gy = this.rootPos.y;
     const v = Math.hypot(this.vel.x, this.vel.z), yr = Math.abs(this.yawRate);
     const vEff = v + yr * 2.8;
@@ -664,7 +748,7 @@ export class BossAnimator {
   }
 
   // ---------------------------------------------------------------- apply pose to bones
-  _apply(dt, P, st) {
+  _apply(dt: number, P: Pose, st: BossAnimState) {
     const by = this.by, R = this.rest;
     const bQ = this.bodyQ, bP = this.bodyPos;
     // body
@@ -732,7 +816,7 @@ export class BossAnimator {
       // pole: out + down, swinging forward as the claw goes overhead
       const raise = cl((_A.y - _H.y) / 1.6);
       _pole.copy(A.pole).applyQuaternion(bQ); _v2.set(0, 0, 1).applyQuaternion(bQ); _pole.addScaledVector(_v2, raise * 1.2).addScaledVector(bodyUp, raise * 0.6).normalize();
-      ik2(_H, _A, A.lu, A.lf, _pole, _K, _v3);
+      ik2(_H, _A, A.lu!, A.lf!, _pole, _K, _v3);
       _n0.subVectors(_v3, _H).cross(_pole).normalize();
       _v1.subVectors(_K, _H); frameQuat(AR.du, AR.n, _v1, _n0, _q1);
       AB[0].quaternion.copy(bQ).invert().multiply(_q1);
@@ -789,14 +873,14 @@ export class BossAnimator {
   }
 
   // ---------------------------------------------------------------- verlet chains
-  _initChain(ch) {
+  _initChain(ch: Chain): ChainSim {
     const n = ch.pts.length;
     const P = new Float32Array(n * 3), Q = new Float32Array(n * 3), L = new Float32Array(n);
     for (let i = 1; i < n; i++) L[i] = ch.pts[i].distanceTo(ch.pts[i - 1]);
     const parentRest = this.rest[ch.parent];
-    return { ch, n, P, Q, L, bones: ch.bones.map((b) => this.by[b]), parent: this.by[ch.parent], restLocal: ch.pts.map((p) => p.clone().sub(parentRest)), restDir: ch.pts.slice(1).map((p, i) => p.clone().sub(ch.pts[i]).normalize()), init: false };
+    return { ch, n, P, Q, L, bones: ch.bones.map((b) => this.by[b]), parent: this.by[ch.parent], restLocal: ch.pts.map((p) => p.clone().sub(parentRest)), restDir: ch.pts.slice(1).map((p, i: number) => p.clone().sub(ch.pts[i]).normalize()), init: false };
   }
-  _chains(dt, st) {
+  _chains(dt: number, st: BossAnimState) {
     this.acc = Math.min(this.acc + dt, 4 / 60);
     const h = 1 / 60;
     let steps = 0; while (this.acc >= h) { this.acc -= h; steps++; }
