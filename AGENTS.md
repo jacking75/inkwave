@@ -12,7 +12,7 @@
 
 ## 확정 사항
 
-- 공통 클라이언트는 **TypeScript + three.js**이다. 직접 작성하는 코드는 TypeScript 또는 C#이다. Rust·Cargo는 Tauri 2 데스크톱 호스트에만 허용한다. 새 JavaScript·Java·Kotlin·Swift 구현과 게임 로직의 Rust 재작성은 금지한다.
+- 공통 클라이언트는 **TypeScript + three.js**이다. 직접 작성하는 코드는 TypeScript 또는 C#이다. Rust·Cargo는 Tauri 2 호스트(데스크톱, 2026-11-06 사용자 선택에 따른 Android 모바일 셸)에만 허용한다. 생성된 Android 프로젝트(Gradle·Kotlin)는 도구 생성물로만 두고 직접 Kotlin을 작성하지 않는다. 새 JavaScript·Java·Kotlin·Swift 구현과 게임 로직의 Rust 재작성은 금지한다.
 - 기존 JavaScript는 변경 모듈부터 동작을 보존하며 TypeScript로 이전한다. 이름만 `.ts`로 바꾸거나 광범위한 `any`·검사 해제로 완료 처리하지 않는다.
 - 기존 게임 코드·절차적 캐릭터·무기·7개 배경을 재사용해 싱글 캠페인을 만든다. 기존 대전·연습·보스·온라인 모드의 동작을 보존하고 전면 재작성을 시작하지 않는다.
 - **스테이지 1 완성 = 캠페인 1장(1-1·1-2·1-3)의 웹 플레이·저장 검증 완료**이다.

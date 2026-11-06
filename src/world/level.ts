@@ -1,41 +1,83 @@
 // Level: turns a map layout (oriented boxes) into collision blocks, paintable faces and render geometry.
 import * as THREE from 'three';
 import { PATTERN } from './maps.js';
+import type { LayoutPiece, StageLayout, StageBounds } from './layoutTypes.js';
+
+// 배치 조각의 표면·충돌 속성(스테이지 데이터가 붙인다)
+export interface MuralTag { id: number; n: number[] }
+export interface PieceSurface {
+  paint?: boolean; grate?: boolean; rail?: boolean; solid?: boolean; hidden?: boolean; roof?: boolean; perch?: boolean; noNav?: boolean;
+  color?: string; pattern?: number; tag?: string; mural?: MuralTag[]; noPaint?: number[][]; bevel?: number; thin?: boolean; thickness?: number;
+}
+export type PieceDef = LayoutPiece & PieceSurface;
+// 소품 충돌 상자: {min,max} 또는 돌린 상자 {obox, center, size, rotY}
+export interface ExtraCollider { obox?: boolean; min?: number[]; max?: number[]; center?: number[]; size?: number[]; rotY?: number; roof?: boolean; rail?: boolean; perch?: boolean }
+// 아틀라스 자리(도색: w·h 포함, 조명: x·y·ppm·pad)
+export interface AtlasSlot { x: number; y: number; ppm: number; pad: number; w?: number; h?: number }
+
+// 충돌·도색 블록(돌린 상자): axes는 로컬 x·y·z 축, faces는 ±x·±y·±z 면 번호(없으면 -1)
+export interface Block {
+  id: number; center: THREE.Vector3; half: THREE.Vector3; axes: THREE.Vector3[]; aabbMin: THREE.Vector3; aabbMax: THREE.Vector3;
+  paint: boolean; solid: boolean; color: THREE.Color; pattern: number; tag: string | null; mural: MuralTag[] | null; noPaint: number[][] | null;
+  grate: boolean; roof: boolean; perch: boolean; noNav: boolean; rail: boolean; hidden: boolean; bevel: number | undefined;
+  faces: number[]; aligned: boolean; render?: boolean;
+}
+// 칠할 수 있는 면: origin에서 u·v 방향으로 su×sv m, n은 바깥 법선
+export interface Face {
+  id: number; block: number; n: THREE.Vector3; u: THREE.Vector3; v: THREE.Vector3; origin: THREE.Vector3; su: number; sv: number;
+  wall: boolean; turf: boolean; ceiling: boolean; paintable: boolean; pattern: number; color: THREE.Color; groundedBottom: boolean;
+  atlas: AtlasSlot | null; grid: number; nu: number; nv: number; cu: number; cv: number; mural: number; light?: AtlasSlot | null;
+}
 
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
 
 export class Level {
+  layout: StageLayout;
+  extra: ExtraCollider[];
+  bounds: StageBounds;
+  spawnPads: THREE.Vector3[];
+  spawnBarrier: number;
+  blocks: Block[] = [];
+  faces: Face[] = [];
+  hasRails = false;
+  _stamp = 1;
+  hashCell = 4; hx0 = 0; hz0 = 0; hw = 0; hd = 0;
+  hash: number[][] = [];
+  blockStamp = new Uint32Array(0);
+  _qtmp: number[] = [];
+  _qtmp2: number[] = [];
+  lightSize = 0;
+  lightUsed = 0;
+  layoutHash = '';
+  renderTris = 0;
   // extra: collision-only boxes from set dressing ({min,max}, or {obox, center, size, rotY} for a turned prop; optional
   // roof / rail / perch flags) — solid, un-inkable, never rendered (the prop mesh is)
-  constructor(layout, extra = []) {
+  constructor(layout: StageLayout, extra: ExtraCollider[] = []) {
     this.extra = extra;
     this.layout = layout;
     this.bounds = layout.bounds;
-    this.spawnPads = layout.spawnPads.map((p) => new THREE.Vector3(...p));
+    this.spawnPads = layout.spawnPads.map((p) => new THREE.Vector3(p[0], p[1], p[2]));
     this.spawnBarrier = layout.spawnBarrier;
-    this.blocks = [];
-    this.faces = [];
-    this._stamp = 1;
     this._build();
   }
 
   // ---------------------------------------------------------------- blocks
   _build() {
     const L = this.layout;
-    const defs = [...L.single, ...L.half, ...L.half.map(mirrorDef),
+    const defs: PieceDef[] = [...L.single, ...L.half, ...L.half.map(mirrorDef),
       ...this.extra.map((c) => (c.obox
-        ? { kind: 'obox', center: c.center, size: c.size, rotY: c.rotY, paint: false, hidden: true, color: '#888888', roof: !!c.roof, rail: !!c.rail, perch: !!c.perch }
-        : { kind: 'box', min: c.min, max: c.max, paint: false, hidden: true, color: '#888888', roof: !!c.roof, rail: !!c.rail, perch: !!c.perch }))];
+        ? { kind: 'obox' as const, center: c.center!, size: c.size!, rotY: c.rotY || 0, paint: false, hidden: true, color: '#888888', roof: !!c.roof, rail: !!c.rail, perch: !!c.perch }
+        : { kind: 'box' as const, min: c.min!, max: c.max!, paint: false, hidden: true, color: '#888888', roof: !!c.roof, rail: !!c.rail, perch: !!c.perch }))];
     for (const d of defs) this._addBlock(d);
     this.hasRails = this.blocks.some((b) => b.rail);   // (actors only run the railing foot check where there are rails)
     this._buildHash();
     for (const b of this.blocks) this._buildFaces(b);
   }
 
-  _addBlock(d) {
-    const b = {
+  _addBlock(d: PieceDef) {
+    const b: Block = {
       id: this.blocks.length,
       center: new THREE.Vector3(),
       half: new THREE.Vector3(),
@@ -71,7 +113,7 @@ export class Level {
       b.aligned = false;
     } else {
       // Ramp: a thick tilted slab whose top surface runs from low → high and whose underside reaches the floor.
-      const L0 = new THREE.Vector3(...d.low), H0 = new THREE.Vector3(...d.high);
+      const L0 = new THREE.Vector3(d.low[0], d.low[1], d.low[2]), H0 = new THREE.Vector3(d.high[0], d.high[1], d.high[2]);
       const s = H0.clone().sub(L0); const len = s.length(); s.normalize();
       const flat = new THREE.Vector3(s.x, 0, s.z).normalize();
       const side = new THREE.Vector3().crossVectors(UP, flat).normalize();
@@ -80,7 +122,7 @@ export class Level {
       const cosT = n.y;
       const rise = H0.y - L0.y;
       // thin: a free-spanning plank/gangway (keeps its own thickness instead of reaching down to the floor)
-      const thick = d.thin ? d.thickness : Math.max(d.thickness, rise * cosT + 0.35);
+      const thick = d.thin ? d.thickness! : Math.max(d.thickness!, rise * cosT + 0.35);
       const ext = 0.6; // extend under the floor at the low end
       const a = L0.clone().addScaledVector(s, -ext);
       const topMid = a.clone().add(H0).multiplyScalar(0.5);
@@ -106,12 +148,12 @@ export class Level {
 
   // 2D spatial hash over XZ for broadphase
   _buildHash() {
-    const cs = (this.hashCell = 4);
+    const cs = this.hashCell;
     const bx = this.bounds;
     this.hx0 = bx.minX - 8; this.hz0 = bx.minZ - 8;
     this.hw = Math.ceil((bx.maxX - bx.minX + 16) / cs);
     this.hd = Math.ceil((bx.maxZ - bx.minZ + 16) / cs);
-    this.hash = Array.from({ length: this.hw * this.hd }, () => []);
+    this.hash = Array.from({ length: this.hw * this.hd }, (): number[] => []);
     this.blockStamp = new Uint32Array(this.blocks.length);
     for (const b of this.blocks) {
       const x0 = this._hxi(b.aabbMin.x), x1 = this._hxi(b.aabbMax.x);
@@ -119,11 +161,11 @@ export class Level {
       for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) this.hash[z * this.hw + x].push(b.id);
     }
   }
-  _hxi(x) { return Math.max(0, Math.min(this.hw - 1, Math.floor((x - this.hx0) / this.hashCell))); }
-  _hzi(z) { return Math.max(0, Math.min(this.hd - 1, Math.floor((z - this.hz0) / this.hashCell))); }
+  _hxi(x: number) { return Math.max(0, Math.min(this.hw - 1, Math.floor((x - this.hx0) / this.hashCell))); }
+  _hzi(z: number) { return Math.max(0, Math.min(this.hd - 1, Math.floor((z - this.hz0) / this.hashCell))); }
 
   // Unique block ids whose hash cells overlap the XZ rectangle.
-  queryBlocks(minX, minZ, maxX, maxZ, out) {
+  queryBlocks(minX: number, minZ: number, maxX: number, maxZ: number, out: number[]) {
     out.length = 0;
     const st = ++this._stamp;
     const x0 = this._hxi(minX), x1 = this._hxi(maxX), z0 = this._hzi(minZ), z1 = this._hzi(maxZ);
@@ -137,15 +179,15 @@ export class Level {
     return out;
   }
 
-  pointInBlock(b, p, pad = 0) {
+  pointInBlock(b: Block, p: THREE.Vector3Like, pad = 0) {
     _v2.copy(p).sub(b.center);
     return Math.abs(_v2.dot(b.axes[0])) < b.half.x + pad &&
       Math.abs(_v2.dot(b.axes[1])) < b.half.y + pad &&
       Math.abs(_v2.dot(b.axes[2])) < b.half.z + pad;
   }
 
-  pointInside(p, pad = 0, exclude = -1) {
-    const ids = this.queryBlocks(p.x - 0.01, p.z - 0.01, p.x + 0.01, p.z + 0.01, this._qtmp || (this._qtmp = []));
+  pointInside(p: THREE.Vector3, pad = 0, exclude = -1) {
+    const ids = this.queryBlocks(p.x - 0.01, p.z - 0.01, p.x + 0.01, p.z + 0.01, this._qtmp);
     for (const id of ids) {
       if (id === exclude) continue;
       const b = this.blocks[id];
@@ -156,7 +198,7 @@ export class Level {
   }
 
   // ---------------------------------------------------------------- faces
-  _buildFaces(b) {
+  _buildFaces(b: Block) {
     if (b.hidden) return;
     const ax = b.axes, h = [b.half.x, b.half.y, b.half.z];
     for (let k = 0; k < 3; k++) {
@@ -182,13 +224,13 @@ export class Level {
         const u = new THREE.Vector3().crossVectors(v, n); // u x v = n
         const su = 2 * h[ui], sv = 2 * h[vi];
         const origin = b.center.clone().addScaledVector(n, h[k]).addScaledVector(u, -su / 2).addScaledVector(v, -sv / 2);
-        const face = {
+        const face: Face = {
           id: this.faces.length, block: b.id, n, u, v, origin, su, sv,
           wall: Math.abs(n.y) < 0.3, turf: n.y > 0.7, ceiling: n.y < -0.5,
           paintable: b.paint && n.y > -0.5,
           pattern: b.pattern, color: b.color,
           groundedBottom: false,
-          atlas: null, grid: -1, nu: 0, nv: 0,
+          atlas: null, grid: -1, nu: 0, nv: 0, cu: 0, cv: 0, mural: -1,
         };
         if (this._faceHidden(face)) continue;
         face.mural = -1;
@@ -206,7 +248,7 @@ export class Level {
   }
 
   // A face is hidden when every sample point just outside it lies inside another solid block.
-  _faceHidden(f) {
+  _faceHidden(f: Face) {
     const nu = Math.max(2, Math.ceil(f.su / 1.25)), nv = Math.max(2, Math.ceil(f.sv / 1.25));
     for (let j = 0; j <= nv; j++) {
       for (let i = 0; i <= nu; i++) {
@@ -245,14 +287,14 @@ export class Level {
   // edges flush against other geometry stay sharp so floors never show grooves. Bevel vertices map into their face's
   // paint atlas (the 8-texel padding holds extrapolated ink), so ink wraps smoothly over the rounded edges.
   // Requires faces to have been laid out in the paint atlas (face.atlas = {x, y, ppm, pad}) — non-paintable faces render too.
-  buildGeometry(atlasSize, filter = (b) => !b.grate) {
-    const B = { pos: [], nor: [], col: [], puv: [], luv: [], fuv: [], fdat: [], fflag: [], ftan: [], idx: [] };
+  buildGeometry(atlasSize: number, filter = (b: Block) => !b.grate) {
+    const B: Record<'pos' | 'nor' | 'col' | 'puv' | 'luv' | 'fuv' | 'fdat' | 'fflag' | 'ftan' | 'idx', number[]> = { pos: [], nor: [], col: [], puv: [], luv: [], fuv: [], fdat: [], fflag: [], ftan: [], idx: [] };
     const LS = this.lightSize || 1;
     const lin = new THREE.Color();
     const P = new THREE.Vector3(), Nn = new THREE.Vector3(), E = new THREE.Vector3(), Q = new THREE.Vector3();
-    const faceOf = (b, k, s) => b.faces[k * 2 + (s > 0 ? 0 : 1)];
+    const faceOf = (b: Block, k: number, s: number) => b.faces[k * 2 + (s > 0 ? 0 : 1)];
     const self = this;
-    function vert(f, p, n) {
+    function vert(f: Face, p: THREE.Vector3, n: THREE.Vector3) {
       const i = B.pos.length / 3;
       B.pos.push(p.x, p.y, p.z); B.nor.push(n.x, n.y, n.z);
       lin.copy(f.color); B.col.push(lin.r, lin.g, lin.b);
@@ -270,7 +312,7 @@ export class Level {
     }
     // triangle with winding chosen so it faces along `n`
     const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3();
-    function tri(i0, i1, i2, n) {
+    function tri(i0: number, i1: number, i2: number, n: THREE.Vector3) {
       const pp = B.pos;
       _a.set(pp[i1 * 3] - pp[i0 * 3], pp[i1 * 3 + 1] - pp[i0 * 3 + 1], pp[i1 * 3 + 2] - pp[i0 * 3 + 2]);
       _b.set(pp[i2 * 3] - pp[i0 * 3], pp[i2 * 3 + 1] - pp[i0 * 3 + 1], pp[i2 * 3 + 2] - pp[i0 * 3 + 2]);
@@ -284,11 +326,11 @@ export class Level {
       // bevel scales with the block: chunky rounded edges on big structures, finer on crates/ramps/rails
       const bev = Math.min(b.bevel ?? Math.max(0.04, Math.min(0.13, minH * 0.14)), minH * 0.45);
       // exposed-edge test (both faces rendered and nothing solid hugging the edge)
-      const edgeCache = new Map();
-      const bevelled = (k1, s1, k2, s2) => {
+      const edgeCache = new Map<string, boolean>();
+      const bevelled = (k1: number, s1: number, k2: number, s2: number) => {
         if (bev < 0.01) return false;
         const key = k1 < k2 ? `${k1}${s1}${k2}${s2}` : `${k2}${s2}${k1}${s1}`;
-        if (edgeCache.has(key)) return edgeCache.get(key);
+        const hit = edgeCache.get(key); if (hit !== undefined) return hit;
         let ok = faceOf(b, k1, s1) >= 0 && faceOf(b, k2, s2) >= 0;
         if (ok) {
           const k3 = 3 - k1 - k2;
@@ -310,7 +352,7 @@ export class Level {
         const ip = bevelled(k, s, i, 1) ? bev : 0, im = bevelled(k, s, i, -1) ? bev : 0;
         const jp = bevelled(k, s, j, 1) ? bev : 0, jm = bevelled(k, s, j, -1) ? bev : 0;
         const cf = E.copy(b.center).addScaledVector(ax[k], s * h[k]).clone();
-        const corner = (si, sj) => {
+        const corner = (si: number, sj: number) => {
           const di = si > 0 ? h[i] - ip : -(h[i] - im), dj = sj > 0 ? h[j] - jp : -(h[j] - jm);
           return vert(f, P.copy(cf).addScaledVector(ax[i], di).addScaledVector(ax[j], dj), f.n);
         };
@@ -325,12 +367,12 @@ export class Level {
         const k3 = 3 - k1 - k2;
         const fa = this.faces[faceOf(b, k1, s1)], fb = this.faces[faceOf(b, k2, s2)];
         const nA = ax[k1].clone().multiplyScalar(s1), nB = ax[k2].clone().multiplyScalar(s2);
-        const endCut = (s3) => faceOf(b, k3, s3) >= 0 && bevelled(k3, s3, k1, s1) && bevelled(k3, s3, k2, s2) ? bev : 0;
+        const endCut = (s3: number) => faceOf(b, k3, s3) >= 0 && bevelled(k3, s3, k1, s1) && bevelled(k3, s3, k2, s2) ? bev : 0;
         const t0 = -h[k3] + endCut(-1), t1 = h[k3] - endCut(1);
         const base = E.copy(b.center).addScaledVector(nA, h[k1] - bev).addScaledVector(nB, h[k2] - bev).clone();
         for (const half of [0, 1]) {
           const f = half ? fb : fa;
-          const rows = [];
+          const rows: Array<[number, number, THREE.Vector3]> = [];
           for (let q = 0; q <= SEG; q++) {
             const th = (Math.PI / 4) * (half + q / SEG);
             Nn.copy(nA).multiplyScalar(Math.cos(th)).addScaledVector(nB, Math.sin(th));
@@ -355,7 +397,7 @@ export class Level {
         let best = 0, bd = -2;
         [n0, n1, n2].forEach((nn, a) => { if (nn.y > bd) { bd = nn.y; best = a; } });
         const f = this.faces[faceOf(b, best, sg[best])];
-        const ids = [];
+        const ids: number[][] = [];
         for (let a = 0; a <= NC; a++) { ids.push([]); for (let bb = 0; bb <= NC - a; bb++) {
           const cc = NC - a - bb;
           Nn.set(0, 0, 0).addScaledVector(n0, a).addScaledVector(n1, bb).addScaledVector(n2, cc).normalize();
@@ -386,9 +428,9 @@ export class Level {
 
   // Highest walkable surface under (x,z) below yMax (used by nav + spawns). Returns y or -Infinity.
   // skipGrates: what a squid would land on (squids drop straight through grates)
-  groundHeight(x, z, yMax = 50, skipGrates = false) {
+  groundHeight(x: number, z: number, yMax = 50, skipGrates = false) {
     let best = -Infinity;
-    const ids = this.queryBlocks(x - 0.01, z - 0.01, x + 0.01, z + 0.01, this._qtmp2 || (this._qtmp2 = []));
+    const ids = this.queryBlocks(x - 0.01, z - 0.01, x + 0.01, z + 0.01, this._qtmp2);
     for (const id of ids) {
       const b = this.blocks[id];
       if (!b.solid || (skipGrates && b.grate)) continue;
@@ -405,9 +447,9 @@ export class Level {
   }
 }
 
-function mirrorDef(d) {
+function mirrorDef(d: PieceDef): PieceDef {
   const mural = d.mural ? d.mural.map((m) => ({ ...m, n: [-m.n[0], m.n[1], -m.n[2]] })) : undefined;
-  const noPaint = d.noPaint ? d.noPaint.map((m) => [-m[0], m[1], -m[2]]) : undefined;
+  const noPaint = d.noPaint ? d.noPaint.map((m: number[]) => [-m[0], m[1], -m[2]]) : undefined;
   if (d.kind === 'box') {
     return { ...d, mural, noPaint, min: [-d.max[0], d.min[1], -d.max[2]], max: [-d.min[0], d.max[1], -d.min[2]] };
   }

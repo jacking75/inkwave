@@ -9,6 +9,11 @@
 //   fx    [weather, chip]      how much the surface's paint mottling shows through / its chips + peeling cut the mural
 import * as THREE from 'three';
 import { STAGES } from './stages/index.js';
+import type { Ctx2D, MuralRect, MuralKit, MuralPlacement } from './muralTypes.js';
+// 할야드 면: 캔버스 영역 + 면 크기 m(m: [가로, 세로])
+type FaceRect = MuralRect & { m: number[] };
+// 바퀴 자국: 굵기 w, 투명도 a, 경로 p(캔버스 px)
+interface Stroke { w: number; a: number; p: number[][] }
 
 const W = 2048, RH = 256, ROWS = 4, H = 2048;
 const NAVY = '#27304d', CORAL = '#ec7a6b', TEAL = '#3fa8a2', MUSTARD = '#eec35c', CREAM = '#fbf5e8', SKY = '#7cc6e6';
@@ -21,7 +26,7 @@ const CEND = { x: 1264, y: 1696, w: 557, h: 240, m: [5.8, 2.5] };      // ferry-
 
 // stage decals (ids 4…11) share one region below the strips; it is redrawn for the loaded stage (setStage)
 const STAGE_R = { x: 0, y: 1040, w: 2048, h: 1008 };
-const STAGE_MURALS = {
+const STAGE_MURALS: Record<string, (g: Ctx2D, R: MuralRect, kit: MuralKit) => MuralPlacement[]> = {
   halyard: (g) => {
     drawCarDeck(g, DECK);
     drawCabinSide(g, CSIDE);
@@ -39,10 +44,10 @@ export async function createMuralTexture(stageId = 'halyard') {
   try { await Promise.all([document.fonts.load('120px "Titan One"'), document.fonts.load('800 100px Rubik')]); } catch { /* fallback font */ }
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
-  const g = c.getContext('2d');
+  const g = c.getContext('2d')!;
   g.clearRect(0, 0, W, H);
-  const font = (px) => `${px}px "Titan One", "Arial Black", sans-serif`;
-  const fontB = (px) => `800 ${px}px Rubik, "Arial Black", sans-serif`;
+  const font = (px: number) => `${px}px "Titan One", "Arial Black", sans-serif`;
+  const fontB = (px: number) => `800 ${px}px Rubik, "Arial Black", sans-serif`;
   drawBanner(g, 0, font);
   drawChevrons(g, RH, font);
   drawShop(g, RH * 2, font);
@@ -53,23 +58,23 @@ export async function createMuralTexture(stageId = 'halyard') {
   tex.wrapS = THREE.RepeatWrapping;
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
-  const rect = (r) => [r.x / W, r.w / W, 1 - (r.y + r.h) / H, r.h / H];
-  const kit = { font, fontB, NAVY, CORAL, TEAL, MUSTARD, CREAM, SKY, squid, blob };
-  let cur = null;
+  const rect = (r: MuralRect) => [r.x / W, r.w / W, 1 - (r.y + r.h) / H, r.h / H];
+  const kit: MuralKit = { font, fontB, NAVY, CORAL, TEAL, MUSTARD, CREAM, SKY, squid, blob };
+  let cur: string | null = null;
   // (re)draw the stage region for `id` and rebuild the placement table; call before building the level material
-  tex.userData.setStage = (id) => {
+  tex.userData.setStage = (id: string) => {
     if (id === cur) return;
     cur = id;
     g.clearRect(STAGE_R.x, STAGE_R.y, STAGE_R.w, STAGE_R.h);
-    const murals = [0, 1, 2, 3].map((k) => ({ rect: [0, 1, 1 - (k + 1) * RH / H, RH / H], place: [0, -8, 0, 0], fx: [0, 0] }));
-    let list = [];
+    const murals: Array<{ rect: number[]; place: number[]; fx: number[] }> = [0, 1, 2, 3].map((k) => ({ rect: [0, 1, 1 - (k + 1) * RH / H, RH / H], place: [0, -8, 0, 0], fx: [0, 0] }));
+    let list: MuralPlacement[] = [];
     try {
       g.save(); g.beginPath(); g.rect(STAGE_R.x, STAGE_R.y, STAGE_R.w, STAGE_R.h); g.clip();
       list = (STAGE_MURALS[id] && STAGE_MURALS[id](g, { ...STAGE_R }, kit)) || [];
     } catch (e) { console.error('[inkwave] stage murals failed', id, e); } finally { g.restore(); }
     for (const m of list) {
       if (!(m.id >= 4 && m.id <= 11)) { console.warn('[inkwave] mural id out of range (4…11)', id, m.id); continue; }
-      murals[m.id] = { rect: rect(m), place: m.place || [0, m.m[0], 0, m.m[1]], fx: m.fx || [0.85, 1] };
+      murals[m.id] = { rect: rect(m), place: m.place || [0, m.m![0], 0, m.m![1]], fx: m.fx || [0.85, 1] };
     }
     tex.userData.murals = murals;
     tex.needsUpdate = true;
@@ -78,7 +83,7 @@ export async function createMuralTexture(stageId = 'halyard') {
   return tex;
 }
 
-function blob(g, x, y, r, seed, color) {
+function blob(g: Ctx2D, x: number, y: number, r: number, seed: number, color: string) {
   g.fillStyle = color;
   g.beginPath();
   for (let i = 0; i <= 48; i++) {
@@ -90,7 +95,7 @@ function blob(g, x, y, r, seed, color) {
   g.fill();
 }
 
-function squid(g, x, y, s, color, eye = CREAM) {
+function squid(g: Ctx2D, x: number, y: number, s: number, color: string, eye = CREAM) {
   // a little squid icon (mantle + fins + tentacles + eyes)
   g.save(); g.translate(x, y); g.scale(s, s);
   g.fillStyle = color;
@@ -104,7 +109,7 @@ function squid(g, x, y, s, color, eye = CREAM) {
 }
 
 // Row 0: big "INKWAVE" banner for the back walls
-function drawBanner(g, y0, font) {
+function drawBanner(g: Ctx2D, y0: number, font: (px: number) => string) {
   g.save(); g.translate(0, y0);
   // stripe band
   g.fillStyle = NAVY; g.fillRect(0, 150, W, 70);
@@ -129,7 +134,7 @@ function drawBanner(g, y0, font) {
 }
 
 // Row 1: bold chevron arrows + hazard stripes for dividing walls
-function drawChevrons(g, y0, font) {
+function drawChevrons(g: Ctx2D, y0: number, font: (px: number) => string) {
   g.save(); g.translate(0, y0);
   g.fillStyle = TEAL; g.fillRect(0, 60, W, 140);
   g.fillStyle = CREAM;
@@ -141,7 +146,7 @@ function drawChevrons(g, y0, font) {
 }
 
 // Row 2: kiosk shop sign
-function drawShop(g, y0, font) {
+function drawShop(g: Ctx2D, y0: number, font: (px: number) => string) {
   g.save(); g.translate(0, y0);
   for (let k = 0; k < 2; k++) {
     const ox = k * 1024;
@@ -159,7 +164,7 @@ function drawShop(g, y0, font) {
 }
 
 // Row 3: shipping line logo for containers
-function drawShipping(g, y0, font) {
+function drawShipping(g: Ctx2D, y0: number, font: (px: number) => string) {
   g.save(); g.translate(0, y0);
   for (let k = 0; k < 2; k++) {
     const ox = k * 1024;
@@ -175,7 +180,7 @@ function drawShipping(g, y0, font) {
   g.restore();
 }
 
-function roundRect(g, x, y, w, h, r) {
+function roundRect(g: Ctx2D, x: number, y: number, w: number, h: number, r: number) {
   g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
 }
 
@@ -185,11 +190,11 @@ function roundRect(g, x, y, w, h, r) {
 const K = { navy: '#2f3a57', hull: '#3f5372', teal: '#3f9f97', tealDk: '#2c7a74', white: '#f1ede4', coral: '#df7c66', yellow: '#e2b64c', black: '#2a2c31' };
 
 // small deterministic RNG for the wear passes
-function rng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function rng(seed: number) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 
 // Paint wear inside a rect: many small erase flecks (worn, chipped paint), a few bigger soft scuffs, and optional long
 // erase strokes along given paths (tyre tracks) — destination-out, so it only thins what is already painted.
-function wear(g, r, { flecks = 2600, fleck = [0.6, 2.4], scuffs = 60, scuff = [6, 22], strokes = [], seed = 1 } = {}) {
+function wear(g: Ctx2D, r: MuralRect, { flecks = 2600, fleck = [0.6, 2.4], scuffs = 60, scuff = [6, 22], strokes = [] as Stroke[], seed = 1 } = {}) {
   const R = rng(seed);
   g.save();
   g.beginPath(); g.rect(r.x, r.y, r.w, r.h); g.clip();
@@ -213,7 +218,7 @@ function wear(g, r, { flecks = 2600, fleck = [0.6, 2.4], scuffs = 60, scuff = [6
 }
 
 // Stencil text in a local frame: at (x, y) in the current transform, reading along +x, `size` = cap height units.
-function stencil(g, str, x, y, size, color, { weight = 800, spacing = 0.08, align = 'center', family = 'Rubik' } = {}) {
+function stencil(g: Ctx2D, str: string, x: number, y: number, size: number, color: string, { weight = 800, spacing = 0.08, align = 'center', family = 'Rubik' } = {}) {
   g.save();
   g.translate(x, y);
   g.scale(size / 100, size / 100);
@@ -228,9 +233,9 @@ function stencil(g, str, x, y, size, color, { weight = 800, spacing = 0.08, alig
 
 // Ferry car deck (the ferry-deck block's top face, u = -x, v = +z). Drawn in world metres: the transform below maps
 // world (X, Z) straight onto the face, and the Bravo end is the same drawing turned 180° (the map's symmetry).
-function drawCarDeck(g, r) {
+function drawCarDeck(g: Ctx2D, r: FaceRect) {
   const S = r.w / r.m[0];                                           // 64 px / m
-  const world = (s) => g.setTransform(-S * s, 0, 0, -S * s, r.x + r.w / 2, r.y + r.h / 2);
+  const world = (s: number) => g.setTransform(-S * s, 0, 0, -S * s, r.x + r.w / 2, r.y + r.h / 2);
   const white = 'rgba(241,237,228,0.8)', yellow = 'rgba(226,182,76,0.85)', dark = 'rgba(30,32,36,0.12)';
   g.save();
   g.beginPath(); g.rect(r.x, r.y, r.w, r.h); g.clip();
@@ -256,7 +261,7 @@ function drawCarDeck(g, r) {
     // KEEP CLEAR in the stair box, read by someone walking in from the ramp (facing -X)
     g.save(); g.translate(13.38, -1.9); g.rotate(-Math.PI / 2); stencil(g, 'KEEP CLEAR', 0, 0, 0.19, 'rgba(241,237,228,0.85)', { spacing: 0.1 }); g.restore();
     // lane numbers at the ramp end (read by drivers boarding, facing -X)
-    for (const [z, n] of [[0, '2'], [2.9, '3']]) { g.save(); g.translate(15.15, z); g.rotate(-Math.PI / 2); stencil(g, n, 0, 0, 0.5, white); g.restore(); }
+    for (const [z, n] of [[0, '2'], [2.9, '3']] as Array<[number, string]>) { g.save(); g.translate(15.15, z); g.rotate(-Math.PI / 2); stencil(g, n, 0, 0, 0.5, white); g.restore(); }
     // gangway landing: yellow / black hazard band on the open deck edge
     hazardBand(g, -1.8, -5.0, 1.8, -4.62);
     // rust bleeding from the freeing ports along the bulwark foot
@@ -269,19 +274,19 @@ function drawCarDeck(g, r) {
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.restore();
   // wear: flecks + scuffs everywhere, heavier along the wheel tracks
-  const px = (X, Z, s) => [r.x + r.w / 2 - S * X * s, r.y + r.h / 2 - S * Z * s];
+  const px = (X: number, Z: number, s: number) => [r.x + r.w / 2 - S * X * s, r.y + r.h / 2 - S * Z * s];
   const strokes = [];
   for (const s of [1, -1]) for (const zc of [-2.9, 0, 2.9]) for (const o of [-0.8, 0.8]) strokes.push({ w: S * 0.22, a: 0.3, p: [px(6.6, zc + o, s), px(16, zc + o, s)] });
   wear(g, r, { flecks: 5200, fleck: [0.6, 2.6], scuffs: 140, scuff: [8, 30], strokes, seed: 7 });
 }
-function arrow(g, x, z, len, color) {                               // pointing +X, tail at x
+function arrow(g: Ctx2D, x: number, z: number, len: number, color: string) {                               // pointing +X, tail at x
   const sw = 0.32, hw = 0.78, hl = 0.62;
   g.fillStyle = color;
   g.beginPath();
   g.moveTo(x, z - sw / 2); g.lineTo(x + len - hl, z - sw / 2); g.lineTo(x + len - hl, z - hw / 2); g.lineTo(x + len, z);
   g.lineTo(x + len - hl, z + hw / 2); g.lineTo(x + len - hl, z + sw / 2); g.lineTo(x, z + sw / 2); g.closePath(); g.fill();
 }
-function hatch(g, x0, z0, x1, z1, color) {
+function hatch(g: Ctx2D, x0: number, z0: number, x1: number, z1: number, color: string) {
   g.save();
   g.beginPath(); g.rect(x0, z0, x1 - x0, z1 - z0); g.clip();
   g.strokeStyle = color; g.lineWidth = 0.12;
@@ -290,7 +295,7 @@ function hatch(g, x0, z0, x1, z1, color) {
   g.strokeStyle = color; g.lineWidth = 0.1;
   g.strokeRect(x0 + 0.05, z0 + 0.05, x1 - x0 - 0.1, z1 - z0 - 0.1);
 }
-function hazardBand(g, x0, z0, x1, z1) {
+function hazardBand(g: Ctx2D, x0: number, z0: number, x1: number, z1: number) {
   g.save();
   g.beginPath(); g.rect(x0, z0, x1 - x0, z1 - z0); g.clip();
   g.fillStyle = 'rgba(226,182,76,0.9)'; g.fillRect(x0, z0, x1 - x0, z1 - z0);
@@ -300,7 +305,7 @@ function hazardBand(g, x0, z0, x1, z1) {
 }
 
 // Kraken Lines roundel with a sail over the swell (the ferry's funnel mark / door plate), centred at the origin.
-function roundel(g, R) {
+function roundel(g: Ctx2D, R: number) {
   g.fillStyle = K.teal; g.beginPath(); g.arc(0, 0, R, 0, Math.PI * 2); g.fill();
   g.strokeStyle = K.white; g.lineWidth = R * 0.11; g.beginPath(); g.arc(0, 0, R * 0.86, 0, Math.PI * 2); g.stroke();
   // sail (mainsail + jib) above two waves
@@ -316,8 +321,8 @@ function roundel(g, R) {
 }
 // The livery band shared by the cabin faces: navy skirt, a teal swell with a white crest line, a coral pinstripe.
 // Face metres: x along the face, y up from the deck (drawn with the transform set by the caller).
-function liveryBand(g, x0, x1, phase) {
-  const crest = (x) => 0.74 + 0.07 * Math.sin((x + phase) * 1.1) + 0.03 * Math.sin((x + phase) * 2.7 + 1.3);
+function liveryBand(g: Ctx2D, x0: number, x1: number, phase: number) {
+  const crest = (x: number) => 0.74 + 0.07 * Math.sin((x + phase) * 1.1) + 0.03 * Math.sin((x + phase) * 2.7 + 1.3);
   g.fillStyle = K.navy; g.fillRect(x0, 0, x1 - x0, 0.62);
   g.fillStyle = K.teal;
   g.beginPath(); g.moveTo(x0, 0.5);
@@ -327,11 +332,11 @@ function liveryBand(g, x0, x1, phase) {
   g.beginPath(); for (let x = x0; x <= x1 + 0.001; x += 0.05) { const y = crest(x) + 0.05; if (x === x0) g.moveTo(x, y); else g.lineTo(x, y); } g.stroke();
   g.fillStyle = K.coral; g.fillRect(x0, 0.955, x1 - x0, 0.03);
 }
-function faceFrame(g, r) {                                          // face metres (x right, y up) → the rect
+function faceFrame(g: Ctx2D, r: FaceRect) {                                          // face metres (x right, y up) → the rect
   const S = r.w / r.m[0];
   g.setTransform(S, 0, 0, -S, r.x, r.y + r.h);
 }
-function drawCabinSide(g, r) {
+function drawCabinSide(g: Ctx2D, r: FaceRect) {
   g.save();
   g.beginPath(); g.rect(r.x, r.y, r.w, r.h); g.clip();
   faceFrame(g, r);
@@ -344,7 +349,7 @@ function drawCabinSide(g, r) {
   g.restore();
   wear(g, r, { flecks: 160, fleck: [0.4, 1.1], scuffs: 22, scuff: [6, 16], seed: 11 });
 }
-function drawCabinEnd(g, r) {
+function drawCabinEnd(g: Ctx2D, r: FaceRect) {
   g.save();
   g.beginPath(); g.rect(r.x, r.y, r.w, r.h); g.clip();
   faceFrame(g, r);

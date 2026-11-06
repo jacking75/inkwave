@@ -18,6 +18,8 @@
 // hull wet band), a planar reflection of the stage (Environment._renderReflection, quality-scaled) and a baked
 // far-reflection cube for the distant land. The other stages keep the original open-sea shader untouched.
 import * as THREE from 'three';
+import type { Block } from './level.js';
+import type { StageBounds } from './layoutTypes.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { PLAYER } from '../config.js';
 import { G } from '../core/ctx.js';
@@ -34,6 +36,11 @@ const HEMI_FLOOR = 0.38; // = the sky-fill floor main.js applies after construct
 // ---------------------------------------------------------------------------------------------------------------
 // Themes (colours are sRGB hex; converted to linear once)
 // ---------------------------------------------------------------------------------------------------------------
+// 테마 이름과 색 보정(렌더러가 적용)
+export type ThemeName = keyof typeof THEMES;
+// 테마마다 있을 수도 없는 값(구름 덮임·씨앗·빛줄기·마리나 물빛)
+type Theme = (typeof THEMES)[ThemeName] & { cloudCov?: number; cloudSeed?: number; shafts?: number; skySun?: number };
+type ThemeGrade = { uSat?: number; uVib?: number; uContrast?: number; uLift?: number; uVignette?: number; uExposure?: number; uShadowTint?: number[]; uHighTint?: number[]; bloom?: number[] };
 const THEMES = {
   day: {
     // key : fill ≈ 3.5 : 1 on the deck — a warm key a little lower than noon (longer shadows model the blocks), a cool
@@ -107,7 +114,7 @@ const THEMES = {
   },
 };
 
-const lin = (hex, k = 1) => new THREE.Color(hex).multiplyScalar(k);
+const lin = (hex: THREE.ColorRepresentation | undefined, k = 1) => new THREE.Color(hex).multiplyScalar(k);
 
 // ---------------------------------------------------------------------------------------------------------------
 // GLSL
@@ -1098,8 +1105,8 @@ void main() {
 }
 `;
 
-function patchScenery(mat, U, flags = {}) {
-  const defs = [];
+function patchScenery(mat: THREE.MeshStandardMaterial, U: EnvUniforms, flags: { city?: boolean; terrain?: boolean; waterline?: boolean; shore?: boolean; gull?: boolean } = {}) {
+  const defs: string[] = [];
   if (flags.city) defs.push('HZ_CITY');
   if (flags.terrain) defs.push('HZ_TERRAIN');
   if (flags.waterline) defs.push('HZ_WATERLINE');
@@ -1109,7 +1116,7 @@ function patchScenery(mat, U, flags = {}) {
   for (const d of defs) mat.defines[d] = '';
   mat.fog = false;
   mat.onBeforeCompile = (sh) => {
-    for (const k of ['uTime', 'uSunDir', 'uZenith', 'uSkyMid', 'uHorizon', 'uGround', 'uHorizonGlow', 'uGlowColor', 'uGlowParams', 'uHaze', 'uNight']) sh.uniforms[k] = U[k];
+    for (const k of ['uTime', 'uSunDir', 'uZenith', 'uSkyMid', 'uHorizon', 'uGround', 'uHorizonGlow', 'uGlowColor', 'uGlowParams', 'uHaze', 'uNight']) sh.uniforms[k] = U[k as keyof EnvUniforms];
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\n' + HZ_VERT_DECL)
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + HZ_VERT_BEGIN_GULL)
@@ -1128,64 +1135,64 @@ function patchScenery(mat, U, flags = {}) {
 // ---------------------------------------------------------------------------------------------------------------
 // JS helpers: seeded rng, value noise, geometry builders
 // ---------------------------------------------------------------------------------------------------------------
-function mulberry(seed) {
+function mulberry(seed: number) {
   let a = seed >>> 0;
   return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
-function hash2(x, y) { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return s - Math.floor(s); }
-function vnoise(x, y) {
+function hash2(x: number, y: number) { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return s - Math.floor(s); }
+function vnoise(x: number, y: number) {
   const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
   const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
   const a = hash2(ix, iy), b = hash2(ix + 1, iy), c = hash2(ix, iy + 1), d = hash2(ix + 1, iy + 1);
   return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
 }
-function fbm(x, y, oct = 4) { let s = 0, a = 0.5, n = 0; for (let i = 0; i < oct; i++) { s += a * vnoise(x, y); n += a; x = x * 2.03 + 5.3; y = y * 2.03 - 1.7; a *= 0.5; } return s / n; }
-const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-const polar = (deg, d) => [Math.cos(deg * DEG) * d, Math.sin(deg * DEG) * d];
+function fbm(x: number, y: number, oct = 4) { let s = 0, a = 0.5, n = 0; for (let i = 0; i < oct; i++) { s += a * vnoise(x, y); n += a; x = x * 2.03 + 5.3; y = y * 2.03 - 1.7; a *= 0.5; } return s / n; }
+const smooth = (a: number, b: number, x: number) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+const polar = (deg: number, d: number): [number, number] => [Math.cos(deg * DEG) * d, Math.sin(deg * DEG) * d];
 
 // ---- oriented deck rects (footprint / marina deck + wet sets) -------------------------------------------------
 // { cx, cz, hx, hz, ax, az, minX, maxX, minZ, maxZ, aligned }: centre, half extents along the local axes, local x axis
 // (ax, az) (unit), local z = (−az, ax), plus the XZ AABB. `aligned` rects keep their exact min/max and take the exact
 // axis-aligned code paths below (so axis-aligned stages build exactly what they always did). Accepts a legacy
 // {minX..maxZ} rect, an oriented {cx,cz,hx,hz,ax,az} one, or both; extra fields (y0, y1 …) are kept.
-function orect(r) {
-  if (r.hx === undefined) return { ...r, cx: (r.minX + r.maxX) / 2, cz: (r.minZ + r.maxZ) / 2, hx: (r.maxX - r.minX) / 2, hz: (r.maxZ - r.minZ) / 2, ax: 1, az: 0, aligned: true };
-  let ax = r.ax ?? 1, az = r.az ?? 0, hx = r.hx, hz = r.hz;
+function orect(r: RectInput): DeckRect {
+  if (r.hx === undefined) return { ...r, minX: r.minX!, maxX: r.maxX!, minZ: r.minZ!, maxZ: r.maxZ!, cx: (r.minX! + r.maxX!) / 2, cz: (r.minZ! + r.maxZ!) / 2, hx: (r.maxX! - r.minX!) / 2, hz: (r.maxZ! - r.minZ!) / 2, ax: 1, az: 0, aligned: true };
+  let ax = r.ax ?? 1, az = r.az ?? 0, hx = r.hx, hz = r.hz!;
   const l = Math.hypot(ax, az) || 1; ax /= l; az /= l;
   // quarter turns are axis-aligned rects (swap the extents for 90° / 270°)
   if (Math.abs(az) < 1e-7) { ax = 1; az = 0; } else if (Math.abs(ax) < 1e-7) { ax = 1; az = 0; [hx, hz] = [hz, hx]; }
   const aligned = ax === 1 && az === 0;
-  const o = { ...r, hx, hz, ax, az, aligned };
+  const o = { ...r, hx, hz, ax, az, aligned } as DeckRect;
   if (!(aligned && r.minX !== undefined)) {
     const ex = Math.abs(ax) * hx + Math.abs(az) * hz, ez = Math.abs(az) * hx + Math.abs(ax) * hz;
-    o.minX = r.cx - ex; o.maxX = r.cx + ex; o.minZ = r.cz - ez; o.maxZ = r.cz + ez;
+    o.minX = r.cx! - ex; o.maxX = r.cx! + ex; o.minZ = r.cz! - ez; o.maxZ = r.cz! + ez;
   }
   return o;
 }
 // a level block as a deck rect (null for ramps / anything tilted: only boxes turned about Y qualify)
-function blockRect(b) {
+function blockRect(b: Block) {
   if (b.aligned) return orect({ minX: b.aabbMin.x, maxX: b.aabbMax.x, minZ: b.aabbMin.z, maxZ: b.aabbMax.z });
   if (Math.abs(b.axes[1].y) < 0.9999) return null;
   return orect({ cx: b.center.x, cz: b.center.z, hx: b.half.x, hz: b.half.z, ax: b.axes[0].x, az: b.axes[0].z });
 }
 // point strictly inside rect r grown by pad
-function inRect(r, x, z, pad = 0) {
+function inRect(r: DeckRect, x: number, z: number, pad = 0) {
   if (r.aligned) return x > r.minX - pad && x < r.maxX + pad && z > r.minZ - pad && z < r.maxZ + pad;
   const dx = x - r.cx, dz = z - r.cz;
   return Math.abs(dx * r.ax + dz * r.az) < r.hx + pad && Math.abs(dz * r.ax - dx * r.az) < r.hz + pad;
 }
 // signed distance (m) from (x, z) to rect r (matches sdORect in the sea shaders)
-function sdRectJS(r, x, z) {
+function sdRectJS(r: DeckRect, x: number, z: number) {
   const dx = x - r.cx, dz = z - r.cz;
   const qx = Math.abs(dx * r.ax + dz * r.az) - r.hx, qz = Math.abs(dz * r.ax - dx * r.az) - r.hz;
   return qx > 0 || qz > 0 ? Math.sqrt((qx > 0 ? qx * qx : 0) + (qz > 0 ? qz * qz : 0)) : Math.max(qx, qz);
 }
 // world (x, z) of the rect-local point (lx, lz)
-const rectPt = (r, lx, lz) => [r.cx + lx * r.ax - lz * r.az, r.cz + lx * r.az + lz * r.ax];
+const rectPt = (r: DeckRect, lx: number, lz: number) => [r.cx + lx * r.ax - lz * r.az, r.cz + lx * r.az + lz * r.ax];
 // the four edges, counter-clockwise from the (−x, −z) corner, with outward unit normals: aligned rects keep the
 // exact min/max corners and (0, ±1) / (±1, 0) normals
-function rectEdges(r) {
-  let c, n;
+function rectEdges(r: DeckRect): EdgeSeg[] {
+  let c: number[][], n: number[][];
   if (r.aligned) {
     c = [[r.minX, r.minZ], [r.maxX, r.minZ], [r.maxX, r.maxZ], [r.minX, r.maxZ]];
     n = [[0, -1], [1, 0], [0, 1], [-1, 0]];
@@ -1196,6 +1203,22 @@ function rectEdges(r) {
   return c.map((p, i) => ({ ax: p[0], az: p[1], bx: c[(i + 1) & 3][0], bz: c[(i + 1) & 3][1], nx: n[i][0] + 0, nz: n[i][1] + 0 }));
 }
 
+// 갑판 사각형: 중심·로컬 반폭·로컬 x축(ax, az, 단위)·XZ AABB. aligned면 min/max를 그대로 쓴다. y0·y1은 블록 높이
+interface DeckRect { cx: number; cz: number; hx: number; hz: number; ax: number; az: number; minX: number; maxX: number; minZ: number; maxZ: number; aligned: boolean; y0?: number; y1?: number }
+// orect 입력: 예전 {minX..maxZ} 또는 돌린 {cx,cz,hx,hz,ax,az}
+type RectInput = Partial<DeckRect>;
+interface MarinaSets { decks: DeckRect[]; wet: DeckRect[] }
+// 물가 선분(시작·끝·바깥 법선)과 그 묶음
+interface EdgeSeg { ax: number; az: number; bx: number; bz: number; nx: number; nz: number }
+interface EdgeRun extends EdgeSeg { len: number; s0: number; s1: number }
+interface MooredSpec { kind: string; x: number; z: number; yaw: number }
+interface Moored { mesh: THREE.Mesh; spec: MooredSpec; phase: number; roll: number }
+interface Sailboat { a: number; d: number; w: number; phase: number; s: number }
+interface Buoy { phase: number; x: number; z: number; col: string; s: number }
+// 거품 거리장 캡슐: 선분 a-b, 반지름 r, 거품이 닿는 거리 reach(기본 3 m)
+interface FoamShape { ax: number; az: number; bx: number; bz: number; r: number; reach?: number }
+interface Gull { cx: number; cz: number; r: number; h: number; w: number; a0: number; s: number }
+type Island = ReturnType<typeof makeIsland>;
 const _m4 = new THREE.Matrix4(), _q = new THREE.Quaternion(), _e = new THREE.Euler(), _v = new THREE.Vector3(), _s = new THREE.Vector3();
 // planar-reflection scratch
 const _rv = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
@@ -1203,7 +1226,7 @@ const _rv2 = new THREE.Vector2(), _rv4 = [new THREE.Vector4(), new THREE.Vector4
 const _bb = new THREE.Box3(), _ident = new THREE.Matrix4();
 
 // Normalise any geometry to non-indexed {position, normal, color, glow} so everything can be merged.
-function prep(geo, hex = '#ffffff', glow = 0) {
+function prep(geo: THREE.BufferGeometry, hex: THREE.ColorRepresentation = '#ffffff', glow = 0): THREE.BufferGeometry {
   const g = geo.index ? geo.toNonIndexed() : geo;
   for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal' && k !== 'color' && k !== 'glow') g.deleteAttribute(k);
   g.clearGroups();
@@ -1218,30 +1241,30 @@ function prep(geo, hex = '#ffffff', glow = 0) {
   if (!g.attributes.glow) g.setAttribute('glow', new THREE.BufferAttribute(new Float32Array(n).fill(glow), 1));
   return g;
 }
-function xf(g, x = 0, y = 0, z = 0, ry = 0, rx = 0, rz = 0, sx = 1, sy = 1, sz = 1) {
+function xf(g: THREE.BufferGeometry, x = 0, y = 0, z = 0, ry = 0, rx = 0, rz = 0, sx = 1, sy = 1, sz = 1) {
   _e.set(rx, ry, rz, 'YXZ'); _q.setFromEuler(_e); _m4.compose(_v.set(x, y, z), _q, _s.set(sx, sy, sz));
   g.applyMatrix4(_m4); return g;
 }
-const box = (w, h, d, hex, glow) => prep(new THREE.BoxGeometry(w, h, d), hex, glow);
-const cyl = (rt, rb, h, seg, hex, glow, open = false) => prep(new THREE.CylinderGeometry(rt, rb, h, seg, 1, open), hex, glow);
-const sph = (r, ws, hs, hex, glow) => prep(new THREE.SphereGeometry(r, ws, hs), hex, glow);
-function beam(ax, ay, az, bx, by, bz, t, hex, glow = 0) { // square beam between two points
+const box = (w: number, h: number, d: number, hex?: THREE.ColorRepresentation, glow?: number) => prep(new THREE.BoxGeometry(w, h, d), hex, glow);
+const cyl = (rt: number, rb: number, h: number, seg: number, hex?: THREE.ColorRepresentation, glow?: number, open = false) => prep(new THREE.CylinderGeometry(rt, rb, h, seg, 1, open), hex, glow);
+const sph = (r: number, ws: number, hs: number, hex?: THREE.ColorRepresentation, glow?: number) => prep(new THREE.SphereGeometry(r, ws, hs), hex, glow);
+function beam(ax: number, ay: number, az: number, bx: number, by: number, bz: number, t: number, hex: string, glow = 0) { // square beam between two points
   const dx = bx - ax, dy = by - ay, dz = bz - az; const L = Math.hypot(dx, dy, dz);
   const g = box(t, L, t, hex, glow);
   _q.setFromUnitVectors(_v.set(0, 1, 0), _s.set(dx / L, dy / L, dz / L));
   _m4.compose(_v.set((ax + bx) / 2, (ay + by) / 2, (az + bz) / 2), _q, _s.set(1, 1, 1));
   g.applyMatrix4(_m4); return g;
 }
-function tube(points, r, hex, seg = 4, glow = 0) {
+function tube(points: number[][], r: number, hex?: THREE.ColorRepresentation, seg = 4, glow = 0) {
   const curve = new THREE.CatmullRomCurve3(points.map((p) => new THREE.Vector3(p[0], p[1], p[2])));
   return prep(new THREE.TubeGeometry(curve, Math.max(4, Math.round(points.length * 1.2)), r, seg, false), hex, glow);
 }
-function sag(a, b, s, n = 12) { // catenary-ish rope points
-  const pts = [];
+function sag(a: number[], b: number[], s: number, n = 12) { // catenary-ish rope points
+  const pts: number[][] = [];
   for (let i = 0; i <= n; i++) { const t = i / n; pts.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t - s * 4 * t * (1 - t), a[2] + (b[2] - a[2]) * t]); }
   return pts;
 }
-function triGeo(verts, hex, doubleSided = true, glow = 0) { // verts: flat array of xyz triangles
+function triGeo(verts: number[], hex?: THREE.ColorRepresentation, doubleSided = true, glow = 0) { // verts: flat array of xyz triangles
   const arr = doubleSided ? new Float32Array(verts.length * 2) : new Float32Array(verts);
   if (doubleSided) {
     arr.set(verts, 0);
@@ -1252,7 +1275,7 @@ function triGeo(verts, hex, doubleSided = true, glow = 0) { // verts: flat array
   const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(arr, 3)); g.computeVertexNormals();
   return prep(g, hex, glow);
 }
-function vcolorBy(g, fn) { // recolour vertices: fn(x,y,z,nx,ny,nz) -> THREE.Color|null
+function vcolorBy(g: THREE.BufferGeometry, fn: (x: number, y: number, z: number, nx: number, ny: number, nz: number) => THREE.Color | null | undefined) { // recolour vertices: fn(x,y,z,nx,ny,nz) -> THREE.Color|null
   const p = g.attributes.position, n = g.attributes.normal, c = g.attributes.color;
   for (let i = 0; i < p.count; i++) { const col = fn(p.getX(i), p.getY(i), p.getZ(i), n.getX(i), n.getY(i), n.getZ(i)); if (col) c.setXYZ(i, col.r, col.g, col.b); }
   return g;
@@ -1311,9 +1334,9 @@ function makeWaveTexture(size = 256, seed = 11) {
 }
 
 // Lofted boat hull (bow at +z). Returns prepared geometry with vertex colours.
-function hullGeo({ L, B, D, F, sheer = 0.3, hull = '#ffffff', stripe = '#3c6e8f', bottom = '#c75c52', deck = '#d9c7a6' }) {
+function hullGeo({ L, B, D, F, sheer = 0.3, hull = '#ffffff', stripe = '#3c6e8f', bottom = '#c75c52', deck = '#d9c7a6' }: { L: number; B: number; D: number; F: number; sheer?: number; hull?: string; stripe?: string; bottom?: string; deck?: string }) {
   const NS = 14, NP = 5;
-  const secs = [];
+  const secs: Array<{ pts: number[][]; top: number; z: number; w: number }> = [];
   for (let i = 0; i <= NS; i++) {
     const t = i / NS;
     const z = (t - 0.5) * L;
@@ -1322,7 +1345,7 @@ function hullGeo({ L, B, D, F, sheer = 0.3, hull = '#ffffff', stripe = '#3c6e8f'
     else { const u = (t - 0.55) / 0.45; w = 0.5 * B * Math.sqrt(Math.max(0, 1 - u * u * 0.995)); }
     const keel = -D * (t < 0.62 ? 1 : 1 - 0.8 * Math.pow((t - 0.62) / 0.38, 1.4));
     const top = F + sheer * t * t;
-    const pts = [];
+    const pts: number[][] = [];
     for (let j = -NP; j <= NP; j++) {
       const s = Math.abs(j) / NP;
       const x = Math.sign(j) * w * Math.pow(Math.sin(s * Math.PI / 2), 0.75);
@@ -1331,8 +1354,8 @@ function hullGeo({ L, B, D, F, sheer = 0.3, hull = '#ffffff', stripe = '#3c6e8f'
     }
     secs.push({ pts, top, z, w });
   }
-  const pos = [];
-  const pushTri = (a, b, c, refY) => {
+  const pos: number[] = [];
+  const pushTri = (a: number[], b: number[], c: number[], refY: number) => {
     // orient outward: normal should point away from the hull centreline (0, refY, z)
     const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
     const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
@@ -1353,7 +1376,7 @@ function hullGeo({ L, B, D, F, sheer = 0.3, hull = '#ffffff', stripe = '#3c6e8f'
   g.computeVertexNormals();
   prep(g, hull);
   const cH = new THREE.Color(hull), cS = new THREE.Color(stripe), cB = new THREE.Color(bottom), cK = new THREE.Color('#2b3440');
-  vcolorBy(g, (x, y, z) => {
+  vcolorBy(g, (x, y: number, z: number) => {
     const i = Math.min(NS, Math.max(0, Math.round((z / L + 0.5) * NS)));
     const top = secs[i].top;
     if (y < 0.02) return cB;
@@ -1380,10 +1403,12 @@ function hullGeo({ L, B, D, F, sheer = 0.3, hull = '#ffffff', stripe = '#3c6e8f'
 
 // Smooth stylised island/hill (indexed radial grid → soft normals). Vertex colour = grass tint, 'glow' = baked fold AO
 // (the HZ_TERRAIN shader does grass/rock/sand by slope + height). Returns { geo, heightAt, localF, sample }.
-function makeIsland(o) {
+// 섬 하나: 중심(x, z)·반지름(rx, rz)·높이 h·씨앗·회전·평탄 여부·링/방사 분할·풀색·능선 세기
+interface IslandSpec { x: number; z: number; rx: number; rz: number; h: number; seed?: number; rot?: number; plateau?: boolean; R?: number; S?: number; grass?: string; ridge?: number }
+function makeIsland(o: IslandSpec) {
   const { x: cx, z: cz, rx, rz, h, seed = 1, rot = 0, plateau = false, R = 12, S = 44, grass = '#9ccf7f', ridge = 0.3 } = o;
   const cr = Math.cos(rot), sr = Math.sin(rot);
-  const hLocal = (lx, lz) => {
+  const hLocal = (lx: number, lz: number) => {
     const r = Math.hypot(lx, lz);
     const a = Math.atan2(lz, lx);
     const edge = 1 + (fbm(Math.cos(a) * 1.2 + seed * 3.7, Math.sin(a) * 1.2 - seed * 1.9, 3) - 0.5) * 0.34;
@@ -1397,15 +1422,15 @@ function makeIsland(o) {
     const prof = Math.pow(1 - f * f, 1.35);
     return h * prof * (0.52 + 0.6 * n + ridge * rg * rg) + (1 - f) * 0.6 - 0.35;
   };
-  const toLocal = (wx, wz) => { const dx = wx - cx, dz = wz - cz; return [(dx * cr + dz * sr) / rx, (-dx * sr + dz * cr) / rz]; };
-  const toWorld = (lx, lz) => [cx + lx * rx * cr - lz * rz * sr, cz + lx * rx * sr + lz * rz * cr];
-  const pos = [], col = [], ao = [], idx = [], nor = [];
+  const toLocal = (wx: number, wz: number) => { const dx = wx - cx, dz = wz - cz; return [(dx * cr + dz * sr) / rx, (-dx * sr + dz * cr) / rz]; };
+  const toWorld = (lx: number, lz: number) => [cx + lx * rx * cr - lz * rz * sr, cz + lx * rx * sr + lz * rz * cr];
+  const pos: number[] = [], col: number[] = [], ao: number[] = [], idx: number[] = [], nor: number[] = [];
   const tint = new THREE.Color(grass);
   const dl = 0.05;
   // smooth analytic normals from the height field (never the mesh facets)
   const eW = Math.max(rx, rz) * 0.012;
-  const hW = (wx, wz) => { const [lx, lz] = toLocal(wx, wz); return hLocal(lx, lz); };
-  const push = (lx, lz, yOverride) => {
+  const hW = (wx: number, wz: number) => { const [lx, lz] = toLocal(wx, wz); return hLocal(lx, lz); };
+  const push = (lx: number, lz: number, yOverride?: number) => {
     const [wx, wz] = toWorld(lx, lz);
     const hy = yOverride ?? hLocal(lx, lz);
     pos.push(wx, WATER_Y + hy, wz);
@@ -1430,7 +1455,7 @@ function makeIsland(o) {
       push(Math.cos(a) * f, Math.sin(a) * f, k === rings - 1 ? -6 : undefined);
     }
   }
-  const ring = (k, sI) => 1 + (k - 1) * S + ((sI + S) % S);
+  const ring = (k: number, sI: number) => 1 + (k - 1) * S + ((sI + S) % S);
   for (let sI = 0; sI < S; sI++) idx.push(0, ring(1, sI + 1), ring(1, sI));
   for (let k = 1; k < rings - 1; k++) {
     for (let sI = 0; sI < S; sI++) {
@@ -1446,18 +1471,121 @@ function makeIsland(o) {
   g.setIndex(idx);
   return {
     geo: prep(g),
-    heightAt: (wx, wz) => { const [lx, lz] = toLocal(wx, wz); return WATER_Y + hLocal(lx, lz); },
-    localF: (wx, wz) => { const [lx, lz] = toLocal(wx, wz); return Math.hypot(lx, lz); },
-    sample: (rnd, maxF = 0.8) => { const a = rnd() * Math.PI * 2, r = Math.sqrt(rnd()) * maxF; return toWorld(Math.cos(a) * r, Math.sin(a) * r); },
+    heightAt: (wx: number, wz: number) => { const [lx, lz] = toLocal(wx, wz); return WATER_Y + hLocal(lx, lz); },
+    localF: (wx: number, wz: number) => { const [lx, lz] = toLocal(wx, wz); return Math.hypot(lx, lz); },
+    sample: (rnd: () => number, maxF = 0.8) => { const a = rnd() * Math.PI * 2, r = Math.sqrt(rnd()) * maxF; return toWorld(Math.cos(a) * r, Math.sin(a) * r); },
   };
 }
+
+// 하늘·바다·풍경 재질이 함께 쓰는 uniform 표
+function envUniforms() {
+  const V3 = () => ({ value: new THREE.Vector3() });
+  const C = () => ({ value: new THREE.Color() });
+  return {
+    uTime: { value: 0 }, uSunDir: V3(),
+    uZenith: C(), uSkyMid: C(), uHorizon: C(), uGround: C(), uHorizonGlow: C(), uGlowColor: C(),
+    uGlowParams: { value: new THREE.Vector4() }, uHaze: { value: new THREE.Vector4() }, uNight: { value: 0 },
+    uSunDisk: C(), uSunCos: { value: 0.9998 }, uCloudLit: C(), uCloudShade: C(), uCloudParams: { value: new THREE.Vector4() },
+    uRects: { value: Array.from({ length: MAX_RECTS }, () => new THREE.Vector4()) }, uRectCount: { value: 0 },
+    uRectAx: { value: Array.from({ length: MAX_RECTS }, () => new THREE.Vector2(1, 0)) },
+    uWaveTex: { value: null as THREE.Texture | null }, uFoamTex: { value: null as THREE.Texture | null }, uFoamRect: { value: new THREE.Vector4() },
+    uSeaDeep: C(), uSeaShallow: C(), uSeaCrest: C(), uFoamColor: C(), uSunLight: C(), uSeaAmbient: C(),
+    uSunSpec: { value: 1 }, uWaveStrength: { value: 1 },
+    uCloudTex: { value: null as THREE.Texture | null },
+    // marina water (theme.marina)
+    uWet: { value: Array.from({ length: MAX_WET }, () => new THREE.Vector4()) }, uWetCount: { value: 0 }, uArena: { value: new THREE.Vector4() },
+    uWetAx: { value: Array.from({ length: MAX_WET }, () => new THREE.Vector2(1, 0)) },
+    // DECK_FIELD (more rects than slots): baked deck / hull distance field
+    uDeckField: { value: null as THREE.Texture | null }, uDeckFieldRect: { value: new THREE.Vector4() }, uDeckFieldK: { value: new THREE.Vector4() },
+    uDeckBox: { value: new THREE.Vector4() }, uWetBox: { value: new THREE.Vector4() },
+    uReflTex: { value: null as THREE.Texture | null }, uReflMat: { value: new THREE.Matrix4() }, uReflOn: { value: 0 },
+    uFarCube: { value: null as THREE.CubeTexture | null }, uFarOn: { value: 0 },
+    uChannelCol: C(), uShadeCol: C(), uMarinaK: { value: new THREE.Vector4(1, 1, 0.3, 0) },
+    uStripK: { value: new THREE.Vector4(1, 0.4, 0, 0) },
+  };
+}
+type EnvUniforms = ReturnType<typeof envUniforms>;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Environment
 // ---------------------------------------------------------------------------------------------------------------
 export class Environment {
+  renderer: THREE.WebGLRenderer;
+  scene: THREE.Scene;
+  bounds: StageBounds;
+  footprint: DeckRect[];
+  shadowSize: number;
+  forceDeckField: boolean;
+  waterY = WATER_Y;
+  time = 0;
+  theme: ThemeName | null = null;
+  envMap: THREE.Texture | null = null;
+  fogColor = new THREE.Color();
+  grade: ThemeGrade | null = null;
+  _envRT: THREE.WebGLRenderTarget | null = null;
+  root: THREE.Group;
+  _marina: boolean;
+  _frameId = 0;
+  reflections = true;   // marina planar reflections (perf lever; low quality turns them off regardless)
+  declare U: EnvUniforms;
+  _marinaData: MarinaSets | null = null;
+  _fieldRT: THREE.WebGLRenderTarget | null = null;
+  _fieldKey: string | null = null;
+  _fieldMat: THREE.ShaderMaterial | null = null;
+  declare _fieldQuad: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
+  declare _fieldScene: THREE.Scene;
+  declare _fieldCam: THREE.OrthographicCamera;
+  fieldBakeMs = 0;
+  declare sun: THREE.DirectionalLight;
+  declare hemi: THREE.HemisphereLight;
+  declare skyMat: THREE.ShaderMaterial;
+  declare sky: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial>;
+  declare _envScene: THREE.Scene;
+  _envOff = false;
+  _pmrem: THREE.PMREMGenerator | null = null;
+  declare _cloudRT: THREE.WebGLRenderTarget;
+  declare _cloudMat: THREE.ShaderMaterial;
+  declare _cloudScene: THREE.Scene;
+  declare _cloudCam: THREE.OrthographicCamera;
+  declare seaMat: THREE.ShaderMaterial;
+  declare sea: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  _reflBusy = false;
+  _reflFrame = -1;
+  reflScale = 0.5;
+  _reflRT: THREE.WebGLRenderTarget | null = null;
+  declare _reflCam: THREE.PerspectiveCamera;
+  _farRT: THREE.WebGLCubeRenderTarget | null = null;
+  declare _farCam: THREE.CubeCamera;
+  _reflSkipKey = '';
+  _reflSkipList: THREE.Object3D[] = [];
+  marinaFx: THREE.Group | null = null;
+  _foamShapes: FoamShape[] = [];
+  declare _underMat: THREE.MeshStandardMaterial;
+  _stripMat: THREE.ShaderMaterial | null = null;
+  _runs: EdgeRun[] = [];
+  _mooredSpec: MooredSpec[] = [];
+  declare pilings: THREE.InstancedMesh;
+  declare dockProps: THREE.Mesh;
+  moored: Moored[] = [];
+  declare _cityIsland: Island;
+  declare _cityFrame: { cx: number; cz: number; rot: number };
+  declare lighthouseTop: THREE.Vector3;
+  declare _ferrisGeo: THREE.BufferGeometry;
+  declare _ferrisPose: { x: number; y: number; z: number; yaw: number };
+  sailboats: Sailboat[] = [];
+  buoys: Buoy[] = [];
+  declare buoyInst: THREE.InstancedMesh;
+  gulls: Gull[] = [];
+  declare gullInst: THREE.InstancedMesh;
+  declare sailInst: THREE.InstancedMesh;
+  declare trees: THREE.InstancedMesh;
+  declare ferris: THREE.Mesh;
+  declare staticScenery: THREE.Mesh;
+  declare terrain: THREE.Mesh;
+  declare city: THREE.Mesh;
+  declare lhBeam: THREE.Mesh;
   static get THEMES() { return THEMES; }   // audit / lab hook: tweak a theme live, then setTheme(name)
-  constructor(renderer, scene, opts = {}) {
+  constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, opts: { bounds?: StageBounds; footprint?: RectInput[]; shadowSize?: number; forceDeckField?: boolean; theme?: string } = {}) {
     this.renderer = renderer;
     this.scene = scene;
     const b = opts.bounds || { minX: -25, maxX: 25, minZ: -44, maxZ: 44 };
@@ -1469,12 +1597,6 @@ export class Environment {
     // shader exceeds the limit and FAILS TO LINK (the entire sea silently vanishes). The field is the same feature,
     // already used by stages with more rects than slots; baking it costs one GPU pass per stage load.
     this.forceDeckField = !!opts.forceDeckField;
-    this.waterY = WATER_Y;
-    this.time = 0;
-    this.theme = null;
-    this.envMap = null;
-    this.fogColor = new THREE.Color();
-    this._envRT = null;
 
     this.root = new THREE.Group();
     this.root.name = 'Environment';
@@ -1483,8 +1605,6 @@ export class Environment {
     // strips, planar reflections, and no generic dock kit (the stage dresses its own pier edges and moored boats).
     // The theme only supplies its look (THEMES[*].marina).
     this._marina = this._stageMarina();
-    this._frameId = 0;
-    this.reflections = true;   // marina planar reflections (perf lever; low quality turns them off regardless)
 
     this._initUniforms();
     this._buildLights();
@@ -1499,30 +1619,7 @@ export class Environment {
 
   // ------------------------------------------------------------------ uniforms
   _initUniforms() {
-    const V3 = () => ({ value: new THREE.Vector3() });
-    const C = () => ({ value: new THREE.Color() });
-    this.U = {
-      uTime: { value: 0 }, uSunDir: V3(),
-      uZenith: C(), uSkyMid: C(), uHorizon: C(), uGround: C(), uHorizonGlow: C(), uGlowColor: C(),
-      uGlowParams: { value: new THREE.Vector4() }, uHaze: { value: new THREE.Vector4() }, uNight: { value: 0 },
-      uSunDisk: C(), uSunCos: { value: 0.9998 }, uCloudLit: C(), uCloudShade: C(), uCloudParams: { value: new THREE.Vector4() },
-      uRects: { value: Array.from({ length: MAX_RECTS }, () => new THREE.Vector4()) }, uRectCount: { value: 0 },
-      uRectAx: { value: Array.from({ length: MAX_RECTS }, () => new THREE.Vector2(1, 0)) },
-      uWaveTex: { value: null }, uFoamTex: { value: null }, uFoamRect: { value: new THREE.Vector4() },
-      uSeaDeep: C(), uSeaShallow: C(), uSeaCrest: C(), uFoamColor: C(), uSunLight: C(), uSeaAmbient: C(),
-      uSunSpec: { value: 1 }, uWaveStrength: { value: 1 },
-      uCloudTex: { value: null },
-      // marina water (theme.marina)
-      uWet: { value: Array.from({ length: MAX_WET }, () => new THREE.Vector4()) }, uWetCount: { value: 0 }, uArena: { value: new THREE.Vector4() },
-      uWetAx: { value: Array.from({ length: MAX_WET }, () => new THREE.Vector2(1, 0)) },
-      // DECK_FIELD (more rects than slots): baked deck / hull distance field
-      uDeckField: { value: null }, uDeckFieldRect: { value: new THREE.Vector4() }, uDeckFieldK: { value: new THREE.Vector4() },
-      uDeckBox: { value: new THREE.Vector4() }, uWetBox: { value: new THREE.Vector4() },
-      uReflTex: { value: null }, uReflMat: { value: new THREE.Matrix4() }, uReflOn: { value: 0 },
-      uFarCube: { value: null }, uFarOn: { value: 0 },
-      uChannelCol: C(), uShadeCol: C(), uMarinaK: { value: new THREE.Vector4(1, 1, 0.3, 0) },
-      uStripK: { value: new THREE.Vector4(1, 0.4, 0, 0) },
-    };
+    this.U = envUniforms();
     this._syncDeckShading();
   }
 
@@ -1548,11 +1645,11 @@ export class Environment {
 
   // Signed distance to the union of the deck rects (R) and of the hull rects (G): 10 cm texels over the arena + reach,
   // half-float, bilinear, rendered on the GPU (one pass; every texel takes the min over all rects, clamped at FIELD_R).
-  _bakeDeckField(decks, wet) {
+  _bakeDeckField(decks: DeckRect[], wet: DeckRect[]) {
     const U = this.U, b = this.bounds, R = FIELD_R;
-    const aabb = (rs) => {
+    const aabb = (rs: DeckRect[]): [number, number, number, number] => {
       if (!rs.length) return [1e4, 1e4, 1e4, 1e4];      // none: far away (like the analytic 1e5)
-      const a = [Infinity, Infinity, -Infinity, -Infinity];
+      const a: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
       for (const r of rs) { a[0] = Math.min(a[0], r.minX); a[1] = Math.min(a[1], r.minZ); a[2] = Math.max(a[2], r.maxX); a[3] = Math.max(a[3], r.maxZ); }
       return a;
     };
@@ -1599,7 +1696,7 @@ export class Environment {
         this._fieldScene = new THREE.Scene(); this._fieldScene.add(this._fieldQuad);
         this._fieldCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
       }
-      const fu = this._fieldMat.uniforms;
+      const fu = this._fieldMat!.uniforms;
       fu.uRectTex.value = rectTex; fu.uN.value.set(decks.length, wet.length); fu.uField.value.set(x0, z0, W * res, H * res);
       if (!this._fieldRT || this._fieldRT.width !== W || this._fieldRT.height !== H) {
         this._fieldRT?.dispose();
@@ -1622,12 +1719,12 @@ export class Environment {
   }
 
   // deck rects → uRects (centre, half extents) + uRectAx (local x axis); marina hulls → uWet + uWetAx
-  _writeRects(rects = this.footprint) {
+  _writeRects(rects: DeckRect[] = this.footprint) {
     const U = this.U;
     rects.forEach((r, i) => { U.uRects.value[i].set(r.cx, r.cz, r.hx, r.hz); U.uRectAx.value[i].set(r.ax, r.az); });
     U.uRectCount.value = rects.length;
   }
-  _writeWet(rects) {
+  _writeWet(rects: DeckRect[]) {
     const U = this.U;
     rects.forEach((r, i) => { U.uWet.value[i].set(r.cx, r.cz, r.hx, r.hz); U.uWetAx.value[i].set(r.ax, r.az); });
     U.uWetCount.value = rects.length;
@@ -1684,7 +1781,7 @@ export class Environment {
     const geo = new THREE.SphereGeometry(1, 48, 24);
     // the in-game dome is depth-tested at the far plane and drawn after every opaque object, so only pixels where sky
     // is actually visible get shaded; the env-map copy renders alone
-    const mk = (env) => new THREE.ShaderMaterial({
+    const mk = (env: boolean) => new THREE.ShaderMaterial({
       name: env ? 'SkyEnv' : 'Sky', uniforms: this.U, vertexShader: SKY_VERT, fragmentShader: SKY_FRAG,
       side: THREE.BackSide, depthWrite: false, depthTest: !env, depthFunc: THREE.LessEqualDepth, fog: false, defines: env ? { ENV_PASS: '' } : {},
     });
@@ -1727,7 +1824,7 @@ export class Environment {
 
   // Bake the cumulus dome for the current theme (sun direction/colour + sky). Rendered in horizontal strips so no
   // single GPU job runs long; ~0.1–0.3 s once per theme change.
-  _bakeClouds(T) {
+  _bakeClouds(T: Theme) {
     const r = this.renderer, u = this._cloudMat.uniforms;
     u.uSunCol.value.copy(lin(T.sunColor, (T.skySun ?? T.sunIntensity) / 2.75));
     u.uCov.value = T.cloudCov ?? 0.46;
@@ -1810,7 +1907,7 @@ export class Environment {
   // reflects), rendered without sea or sky dome into a mip-mapped HDR target; alpha = coverage, so the sea shader keeps
   // its analytic sky + clouds wherever nothing stands above the water. Once per frame, only in marina mode, skipped for
   // override passes (GTAO normals) and when the camera dips under the surface. Resolution follows the quality preset.
-  _renderReflection(renderer, scene, camera) {
+  _renderReflection(renderer: THREE.WebGLRenderer, scene: THREE.Scene<THREE.Object3DEventMap>, camera: THREE.Camera) {
     const U = this.U;
     if (!this._marina || this._reflBusy || scene.overrideMaterial || this._reflFrame === this._frameId) return;
     this._reflFrame = this._frameId;
@@ -1860,23 +1957,24 @@ export class Environment {
     // scenery comes from the baked far-reflection cube; below ultra the squid kids, FX particles, lamp posts, palms,
     // flags, light glows and spinners stay out too — they are most of the pass's draw calls (its real cost is CPU:
     // ~50 µs per draw) and all but vanish in a wave-broken reflection.
-    const hide = [this.sea, this.sky, this.lhBeam, this.city, this.terrain, this.staticScenery, this.ferris, this.trees, this.sailInst, this.gullInst];
+    const hide: Array<THREE.Object3D | null | undefined> = [this.sea, this.sky, this.lhBeam, this.city, this.terrain, this.staticScenery, this.ferris, this.trees, this.sailInst, this.gullInst];
     if (q !== 'ultra') {
       for (const a of G.actors || []) if (a.character && a.character.root) hide.push(a.character.root);
       hide.push(...this._reflSkips(scene));
     }
     for (let i = hide.length - 1; i >= 0; i--) if (!hide[i]) hide.splice(i, 1);
-    const vis = hide.map((o) => o.visible);
+    const shown = hide as THREE.Object3D[];
+    const vis = shown.map((o) => o.visible);
     this._reflBusy = true;
     try {
-      for (const o of hide) o.visible = false;
+      for (const o of shown) o.visible = false;
       renderer.xr.enabled = false; renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = false;
       renderer.setRenderTarget(rt);
       renderer.setClearColor(0x000000, 0);
       renderer.clear(true, true, false);
       renderer.render(scene, rc);
     } finally {
-      hide.forEach((o, i) => { o.visible = vis[i]; });
+      shown.forEach((o, i) => { o.visible = vis[i]; });
       renderer.xr.enabled = xr; renderer.shadowMap.autoUpdate = sAuto; renderer.shadowMap.needsUpdate = sNeed;
       renderer.setClearColor(_rCol, ca);
       renderer.setRenderTarget(prevRT);
@@ -1901,9 +1999,9 @@ export class Environment {
       this._farCam = new THREE.CubeCamera(2, 30000, this._farRT);
       U.uFarCube.value = this._farRT.texture;
     }
-    const far = new Set([this.terrain, this.city, this.staticScenery, this.ferris, this.trees].filter(Boolean));
-    const hidden = [];
-    for (const o of this.scene.children) if (o !== this.root && o.visible && !o.isLight) { o.visible = false; hidden.push(o); }
+    const far = new Set<THREE.Object3D>([this.terrain, this.city, this.staticScenery, this.ferris, this.trees].filter(Boolean));
+    const hidden: THREE.Object3D[] = [];
+    for (const o of this.scene.children) if (o !== this.root && o.visible && !(o as THREE.Light).isLight) { o.visible = false; hidden.push(o); }
     for (const o of this.root.children) if (o.visible && !far.has(o)) { o.visible = false; hidden.push(o); }
     const b = this.bounds;
     this._farCam.position.set((b.minX + b.maxX) / 2, WATER_Y + 1.5, (b.minZ + b.maxZ) / 2);
@@ -1926,7 +2024,7 @@ export class Environment {
   }
 
   // Scene parts left out of the planar reflection below ultra (cached per prop build): FX, decor, small prop batches.
-  _reflSkips(scene) {
+  _reflSkips(scene: THREE.Scene<THREE.Object3DEventMap>) {
     const props = scene.children.find((o) => o.name === 'props');
     const key = scene.children.length + ':' + (props ? props.uuid + props.children.length : '-');
     if (this._reflSkipKey === key) return this._reflSkipList;
@@ -1947,8 +2045,8 @@ export class Environment {
   // below it (hulls, dry-dock floors: no sea inside, contact foam). Read from the live level (y extents matter here —
   // the main.js footprint only carries XZ). Axis-aligned boxes and boxes turned about Y (oriented rects); ramps and
   // other tilted blocks are left out.
-  _marinaSets() {
-    const L = G.level, decks = [], wet = [];
+  _marinaSets(): MarinaSets {
+    const L = G.level, decks: DeckRect[] = [], wet: DeckRect[] = [];
     if (L) for (const b of L.blocks) {
       if (!b.solid || b.hidden || b.grate) continue;
       const lo = b.aabbMin, hi = b.aabbMax;
@@ -1967,7 +2065,7 @@ export class Environment {
     const U = this.U;
     if (this.marinaFx) {
       this.root.remove(this.marinaFx);
-      this.marinaFx.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+      this.marinaFx.traverse((o) => { if (o instanceof THREE.Mesh) o.geometry.dispose(); });
       this.marinaFx = null;
     }
     const on = this._marina;
@@ -1983,14 +2081,14 @@ export class Environment {
     this._buildMarinaFx(M);
   }
 
-  _buildMarinaFx(M) {
+  _buildMarinaFx(M: MarinaSets) {
     const L = G.level;
     if (!L) return;
     const grp = new THREE.Group();
     grp.name = 'MarinaWaterline';
-    const open = (x, z) => !M.decks.some((r) => inRect(r, x, z)) && !M.wet.some((r) => inRect(r, x, z));
-    const pos = [], nor = [], info = [];
-    const quad = (a, b, c, d, n, col, kind) => {   // a b c d counter-clockwise seen from the front (n)
+    const open = (x: number, z: number) => !M.decks.some((r) => inRect(r, x, z)) && !M.wet.some((r) => inRect(r, x, z));
+    const pos: number[] = [], nor: number[] = [], info: number[] = [];
+    const quad = (a: number[], b: number[], c: number[], d: number[], n: THREE.Vector3, col: THREE.Color, kind: number) => {   // a b c d counter-clockwise seen from the front (n)
       pos.push(...a, ...b, ...c, ...a, ...c, ...d);
       for (let i = 0; i < 6; i++) { nor.push(n.x, n.y, n.z); info.push(col.r, col.g, col.b, kind); }
     };
@@ -2010,11 +2108,11 @@ export class Environment {
       const n = f.n, u = f.u;
       const steps = Math.max(2, Math.ceil(f.su / 0.2));
       const ds = f.su / steps;
-      const emit = (s0, s1) => {
+      const emit = (s0: number, s1: number) => {
         const e0 = s0 < 0.01 ? 0.15 : 0.03, e1 = s1 > f.su - 0.01 ? 0.15 : 0.03;
         s0 += e0; s1 -= e1;
         if (s1 - s0 < 0.25) return;
-        const px = (s, y) => [f.origin.x + u.x * s + n.x * off, y, f.origin.z + u.z * s + n.z * off];
+        const px = (s: number, y: number) => [f.origin.x + u.x * s + n.x * off, y, f.origin.z + u.z * s + n.z * off];
         quad(px(s0, y0), px(s1, y0), px(s1, y1), px(s0, y1), n, f.color, inWater ? 1 : 0);
       };
       let s0 = -1;
@@ -2029,11 +2127,11 @@ export class Environment {
     const under = [];
     const dn = new THREE.Vector3(0, -1, 0), dark = new THREE.Color('#2e2923');
     for (const r of M.decks) {
-      const y = r.y0 - 0.002, e = 0.004;
+      const y = r.y0! - 0.002, e = 0.004;   // (_marinaSets가 높이를 붙인 사각형)
       let A, B, Cc, D;
       if (r.aligned) { A = [r.minX + e, y, r.minZ + e]; B = [r.maxX - e, y, r.minZ + e]; Cc = [r.maxX - e, y, r.maxZ - e]; D = [r.minX + e, y, r.maxZ - e]; } else {
         // turned slab: the same quad in its own frame (a rotation keeps the winding)
-        const P = (lx, lz) => { const q = rectPt(r, lx, lz); return [q[0], y, q[1]]; }, hx = r.hx - e, hz = r.hz - e;
+        const P = (lx: number, lz: number) => { const q = rectPt(r, lx, lz); return [q[0], y, q[1]]; }, hx = r.hx - e, hz = r.hz - e;
         A = P(-hx, -hz); B = P(hx, -hz); Cc = P(hx, hz); D = P(-hx, hz);
       }
       under.push(...A, ...B, ...Cc, ...A, ...Cc, ...D);     // winding faces −Y
@@ -2074,13 +2172,13 @@ export class Environment {
 
   // Distance field (metres, 0..range) to pilings, boats, buoys around the deck → foam rings on the water.
   // Marina mode: finer (0.1 m) and short-range (2.5 m, 1 cm steps), fed by the real waterline contours.
-  _buildFoamField(shapes) {
+  _buildFoamField(shapes: FoamShape[]) {
     const marina = this._marina;
     const b = this.bounds, pad = 22, res = marina ? 0.1 : 0.2, range = marina ? 2.5 : 8;
     const minX = b.minX - pad, minZ = b.minZ - pad;
     const W = Math.ceil((b.maxX - b.minX + pad * 2) / res), H = Math.ceil((b.maxZ - b.minZ + pad * 2) / res);
     const data = new Uint8Array(W * H).fill(255);
-    const segDist = (px, pz, ax, az, bx, bz) => {
+    const segDist = (px: number, pz: number, ax: number, az: number, bx: number, bz: number) => {
       const dx = bx - ax, dz = bz - az; const l2 = dx * dx + dz * dz;
       const t = l2 > 0 ? Math.min(1, Math.max(0, ((px - ax) * dx + (pz - az) * dz) / l2)) : 0;
       return Math.hypot(px - ax - dx * t, pz - az - dz * t);
@@ -2112,19 +2210,19 @@ export class Environment {
   // Triangle ∩ plane y = WATER_Y segments from the prop meshes → zero-radius capsules for the foam field, so froth
   // rings whatever actually stands in the water, whoever placed it. Hull dressing hugging a wet rect is left to the
   // analytic hull contact line.
-  _waterContours(wet) {
-    const out = [];
+  _waterContours(wet: DeckRect[]): FoamShape[] {
+    const out: FoamShape[] = [];
     const b = this.bounds, pad = 21;
     const X0 = b.minX - pad, X1 = b.maxX + pad, Z0 = b.minZ - pad, Z1 = b.maxZ + pad;
     const Wy = WATER_Y;
-    const A = new THREE.Vector3(), Bv = new THREE.Vector3(), Cv = new THREE.Vector3(), pts = [];
-    const nearWet = (x, z) => wet.some((r) => inRect(r, x, z, 0.12));
-    const cut = (p, q) => { const t = (Wy - p.y) / (q.y - p.y); pts.push(p.x + (q.x - p.x) * t, p.z + (q.z - p.z) * t); };
-    const scan = (geo, mat) => {
+    const A = new THREE.Vector3(), Bv = new THREE.Vector3(), Cv = new THREE.Vector3(), pts: number[] = [];
+    const nearWet = (x: number, z: number) => wet.some((r) => inRect(r, x, z, 0.12));
+    const cut = (p: THREE.Vector3, q: THREE.Vector3) => { const t = (Wy - p.y) / (q.y - p.y); pts.push(p.x + (q.x - p.x) * t, p.z + (q.z - p.z) * t); };
+    const scan = (geo: THREE.BufferGeometry, mat: THREE.Matrix4 | null) => {
       const pos = geo.attributes.position, idx = geo.index;
       if (!pos) return;
       if (!geo.boundingBox) geo.computeBoundingBox();
-      const bb = _bb.copy(geo.boundingBox);
+      const bb = _bb.copy(geo.boundingBox!);
       if (mat) bb.applyMatrix4(mat);
       if (bb.min.y > Wy || bb.max.y < Wy || bb.max.x < X0 || bb.min.x > X1 || bb.max.z < Z0 || bb.min.z > Z1) return;
       const n = idx ? idx.count : pos.count;
@@ -2152,7 +2250,8 @@ export class Environment {
     for (const grp of this.scene.children) {
       if (grp === this.root || grp.name !== 'props') continue;
       grp.updateMatrixWorld(true);
-      grp.traverse((o) => {
+      grp.traverse((obj) => {
+        const o = obj as THREE.InstancedMesh;
         if (!o.isMesh || !o.geometry || o.visible === false) return;
         if (o.isInstancedMesh) {
           for (let k = 0; k < o.count; k++) { o.getMatrixAt(k, _mi); _mi.premultiply(o.matrixWorld); scan(o.geometry, _mi); }
@@ -2163,8 +2262,8 @@ export class Environment {
   }
 
   // ------------------------------------------------------------------ dock: pilings, fenders, ladders, moored boats
-  _insideFootprint(x, z) { return this.footprint.some((r) => inRect(r, x, z)); }
-  _insideBounds(x, z) { const b = this.bounds; return x > b.minX + 0.01 && x < b.maxX - 0.01 && z > b.minZ + 0.01 && z < b.maxZ - 0.01; }
+  _insideFootprint(x: number, z: number) { return this.footprint.some((r) => inRect(r, x, z)); }
+  _insideBounds(x: number, z: number) { const b = this.bounds; return x > b.minX + 0.01 && x < b.maxX - 0.01 && z > b.minZ + 0.01 && z < b.maxZ - 0.01; }
 
   // exposed stretches of the footprint outline (edge samples whose outside is open water), along each rect's real
   // (possibly turned) edges: { ax, az → bx, bz, outward nx, nz, len, s0..s1 }
@@ -2230,7 +2329,7 @@ export class Environment {
 
     // ---- moored boats + dolphins (outside the bounds) ----
     // (a stage that dresses its own water can switch these off: layout.envBoats === false)
-    const boatsSpec = marina || G.level?.layout?.envBoats === false ? [] : [
+    const boatsSpec = marina || (G.level?.layout as { envBoats?: boolean } | undefined)?.envBoats === false ? [] : [
       { kind: 'fishing', x: b.maxX + 3.25, z: b.minZ + (b.maxZ - b.minZ) * 0.77, yaw: 0 },
       { kind: 'launch', x: b.minX - 2.85, z: b.minZ + (b.maxZ - b.minZ) * 0.2, yaw: Math.PI },
       { kind: 'row', x: b.minX - 1.75, z: b.minZ + (b.maxZ - b.minZ) * 0.86, yaw: 0.12 },
@@ -2238,7 +2337,7 @@ export class Environment {
     this._mooredSpec = boatsSpec;
     // nearest exposed deck edge to (x, z) whose outward normal faces (nx, nz), within 8 m: spring-line rings and ladders
     // hang on the real (possibly turned) slab face rather than on the arena bounds; none near → left out
-    const edgeAt = (x, z, nx, nz) => {
+    const edgeAt = (x: number, z: number, nx: number, nz: number) => {
       let best = null, bd = 8;
       for (const r of runs) {
         if (r.nx * nx + r.nz * nz < 0.5) continue;
@@ -2249,10 +2348,10 @@ export class Environment {
       }
       return best && bd < 1e-6 && best.nx === nx && best.nz === nz ? { x, z, nx, nz } : best;   // on the edge: as asked
     };
-    const ringAt = (e) => dockParts.push(xf(prep(new THREE.TorusGeometry(0.09, 0.02, 5, 10), '#8d969e'), e.x + e.nx * 0.04, -0.36, e.z + e.nz * 0.04, e.nz === 0 ? Math.PI / 2 : Math.atan2(e.nx, e.nz)));
-    const dockParts = [];
-    const pushRope = (a, c, s = 0.35, r = 0.035) => dockParts.push(tube(sag(a, c, s), r, '#dccaa0'));
-    const dolphin = (x, z, h = -0.28) => {
+    const ringAt = (e: { x: number; z: number; nx: number; nz: number }) => dockParts.push(xf(prep(new THREE.TorusGeometry(0.09, 0.02, 5, 10), '#8d969e'), e.x + e.nx * 0.04, -0.36, e.z + e.nz * 0.04, e.nz === 0 ? Math.PI / 2 : Math.atan2(e.nx, e.nz)));
+    const dockParts: THREE.BufferGeometry[] = [];
+    const pushRope = (a: number[], c: number[], s = 0.35, r = 0.035) => dockParts.push(tube(sag(a, c, s), r, '#dccaa0'));
+    const dolphin = (x: number, z: number, h = -0.28) => {
       for (let k = 0; k < 3; k++) { const a = k * 2.094 + 0.3; pilings.push([x + Math.cos(a) * 0.42, z + Math.sin(a) * 0.42, 0.22, h - 0.25]); }
       foamShapes.push({ ax: x, az: z, bx: x, bz: z, r: 0.7 });
       dockParts.push(xf(box(1.5, 0.45, 1.5, '#d6cfc2'), x, h, z));
@@ -2301,7 +2400,7 @@ export class Environment {
       dockParts.push(xf(cyl(0.022, 0.022, 0.42, 5, '#d8c69c'), x + run.nx * 0.02, -0.12, z + run.nz * 0.02));
     });
     // ladders near the moored boats
-    const ladderAt = (x, z, nx, nz) => {
+    const ladderAt = (x: number, z: number, nx: number, nz: number) => {
       const yaw = Math.atan2(nx, nz);
       const tx = Math.cos(yaw), tz = -Math.sin(yaw); // tangent
       const off = 0.08;
@@ -2317,7 +2416,7 @@ export class Environment {
     // ---- pilings (instanced) ----
     const pGeo = mergeGeometries([prep(new THREE.CylinderGeometry(1, 1, 1, 9, 1, true), '#ffffff'), xf(prep(new THREE.CircleGeometry(1, 9), '#ffffff'), 0, 0.5, 0, 0, -Math.PI / 2)]);
     xf(pGeo, 0, 0.5, 0);
-    vcolorBy(pGeo, (x, y, z, nx, ny) => (ny > 0.5 ? new THREE.Color('#e3d8c4') : null));
+    vcolorBy(pGeo, (x, y, z, nx, ny: number) => (ny > 0.5 ? new THREE.Color('#e3d8c4') : null));
     const pMat = patchScenery(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0 }), this.U, { waterline: true });
     const pInst = new THREE.InstancedMesh(pGeo, pMat, pilings.length);
     const rnd = mulberry(5);
@@ -2401,12 +2500,12 @@ export class Environment {
   // ------------------------------------------------------------------ far scenery
   _buildScenery() {
     const U = this.U;
-    const staticParts = [];
+    const staticParts: THREE.BufferGeometry[] = [];
     const shoreMat = patchScenery(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0 }), U, { shore: true });
     const rnd = mulberry(42);
-    const islands = [];
-    const terrainParts = [];
-    const addIsland = (o) => { const isl = makeIsland(o); terrainParts.push(isl.geo); islands.push({ ...o, isl }); return isl; };
+    const islands: Array<IslandSpec & { isl: Island }> = [];
+    const terrainParts: THREE.BufferGeometry[] = [];
+    const addIsland = (o: IslandSpec) => { const isl = makeIsland(o); terrainParts.push(isl.geo); islands.push({ ...o, isl }); return isl; };
 
     // --- city land across the bay (east / north-east) + backdrop hills ---
     const [ccx, ccz] = polar(22, 900);
@@ -2417,7 +2516,7 @@ export class Environment {
       const [x, z] = polar(a, d); addIsland({ x, z, rx, rz: rx * 0.62, h: h * 0.85, seed: s, rot: (a + 90) * DEG, R: 20, S: 84, grass: '#7fb86f', ridge: 0.4 });
     }
     // --- west + south islands and headlands ---
-    const isl = [
+    const isl: Array<{ a: number; d: number; rx: number; rz: number; h: number; seed: number; trees?: number; isl?: Island }> = [
       { a: 178, d: 640, rx: 250, rz: 120, h: 72, seed: 21, trees: 60 },
       { a: 236, d: 300, rx: 42, rz: 30, h: 13, seed: 22, trees: 14 },
       { a: 300, d: 470, rx: 95, rz: 60, h: 28, seed: 23, trees: 22 },
@@ -2446,7 +2545,7 @@ export class Environment {
     const quayTop = WATER_Y + 2.7;
     const quay = xf(box(210, quayTop - WATER_Y + 6, 80, '#cfc9bd'), qx, (quayTop + WATER_Y - 6) / 2, qz, qYaw);
     staticParts.push(quay);
-    const toQ = (lx, lz) => { const c = Math.cos(qYaw), s = Math.sin(qYaw); return [qx + lx * c + lz * s, qz - lx * s + lz * c]; };
+    const toQ = (lx: number, lz: number) => { const c = Math.cos(qYaw), s = Math.sin(qYaw); return [qx + lx * c + lz * s, qz - lx * s + lz * c]; };
     const craneCols = ['#e8927f', '#6fa6cf', '#e8927f'];
     [-55, 0, 55].forEach((lx, i) => { const [x, z] = toQ(lx, 30); staticParts.push(this._craneGeo(x, quayTop, z, qYaw, craneCols[i])); });
     const contCols = ['#e9967a', '#7fb8c9', '#e8c56b', '#a99fd3', '#8fcf9f', '#f2efe8', '#d97f8f', '#6f9fd8'];
@@ -2508,10 +2607,10 @@ export class Environment {
       if (!o.trees) continue;
       let placed = 0, tries = 0;
       while (placed < o.trees && tries++ < o.trees * 12) {
-        const [x, z] = o.isl.sample(rnd, 0.78);
-        const y = o.isl.heightAt(x, z);
+        const [x, z] = o.isl!.sample(rnd, 0.78);
+        const y = o.isl!.heightAt(x, z);
         if (y < WATER_Y + 2.2) continue;
-        const sl = Math.abs(o.isl.heightAt(x + 3, z) - o.isl.heightAt(x - 3, z)) + Math.abs(o.isl.heightAt(x, z + 3) - o.isl.heightAt(x, z - 3));
+        const sl = Math.abs(o.isl!.heightAt(x + 3, z) - o.isl!.heightAt(x - 3, z)) + Math.abs(o.isl!.heightAt(x, z + 3) - o.isl!.heightAt(x, z - 3));
         if (sl > 7) continue;
         trees.push([x, y - 0.3, z, 0.8 + rnd() * 1.1]);
         placed++;
@@ -2531,7 +2630,7 @@ export class Environment {
     this.trees = treeInst;
   }
 
-  _buildLighthouse(parts, x, y, z) {
+  _buildLighthouse(parts: THREE.BufferGeometry[], x: number, y: number, z: number) {
     const bands = ['#f7f4ee', '#ea7f6e', '#f7f4ee', '#ea7f6e', '#f7f4ee'];
     const H = 17, r0 = 2.5, r1 = 1.75;
     parts.push(xf(cyl(3.4, 3.8, 2.2, 14, '#d9d2c4'), x, y + 1.1, z));
@@ -2573,7 +2672,7 @@ export class Environment {
     this.root.add(this.lhBeam);
   }
 
-  _craneGeo(x, y, z, yaw, col) {
+  _craneGeo(x: number, y: number, z: number, yaw: number, col: string) {
     const p = [];
     const W = '#f3f0ea';
     for (const lx of [-9, 9]) for (const lz of [-7, 7]) p.push(xf(box(1.4, 38, 1.4, col), lx, 19, lz));
@@ -2599,14 +2698,14 @@ export class Environment {
     return xf(g, x, y, z, yaw);
   }
 
-  _buildBridge(parts, A, B) {
+  _buildBridge(parts: THREE.BufferGeometry[], A: number[], B: number[]) {
     const ax = A[0], az = A[1], bx = B[0], bz = B[1];
     const L = Math.hypot(bx - ax, bz - az);
     const ux = (bx - ax) / L, uz = (bz - az) / L; // along
     const px = -uz, pz = ux;                         // lateral
     const yaw = Math.atan2(ux, uz);
     const deckY = 32, towerH = 100, col = '#e59c86', cable = '#d98c77';
-    const at = (t, lat, y) => [ax + ux * L * t + px * lat, y, az + uz * L * t + pz * lat];
+    const at = (t: number, lat: number, y: number) => [ax + ux * L * t + px * lat, y, az + uz * L * t + pz * lat];
     const mx = (ax + bx) / 2, mz = (az + bz) / 2;
     parts.push(xf(box(22, 3.2, L + 120, '#d8d3ca'), mx, deckY, mz, yaw));
     parts.push(xf(box(22.5, 1.2, L + 120, col), mx, deckY - 2.1, mz, yaw));
@@ -2631,7 +2730,7 @@ export class Environment {
     for (const t of towers) for (const lat of [-10.5, 10.5]) { const [x, , z] = at(t, lat, 0); parts.push(xf(sph(1.0, 6, 4, '#ff4a3a', 2), x, WATER_Y + towerH + 2, z)); }
   }
 
-  _buildFerris(parts, x, y, z) {
+  _buildFerris(parts: THREE.BufferGeometry[], x: number, y: number, z: number) {
     const R = 24, hubY = y + R + 5;
     const yaw = Math.atan2(-x, -z); // wheel faces the arena
     // static support A-frames + base
@@ -2661,29 +2760,29 @@ export class Environment {
   // Procedural skyline: every building is unique geometry (tiers/setbacks, cornices, podiums, rooftop units, water
   // towers, crowns, spires, slanted tops) merged into one mesh. Attribute 'bld' = (facade style, seed, base y) drives the
   // HZ_CITY facade shader (window rows, mullions, glass reflectance, night lights).
-  _buildCity(city, rnd) {
+  _buildCity(city: Island, rnd: () => number) {
     const U = this.U;
     const F = this._cityFrame;
     const cr = Math.cos(F.rot), sr = Math.sin(F.rot);
     const TX = [cr, sr], TZ = [-sr, cr];            // along-shore / toward the arena
     const ryGrid = -F.rot;
-    const all = [];
+    const all: THREE.BufferGeometry[] = [];
     const PAL = [
       ['#eee4d2', '#d8cab0'], ['#e8c4b0', '#d3a791'], ['#f4f2ed', '#d9d6cf'], ['#eadbb6', '#d3bf94'],
       ['#d4dbe1', '#bac4cc'], ['#dcd4ea', '#c4bad9'], ['#d2e6d8', '#b6d1be'], ['#f1d8d6', '#dcbcba'], ['#e3ddd3', '#c9c0b2'],
     ];
     const GLASS = [['#a9c0d2', '#e6ebef'], ['#a6cbc9', '#e3ecea'], ['#bcc1d8', '#e9eaf1'], ['#b8cfdc', '#eef2f4']];
-    const tag = (g, style, seed, baseY) => {
+    const tag = (g: THREE.BufferGeometry, style: number, seed: number, baseY: number) => {
       const n = g.attributes.position.count, a = new Float32Array(n * 3);
       for (let i = 0; i < n; i++) { a[i * 3] = style; a[i * 3 + 1] = seed; a[i * 3 + 2] = baseY; }
       g.setAttribute('bld', new THREE.BufferAttribute(a, 3));
       return g;
     };
-    const tint = (g, k) => { const c = g.attributes.color.array; for (let i = 0; i < c.length; i++) c[i] *= k; return g; };
+    const tint = (g: THREE.BufferGeometry, k: number) => { const c = g.attributes.color.array; for (let i = 0; i < c.length; i++) c[i] *= k; return g; };
     // building in local space (x along TX, z along TZ), then placed
-    const place = (parts, x, z, ry) => { for (const g of parts) { xf(g, x, 0, z, ry); all.push(g); } };
+    const place = (parts: THREE.BufferGeometry[], x: number, z: number, ry: number) => { for (const g of parts) { xf(g, x, 0, z, ry); all.push(g); } };
 
-    const makeBuilding = (x, z, ry, w, d, h, gy, core) => {
+    const makeBuilding = (x: number, z: number, ry: number, w: number, d: number, h: number, gy: number, core: number) => {
       const P = [];
       const seed = rnd();
       const tall = h > 88, mid = h > 38;
@@ -2691,7 +2790,7 @@ export class Environment {
       const pal = glassy ? GLASS[Math.floor(rnd() * GLASS.length)] : PAL[Math.floor(rnd() * PAL.length)];
       const style = glassy ? (rnd() < 0.8 ? 3 : 4) : tall ? 4 : mid ? [1, 2, 4, 1][Math.floor(rnd() * 4)] : (rnd() < 0.6 ? 1 : 2);
       const k = 0.95 + rnd() * 0.1;
-      const B = (bw, bh, bd, by, hex, st, ox = 0, oz = 0, glow = 0) => { P.push(tag(tint(xf(box(bw, bh, bd, hex, glow), ox, by + bh / 2, oz), k), st, seed, gy)); };
+      const B = (bw: number, bh: number, bd: number, by: number, hex: string, st: number, ox = 0, oz = 0, glow = 0) => { P.push(tag(tint(xf(box(bw, bh, bd, hex, glow), ox, by + bh / 2, oz), k), st, seed, gy)); };
       let y = gy - 0.6, tw = w, td = d, rem = h;
       if (h > 70 && rnd() < 0.5) { const ph = 9 + rnd() * 6; B(w * 1.32, ph, d * 1.3, y, pal[1] === '#e6ebef' ? '#dfe3e6' : pal[0], 2); B(w * 1.36, 0.8, d * 1.34, y + ph - 0.4, pal[1], 0); y += ph; rem -= ph; }
       const tiers = tall && rnd() < 0.8 ? (h > 140 ? 3 : 2) : (mid && rnd() < 0.3 ? 2 : 1);
@@ -2741,7 +2840,7 @@ export class Environment {
       place(P, x, z, ry);
     };
 
-    const roundTower = (x, z, r, h, gy, hex, crownHex) => {
+    const roundTower = (x: number, z: number, r: number, h: number, gy: number, hex: string, crownHex: string) => {
       const seed = rnd();
       const P = [];
       P.push(tag(xf(cyl(r, r, h, 24, hex), 0, gy - 0.6 + h / 2, 0), 5, seed, gy));
@@ -2751,8 +2850,8 @@ export class Environment {
     };
 
     // --- landmarks ---
-    const lm = [];
-    const at = (a, dd) => { const [x, z] = polar(a, dd); return [x, z, city.heightAt(x, z)]; };
+    const lm: number[][] = [];
+    const at = (a: number, dd: number) => { const [x, z] = polar(a, dd); return [x, z, city.heightAt(x, z)]; };
     { // observation needle on the waterfront
       const [x, z, gy] = at(13, 600); const P = []; const sd = rnd();
       P.push(tag(xf(cyl(2.2, 4.2, 128, 12, '#eef0f2'), 0, gy + 64, 0), 0, sd, gy));
@@ -2807,7 +2906,7 @@ export class Environment {
       P.push(tag(xf(sg, 0, gy + 172, 0), 3, sd, gy));
       place(P, x, z, ryGrid); lm.push([x, z, 24]);
     }
-    const nearLandmark = (x, z, r) => lm.some((l) => Math.hypot(l[0] - x, l[1] - z) < l[2] + r);
+    const nearLandmark = (x: number, z: number, r: number) => lm.some((l) => Math.hypot(l[0] - x, l[1] - z) < l[2] + r);
 
     // --- street grid of blocks ---
     const [dcx, dcz] = polar(24, 760);
@@ -2885,14 +2984,14 @@ export class Environment {
     const bGeo = mergeGeometries(bp);
     const bMat = patchScenery(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4 }), U, { waterline: true });
     const b = this.bounds;
-    const buoySpec = [];
+    const buoySpec: Array<Omit<Buoy, 'phase'>> = [];
     const chx = 0.625, chz = -0.781; // channel toward the port
     for (let i = 0; i < 4; i++) {
       const cx = 62 + i * 40 * chx, cz = -70 + i * 40 * chz;
       buoySpec.push({ x: cx - chz * 14, z: cz + chx * 14, col: '#ef6b61', s: 1.1 });
       buoySpec.push({ x: cx + chz * 14, z: cz - chx * 14, col: '#4fb47e', s: 1.1 });
     }
-    for (const [x, z, col] of [[b.maxX + 16, 12, '#ffd463'], [b.minX - 18, -6, '#ffd463'], [8, b.maxZ + 17, '#f7f5f0'], [-14, b.minZ - 16, '#f7f5f0'], [b.maxX + 26, -30, '#ef9d61'], [b.minX - 30, 40, '#ef9d61']]) buoySpec.push({ x, z, col, s: 0.85 });
+    for (const [x, z, col] of <Array<[number, number, string]>>[[b.maxX + 16, 12, '#ffd463'], [b.minX - 18, -6, '#ffd463'], [8, b.maxZ + 17, '#f7f5f0'], [-14, b.minZ - 16, '#f7f5f0'], [b.maxX + 26, -30, '#ef9d61'], [b.minX - 30, 40, '#ef9d61']]) buoySpec.push({ x, z, col, s: 0.85 });
     this.buoys = buoySpec.map((s) => ({ ...s, phase: rnd() * 10 }));
     this.buoyInst = new THREE.InstancedMesh(bGeo, bMat, this.buoys.length);
     this.buoys.forEach((s, i) => this.buoyInst.setColorAt(i, new THREE.Color(s.col)));
@@ -2932,12 +3031,12 @@ export class Environment {
     this.gullInst.frustumCulled = false;
     this.gullInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.root.add(this.gullInst);
-    this._animate(0);
+    this._animate();
   }
 
   // ------------------------------------------------------------------ public API
   // Water surface height at (x, z) (includes the gentle swell). Matches the sea vertex shader.
-  waterHeightAt(x, z, t = this.time) {
+  waterHeightAt(x: number, z: number, t = this.time) {
     let d = 1e5;
     const M = this._marinaData;
     for (const set of M ? [M.decks, M.wet] : [this.footprint]) for (const r of set) {
@@ -2981,7 +3080,7 @@ export class Environment {
 
   // New stage: rebuild everything that hugs the deck (pilings, fenders/ladders, moored boats, foam field) and refit the
   // sun's shadow camera to the new arena bounds.
-  rebuildForArena(bounds, rects) {
+  rebuildForArena(bounds: StageBounds, rects: RectInput[]) {
     this._marina = this._stageMarina();
     this.bounds = { ...bounds };
     this.footprint = (rects && rects.length ? rects : [this.bounds]).map(orect);
@@ -3004,27 +3103,28 @@ export class Environment {
   }
 
   // Replace the deck outline (array of rects, see orect()) → foam/under-deck shading follow. Pilings are built once.
-  setFootprint(rects) {
+  setFootprint(rects: RectInput[]) {
     this.footprint = rects.map(orect);
     this._syncDeckShading();
   }
 
-  setTheme(name) {
-    const T = THEMES[name] || THEMES.day;
+  setTheme(name: string | null) {
+    const key: ThemeName = name && name in THEMES ? (name as ThemeName) : 'day';
+    const T: Theme = THEMES[key];
     const r0 = this.renderer;
-    this.theme = THEMES[name] ? name : 'day';
+    this.theme = key;
     const U = this.U;
     const el = T.sunEl * DEG, az = T.sunAz * DEG;
     U.uSunDir.value.set(Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)).normalize();
     U.uZenith.value.set(T.zenith); U.uSkyMid.value.set(T.skyMid); U.uHorizon.value.set(T.horizon); U.uGround.value.set(T.ground);
     U.uHorizonGlow.value.copy(lin(T.horizonGlow, T.horizonGlowK)); U.uGlowColor.value.set(T.glowColor);
-    U.uGlowParams.value.set(...T.glow);
+    U.uGlowParams.value.fromArray(T.glow);
     U.uHaze.value.set(T.haze[0], T.haze[1], T.haze[2], 0);
     U.uNight.value = T.night;
     U.uSunDisk.value.copy(lin(T.sunDisk, T.sunDiskK));
     U.uSunCos.value = Math.cos(T.sunRadius * DEG);
     U.uCloudLit.value.copy(lin(T.cloudLit, T.cloudLitK)); U.uCloudShade.value.set(T.cloudShade);
-    U.uCloudParams.value.set(...T.cloud);
+    U.uCloudParams.value.fromArray(T.cloud);
     U.uSeaDeep.value.set(T.seaDeep); U.uSeaShallow.value.set(T.seaShallow); U.uSeaCrest.value.set(T.seaCrest); U.uFoamColor.value.set(T.foam);
     // sky / clouds / sea keep the sun strength they were tuned with (skySun) — the key light on the world is balanced on
     // its own (sunIntensity vs hemi + envK) without re-exposing the sky
@@ -3042,7 +3142,7 @@ export class Environment {
     const stageMarina = this._stageMarina();
     if (stageMarina !== this._marina) { this._marina = stageMarina; this._rebuildDock(); }
     // marina look for this light (every theme resolves to a full set, so nothing lingers from the previous one)
-    const MA = { channel: null, shade: null, calm: 0.55, lap: 1.0, caustic: 1.5, wet: 0.5, ...(T.marina || {}) };
+    const MA: { channel: string | null; shade: string | null; calm: number; lap: number; caustic: number; wet: number } = Object.assign({ channel: null, shade: null, calm: 0.55, lap: 1.0, caustic: 1.5, wet: 0.5 }, T.marina || {});
     if (MA.channel) U.uChannelCol.value.set(MA.channel); else U.uChannelCol.value.set(T.seaDeep).multiplyScalar(0.65);
     if (MA.shade) U.uShadeCol.value.set(MA.shade); else U.uShadeCol.value.set(T.seaDeep).multiplyScalar(0.12);
     U.uMarinaK.value.x = MA.calm; U.uMarinaK.value.y = MA.lap; U.uMarinaK.value.z = 0.35;
@@ -3059,7 +3159,7 @@ export class Environment {
     this.hemi.intensity = T.hemiIntensity;
     this.scene.environmentIntensity = T.envK ?? 0.66;
     this.fogColor.copy(U.uHorizon.value).lerp(U.uSkyMid.value, 0.15);
-    if (this.scene.fog && this.scene.fog.isFog) { this.scene.fog.color.copy(this.fogColor); this.scene.fog.near = T.fog[0]; this.scene.fog.far = T.fog[1]; }
+    if (this.scene.fog instanceof THREE.Fog) { this.scene.fog.color.copy(this.fogColor); this.scene.fog.near = T.fog[0]; this.scene.fog.far = T.fog[1]; }
     this.lhBeam.visible = T.night > 0.01;
     this._fitShadow();
     const cc = r0.getClearColor(new THREE.Color()), ca = r0.getClearAlpha();
@@ -3069,13 +3169,13 @@ export class Environment {
     this._bakeFarReflection();
   }
 
-  update(dt, camera) {
+  update(dt: number, camera: THREE.PerspectiveCamera | null) {
     dt = Math.min(dt || 0, 0.1);
     this.time += dt;
     this._frameId++;
     this.U.uTime.value = this.time;
     if (camera) this.sky.position.copy(camera.position);
-    this._animate(dt);
+    this._animate();
   }
 
   _animate() {
@@ -3128,7 +3228,7 @@ export class Environment {
 
   dispose() {
     this.scene.remove(this.root, this.sun, this.sun.target, this.hemi);
-    this.root.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+    this.root.traverse((o) => { if (o instanceof THREE.Mesh) { o.geometry.dispose(); for (const m of [o.material].flat()) m.dispose(); } });
     if (this._envRT) this._envRT.dispose();
     this._cloudRT?.dispose(); this._cloudMat?.dispose();
     this._reflRT?.dispose(); this._farRT?.dispose(); this._stripMat?.dispose(); this._underMat?.dispose();

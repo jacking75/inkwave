@@ -171,7 +171,6 @@ type GpuLimit = 'MAX_VERTEX_UNIFORM_VECTORS' | 'MAX_FRAGMENT_UNIFORM_VECTORS' | 
 type Palette = typeof COLORBLIND_PALETTE;
 type LevelMaterial = ReturnType<typeof createLevelMaterial>;
 // levelMaterial.js의 실제 계약이다(JS 추론은 muralTexture = null 기본값 때문에 null만 받는 것으로 본다).
-type LevelMaterialFactory = (paintTexture: THREE.Texture, atlasSize: number, muralTexture: THREE.Texture | null, opts?: object) => LevelMaterial;
 type BotActor = Actor & { bot?: { update(): void } };
 // hud.js의 JS 추론이 null 기본값·구조 분해 기본값 때문에 좁게 잡는 매개변수를 실제 호출 계약으로 넓힌다.
 type GameHUD = HUD & {
@@ -796,16 +795,16 @@ class Game {
     const level = (G.level = new Level(layoutFor((MAP_LAYOUTS as Lookup<typeof MAP_LAYOUTS>)[layoutId], mode), colliders));
     G.physics = new Physics(level);
     const lightmap = await this._loadLightmap(level, worldKey);
-    G.paint = new PaintSystem(G.renderer, level, { atlasSize: Math.max(512, Math.round(q.paintAtlas * this.memK)), maxDensity: q.paintAtlas >= 4096 ? 30 : 18 });
+    G.paint = new PaintSystem(G.renderer!, level, { atlasSize: Math.max(512, Math.round(q.paintAtlas * this.memK)), maxDensity: q.paintAtlas >= 4096 ? 30 : 18 });
     this.murals.userData.setStage?.(layoutId);   // stage decals (murals.js) before the material reads the table
-    this.levelMat = (createLevelMaterial as LevelMaterialFactory)(G.paint.texture!, G.paint.size, this.murals, { lightmap, texlib: this.texlib });
+    this.levelMat = createLevelMaterial(G.paint.texture!, G.paint.size, this.murals, { lightmap, texlib: this.texlib });
     (this.swimWake || (this.swimWake = new SwimWake())).reset();
     this.levelMesh = new THREE.Mesh(level.buildGeometry(G.paint.size), this.levelMat);
     this.levelMesh.castShadow = true; this.levelMesh.receiveShadow = true;
     this.levelMesh.name = 'level';
     scene.add(this.levelMesh);
     // grates: same surface shader, cut-out holes, no ink (they cast no shadow; the mesh is too fine for the shadow map)
-    this.grateMat = (createLevelMaterial as LevelMaterialFactory)(G.paint.texture!, G.paint.size, this.murals, { grate: true, lightmap, texlib: this.texlib });
+    this.grateMat = createLevelMaterial(G.paint.texture!, G.paint.size, this.murals, { grate: true, lightmap, texlib: this.texlib });
     const gg = level.buildGeometry(G.paint.size, (b) => b.grate);
     this.grateMesh = new THREE.Mesh(gg, this.grateMat);
     this.grateMesh.receiveShadow = true; this.grateMesh.visible = gg.index!.count > 0;

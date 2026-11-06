@@ -27,12 +27,24 @@
 //       'roll' needs `stretch` = the roll direction and paints a straight-edged band segment instead of a blob)
 import * as THREE from 'three';
 import { G } from '../core/ctx.js';
+import type { Level, Face } from './level.js';
+
+// 칠하기 선택: 늘임 방향·양, 무늬 씨앗, 모양 종류, 즉시 그리기, 화면 전용(격자·점수에 안 들어감)
+export interface SplatOptions { stretch?: THREE.Vector3; stretchAmt?: number; seed?: number; kind?: SplatKind; instant?: boolean; cosmetic?: boolean }
+// 화면에서 아직 퍼지는 물방울: entries는 [면, lu, lv, dn, sdu, sdv, sa]를 7개씩 이어 붙인 평면 배열
+interface Growth { entries: Array<Face | number>; R: number; team: number; seed: number; kind: number; age: number; dur: number; dripDur: number; cx: number; cy: number; cz: number }
+// 구역 채움(구역 쟁탈): 살아 있는 칸 번호, 외곽선 [[x, z], …] 여러 개, 높이 범위
+export interface FloodRegion { cells: ArrayLike<number>; polys?: number[][][]; y0?: number; y1?: number }
+export interface FloodOptions { center?: number[]; y?: number; reach?: number; dur?: number; ease?: 'out' | 'linear' }
+interface FloodPrep { geo: THREE.BufferGeometry; poly: Float32Array; part: Int32Array; parts: number; y0: number; y1: number; cx: number; cz: number; order: Int32Array; dist: Float32Array; n: number }
+export interface FloodJob { region: FloodRegion; prep: FloodPrep; team: number; t: number; dur: number; r: number; i: number; reach: number; ease: 'out' | 'linear'; cx: number; cz: number }
 
 const MAX_QUADS = 6000;
 const RIP_N = 24;
 const _rel = new THREE.Vector3();
 
-const K = { shot: 0, line: 1, blast: 2, bomb: 3, trail: 4, drop: 5, roll: 6, speck: 7 };
+const K: Record<string, number> = { shot: 0, line: 1, blast: 2, bomb: 3, trail: 4, drop: 5, roll: 6, speck: 7 };
+type SplatKind = 'shot' | 'line' | 'blast' | 'bomb' | 'trail' | 'drop' | 'roll' | 'speck';
 const K_SHOT = 0, K_LINE = 1, K_BLAST = 2, K_BOMB = 3, K_TRAIL = 4, K_DROP = 5, K_ROLL = 6, K_SPECK = 7;
 // quad half-extent in footprint radii (satellites / spatter reach) and the extra reach below wall splats (drips)
 const REACH = [2.45, 2.1, 2.7, 2.75, 2.3, 1.9, 1.25, 1.35];
@@ -40,7 +52,7 @@ const DRIP_REACH = 3.9;
 
 // Main-blob outline: organic lobes + two narrow "fingers" thrown out by the impact. The GPU splat shader evaluates the
 // identical function (wob), so the gameplay grid and the rendered ink agree on the edge.
-export function blobWobble(ang, seed) {
+export function blobWobble(ang: number, seed: number) {
   return 1 + 0.12 * Math.sin(3 * ang + seed * 6.2831) + 0.08 * Math.sin(5 * ang + seed * 17.0) +
     0.05 * Math.sin(7 * ang + seed * 41.0) + 0.03 * Math.sin(11 * ang + seed * 73.0) + 0.018 * Math.sin(17 * ang + seed * 29.0) +
     0.17 * Math.pow(Math.max(Math.cos(ang - seed * 37.7), 0), 28) + 0.12 * Math.pow(Math.max(Math.cos(ang - seed * 53.3 - 2.1), 0), 36);
@@ -264,32 +276,61 @@ void main() {
 }`;
 
 export class PaintSystem {
-  constructor(renderer, level, { atlasSize = 4096, maxDensity = 30, cell = 0.25 } = {}) {
+  renderer: THREE.WebGLRenderer;
+  level: Level;
+  size: number;
+  cell: number;
+  pad = 8;            // >= 2^maxInkLod texels so mip levels never bleed between faces
+  paintFaces: Face[] = [];
+  ppm = 0;
+  usedHeight = 0;
+  grid = new Uint8Array(0);      // 0 none, 1 team0, 2 team1
+  dead = new Uint8Array(0);      // cells buried inside other geometry
+  turfTotal = 0;
+  turfArea = 0;
+  counts = [0, 0];               // live turf cells per team
+  growing: Growth[] = [];        // splats still spreading / dripping on screen (the gameplay grid is already updated)
+  version = 0;                   // bumps whenever the CPU grid changes (minimap polling)
+  clock = 0;
+  frame = 0;
+  viewPos: THREE.Vector3Like | null = null;   // camera position (setView): ripples far from it are skipped / evicted first
+  // ripple table read by the level shader (inkShading.js): xyz + birth (paint clock) . amp, wavelength, speed, life
+  rip = new Float32Array(RIP_N * 4);
+  ripP = new Float32Array(RIP_N * 4);
+  _ripS = new Float32Array(RIP_N);
+  _dryAcc = 0;
+  _floods: FloodJob[] = [];      // region floods in progress (flood())
+  _floodPrep = new Map<FloodRegion, FloodPrep>();   // region -> its cells sorted by distance from the front's centre + atlas quads
+  _qb: number[] = [];
+  _qr: number[] = [];
+  quads = 0;
+  declare rt: THREE.WebGLRenderTarget;
+  declare texture: THREE.Texture;
+  declare aPos: Float32Array; declare aLocal: Float32Array; declare aSplat: Float32Array; declare aStretch: Float32Array; declare aGrow: Float32Array;
+  declare geo: THREE.BufferGeometry;
+  declare mat: THREE.ShaderMaterial;
+  declare mesh: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  declare scene: THREE.Scene;
+  declare _dryU: { uDry: { value: number } };
+  declare dryMesh: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  declare cam: THREE.OrthographicCamera;
+  declare _floodU: { uPoly: { value: Float32Array }; uPart: { value: Int32Array }; uParts: { value: number }; uY: { value: THREE.Vector2 }; uC: { value: THREE.Vector2 }; uR: { value: THREE.Vector2 }; uTeam: { value: number } };
+  declare _floodInk: THREE.ShaderMaterial;
+  declare _floodWipe: THREE.ShaderMaterial;
+  declare _floodMesh: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  declare _floodScene: THREE.Scene;
+  constructor(renderer: THREE.WebGLRenderer, level: Level, { atlasSize = 4096, maxDensity = 30, cell = 0.25 } = {}) {
     this.renderer = renderer;
     this.level = level;
     this.size = atlasSize;
     this.cell = cell;
-    this.pad = 8;            // ≥ 2^maxInkLod texels so mip levels never bleed between faces
     this._layout(maxDensity);
     this._initGrid();
-    this._q = [];
-    this.growing = [];            // splats still spreading / dripping on screen (the gameplay grid is already updated)
-    this.version = 0;          // bumps whenever the CPU grid changes (minimap polling)
-    this.clock = 0;
-    this.frame = 0;
-    this.viewPos = null;       // camera position (setView) — ripples far from it are skipped / evicted first
-    // ripple table read by the level shader (inkShading.js): xyz + birth (paint clock) · amp, wavelength, speed, life
-    this.rip = new Float32Array(RIP_N * 4);
-    this.ripP = new Float32Array(RIP_N * 4);
-    this._ripS = new Float32Array(RIP_N);
-    this._dryAcc = 0;
-    this._floods = [];         // region floods in progress (flood())
-    this._floodPrep = new Map();   // region → its cells sorted by distance from the front's centre + atlas quads
     this._initGPU();
   }
 
   // ------------------------------------------------------------ atlas layout (shelf packing)
-  _layout(maxDensity) {
+  _layout(maxDensity: number) {
     const faces = this.level.faces.filter((f) => f.paintable);
     this.paintFaces = faces;
     const S = this.size;
@@ -300,9 +341,9 @@ export class PaintSystem {
     }
     this.ppm = ppm;
   }
-  _tryPack(faces, ppm, S) {
+  _tryPack(faces: Face[], ppm: number, S: number) {
     const pad = this.pad;
-    const rects = faces.map((f) => ({ f, w: Math.ceil(f.su * ppm) + pad * 2, h: Math.ceil(f.sv * ppm) + pad * 2 }));
+    const rects = faces.map((f) => ({ f, w: Math.ceil(f.su * ppm) + pad * 2, h: Math.ceil(f.sv * ppm) + pad * 2, x: 0, y: 0 }));
     // rotate nothing; sort by height
     rects.sort((a, b) => b.h - a.h);
     let x = 0, y = 0, rowH = 0;
@@ -363,7 +404,7 @@ export class PaintSystem {
     this.aGrow = new Float32Array(MAX_QUADS * 4 * 4);
     const idx = new Uint32Array(MAX_QUADS * 6);
     for (let i = 0; i < MAX_QUADS; i++) idx.set([i * 4, i * 4 + 1, i * 4 + 2, i * 4, i * 4 + 2, i * 4 + 3], i * 6);
-    const mk = (arr, n) => { const a = new THREE.BufferAttribute(arr, n); a.setUsage(THREE.DynamicDrawUsage); return a; };
+    const mk = (arr: THREE.TypedArray, n: number) => { const a = new THREE.BufferAttribute(arr, n); a.setUsage(THREE.DynamicDrawUsage); return a; };
     g.setAttribute('aPos', mk(this.aPos, 2));
     g.setAttribute('aLocal', mk(this.aLocal, 3));
     g.setAttribute('aSplat', mk(this.aSplat, 4));
@@ -413,7 +454,7 @@ export class PaintSystem {
       uPoly: { value: new Float32Array(FLOOD_MAXV * 2) }, uPart: { value: new Int32Array(FLOOD_MAXP + 1) }, uParts: { value: 0 },
       uY: { value: new THREE.Vector2() }, uC: { value: new THREE.Vector2() }, uR: { value: new THREE.Vector2() }, uTeam: { value: 0 },
     };
-    const fmat = (o) => new THREE.ShaderMaterial({ uniforms: fu, vertexShader: FLOOD_VS, fragmentShader: FLOOD_FS, transparent: true, depthTest: false, depthWrite: false, toneMapped: false, ...o });
+    const fmat = (o: THREE.ShaderMaterialParameters | undefined) => new THREE.ShaderMaterial({ uniforms: fu, vertexShader: FLOOD_VS, fragmentShader: FLOOD_FS, transparent: true, depthTest: false, depthWrite: false, toneMapped: false, ...o });
     this._floodInk = fmat({
       blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendEquationAlpha: THREE.MaxEquation,
       blendSrc: THREE.SrcAlphaFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor,
@@ -439,8 +480,8 @@ export class PaintSystem {
     this.grid.fill(0);
     this.counts[0] = this.counts[1] = 0;
     this.quads = 0;
-    if (this.growing) this.growing.length = 0;
-    if (this.rip) { for (let i = 0; i < RIP_N; i++) { this.rip[i * 4 + 3] = -99; this.ripP[i * 4 + 3] = 0.01; this._ripS[i] = 0; } }
+    this.growing.length = 0;
+    { for (let i = 0; i < RIP_N; i++) { this.rip[i * 4 + 3] = -99; this.ripP[i * 4 + 3] = 0.01; this._ripS[i] = 0; } }
     this._dryAcc = 0;
     this._floods.length = 0;
     for (const p of this._floodPrep.values()) p.geo.dispose();
@@ -449,9 +490,9 @@ export class PaintSystem {
   }
 
   // Camera position for ripple priorities (fxHooks calls it every frame; the vector is kept by reference).
-  setView(pos) { this.viewPos = pos; }
+  setView(pos: THREE.Vector3Like | null) { this.viewPos = pos; }
 
-  _kind(opts, radius, st, sAmt) {
+  _kind(opts: SplatOptions, radius: number, st: THREE.Vector3 | undefined, sAmt: number) {
     if (opts.kind !== undefined) { const k = K[opts.kind]; if (k !== undefined && (k !== K_ROLL || st)) return k; }
     if (st) return sAmt >= 1 ? K_LINE : K_SHOT;
     if (radius >= 1.9) return K_BOMB;
@@ -463,7 +504,7 @@ export class PaintSystem {
   // ------------------------------------------------------------ splat
   // center: Vector3, radius (m), team 0|1, opts: { stretch: Vector3 dir, stretchAmt, seed, kind, instant, cosmetic }
   // Returns the area (m²) newly claimed by `team` (for turf points / special gauge).
-  splat(center, radius, team, opts = {}) {
+  splat(center: THREE.Vector3, radius: number, team: number, opts: SplatOptions = {}) {
     // online: other players' ghost rounds never paint (their owner's splats arrive instead); yours are recorded
     const nm = G.netm;
     if (nm && !opts.cosmetic) {
@@ -478,9 +519,9 @@ export class PaintSystem {
     if (kind === K_ROLL) sAmt = 0;      // the direction orients the band; no smear
     const reachK = REACH[kind];
     const reach = radius * Math.max(3.2, reachK + 1.4 * sAmt + 0.3);
-    const ids = this.level.queryBlocks(center.x - reach, center.z - reach, center.x + reach, center.z + reach, this._qb || (this._qb = []));
+    const ids = this.level.queryBlocks(center.x - reach, center.z - reach, center.x + reach, center.z + reach, this._qb);
     let claimed = 0;
-    const entries = [];
+    const entries: Array<Face | number> = [];
     let wall = false;
     for (const bid of ids) {
       const b = this.level.blocks[bid];
@@ -525,7 +566,7 @@ export class PaintSystem {
         }
       }
       const drips = wall && kind !== K_SPECK && kind !== K_ROLL ? 1 : 0;
-      const g = {
+      const g: Growth = {
         entries, R: radius, team, seed, kind, age: 0,
         // the body floods out in ≈ 0.1–0.3 s (bigger = heavier), droplets land up to ~1.3× that later; drips run on
         dur: kind === K_SPECK ? 0.05 : 0.085 + Math.min(0.22, radius * 0.075),
@@ -544,12 +585,12 @@ export class PaintSystem {
   }
 
   // Cosmetic micro-splat where a flying droplet lands: GPU only (finer than the gameplay grid, never claims turf).
-  speck(center, radius, team, seed = Math.random()) {
+  speck(center: THREE.Vector3, radius: number, team: number, seed = Math.random()) {
     return this.splat(center, Math.min(radius, 0.12), team, { seed, kind: 'speck', cosmetic: true });
   }
 
   // A ripple of at least this size already started nearby within the last ~0.16 s?
-  _rippledNear(pos, radius) {
+  _rippledNear(pos: THREE.Vector3Like, radius: number) {
     const R = this.rip, P = this.ripP, reach = 0.55 + radius * 0.6;
     for (let i = 0; i < RIP_N; i++) {
       const o = i * 4, age = this.clock - R[o + 3];
@@ -562,7 +603,7 @@ export class PaintSystem {
 
   // A ripple across the ink surface at pos (only visible where there is ink). amp in metres (≈ 0.003–0.015),
   // wavelength in metres, speed m/s, life s. Keeps the RIP_N most important live ripples (size × nearness × life left).
-  ripple(pos, amp = 0.006, wavelength = 0.14, speed = 1.2, life = 0.7) {
+  ripple(pos: THREE.Vector3, amp = 0.006, wavelength = 0.14, speed = 1.2, life = 0.7) {
     let d2 = 0;
     const vp = this.viewPos;
     if (vp) {
@@ -589,11 +630,11 @@ export class PaintSystem {
   // Draw one growth step of a splat. tn = age / spread time (the body spreads over [0,1], droplets + spatter land up to
   // ≈ 1.7), dT = drip progress 0..1, dripOnly = the body is done: redraw only the running drips on walls. The atlas
   // alpha is max-blended and the colour "over" blended with the same shape, so redrawing every frame is idempotent.
-  _emitGrowth(g, tn, dT, dripOnly) {
+  _emitGrowth(g: Growth, tn: number, dT: number, dripOnly: boolean) {
     const E = g.entries, R = g.R, kind = g.kind;
     const reachK = REACH[kind];
     for (let i = 0; i < E.length; i += 7) {
-      const f = E[i], lu = E[i + 1], lv = E[i + 2], dn = E[i + 3], sdu = E[i + 4], sdv = E[i + 5], sa = E[i + 6];
+      const f = E[i] as Face, lu = E[i + 1] as number, lv = E[i + 2] as number, dn = E[i + 3] as number, sdu = E[i + 4] as number, sdv = E[i + 5] as number, sa = E[i + 6] as number;
       if (dn >= R) continue;
       const rr = Math.sqrt(R * R - dn * dn);
       if (dripOnly) {
@@ -607,7 +648,7 @@ export class PaintSystem {
     }
   }
 
-  _cpuSplat(f, lu, lv, r, team, seed, sdu, sdv, sa, kind) {
+  _cpuSplat(f: Face, lu: number, lv: number, r: number, team: number, seed: number, sdu: number, sdv: number, sa: number, kind: number) {
     if (r <= 0.02) return 0;
     const val = team + 1;
     const roll = kind === K_ROLL;
@@ -650,9 +691,9 @@ export class PaintSystem {
     return claimed;
   }
 
-  _pushQuad(f, u0, u1, v0, v1, lu, lv, dn, R, team, seed, kind, sdu, sdv, sa, tn, dT, dripOnly) {
+  _pushQuad(f: Face, u0: number, u1: number, v0: number, v1: number, lu: number, lv: number, dn: number, R: number, team: number, seed: number, kind: number, sdu: number, sdv: number, sa: number, tn: number, dT: number, dripOnly: number) {
     if (this.quads >= MAX_QUADS) this._drawQuads();
-    const a = f.atlas, S = this.size;
+    const a = f.atlas!, S = this.size;   // (splat·emit만 부른다: 아틀라스가 있는 면)
     const padM = (a.pad - 0.5) / a.ppm;
     u0 = Math.max(-padM, u0); u1 = Math.min(f.su + padM, u1);
     v0 = Math.max(-padM, v0); v1 = Math.min(f.sv + padM, v1);
@@ -714,13 +755,13 @@ export class PaintSystem {
   // picked with (inside an outline, y0 ≤ y ≤ y1), and the gameplay grid, the coverage counts and `version` (→ the
   // minimap) change with it as the front passes each cell, so what you see and what you swim in agree. Nobody is
   // credited: no turf points, no special gauge. A new flood of a region replaces one still running there.
-  flood(region, team, opts = {}) {
+  flood(region: FloodRegion, team: number, opts: FloodOptions = {}): FloodJob | null {
     if (!region || !region.cells || !region.cells.length) return null;
     const c = opts.center || [0, 0];
     const P = this._floodPrepFor(region, c[0], c[1]);
     for (let k = this._floods.length - 1; k >= 0; k--) if (this._floods[k].region === region) this._floods.splice(k, 1);
-    const J = {
-      region, prep: P, team: team === 0 || team === 1 ? team : -1, t: 0, dur: Math.max(0, +opts.dur || 0), r: -1, i: 0,
+    const J: FloodJob = {
+      region, prep: P, team: team === 0 || team === 1 ? team : -1, t: 0, dur: Math.max(0, +(opts.dur || 0)), r: -1, i: 0,
       reach: Math.max(0.1, opts.reach ?? (P.n ? P.dist[P.n - 1] + 0.2 : 1)), ease: opts.ease === 'linear' ? 'linear' : 'out', cx: c[0], cz: c[1],
     };
     if (opts.dur == null) J.dur = 0.5;
@@ -731,12 +772,12 @@ export class PaintSystem {
   }
 
   // a region's cells (live turf only) sorted by distance from the front's centre, plus its atlas quads + outlines
-  _floodPrepFor(region, cx, cz) {
+  _floodPrepFor(region: FloodRegion, cx: number, cz: number): FloodPrep {
     let P = this._floodPrep.get(region);
     if (P && P.cx === cx && P.cz === cz) return P;
     const faces = this.paintFaces, cells = region.cells;
-    const faceOf = (k) => { let a = 0, b = faces.length - 1; while (a < b) { const m = (a + b + 1) >> 1; if (faces[m].grid <= k) a = m; else b = m - 1; } return faces[a]; };
-    const ids = [], ds = [], box = new Map();
+    const faceOf = (k: number) => { let a = 0, b = faces.length - 1; while (a < b) { const m = (a + b + 1) >> 1; if (faces[m].grid <= k) a = m; else b = m - 1; } return faces[a]; };
+    const ids: number[] = [], ds: number[] = [], box = new Map<Face, number[]>();
     for (let n = 0; n < cells.length; n++) {
       const k = cells[n], f = faceOf(k);
       if (!f || !f.atlas || k < f.grid || k >= f.grid + f.nu * f.nv) continue;
@@ -752,9 +793,9 @@ export class PaintSystem {
     if (!P) {
       // one quad per face: the region's cell bounds on it + a cell (the outline can run up to half a cell past them),
       // clamped to the face's atlas rect incl. its padding (like a splat)
-      const pos = [], w = [], index = [], S = this.size;
+      const pos: number[] = [], w: number[] = [], index: number[] = [], S = this.size;
       for (const [f, b] of box) {
-        const a = f.atlas, padM = (a.pad - 0.5) / a.ppm;
+        const a = f.atlas!, padM = (a.pad - 0.5) / a.ppm;
         const u0 = Math.max(-padM, (b[0] - 1) * f.cu), u1 = Math.min(f.su + padM, (b[1] + 2) * f.cu);
         const v0 = Math.max(-padM, (b[2] - 1) * f.cv), v1 = Math.min(f.sv + padM, (b[3] + 2) * f.cv);
         const base = pos.length / 2;
@@ -779,7 +820,7 @@ export class PaintSystem {
         for (const [x, z] of p) { poly[nv * 2] = x; poly[nv * 2 + 1] = z; nv++; }
       }
       part[np] = nv;
-      P = { geo, poly, part, parts: np, y0: region.y0 ?? -2, y1: region.y1 ?? 6 };
+      P = { geo, poly, part, parts: np, y0: region.y0 ?? -2, y1: region.y1 ?? 6, cx: NaN, cz: NaN, order: new Int32Array(0), dist: new Float32Array(0), n: 0 };
       this._floodPrep.set(region, P);
     }
     P.cx = cx; P.cz = cz;
@@ -805,7 +846,7 @@ export class PaintSystem {
   }
 
   // advance every front: flip the cells it reached (grid + counts), then draw the band it crossed into the atlas
-  _floodStep(dt) {
+  _floodStep(dt: number) {
     const r = this.renderer, prev = r.getRenderTarget(), ac = r.autoClear, U = this._floodU;
     r.autoClear = false;
     r.setRenderTarget(this.rt);
@@ -846,7 +887,7 @@ export class PaintSystem {
     const g = this.geo, n = this.quads * 4;
     if (n) {
       for (const name of ['aPos', 'aLocal', 'aSplat', 'aStretch', 'aGrow']) {
-        const at = g.attributes[name];
+        const at = g.attributes[name] as THREE.BufferAttribute;
         at.clearUpdateRanges(); at.addUpdateRange(0, n * at.itemSize); at.needsUpdate = true;
       }
     }
@@ -866,7 +907,7 @@ export class PaintSystem {
 
   // ------------------------------------------------------------ queries
   // Team at face-local (u,v): 0 none, 1 = team0, 2 = team1
-  sample(faceId, u, v) {
+  sample(faceId: number, u: number, v: number) {
     if (faceId < 0) return 0;
     const f = this.level.faces[faceId];
     if (!f || !f.atlas) return 0;   // (a face id from a stage being swapped in under a still-running match)
@@ -876,7 +917,7 @@ export class PaintSystem {
   }
 
   // Team at a world point lying on face faceId.
-  sampleWorld(faceId, p) {
+  sampleWorld(faceId: number, p: THREE.Vector3Like) {
     if (faceId < 0) return 0;
     const f = this.level.faces[faceId];
     _rel.copy(p).sub(f.origin);
@@ -889,9 +930,9 @@ export class PaintSystem {
   }
 
   // Fractions of turf cells within radius of (x, z) near height y: { own, enemy, empty } relative to `team`.
-  regionStats(x, y, z, radius, team, out = { own: 0, enemy: 0, empty: 0, n: 0 }) {
+  regionStats(x: number, y: number, z: number, radius: number, team: number, out = { own: 0, enemy: 0, empty: 0, n: 0 }) {
     out.own = out.enemy = out.empty = out.n = 0;
-    const ids = this.level.queryBlocks(x - radius, z - radius, x + radius, z + radius, this._qr || (this._qr = []));
+    const ids = this.level.queryBlocks(x - radius, z - radius, x + radius, z + radius, this._qr);
     const own = team + 1;
     for (const bid of ids) {
       const b = this.level.blocks[bid];

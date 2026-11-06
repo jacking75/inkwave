@@ -25,7 +25,7 @@ type Quality = ReturnType<typeof rendererQuality>;
 // 환경 테마가 권하는 색 보정(environment.js THEMES[*].grade)이다.
 interface ThemeGrade {
   uSat?: number; uVib?: number; uContrast?: number; uLift?: number; uVignette?: number; uExposure?: number;
-  uShadowTint?: [number, number, number]; uHighTint?: [number, number, number]; bloom?: [number, number, number];
+  uShadowTint?: number[]; uHighTint?: number[]; bloom?: number[];
 }
 type GradeKey = 'uSat' | 'uVib' | 'uContrast' | 'uLift' | 'uVignette' | 'uExposure';
 
@@ -344,8 +344,8 @@ export class Renderer {
       this._gradeSrc = gr;
       const u = this.grade.uniforms;
       for (const k of ['uSat', 'uVib', 'uContrast', 'uLift', 'uVignette', 'uExposure'] as GradeKey[]) u[k].value = gr[k] ?? GradeShader.uniforms[k].value;
-      u.uShadowTint.value.set(...(gr.uShadowTint || [0.975, 0.99, 1.035]));
-      u.uHighTint.value.set(...(gr.uHighTint || [1.025, 1.0, 0.972]));
+      u.uShadowTint.value.fromArray(gr.uShadowTint || [0.975, 0.99, 1.035]);
+      u.uHighTint.value.fromArray(gr.uHighTint || [1.025, 1.0, 0.972]);
       // bloom per theme: [strength, radius, threshold] — dusk lets lamps / lit windows bloom, daylight keeps it to the sun
       const bl = gr.bloom || BLOOM;
       if (this.bloom) { this.bloom.strength = bl[0]; this.bloom.radius = bl[1]; this.bloom.threshold = bl[2]; }

@@ -16,6 +16,8 @@
     "test:client": "tsc -p tsconfig.client-tools.json && node .tools/test.js",
     "verify": "npm run typecheck && npm run check && npm run test:client && npm run build",
     "package": "tauri build",
+    "android:init": "tauri android init --ci",
+    "android:build": "tauri android build --debug --apk --target aarch64",
     "music": "node build/music-manifest.mjs",
     "bake": "electron build/bake-ao.cjs",
     "check-maps": "npm run compile && node build/check-maps.mjs",

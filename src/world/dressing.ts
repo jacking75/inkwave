@@ -6,7 +6,9 @@ import { STAGES } from './stages/index.js';
 
 const P = Math.PI;
 
-export const DRESSING = {
+// 소품 배치 한 줄(props.js PropKit.add가 읽는다). 반쪽 목록은 원점 대칭으로 두 번 놓인다(mirror false면 한 번)
+export interface Placement { type: string; pos: number[]; rotY?: number; mirror?: boolean; team?: number; onlyIn?: string; notIn?: string; [k: string]: unknown }
+export const DRESSING: Record<string, Placement[]> = {
   halyard: [
     // owner: docks stream (src/world/props-marina-dock.js). Alpha half; every entry is mirrored (x,z → -x,-z).
     // ---- pier edges: `pieredge` runs start on the deck edge and run along local +X with the water on local +Z.
@@ -112,13 +114,13 @@ export const DRESSING = {
 };
 
 // stage packs that own their own placement lists
-const EXTRA = { halyard: HALYARD_VESSELS };
+const EXTRA: Record<string, Placement[]> = { halyard: HALYARD_VESSELS };
 for (const [id, st] of Object.entries(STAGES)) if (st.PLACEMENTS) EXTRA[id] = st.PLACEMENTS;
 
 // Expand the half-list into world placements for both halves.
-export function dressingFor(layoutId) {
+export function dressingFor(layoutId: string): Placement[] {
   const src = [...(DRESSING[layoutId] || []), ...(EXTRA[layoutId] || [])];
-  const out = [];
+  const out: Placement[] = [];
   for (const it of src) {
     out.push(it);
     if (it.mirror === false) continue;

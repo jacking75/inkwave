@@ -1331,7 +1331,7 @@ float texlibCoverage(float a, vec2 uv, float texSize) {
 // Library construction
 // ---------------------------------------------------------------------------------------------------------------
 
-export interface TextureLibraryMeta { scale: number; tint: boolean; mask: boolean; stair: unknown; alpha: boolean; mode: number; sym: number; detail: number; depth: number }
+export interface TextureLibraryMeta { scale: number; tint: boolean; mask: boolean; stair: number[] | null; alpha: boolean; mode: number; sym: number; detail: number; depth: number }
 export interface TextureLibrary {
   albedo: THREE.Texture; normal: THREE.Texture; orm: THREE.Texture;
   layers: Record<string, number>; meta: Record<string, TextureLibraryMeta>; names: string[]; size: number;

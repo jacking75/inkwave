@@ -1,9 +1,10 @@
 // Level surface material: MeshPhysicalMaterial + injected procedural surface patterns and the wet ink layer.
 import * as THREE from 'three';
 import { STAGE_SURFACES, FIRST_STAGE_SLOT, LAST_STAGE_SLOT } from './stages/surfaces.js';
-import { TEXLIB_GLSL } from './texlib.js';
+import { TEXLIB_GLSL, type TextureLibrary } from './texlib.js';
+import type { Level } from './level.js';
 import { G } from '../core/ctx.js';
-import { inkUniforms, inkBeforeRender, INK_PARS, INK_COLOR, INK_ROUGH, INK_GEL, INK_SLOPE, INK_EMISSIVE, INK_LIGHTS, INK_LIGHT_MAPS, INK_SHADE } from './inkShading.js';
+import { inkUniforms, inkBeforeRender, type InkRippleSource, INK_PARS, INK_COLOR, INK_ROUGH, INK_GEL, INK_SLOPE, INK_EMISSIVE, INK_LIGHTS, INK_LIGHT_MAPS, INK_SHADE } from './inkShading.js';
 
 // Street lamps light the deck at dusk: each bulb is a real punctual light through the material's own BRDF (diffuse +
 // the ink's wet coat, so fresh ink glints under a lamp), windowed to a few metres and culled per pixel in world space
@@ -25,23 +26,27 @@ for (int i = 0; i < ${MAX_LAMPS}; i++) {
 
 // Bulb positions of the stage's street lamps (same placement rule as decor.js _buildLamps: mirrored pairs, the arm
 // reaching 0.92 m toward the arena centre, bulb 4.9 m up) → uniforms; k = environment night factor (0 = off).
-export function setLevelLamps(mat, level, k = 0) {
+export function setLevelLamps(mat: THREE.MeshPhysicalMaterial, level: Level | null, k = 0) {
   const u = mat && mat.userData && mat.userData.uniforms;
   if (!u || !u.uLamps) return;
   const L = (level && level.layout && level.layout.decor && level.layout.decor.lamps) || [];
-  const pts = k > 0.01 ? [...L, ...L.map(([x, z]) => [-x, -z])].slice(0, MAX_LAMPS) : [];
-  pts.forEach(([x, z], i) => u.uLamps.value[i].set(x + 0.92 * (x > 0 ? -1 : 1), Math.max(0, level.groundHeight(x, z)) + 4.9, z));
+  const pts = level && k > 0.01 ? [...L, ...L.map(([x, z]) => [-x, -z])].slice(0, MAX_LAMPS) : [];
+  pts.forEach(([x, z], i) => u.uLamps.value[i].set(x + 0.92 * (x > 0 ? -1 : 1), Math.max(0, level!.groundHeight(x, z)) + 4.9, z));
   u.uLampN.value = pts.length;
   u.uLampCol.value.set(LAMP_HEX).multiplyScalar(LAMP_I * k);
 }
 
-export function createLevelMaterial(paintTexture, atlasSize, muralTexture = null, opts = {}) {
+// 레벨 재질 선택: 굽힌 조명·도색 밀도·텍스처 라이브러리·도색 원본(기본 G.paint)·격자 재질
+export interface LevelMaterialOptions { lightmap?: THREE.Texture | null; ppm?: number; texlib?: TextureLibrary | null; paint?: (InkRippleSource & { texture: THREE.Texture | null; ppm: number }) | null; grate?: boolean }
+type MuralRow = { rect: number[]; place: number[]; fx?: number[] };
+
+export function createLevelMaterial(paintTexture: THREE.Texture | null, atlasSize: number, muralTexture: THREE.Texture | null = null, opts: LevelMaterialOptions = {}) {
   const mat = new THREE.MeshPhysicalMaterial({
     color: 0xffffff, vertexColors: true, roughness: 0.82, metalness: 0.0,
     clearcoat: 1.0, clearcoatRoughness: 0.08,
     envMapIntensity: 0.9,
   });
-  const uniforms = {
+  const base = {
     uPaint: { value: paintTexture },
     uTexel: { value: 1 / atlasSize },
     uTeamA: { value: new THREE.Color('#ff8a14') },
@@ -69,6 +74,11 @@ export function createLevelMaterial(paintTexture, atlasSize, muralTexture = null
     uSwimH: { value: Array.from({ length: 4 }, () => new THREE.Vector4(0, -999, 0, 0)) },
     uSwimF: { value: Array.from({ length: 4 }, () => new THREE.Vector4(0, 0, 1, 0)) },
   };
+  // 텍스처 라이브러리가 있을 때만 붙는 표와 벽화 표
+  const uniforms: typeof base & {
+    tAlbedo?: { value: THREE.Texture }; tNormal?: { value: THREE.Texture }; tOrm?: { value: THREE.Texture }; uTexSize?: { value: number }; uTLTex?: { value: THREE.DataTexture };
+    uMurA?: { value: THREE.Vector4[] }; uMurB?: { value: THREE.Vector4[] }; uMurC?: { value: THREE.Vector2[] };
+  } = base;
   // Texture library: one slot per PATTERN id (maps.js) → uTL (layer, 1/scale, anti-tiling mode, sym) and uTLt (tint
   // mode, normal strength, slot used on vertical faces, slot used on top faces). Tint mode 0 = own colours, 1 = albedo x
   // block colour, 2 = premultiplied paint mask (albedo.rgb + block colour x albedo.a x 1.25, see texlib 'mask').
@@ -86,8 +96,8 @@ export function createLevelMaterial(paintTexture, atlasSize, muralTexture = null
     const SIDE = map.length - 1;
     // ramp / asphalt / yard sides → concrete; car-deck edge → hull plating; stair / ramp sides → steel stringer plating,
     // rendered cheek wall, timber skirting, painted steel
-    const onWall = { 4: SIDE, 10: SIDE, 21: SIDE, 19: 18, 24: 18, 25: 23, 26: 17, 27: 11 };
-    const onTop = { 20: 17 };                                  // gelcoat hulls get a planked deck on top
+    const onWall: Record<number, number> = { 4: SIDE, 10: SIDE, 21: SIDE, 19: 18, 24: 18, 25: 23, 26: 17, 27: 11 };
+    const onTop: Record<number, number> = { 20: 17 };                                  // gelcoat hulls get a planked deck on top
     for (const s of STAGE_SURFACES) { if (s.onWall != null) onWall[s.slot] = s.onWall; if (s.onTop != null) onTop[s.slot] = s.onTop; }
     uniforms.tAlbedo = { value: lib.albedo };
     uniforms.tNormal = { value: lib.normal };
@@ -125,10 +135,10 @@ export function createLevelMaterial(paintTexture, atlasSize, muralTexture = null
   // (metres), weathering. Without a table: the original four 8:1 strips.
   {
     const MUR = 12;
-    const rows = (muralTexture && muralTexture.userData && muralTexture.userData.murals) || [0, 1, 2, 3].map((id) => ({ rect: [0, 1, (3 - id) / 4, 1 / 4], place: [0, -8, 0, 0] }));
-    uniforms.uMurA = { value: Array.from({ length: MUR }, (_, i) => new THREE.Vector4(...((rows[i] && rows[i].rect) || [0, 1, 0, 0.25]))) };
-    uniforms.uMurB = { value: Array.from({ length: MUR }, (_, i) => new THREE.Vector4(...((rows[i] && rows[i].place) || [0, -8, 0, 0]))) };
-    uniforms.uMurC = { value: Array.from({ length: MUR }, (_, i) => new THREE.Vector2(...((rows[i] && rows[i].fx) || [0, 0]))) };
+    const rows: MuralRow[] = (muralTexture && muralTexture.userData && muralTexture.userData.murals) || [0, 1, 2, 3].map((id): MuralRow => ({ rect: [0, 1, (3 - id) / 4, 1 / 4], place: [0, -8, 0, 0] }));
+    uniforms.uMurA = { value: Array.from({ length: MUR }, (_, i) => new THREE.Vector4().fromArray((rows[i] && rows[i].rect) || [0, 1, 0, 0.25])) };
+    uniforms.uMurB = { value: Array.from({ length: MUR }, (_, i) => new THREE.Vector4().fromArray((rows[i] && rows[i].place) || [0, -8, 0, 0])) };
+    uniforms.uMurC = { value: Array.from({ length: MUR }, (_, i) => new THREE.Vector2().fromArray((rows[i] && rows[i].fx) || [0, 0])) };
   }
   mat.userData.uniforms = uniforms;
   // see-through window: feet height of the local player + whether this draw is multisampled (main.js drives the rest)

@@ -6,6 +6,11 @@ edition = "2021"
 rust-version = "1.89"
 license = "MIT"
 
+# Android(모바일 셸)는 공유 라이브러리로, 데스크톱은 같은 라이브러리를 실행 파일이 부른다
+[lib]
+name = "inkwave_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "=2.6.3", features = [] }
 

@@ -84,7 +84,7 @@ export class DeviceSet {
     const errs = validateDevices(defs);
     if (errs.length) throw new Error('[devices] ' + errs.join('; '));
     this.scene = scene; this.team = team; this.player = player; this.enemies = enemies;
-    this.group = new THREE.Group(); this.group.name = 'campaign-devices';
+    this.group = new THREE.Group(); this.group.name = 'campaign-action-devices';
     scene.add(this.group);
     this.fountains = []; this.barrels = []; this.switches = [];
     const color = new THREE.Color(G.teamHex?.[team] ?? '#ff8a14');

@@ -2,7 +2,10 @@
 import * as THREE from 'three';
 
 export class Character {
-  constructor({ color }) {
+  declare body: THREE.Mesh<THREE.CapsuleGeometry, THREE.MeshStandardMaterial>;
+  declare mat: THREE.MeshStandardMaterial;
+  declare root: THREE.Group;
+  constructor({ color }: { color: THREE.ColorRepresentation }) {
     this.root = new THREE.Group();
     this.mat = new THREE.MeshStandardMaterial({ color });
     const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.33, 0.8, 6, 12), this.mat);
@@ -10,14 +13,14 @@ export class Character {
     this.root.add(body);
     this.body = body;
   }
-  setColor(c) { this.mat.color.copy(c); }
+  setColor(c: THREE.Color) { this.mat.color.copy(c); }
   setWeapon() {}
-  update(dt, s) { this.body.scale.y = s.form === 'kid' ? 1 : 0.4; this.body.position.y = s.form === 'kid' ? 0.73 : 0.3; }
+  update(_dt: number, s: { form: string }) { this.body.scale.y = s.form === 'kid' ? 1 : 0.4; this.body.position.y = s.form === 'kid' ? 0.73 : 0.3; }
   trigger() {}
   setDance() {}
   setHurt() {}
-  setVisible(v) { this.root.visible = v; }
-  getMuzzle(out) { return this.root.localToWorld(out.set(0.2, 1.0, 0.5)); }
+  setVisible(v: boolean) { this.root.visible = v; }
+  getMuzzle(out: THREE.Vector3) { return this.root.localToWorld(out.set(0.2, 1.0, 0.5)); }
   dispose() {}
 }
 
@@ -26,7 +29,10 @@ export class FX {
 }
 
 export class Environment {
-  constructor(renderer, scene) {
+  declare envMap: null;
+  declare hemi: THREE.HemisphereLight;
+  declare sun: THREE.DirectionalLight;
+  constructor(_renderer: THREE.WebGLRenderer, scene: THREE.Scene) {
     scene.background = new THREE.Color('#9fd8f0');
     this.sun = new THREE.DirectionalLight(0xfff3e0, 2.6);
     this.sun.position.set(-30, 50, -20); this.sun.castShadow = true;

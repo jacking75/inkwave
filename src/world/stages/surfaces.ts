@@ -12,9 +12,9 @@ import * as cargo from './cargo/surfaces.js';
 
 type StageId = 'tidewater' | 'kelpline' | 'saltpan' | 'crossmarket' | 'lockgate' | 'terraces' | 'cargo';
 // 텍스처 라이브러리 재질 본문(texlib의 층 정의에서 이름·묶음을 뺀 것)
-export interface StageTexMaterial { detail: number; scale: number; tint: boolean; alpha: boolean; mode: number; sym: number; hr: number[]; ao: number; prep: string; surf: string; mask?: boolean; stair?: unknown }
-export interface StageSurfaceDef { slot: number; name: string; mat: StageTexMaterial; onWall?: unknown; onTop?: unknown }
-export interface StageSurface { stage: StageId; slot: number; name: string; group: number; mat: StageTexMaterial; onWall: unknown; onTop: unknown }
+export interface StageTexMaterial { detail: number; scale: number; tint: boolean; alpha: boolean; mode: number; sym: number; hr: number[]; ao: number; prep: string; surf: string; mask?: boolean; stair?: number[] }
+export interface StageSurfaceDef { slot: number; name: string; mat: StageTexMaterial; onWall?: number; onTop?: number }
+export interface StageSurface { stage: StageId; slot: number; name: string; group: number; mat: StageTexMaterial; onWall?: number; onTop?: number }
 const PACKS: Record<StageId, { SURFACES?: readonly StageSurfaceDef[] }> = { tidewater, kelpline, saltpan, crossmarket, lockgate, terraces, cargo };
 export const STAGE_SLOTS: Record<StageId, number[]> = { tidewater: [28, 29, 30], kelpline: [31, 32, 33], saltpan: [34, 35, 36], crossmarket: [37, 38, 39], lockgate: [40, 41, 42], terraces: [43, 44, 45], cargo: [46, 47, 48] };
 export const FIRST_STAGE_SLOT = 28, LAST_STAGE_SLOT = 48;
