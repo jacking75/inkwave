@@ -288,7 +288,7 @@ export class Match {
   _judge() {
     if (this.zones) {
       const Z = this.zones;
-      this.result = { mode: 'zones', coverage: G.paint!.coverage(), winner: Z.winner ?? (Math.random() < 0.5 ? 0 : 1), reason: Z.reason,
+      this.result = { mode: 'zones', coverage: G.paint!.coverage(), winner: Z.winner ?? (Math.random() < 0.5 ? 0 : 1), reason: Z.reason ?? undefined,
         counts: [Math.ceil(Z.count[0]), Math.ceil(Z.count[1])], penalty: [...Z.penalty], overtime: Z.overtime, log: Z.log };
       G.netm?.sendResult(this.result);        // online: every client shows the host's result
       this.setState('judge');

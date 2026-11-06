@@ -23,16 +23,17 @@
 // bounce in each team's colour, string-bulb top light, a hemisphere for the blue-hour sky.
 // Draw calls: everything static is merged per material (surface, lit glass, neon, emitters) — see stats().
 import * as THREE from 'three';
+import type { TextureLibrary } from '../world/texlib.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { SetBuilder, mat4, PAINT, fireEscape, drainPipe, windowUnit, acUnit, shutter, dumpster, vending, woodCrate, milkCrate, speakerStack, cone, bike, trashBag, catenary, decalQuad } from './lobbySet-geo.js';
 import { makeUniforms, surfaceMaterial, groundMaterial, litMaterial, neonMaterial, haloMaterial, glowMaterial, emitMaterial, skyMaterial, skylineMaterial, steamMaterial, hazeMaterial, SLOT } from './lobbySet-mats.js';
 import { createDecalAtlas, createLitAtlas, createGroundMask, createSkyline, neonText, neonSquid, neonHalo, DECAL, LIT, GROUND_RECT, loadSetFonts } from './lobbySet-tex.js';
 
-const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const V = (x?: number, y?: number, z?: number) => new THREE.Vector3(x, y, z);
 // update() temporaries (it never allocates)
 const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
 const HEADLIGHT = new THREE.Color('#fff1d8');
-const S = (slot, grime = 0.3, rough = 1, metal = 0) => [slot, grime, rough, metal];
+const S = (slot: number, grime = 0.3, rough = 1, metal = 0) => [slot, grime, rough, metal];
 
 // ------------------------------------------------------------------------------------------------ layout (metres)
 export const ALLEY = {
@@ -45,22 +46,88 @@ const CAM = { pos: V(-2.45, 2.25, 10.4), target: V(-0.95, 1.2, -1.7), fov: 32, n
 // Marks are placed by camera BEARING (degrees right of -Z from the hero camera) + depth z, so the rivals land in the
 // on-screen gaps between the front row's heads (world-x gaps are not screen gaps from a camera left of the line-up).
 // front = your team (0 = you, front and centre), back = rivals on the dock.
-const bear = ([deg, z]) => [CAM.pos.x + (CAM.pos.z - z) * Math.tan((deg * Math.PI) / 180), z];
+const bear = ([deg, z]: number[]) => [CAM.pos.x + (CAM.pos.z - z) * Math.tan((deg * Math.PI) / 180), z];
 const FRONT = [[16.4, 0.35], [10.6, 0.05], [22.2, 0.05], [4.8, -0.35]].map(bear);
 const BACK = [[13.3, -2.6], [7.6, -2.75], [18.9, -2.6], [24.2, -2.4]].map(bear);
-const faceCam = (x, z, k = 0.72) => Math.atan2(CAM.pos.x - x, CAM.pos.z - z) * k;
+const faceCam = (x: number, z: number, k = 0.72) => Math.atan2(CAM.pos.x - x, CAM.pos.z - z) * k;
 
-const QUALITY = {
+const QUALITY: Record<string, { refl: number; shadow: number; steam: boolean; extraLights: boolean } | undefined> = {
   high: { refl: 0.5, shadow: 2048, steam: true, extraLights: true },
   medium: { refl: 0.34, shadow: 1536, steam: true, extraLights: true },
   low: { refl: 0, shadow: 1024, steam: false, extraLights: false },
 };
 
+/** 전구 줄: 양 끝, 처짐, 전구 수 */
+interface BulbString { a: THREE.Vector3; b: THREE.Vector3; sag: number; n: number }
+/** 빛 판 하나: 위치, 색(밝기 곱), 크기, 전구면 줄·번호, 기본 밝기 */
+interface Glow { pos: THREE.Vector3; color: THREE.Color; r: number; tag?: { bulb: number; s: BulbString; k: number }; base: number }
+/** 세트 조명 */
+interface SetLights { key: THREE.SpotLight; spill: THREE.SpotLight; rim: THREE.SpotLight; sweep: THREE.SpotLight; neonA: THREE.PointLight; neonB: THREE.PointLight; bulbs: THREE.PointLight; street: THREE.PointLight; vend: THREE.PointLight; hemi: THREE.HemisphereLight }
+type AnyMesh = THREE.Mesh<THREE.BufferGeometry, THREE.Material>;
+
 export class LobbySet {
-  constructor(renderer, { quality = 'high', texlib = null } = {}) {
+  declare _inRefl: boolean;
+  declare _rRT: THREE.WebGLRenderTarget<THREE.Texture<unknown, THREE.TextureEventMap>>;
+  declare _rCam: THREE.PerspectiveCamera;
+  declare lights: SetLights;
+  declare dripMesh: THREE.InstancedMesh<THREE.CylinderGeometry, THREE.MeshBasicMaterial | THREE.MeshStandardMaterial, THREE.Object3DEventMap>;
+  declare _dripSrc: THREE.Vector3[];
+  declare steam: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+  declare _mothC: THREE.Vector3;
+  declare moth: THREE.Mesh<THREE.BufferGeometry<THREE.NormalBufferAttributes, THREE.BufferGeometryEventMap>, THREE.MeshBasicMaterial | THREE.MeshStandardMaterial, THREE.Object3DEventMap>;
+  declare volumes: THREE.Mesh<THREE.BufferGeometry<THREE.NormalBufferAttributes, THREE.BufferGeometryEventMap>, THREE.ShaderMaterial, THREE.Object3DEventMap>;
+  declare _headlightGlow: number;
+  declare _glowList: Glow[];
+  declare bulbs: THREE.InstancedMesh<THREE.SphereGeometry, THREE.MeshBasicMaterial | THREE.MeshStandardMaterial, THREE.Object3DEventMap>;
+  declare glows: THREE.InstancedMesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
+  declare _lampHeads: THREE.Vector3[];
+  declare _farNeon: THREE.Vector3;
+  declare skyline: THREE.Mesh[];
+  declare _strings: BulbString[];
+  declare _neonB: { pos: THREE.Vector3; };
+  declare _neonA: { pos: THREE.Vector3; };
+  declare halos: Array<THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>>;
+  declare sky: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial>;
+  declare curbs: AnyMesh;
+  declare ground: AnyMesh;
+  declare emitMesh: AnyMesh;
+  declare neonMesh: AnyMesh;
+  declare litMesh: AnyMesh;
+  declare surface: AnyMesh;
+  declare tris: number;
+  declare mats: { surface: THREE.MeshStandardMaterial; ground: THREE.MeshStandardMaterial; lit: THREE.MeshStandardMaterial; neon: THREE.ShaderMaterial; emit: THREE.MeshBasicMaterial | THREE.MeshStandardMaterial; glow: THREE.ShaderMaterial; sky: THREE.ShaderMaterial; steam: THREE.ShaderMaterial; };
+  declare _envMats: Array<THREE.MeshStandardMaterial | THREE.MeshBasicMaterial>;
+  declare _envRT: THREE.WebGLRenderTarget | undefined;
+  declare _envOld: THREE.WebGLRenderTarget | undefined;
+  declare _pmrem: THREE.PMREMGenerator;
+  declare _envScene: THREE.Scene<THREE.Object3DEventMap>;
+  declare _envB: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial, THREE.Object3DEventMap>;
+  declare _envA: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial, THREE.Object3DEventMap>;
+  declare ready: Promise<this>;
+  declare environment: THREE.Texture | null;
+  declare tex: { decal: THREE.CanvasTexture<HTMLCanvasElement>; lit: THREE.CanvasTexture<HTMLCanvasElement>; sky: THREE.CanvasTexture<HTMLCanvasElement>; mask: THREE.CanvasTexture<HTMLCanvasElement>; };
+  declare environmentIntensity: number;
+  declare _sweep: { t: number; dir: number; dur: number } | null;
+  declare _nextSweep: number;
+  declare _nextDrip: number;
+  declare _ripI: number;
+  declare _drips: { p: THREE.Vector3; v: number; on: boolean; }[];
+  declare _t: number;
+  declare _lanes: THREE.Vector3[][];
+  declare hubCamera: { pos: THREE.Vector3; target: THREE.Vector3; fov: number; near: number; far: number; };
+  declare camera: { pos: THREE.Vector3; target: THREE.Vector3; fov: number; near: number; far: number; };
+  declare hubSpot: { pos: THREE.Vector3; yaw: number; };
+  declare spots: { pos: THREE.Vector3; yaw: number; }[];
+  declare root: THREE.Group<THREE.Object3DEventMap>;
+  declare U: { uTime: { value: number; }; uTeamA: { value: THREE.Color; }; uTeamB: { value: THREE.Color; }; uHzA: { value: THREE.Color; }; uHzB: { value: THREE.Color; }; uHzK: { value: THREE.Vector4; }; uHzStart: { value: number; }; };
+  declare Q: { refl: number; shadow: number; steam: boolean; extraLights: boolean };
+  declare quality: string;
+  declare texlib: TextureLibrary | null;
+  declare renderer: THREE.WebGLRenderer;
+  constructor(renderer: THREE.WebGLRenderer, { quality = 'high', texlib = null as TextureLibrary | null } = {}) {
     this.renderer = renderer; this.texlib = texlib;
     this.quality = QUALITY[quality] ? quality : 'high';
-    this.Q = QUALITY[this.quality];
+    this.Q = QUALITY[this.quality]!;
     this.U = makeUniforms();
     this.root = new THREE.Group(); this.root.name = 'lobbySet';
     const D = ALLEY.dock;
@@ -92,8 +159,8 @@ export class LobbySet {
   // half, up the dock stairs at its far end, then fanned out across the dock to their marks in x order (again no
   // crossings). Corners are rounded (a few points per turn) so a walker never snaps direction.
   _buildLanes() {
-    const D = ALLEY.dock, ST = ALLEY.stair, out = [];
-    const round = (pts, r = 0.45) => {
+    const D = ALLEY.dock, ST = ALLEY.stair, out: THREE.Vector3[][] = [];
+    const round = (pts: THREE.Vector3[], r = 0.45) => {
       const o = [pts[0]];
       for (let i = 1; i < pts.length - 1; i++) {
         const a = pts[i - 1], b = pts[i], c = pts[i + 1];
@@ -105,7 +172,7 @@ export class LobbySet {
       return o;
     };
     const fr = FRONT.map((f, i) => i).sort((a, b) => FRONT[a][0] - FRONT[b][0]);
-    const laneX = [-3.5, -3.0, -2.5, -2.0], turnZ = [null, -1.0, -1.3, -1.6];
+    const laneX = [-3.5, -3.0, -2.5, -2.0], turnZ = [0, -1.0, -1.3, -1.6];   // (첫 줄은 turnZ를 쓰지 않는다)
     fr.forEach((id, k) => {
       const [mx, mz] = FRONT[id], lx = laneX[k];
       const tz = k === 0 ? mz : turnZ[k];
@@ -125,8 +192,8 @@ export class LobbySet {
     });
     return out;
   }
-  lanes(i) { return this._lanes[i].map((v) => v.clone()); }
-  exitPath(i) { return this.lanes(i).reverse(); }
+  lanes(i: number) { return this._lanes[i].map((v) => v.clone()); }
+  exitPath(i: number) { return this.lanes(i).reverse(); }
 
   // ---------------------------------------------------------------------------------------------- environment
   // A PMREM of a proxy alley: dark walls, the blue sky slot overhead, the glowing mouth, the door, neon patches in the
@@ -134,8 +201,8 @@ export class LobbySet {
   _bakeEnv() {
     if (!this.renderer) return null;
     const sc = new THREE.Scene();
-    const box = (w, h, d, x, y, z, c, k = 1) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(k), side: THREE.BackSide })); m.position.set(x, y, z); sc.add(m); return m; };
-    const card = (w, h, x, y, z, ry, c, k) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(k), side: THREE.DoubleSide })); m.position.set(x, y, z); m.rotation.y = ry; sc.add(m); return m; };
+    const box = (w: number, h: number, d: number, x: number, y: number, z: number, c: THREE.ColorRepresentation | undefined, k = 1) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(k), side: THREE.BackSide })); m.position.set(x, y, z); sc.add(m); return m; };
+    const card = (w: number, h: number, x: number, y: number, z: number, ry: number, c: THREE.ColorRepresentation | undefined, k: number) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(k), side: THREE.DoubleSide })); m.position.set(x, y, z); m.rotation.y = ry; sc.add(m); return m; };
     box(8, 30, 90, 0, 14, -10, '#0b0d14', 1);
     card(8, 10, 0, 29, -10, 0, '#2a3f6e', 1).rotation.x = Math.PI / 2;           // sky slot
     card(8, 10, 0, 5, -36, 0, '#d9a878', 0.5);                                    // the mouth (city glow)
@@ -200,9 +267,9 @@ export class LobbySet {
     this._farStreet(B, rnd);
 
     // ---- windows (upper floors), AC units, pipes, fire escapes
-    const litPick = (r) => (r < 0.3 ? [1.4, 1.25, 1.1] : r < 0.4 ? [0.6, 0.8, 1.2] : r < 0.5 ? [0.35, 0.3, 0.28] : [0.03, 0.03, 0.035]);
+    const litPick = (r: number) => (r < 0.3 ? [1.4, 1.25, 1.1] : r < 0.4 ? [0.6, 0.8, 1.2] : r < 0.5 ? [0.35, 0.3, 0.28] : [0.03, 0.03, 0.035]);
     const wins = ['win0', 'win1', 'win2', 'win3'];
-    for (const [wx, dir, zs, floors, frame] of [[A.xL, 1, [7, 3.5, -3.5, -7, -14, -17.5, -21, -24.5, -28, -31], [4.7, 8.0], '#cdbfa8'], [A.xR, -1, [8.5, 5, -11.5, -15, -18.5, -22, -25.5, -29], [4.8, 8.3, 11.8], '#b9c3c8']]) {
+    for (const [wx, dir, zs, floors, frame] of [[A.xL, 1, [7, 3.5, -3.5, -7, -14, -17.5, -21, -24.5, -28, -31], [4.7, 8.0], '#cdbfa8'], [A.xR, -1, [8.5, 5, -11.5, -15, -18.5, -22, -25.5, -29], [4.8, 8.3, 11.8], '#b9c3c8']] as Array<[number, number, number[], number[], string]>) {
       for (const z of zs) for (const y of floors) {
         const r = rnd();
         windowUnit(B, wx, dir, z, y, 1.15, 1.75, LIT[wins[Math.floor(rnd() * 4)]], litPick(r), { frame, bars: y < 5 && rnd() < 0.3 });
@@ -230,7 +297,7 @@ export class LobbySet {
     this._door(B, A.xL, 1, -9.8, { color: '#3b4148' });
 
     // ---- the loading dock (rivals' riser)
-    this._dock(B, rnd);
+    this._dock(B);
 
     // ---- the shop side (right, near the camera): graffiti shutter, back door with its lamp, INK & SKATE neon
     shutter(B, A.xR, -1, -0.55, 2.05, 0, 2.6);
@@ -277,7 +344,7 @@ export class LobbySet {
     // ---- merge
     const G = B.build();
     this.tris = Math.round(B.tris);
-    const mesh = (geo, mat, name, cast = false, recv = true) => { const m = new THREE.Mesh(geo, mat); m.name = 'lobbySet:' + name; m.castShadow = cast; m.receiveShadow = recv; m.matrixAutoUpdate = false; this.root.add(m); return m; };
+    const mesh = (geo: THREE.BufferGeometry, mat: THREE.Material, name: string, cast = false, recv = true) => { const m = new THREE.Mesh(geo, mat); m.name = 'lobbySet:' + name; m.castShadow = cast; m.receiveShadow = recv; m.matrixAutoUpdate = false; this.root.add(m); return m; };
     this.surface = mesh(G.surface, this.mats.surface, 'surface', true, true);
     if (G.lit) this.litMesh = mesh(G.lit, this.mats.lit, 'lit', false, false);
     if (G.neon) this.neonMesh = mesh(G.neon, this.mats.neon, 'neon');
@@ -310,7 +377,7 @@ export class LobbySet {
   }
 
   // Steel back door (flush, with a kick plate + closer arm) on a wall.
-  _door(B, wx, dir, zc, o = {}) {
+  _door(B: SetBuilder, wx: number, dir: number, zc: number, o: { y0?: number; color?: string } = {}) {
     const y = o.y0 || 0, x0 = Math.min(wx, wx + dir * 0.06), x1 = Math.max(wx, wx + dir * 0.06);
     B.box('surface', x0, y, zc - 0.55, x1, y + 2.2, zc + 0.55, { color: o.color || '#3b4148', surf: S(SLOT.metalpanel, 0.7, 1.2, 0.08) });
     B.box('surface', Math.min(wx, wx + dir * 0.1), y + 2.2, zc - 0.65, Math.max(wx, wx + dir * 0.1), y + 2.3, zc + 0.65, PAINT.steelBlack);
@@ -320,7 +387,7 @@ export class LobbySet {
 
   // Concrete dock: slab + nosing (steel angle with hazard stripes along both open edges), rubber bumpers, stairs with
   // a handrail at the far end, a dock door + caged lamp on the wall behind.
-  _dock(B) {
+  _dock(B: SetBuilder) {
     const A = ALLEY, D = A.dock, ST = A.stair;
     // dark, water-stained concrete: the face sits right behind the front row's bodies, so it stays low-key
     const conc = { color: '#5b5955', surf: S(SLOT.concrete, 1.0, 1, 0) };
@@ -350,7 +417,7 @@ export class LobbySet {
   }
 
   // The shop's back door (open, warm room behind), a caged bulkhead lamp over it, a step.
-  _shopDoor(B) {
+  _shopDoor(B: SetBuilder) {
     const A = ALLEY, zc = 3.05, w = 1.05, h = 2.2, x = A.xR;
     // interior card set back into the wall (seen through the opening) + dark reveals
     const g = new THREE.PlaneGeometry(w, h); const uv = g.attributes.uv, r = LIT.door;
@@ -369,14 +436,14 @@ export class LobbySet {
     // dark recess panel instead (reads as depth through the doorway)
   }
 
-  _neon(B) {
+  _neon(B: SetBuilder) {
     const A = ALLEY;
     this.halos = [];
     // INK & SKATE on the shop wall (x = xR, facing -x); text reads -z → +z from inside the alley
     const txt = neonText('INK & SKATE', 0.42, 0.18);
     const buzzIdx = 8;   // the second K ... "SKATE": S=6, K=7, A=8 → the A buzzes
     const sA = { z0: -4.05, y0: 3.05 };
-    const wallPt = (u, v, off) => V(A.xR - off, sA.y0 + v, sA.z0 + u);
+    const wallPt = (u: number, v: number, off: number) => V(A.xR - off, sA.y0 + v, sA.z0 + u);
     // raceway (the painted box the tubes mount to) + tube standoffs
     B.box('surface', A.xR - 0.07, sA.y0 + 0.12, sA.z0 - 0.05, A.xR, sA.y0 + 0.28, sA.z0 + txt.width + 0.05, { color: '#15171a', surf: S(SLOT.metalpanel, 0.3, 0.7, 0.4) });
     for (const s of txt.strokes) {
@@ -385,21 +452,21 @@ export class LobbySet {
       B.tube('surface', [wallPt(s.pts[0][0], s.pts[0][1], 0.0), wallPt(s.pts[0][0], s.pts[0][1], 0.1)], 0.006, { sharp: true, seg: 1, radial: 4, color: '#777', surf: S(SLOT.plain, 0, 0.4, 0.8) });
     }
     const hA = neonHalo(txt.strokes, 0.45);
-    this.halos.push(this._halo(hA, (u, v) => wallPt(u, v, 0.03), 0, 1.0));
+    this.halos.push(this._halo(hA, (u: number, v: number) => wallPt(u, v, 0.03), 0, 1.0));
     // squid blade sign: a double-faced sign box projecting from the right wall over the dock, tubes on the +z face
     const sq = neonSquid(0.95), zc = -7.05, yb = 4.5, xc = A.xR - 0.62;
     B.box('surface', xc - 0.5, yb - 0.08, zc - 0.07, xc + 0.5, yb + 1.08, zc + 0.02, { color: '#08090b', surf: S(SLOT.metalpanel, 0.3, 1.2, 0.1) });
     B.box('surface', xc + 0.5, yb + 0.9, zc - 0.03, A.xR, yb + 0.95, zc - 0.01, PAINT.steelBlack);
     B.box('surface', xc + 0.5, yb + 0.05, zc - 0.03, A.xR, yb + 0.1, zc - 0.01, PAINT.steelBlack);
-    const sqPt = (u, v, off) => V(xc + u, yb + v, zc + 0.02 + off);
+    const sqPt = (u: number, v: number, off: number) => V(xc + u, yb + v, zc + 0.02 + off);
     for (const s of sq.strokes) B.tube('neon', s.pts.map(([u, v]) => sqPt(u, v, 0.05)), 0.019, { neon: [1, 0, 1], radial: 6, step: 0.03, closed: false });
     const hB = neonHalo(sq.strokes, 0.5);
-    this.halos.push(this._halo(hB, (u, v) => sqPt(u, v, 0.01), 1, 1.0));
+    this.halos.push(this._halo(hB, (u: number, v: number) => sqPt(u, v, 0.01), 1, 1.0));
     this._neonA = { pos: V(A.xR - 0.6, sA.y0 + 0.25, sA.z0 + txt.width / 2) };
     this._neonB = { pos: V(2.1, 3.4, -4.4) };
   }
   // halo plane in a sign's own 2-D frame (map uv ↔ metres), placed by the sign's point function
-  _halo(h, P, team, k) {
+  _halo(h: ReturnType<typeof neonHalo>, P: (u: number, v: number) => THREE.Vector3, team: number, k: number) {
     const [x0, y0, x1, y1] = h.rect;
     const g = new THREE.BufferGeometry();
     const c = [P(x0, y0), P(x1, y0), P(x1, y1), P(x0, y1)];
@@ -413,7 +480,7 @@ export class LobbySet {
   }
 
   // String lights zig-zagging wall to wall over the stage + cable runs; bulbs are an instanced emitter that sways.
-  _overhead(B, rnd) {
+  _overhead(B: SetBuilder, rnd: () => number) {
     const A = ALLEY;
     const anchors = [];
     for (let i = 0; i < 7; i++) { const z = 3.2 - i * 2.4; anchors.push(V(i % 2 ? A.xR - 0.05 : A.xL + 0.05, 4.9 + (i % 2) * 0.3, z)); }
@@ -450,7 +517,7 @@ export class LobbySet {
     this.root.add(m); this._envMats.push(mat);
     return m;
   }
-  _bulbPos(s, k, t, out) {
+  _bulbPos(s: BulbString, k: number, t: number, out: THREE.Vector3) {
     const f = (k + 0.5) / s.n;
     out.lerpVectors(s.a, s.b, f); out.y -= s.sag * 4 * f * (1 - f);
     const sw = Math.sin(t * 1.3 + s.a.z * 0.7) * 0.035 * Math.sin(Math.PI * f);
@@ -473,7 +540,7 @@ export class LobbySet {
 
   // The far side of the cross street: a row of shopfronts (lit windows, awnings, a pharmacy cross in neon green),
   // street lamps, a parked van — mostly light and silhouette at 45 m.
-  _farStreet(B, rnd) {
+  _farStreet(B: SetBuilder, rnd: () => number) {
     const z = ALLEY.street.z1;
     B.box('surface', -40, 0, z - 0.5, 40, 9.5, z, { color: '#3a3431', surf: S(SLOT.brick, 0.8, 1, 0), faces: 'Z' });
     B.box('surface', -40, 9.2, z - 0.5, 40, 9.6, z + 0.25, { color: '#26262a', surf: S(SLOT.concrete, 0.5, 1, 0), faces: 'ZY' });
@@ -495,8 +562,8 @@ export class LobbySet {
     }
     // a pharmacy cross over a shopfront (fixed green neon, sign colour 2) — a small cool accent deep in the mouth,
     // left of the rivals' heads. One tube per edge so the corners stay square.
-    { const cx = -1.3, cy = 4.4, zz = z + 0.35, A2 = 0.32, b = 0.1, P = (x, y) => V(cx + x, cy + y, zz);
-      const o = [[-b, A2], [b, A2], [b, b], [A2, b], [A2, -b], [b, -b], [b, -A2], [-b, -A2], [-b, -b], [-A2, -b], [-A2, b], [-b, b]];
+    { const cx = -1.3, cy = 4.4, zz = z + 0.35, A2 = 0.32, b = 0.1, P = (x: number, y: number) => V(cx + x, cy + y, zz);
+      const o: Array<[number, number]> = [[-b, A2], [b, A2], [b, b], [A2, b], [A2, -b], [b, -b], [b, -A2], [-b, -A2], [-b, -b], [-A2, -b], [-A2, b], [-b, b]];
       o.forEach((p0, i) => { const p1 = o[(i + 1) % o.length]; B.tube('neon', [P(...p0), P(...p1)], 0.03, { sharp: true, seg: 1, radial: 6, neon: [2, 0, 2] }); });
       B.box('surface', cx - 0.45, cy - 0.45, z, cx + 0.45, cy + 0.45, zz - 0.03, { color: '#0c0d0f', surf: S(SLOT.metalpanel, 0.3, 1, 0.1) });
       this._farNeon = V(cx, cy, zz + 0.3); }
@@ -529,7 +596,7 @@ export class LobbySet {
     for (let i = 0; i < nb; i++) bulbs.setColorAt(i, warm.clone().multiplyScalar(i % 7 === 3 ? 1.5 : 7));   // one dead-ish bulb per string
     this.root.add(bulbs); this.bulbs = bulbs;
     this._glowList = [];
-    const add = (pos, color, k, r, tag) => { this._glowList.push({ pos, color: new THREE.Color(color).multiplyScalar(k), r, tag, base: k }); };
+    const add = (pos: THREE.Vector3, color: THREE.ColorRepresentation, k: number, r: number, tag?: Glow['tag']) => { this._glowList.push({ pos, color: new THREE.Color(color).multiplyScalar(k), r, tag, base: k }); };
     let i = 0;
     for (const s of this._strings) for (let k = 0; k < s.n; k++, i++) add(V(), '#ffb865', i % 7 === 3 ? 0.08 : 0.34, 0.32, { bulb: i, s, k });
     add(V(ALLEY.xR - 0.2, 2.75, 3.05), '#ffb86a', 1.0, 0.7);                // bulkhead over the shop door
@@ -542,7 +609,7 @@ export class LobbySet {
     g.count = this._glowList.length;
     this._placeGlows(0);
   }
-  _placeGlows(t) {
+  _placeGlows(t: number) {
     let bi = 0;
     _q.identity();
     this._glowList.forEach((gl, i) => {
@@ -550,7 +617,7 @@ export class LobbySet {
       _m.compose(_p.copy(gl.pos), _q, _s.setScalar(gl.r));
       this.glows.setMatrixAt(i, _m); this.glows.setColorAt(i, gl.color);
     });
-    this.glows.instanceMatrix.needsUpdate = true; this.glows.instanceColor.needsUpdate = true;
+    this.glows.instanceMatrix.needsUpdate = true; this.glows.instanceColor!.needsUpdate = true;
     this.bulbs.instanceMatrix.needsUpdate = true;
   }
 
@@ -604,7 +671,7 @@ export class LobbySet {
 
   // ---------------------------------------------------------------------------------------------- lights
   _lights() {
-    const L = (this.lights = {}), r = this.root, A = ALLEY;
+    const L = (this.lights = {} as SetLights), r = this.root, A = ALLEY;   // (아래에서 모두 채운다)
     // key: warm, from over the shop door (off-frame right), the one shadow caster, framed tightly on the stage
     const key = (L.key = new THREE.SpotLight('#ffe8d0', 215, 0, 0.6, 0.55, 2));
     key.position.set(3.45, 3.9, 5.5); key.target.position.set(0.6, 0.95, -1.2);
@@ -659,7 +726,7 @@ export class LobbySet {
       tgt.set(look.x, -look.y, look.z);
       cam.up.set(0, 1, 0).applyMatrix4(rot); cam.up.y = -cam.up.y;
       cam.lookAt(tgt);
-      cam.far = camera.far; cam.updateMatrixWorld();
+      cam.far = (camera as THREE.PerspectiveCamera).far; cam.updateMatrixWorld();
       cam.projectionMatrix.copy(camera.projectionMatrix);
       R.mat.value.copy(bias).multiply(cam.projectionMatrix).multiply(cam.matrixWorldInverse);
       // oblique clip plane y = 0 (Lengyel)
@@ -695,7 +762,7 @@ export class LobbySet {
   }
 
   // ---------------------------------------------------------------------------------------------- runtime
-  update(dt, t) {
+  update(dt: number, t: number) {
     this._t = t; this.U.uTime.value = t;
     const L = this.lights;
     // neon: INK & SKATE steady with a faint mains shimmer, its 'A' buzzing in bursts; the squid breathes slightly
@@ -746,14 +813,14 @@ export class LobbySet {
     }
   }
 
-  setTeamColors(a, b) {
+  setTeamColors(a: THREE.ColorRepresentation | null, b: THREE.ColorRepresentation | null) {
     if (a != null) this.U.uTeamA.value.set(a);
     if (b != null) this.U.uTeamB.value.set(b);
     this._rebakeEnv();
     this.update(0, this._t);
   }
 
-  setQuality(q) {
+  setQuality(q: string) {
     if (!QUALITY[q]) return;
     this.quality = q; this.Q = QUALITY[q];
     const L = this.lights, sh = this.Q.shadow;
@@ -765,17 +832,17 @@ export class LobbySet {
 
   stats() {
     let meshes = 0, tris = 0;
-    this.root.traverse((o) => { if ((o.isMesh || o.isInstancedMesh) && o.visible) { meshes++; const g = o.geometry; const n = g.index ? g.index.count : g.attributes.position.count; tris += (n / 3) * (o.isInstancedMesh ? o.count : 1); } });
+    this.root.traverse((o) => { const im = o as THREE.InstancedMesh; if ((im.isMesh || im.isInstancedMesh) && o.visible) { meshes++; const g = im.geometry; const n = g.index ? g.index.count : g.attributes.position.count; tris += (n / 3) * (im.isInstancedMesh ? im.count : 1); } });
     return { setDraws: meshes, setTriangles: Math.round(tris), reflection: this.Q.refl ? `${this._rRT.width}x${this._rRT.height}` : 'off' };
   }
 
   dispose() {
-    this.root.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) [].concat(o.material).forEach((m) => m.dispose()); });
+    this.root.traverse((o) => { const m = o as THREE.Mesh; if (m.geometry) m.geometry.dispose(); if (m.material) ([] as THREE.Material[]).concat(m.material).forEach((x) => x.dispose()); });
     for (const t of Object.values(this.tex)) t.dispose();
     this.halos?.forEach((h) => h.material.uniforms.map.value.dispose());
     this._rRT?.dispose(); this._envRT?.dispose(); this._envOld?.dispose(); this._pmrem?.dispose();
     this.lights?.spill.map?.dispose();
-    this._envScene?.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+    this._envScene?.traverse((o) => { const m = o as THREE.Mesh<THREE.BufferGeometry, THREE.Material>; if (m.geometry) m.geometry.dispose(); if (m.material) m.material.dispose(); });
     this.root.removeFromParent();
   }
 }
@@ -795,12 +862,12 @@ const SPLATS = [
   { x: -1.8, z: -11, r: 0.3, team: 0, seed: 19 },
 ];
 
-function hash1(n) { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
-function mulberry(a) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function hash1(n: number) { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
+function mulberry(a: number) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 // Light cookie for the door spill: the doorway's soft-edged rectangle (the spot sits inside the room, so the frame
 // clips its cone into a tall trapezoid of light on the asphalt).
 function doorCookie() {
-  const c = document.createElement('canvas'); c.width = c.height = 128; const g = c.getContext('2d');
+  const c = document.createElement('canvas'); c.width = c.height = 128; const g = c.getContext('2d')!;
   g.fillStyle = '#000'; g.fillRect(0, 0, 128, 128);
   g.filter = 'blur(5px)'; g.fillStyle = '#fff'; g.fillRect(38, 14, 52, 100);
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;

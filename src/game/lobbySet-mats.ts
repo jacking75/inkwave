@@ -1,4 +1,4 @@
-// Lobby set materials. All of them share one uniform block (U) so a team change, the ambient clock and the haze are
+// Lobby set materials. All of them share one uniform block (U: SetUniforms) so a team change, the ambient clock and the haze are
 // single writes. Two workhorses carry almost all static geometry in one draw each:
 //   surface — every wall, prop, frame and fixture: texlib PBR layer per vertex (brick / stucco / steel / hazard ...),
 //             world-space grime, damp streaks, a wet splash band at the base of walls, contact darkening, and a
@@ -10,7 +10,10 @@
 // Every material gets the set's own depth haze (the showcase owns scene.fog, so the set cannot use it).
 import * as THREE from 'three';
 import { TEXLIB_GLSL } from '../world/texlib.js';
+import type { TextureLibrary } from '../world/texlib.js';
 
+/** 세트 공통 유니폼 묶음 */
+export type SetUniforms = ReturnType<typeof makeUniforms>;
 export function makeUniforms() {
   return {
     uTime: { value: 0 },
@@ -48,7 +51,7 @@ float lsF(vec2 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 4; i++) { s += a
 `;
 
 // Chain the haze into a built-in material's shader (call from onBeforeCompile). additive: only attenuate.
-function hazeify(shader, U, additive = false) {
+function hazeify(shader: THREE.WebGLProgramParametersWithUniforms, U: SetUniforms, additive = false) {
   Object.assign(shader.uniforms, { uHzA: U.uHzA, uHzB: U.uHzB, uHzK: U.uHzK, uHzStart: U.uHzStart });
   shader.vertexShader = shader.vertexShader.replace('#include <common>', '#include <common>\n' + HAZE_V_PARS)
     .replace('#include <project_vertex>', '#include <project_vertex>\n' + HAZE_V);
@@ -56,7 +59,7 @@ function hazeify(shader, U, additive = false) {
     .replace('#include <tonemapping_fragment>', (additive ? 'gl_FragColor.rgb *= 1.0 - lsHazeAmt(vLsW);\n'
       : 'gl_FragColor.rgb = mix(gl_FragColor.rgb, lsHazeCol(vLsW), lsHazeAmt(vLsW));\n') + '#include <tonemapping_fragment>');
 }
-export function hazeMaterial(mat, U, additive = false) {
+export function hazeMaterial(mat: THREE.MeshStandardMaterial | THREE.MeshBasicMaterial, U: SetUniforms, additive = false) {
   const prev = mat.onBeforeCompile;
   mat.onBeforeCompile = (s, r) => { prev?.call(mat, s, r); hazeify(s, U, additive); };
   mat.customProgramCacheKey = () => 'lsHaze' + (additive ? 1 : 0) + (mat.userData.key || '');
@@ -69,7 +72,7 @@ export const SLOT = { plain: 0, brick: 1, render: 2, concrete: 3, metalpanel: 4,
 const SLOT_LAYER = ['concrete', 'brick', 'render', 'concrete', 'metalpanel', 'corrugated', 'hazard', 'treads', 'planks', 'grate', 'rubber', 'asphalt'];
 const SLOT_NSTR = [0, 1.0, 0.9, 0.8, 0.8, 1.0, 0.8, 0.9, 1.0, 0.7, 0.7, 0.9];
 
-export function surfaceMaterial(U, texlib, decalTex, envMap) {
+export function surfaceMaterial(U: SetUniforms, texlib: TextureLibrary | null, decalTex: THREE.CanvasTexture<HTMLCanvasElement>, envMap: THREE.Texture | null) {
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 0, envMap, envMapIntensity: 0.55 });
   const lib = texlib;
   mat.onBeforeCompile = (s) => {
@@ -171,7 +174,7 @@ vec3 gN = vec3(0.0, 0.0, 1.0); float gNS = 0.0; float gRough = 0.7; float gMetal
 }
 
 // ------------------------------------------------------------------------------------------------ ground
-export function groundMaterial(U, texlib, maskTex, maskRect, envMap) {
+export function groundMaterial(U: SetUniforms, texlib: TextureLibrary | null, maskTex: THREE.CanvasTexture<HTMLCanvasElement>, maskRect: number[], envMap: THREE.Texture | null) {
   const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, metalness: 0, envMap, envMapIntensity: 1 });
   const lib = texlib;
   const R = (mat.userData.refl = { tex: { value: null }, mat: { value: new THREE.Matrix4() }, on: { value: 0 }, res: { value: new THREE.Vector2(1, 1) } });
@@ -301,7 +304,7 @@ vec3 gN = vec3(0.0, 0.0, 1.0); float gRough = 0.8; float gWater = 0.0; float gDa
 // Windows, the vending front, the shop back room: dark glossy glass (reflects the env) over an emissive atlas;
 // per-vertex aLit = emissive multiplier (rgb) so lit / dim / off windows share one draw. A cheap parallax shift of
 // the interior along the view ray gives the rooms depth.
-export function litMaterial(U, atlas, envMap) {
+export function litMaterial(U: SetUniforms, atlas: THREE.CanvasTexture<HTMLCanvasElement>, envMap: THREE.Texture | null) {
   const mat = new THREE.MeshStandardMaterial({ color: 0x06070a, roughness: 0.07, metalness: 0, emissive: 0xffffff, emissiveMap: atlas, envMap, envMapIntensity: 1.2 });
   mat.onBeforeCompile = (s) => {
     s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\nattribute vec3 aLit; varying vec3 vLit;')
@@ -316,7 +319,7 @@ export function litMaterial(U, atlas, envMap) {
 
 // ------------------------------------------------------------------------------------------------ neon
 // Glass tubes: team colour, a hot near-white core where the tube faces the viewer. aNeon = (team, buzz, sign).
-export function neonMaterial(U) {
+export function neonMaterial(U: SetUniforms) {
   return new THREE.ShaderMaterial({
     uniforms: { uColA: U.uTeamA, uColB: U.uTeamB, uColC: { value: new THREE.Color(0.1, 1, 0.35) }, uI: { value: new THREE.Vector4(7, 7, 1, 5) }, uHzA: U.uHzA, uHzB: U.uHzB, uHzK: U.uHzK, uHzStart: U.uHzStart },
     vertexShader: /* glsl */`
@@ -339,7 +342,7 @@ export function neonMaterial(U) {
 // additive blending that leaves destination alpha alone (see the header)
 const ADD = { blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor, transparent: true, depthWrite: false };
 // Halo planes (texture R = glow) in a team colour; uI.x = intensity.
-export function haloMaterial(U, map, team) {
+export function haloMaterial(U: SetUniforms, map: THREE.Texture, team: number) {
   return new THREE.ShaderMaterial({
     uniforms: { map: { value: map }, uCol: team ? U.uTeamB : U.uTeamA, uI: { value: 1 }, uHzA: U.uHzA, uHzB: U.uHzB, uHzK: U.uHzK, uHzStart: U.uHzStart },
     vertexShader: 'varying vec2 vUv; varying vec3 vLsW; void main() { vUv = uv; vec4 w = modelMatrix * vec4(position, 1.0); vLsW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
@@ -352,7 +355,7 @@ export function haloMaterial(U, map, team) {
 }
 // Camera-facing glow sprites (instanced): instance scale = radius, instanceColor = HDR colour. Pulled toward the viewer
 // so a glow on a wall isn't cut in half by it.
-export function glowMaterial(U) {
+export function glowMaterial(U: SetUniforms) {
   return new THREE.ShaderMaterial({
     uniforms: { uHzA: U.uHzA, uHzB: U.uHzB, uHzK: U.uHzK, uHzStart: U.uHzStart },
     vertexShader: /* glsl */`
@@ -375,7 +378,7 @@ export function glowMaterial(U) {
   });
 }
 // Bulbs / lamp lenses: flat HDR emitters (instanced), hazed like everything else.
-export function emitMaterial(U) {
+export function emitMaterial(U: SetUniforms) {
   const m = new THREE.MeshBasicMaterial({ color: 0xffffff });
   return hazeMaterial(m, U, false);
 }
@@ -383,7 +386,7 @@ export function emitMaterial(U) {
 // ------------------------------------------------------------------------------------------------ sky + skyline
 // Blue hour: deep indigo zenith, a pale teal band over the roofs, the city's sodium glow low toward the street mouth.
 // Drawn at the far plane (depth forced) so it works with any camera far distance.
-export function skyMaterial(U) {
+export function skyMaterial(U: SetUniforms) {
   return new THREE.ShaderMaterial({
     uniforms: { uTime: U.uTime, uGlow: { value: new THREE.Color(0.55, 0.3, 0.18) } },
     vertexShader: 'varying vec3 vDir; void main() { vec4 w = modelMatrix * vec4(position, 1.0); vDir = w.xyz - cameraPosition; gl_Position = projectionMatrix * viewMatrix * w; gl_Position.z = gl_Position.w * 0.99999; }',
@@ -405,7 +408,7 @@ export function skyMaterial(U) {
     side: THREE.BackSide, depthWrite: false,
   });
 }
-export function skylineMaterial(U, map, fogCol, fog) {
+export function skylineMaterial(U: SetUniforms, map: THREE.CanvasTexture<HTMLCanvasElement>, fogCol: THREE.Color, fog: number) {
   return new THREE.ShaderMaterial({
     uniforms: { map: { value: map }, uFog: { value: fogCol }, uF: { value: fog }, uV: { value: new THREE.Vector2(0, 0.5) } },
     vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
@@ -419,7 +422,7 @@ export function skylineMaterial(U, map, fogCol, fog) {
 
 // ------------------------------------------------------------------------------------------------ steam
 // Soft curling plume on camera-facing cards: two scrolling noise octaves, faded at the card edges and with height.
-export function steamMaterial(U) {
+export function steamMaterial(U: SetUniforms) {
   return new THREE.ShaderMaterial({
     uniforms: { uTime: U.uTime, uCol: { value: new THREE.Color(0.2, 0.19, 0.21) }, uHzA: U.uHzA, uHzB: U.uHzB, uHzK: U.uHzK, uHzStart: U.uHzStart },
     vertexShader: /* glsl */`

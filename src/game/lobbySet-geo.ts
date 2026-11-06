@@ -11,16 +11,28 @@ export const mat4 = (x = 0, y = 0, z = 0, ry = 0, rx = 0, rz = 0, sx = 1, sy = s
   new THREE.Matrix4().compose(_p.set(x, y, z), _q.setFromEuler(_e.set(rx, ry, rz, 'YXZ')), _s.set(sx, sy, sz));
 
 const COL = new THREE.Color();
+type P3 = THREE.Vector3 | number[];
+/** add 선택(위 주석): 색, 표면 [슬롯, 때, 거칠기, 금속], 데칼 [u, v, 방식] 또는 함수, 조명 판 [r,g,b], 네온 [팀, 떨림, 간판],
+ *  발광 배수 k, 추가 행렬, uv 처리, uv 축척·교환, 남길 면, 원기둥 열기, 관 옵션 */
+export interface SetOpts {
+  color?: THREE.ColorRepresentation; surf?: number[]; dec?: number[] | ((u: number, v: number, i: number) => number[]);
+  lit?: number[]; neon?: number[]; k?: number; m?: THREE.Matrix4; uv?: string; uvScale?: number; swapUV?: boolean;
+  faces?: string; open?: boolean; sharp?: boolean; closed?: boolean; seg?: number; step?: number; radial?: number;
+  frame?: string; bars?: boolean; ladder?: number[];
+}
 export class SetBuilder {
+  declare tris: number;
+  declare stack: THREE.Matrix4[];
+  declare buckets: Map<string, THREE.BufferGeometry[]>;
   constructor() { this.buckets = new Map(); this.stack = [new THREE.Matrix4()]; this.tris = 0; }
   get M() { return this.stack[this.stack.length - 1]; }
-  push(m) { this.stack.push(this.M.clone().multiply(m)); return this; }
+  push(m: THREE.Matrix4) { this.stack.push(this.M.clone().multiply(m)); return this; }
   pop() { this.stack.pop(); return this; }
-  at(m, fn) { this.push(m); fn(); this.pop(); }
+  at(m: THREE.Matrix4, fn: () => void) { this.push(m); fn(); this.pop(); }
 
   // Add a geometry to a bucket. o: { color, surf: [slot, grime, rough, metal], dec: [u, v, mode] | fn(pos) , lit: [r,g,b],
   // neon: [team, buzz, sign], emit: colour (HDR, scalar multiplier via o.k), m: extra matrix, uv: 'box' | 'keep' }
-  add(key, g, o = {}) {
+  add(key: string, g: THREE.BufferGeometry, o: SetOpts = {}) {
     g = g.index ? g.toNonIndexed() : g.clone();
     if (!g.attributes.normal) g.computeVertexNormals();
     const m = o.m ? this.M.clone().multiply(o.m) : this.M;
@@ -30,7 +42,7 @@ export class SetBuilder {
     if (key === 'surface' && o.uv !== 'keep') boxUV(g, o.uvScale || 1);
     if (o.swapUV) { const u = g.attributes.uv; for (let i = 0; i < n; i++) u.setXY(i, u.getY(i), u.getX(i)); }
     g.applyMatrix4(m);
-    const kind = KIND[key] || 'surface';
+    const kind: string = KIND[key] || 'surface';
     if (kind === 'surface') {
       const c = COL.set(o.color ?? '#808080'), cs = new Float32Array(n * 3), ss = new Float32Array(n * 4), ds = new Float32Array(n * 3);
       const sf = o.surf || [SLOT.plain, 0.3, 1, 0];
@@ -60,44 +72,44 @@ export class SetBuilder {
     return g;
   }
   // axis-aligned box from corners (in the current frame); faces: string of faces to keep ('xXyYzZ', lower = negative)
-  box(key, x0, y0, z0, x1, y1, z1, o = {}) {
+  box(key: string, x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, o: SetOpts = {}) {
     const g = boxGeo(x1 - x0, y1 - y0, z1 - z0, o.faces);
     g.translate((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
     if (key === 'surface' && o.uv !== 'keep') { boxUV(g, 1); o = { ...o, uv: 'keep' }; }
     return this.add(key, g, o);
   }
-  rbox(key, w, h, d, r, o = {}) { return this.add(key, new RoundedBoxGeometry(w, h, d, 2, r), o); }
-  cyl(key, r0, r1, h, seg, o = {}) { return this.add(key, new THREE.CylinderGeometry(r1, r0, h, seg, 1, !!o.open), o); }
+  rbox(key: string, w: number, h: number, d: number, r: number, o: SetOpts = {}) { return this.add(key, new RoundedBoxGeometry(w, h, d, 2, r), o); }
+  cyl(key: string, r0: number, r1: number, h: number, seg: number, o: SetOpts = {}) { return this.add(key, new THREE.CylinderGeometry(r1, r0, h, seg, 1, !!o.open), o); }
   // tube along points (polyline, lightly smoothed through CatmullRom unless o.sharp)
-  tube(key, pts, r, o = {}) {
-    const v = pts.map((p) => (p.isVector3 ? p : new THREE.Vector3(...p)));
-    const curve = o.sharp ? polyCurve(v) : new THREE.CatmullRomCurve3(v, !!o.closed, 'centripetal', 0.5);
+  tube(key: string, pts: P3[], r: number, o: SetOpts = {}) {
+    const v = pts.map((p) => (p instanceof THREE.Vector3 ? p : new THREE.Vector3(p[0], p[1], p[2])));
+    const curve: THREE.Curve<THREE.Vector3> = o.sharp ? polyCurve(v) : new THREE.CatmullRomCurve3(v, !!o.closed, 'centripetal', 0.5);
     const seg = o.seg || Math.max(4, Math.ceil(curve.getLength() / (o.step || 0.08)));
     return this.add(key, new THREE.TubeGeometry(curve, seg, r, o.radial || 6, !!o.closed), o);
   }
   build() {
-    const out = {};
+    const out: Record<string, THREE.BufferGeometry> = {};
     for (const [k, list] of this.buckets) out[k] = list.length === 1 ? list[0] : mergeGeometries(list, false);
     return out;
   }
 }
-const KIND = { surface: 'surface', lit: 'lit', neonA: 'neon', neonB: 'neon', neon: 'neon', emit: 'emit' };
-const KEEP = { surface: ['position', 'normal', 'uv', 'color', 'aSurf', 'aDec'], lit: ['position', 'normal', 'uv', 'aLit'], neon: ['position', 'normal', 'aNeon'], emit: ['position', 'normal', 'color'] };
+const KIND: Record<string, string | undefined> = { surface: 'surface', lit: 'lit', neonA: 'neon', neonB: 'neon', neon: 'neon', emit: 'emit' };
+const KEEP: Record<string, string[]> = { surface: ['position', 'normal', 'uv', 'color', 'aSurf', 'aDec'], lit: ['position', 'normal', 'uv', 'aLit'], neon: ['position', 'normal', 'aNeon'], emit: ['position', 'normal', 'color'] };
 
-function polyCurve(v) { const c = new THREE.CurvePath(); for (let i = 1; i < v.length; i++) c.add(new THREE.LineCurve3(v[i - 1], v[i])); return c; }
+function polyCurve(v: THREE.Vector3[]) { const c = new THREE.CurvePath<THREE.Vector3>(); for (let i = 1; i < v.length; i++) c.add(new THREE.LineCurve3(v[i - 1], v[i])); return c; }
 // box with per-face metre uvs; faces filter (e.g. 'xXyzZ' drops the +Y top)
-function boxGeo(w, h, d, faces) {
+function boxGeo(w: number, h: number, d: number, faces?: string) {
   const g = new THREE.BoxGeometry(w, h, d);
   if (!faces) return g;
   // BoxGeometry groups: +x, -x, +y, -y, +z, -z
   const keep = ['X', 'x', 'Y', 'y', 'Z', 'z'].map((f) => faces.includes(f));
-  const idx = g.index.array, out = [];
+  const idx = g.index!.array, out: number[] = [];
   g.groups.forEach((gr, i) => { if (keep[i]) for (let k = gr.start; k < gr.start + gr.count; k++) out.push(idx[k]); });
   g.setIndex(out); g.clearGroups();
   return g;
 }
 // planar metre uvs chosen per vertex by the dominant normal axis (x faces: z,y · y faces: x,z · z faces: x,y)
-export function boxUV(g, s = 1) {
+export function boxUV(g: THREE.BufferGeometry, s = 1) {
   const p = g.attributes.position, n = g.attributes.normal, N = p.count, uv = new Float32Array(N * 2);
   for (let i = 0; i < N; i++) {
     const ax = Math.abs(n.getX(i)), ay = Math.abs(n.getY(i)), az = Math.abs(n.getZ(i));
@@ -110,7 +122,7 @@ export function boxUV(g, s = 1) {
 }
 
 // ================================================================================================ props
-const S = (slot, grime = 0.3, rough = 1, metal = 0) => [slot, grime, rough, metal];
+const S = (slot: number, grime = 0.3, rough = 1, metal = 0): number[] => [slot, grime, rough, metal];
 export const PAINT = {
   steelBlack: { color: '#1b1d21', surf: S(SLOT.plain, 0.25, 0.75, 0.2) },
   steelGalv: { color: '#8a9096', surf: S(SLOT.metalpanel, 0.35, 0.8, 0.6) },
@@ -122,10 +134,10 @@ export const PAINT = {
 
 // Fire escape against a wall (x = wallX, facing dir = +1 into +x / -1 into -x): landings at `levels`, railings,
 // stair flights between landings, a drop ladder at the bottom.
-export function fireEscape(B, wallX, dir, z0, z1, levels, o = {}) {
+export function fireEscape(B: SetBuilder, wallX: number, dir: number, z0: number, z1: number, levels: number[], o: SetOpts = {}) {
   const P = PAINT.steelBlack, D = 1.15, x0 = wallX, x1 = wallX + dir * D, xa = Math.min(x0, x1), xb = Math.max(x0, x1);
-  const bar = (ax, ay, az, bx, by, bz, r = 0.018) => B.tube('surface', [[ax, ay, az], [bx, by, bz]], r, { sharp: true, seg: 1, radial: 5, ...P });
-  levels.forEach((y, li) => {
+  const bar = (ax: number, ay: number, az: number, bx: number, by: number, bz: number, r = 0.018) => B.tube('surface', [[ax, ay, az], [bx, by, bz]], r, { sharp: true, seg: 1, radial: 5, ...P });
+  levels.forEach((y: number, li: number) => {
     // grate floor + channel frame
     B.box('surface', xa, y - 0.03, z0, xb, y, z1, { color: '#26282c', surf: S(SLOT.grate, 0.3, 0.9, 0.3), uv: 'box' });
     B.box('surface', xa, y - 0.12, z0, xb, y - 0.03, z0 + 0.05, P); B.box('surface', xa, y - 0.12, z1 - 0.05, xb, y - 0.03, z1, P);
@@ -154,7 +166,7 @@ export function fireEscape(B, wallX, dir, z0, z1, levels, o = {}) {
 }
 
 // Drain pipe down a wall with brackets, an offset near the top and a shoe at the bottom.
-export function drainPipe(B, wallX, dir, z, y0, y1, r = 0.055) {
+export function drainPipe(B: SetBuilder, wallX: number, dir: number, z: number, y0: number, y1: number, r = 0.055) {
   const x = wallX + dir * (r + 0.05);
   B.tube('surface', [[x, y1 + 0.2, z - 0.3], [x, y1, z - 0.3], [x, y1 - 0.35, z], [x, y0 + 0.25, z], [x + dir * 0.12, y0 + 0.02, z]], r, { radial: 10, step: 0.1, ...PAINT.pipe });
   for (let y = y0 + 0.9; y < y1 - 0.4; y += 1.8) B.box('surface', Math.min(wallX, x + dir * r), y - 0.03, z - r - 0.02, Math.max(wallX, x + dir * r), y + 0.03, z + r + 0.02, PAINT.steelBlack);
@@ -162,8 +174,8 @@ export function drainPipe(B, wallX, dir, z, y0, y1, r = 0.055) {
 
 // Window (walls are solid, so the depth is built outward): a proud casing, the glass set back inside it, a mullion
 // + transom, a projecting stone sill and lintel, optional security bars. Glass uses the lit bucket (atlas rect).
-export function windowUnit(B, wallX, dir, zc, yb, w, h, rect, lit, o = {}) {
-  const f = 0.075, cd = 0.11, X = (a, b) => [Math.min(wallX + dir * a, wallX + dir * b), Math.max(wallX + dir * a, wallX + dir * b)];
+export function windowUnit(B: SetBuilder, wallX: number, dir: number, zc: number, yb: number, w: number, h: number, rect: number[], lit: number[], o: SetOpts = {}) {
+  const f = 0.075, cd = 0.11, X = (a: number, b: number) => [Math.min(wallX + dir * a, wallX + dir * b), Math.max(wallX + dir * a, wallX + dir * b)];
   const z0 = zc - w / 2, z1 = zc + w / 2;
   const fr = { color: o.frame || '#cfc8b8', surf: S(SLOT.plain, 0.7, 0.85, 0) };
   const [c0, c1] = X(0, cd);
@@ -183,7 +195,7 @@ export function windowUnit(B, wallX, dir, zc, yb, w, h, rect, lit, o = {}) {
 }
 
 // AC unit hung under a window: casing, grille, fan disc, drip tray + brackets.
-export function acUnit(B, wallX, dir, zc, y, o = {}) {
+export function acUnit(B: SetBuilder, wallX: number, dir: number, zc: number, y: number, o: SetOpts = {}) {
   const w = 0.72, h = 0.46, d = 0.55;
   B.at(mat4(wallX + dir * d / 2, y + h / 2, zc, dir > 0 ? Math.PI / 2 : -Math.PI / 2), () => {
     B.rbox('surface', w, h, d, 0.025, { color: o.color || '#bfbcb4', surf: S(SLOT.metalpanel, 0.7, 0.9, 0.1) });
@@ -196,7 +208,7 @@ export function acUnit(B, wallX, dir, zc, y, o = {}) {
 
 // Roll-up shutter: corrugated curtain, guide rails, the coil housing above, a bottom bar. (The graffiti is a separate
 // decal quad over it, see decalQuad.)
-export function shutter(B, wallX, dir, z0, z1, y0, y1) {
+export function shutter(B: SetBuilder, wallX: number, dir: number, z0: number, z1: number, y0: number, y1: number) {
   const x = wallX + dir * 0.06, xl = Math.min(wallX, x), xh = Math.max(wallX, x);
   const g = new THREE.PlaneGeometry(z1 - z0, y1 - y0, 1, 1);
   B.add('surface', g, { m: mat4(x, (y0 + y1) / 2, (z0 + z1) / 2, dir > 0 ? Math.PI / 2 : -Math.PI / 2), color: '#6f7479', surf: S(SLOT.corrugated, 0.45, 1, 0.35), swapUV: true });
@@ -206,7 +218,7 @@ export function shutter(B, wallX, dir, z0, z1, y0, y1) {
 }
 
 // Dumpster (roll-off bin): tapered body, two lids (one propped open), side pockets, casters.
-export function dumpster(B, x, z, ry, color = '#2f5a45') {
+export function dumpster(B: SetBuilder, x: number, z: number, ry: number, color = '#2f5a45') {
   const W = 1.9, D = 1.1, H = 1.12;
   B.at(mat4(x, 0, z, ry), () => {
     const body = new THREE.BoxGeometry(W, H, D, 1, 1, 1); const p = body.attributes.position;
@@ -223,7 +235,7 @@ export function dumpster(B, x, z, ry, color = '#2f5a45') {
 }
 
 // Vending machine: body, lit front (lit bucket), coin panel, delivery flap.
-export function vending(B, x, z, ry, rectFront, body = '#d9dde0') {
+export function vending(B: SetBuilder, x: number, z: number, ry: number, rectFront: number[], body = '#d9dde0') {
   const W = 0.95, D = 0.78, H = 1.9;
   B.at(mat4(x, 0, z, ry), () => {
     B.rbox('surface', W, H, D, 0.04, { m: mat4(0, H / 2 + 0.04, 0), color: body, surf: S(SLOT.plain, 0.5, 0.45, 0.1) });
@@ -237,7 +249,7 @@ export function vending(B, x, z, ry, rectFront, body = '#d9dde0') {
 }
 
 // Stacked crates: wooden produce crates (plank slot) and plastic milk crates (bars) in a colour.
-export function woodCrate(B, x, y, z, ry, w = 0.6, h = 0.45, d = 0.42) {
+export function woodCrate(B: SetBuilder, x: number, y: number, z: number, ry: number, w = 0.6, h = 0.45, d = 0.42) {
   B.at(mat4(x, y, z, ry), () => {
     const P = { color: '#9c7b55', surf: S(SLOT.planks, 0.6, 1, 0) };
     for (let i = 0; i < 3; i++) { const yy = 0.02 + i * (h / 3); B.box('surface', -w / 2, yy, -d / 2, w / 2, yy + h / 3 - 0.03, -d / 2 + 0.018, P); B.box('surface', -w / 2, yy, d / 2 - 0.018, w / 2, yy + h / 3 - 0.03, d / 2, P); B.box('surface', -w / 2, yy, -d / 2, -w / 2 + 0.018, yy + h / 3 - 0.03, d / 2, P); B.box('surface', w / 2 - 0.018, yy, -d / 2, w / 2, yy + h / 3 - 0.03, d / 2, P); }
@@ -245,7 +257,7 @@ export function woodCrate(B, x, y, z, ry, w = 0.6, h = 0.45, d = 0.42) {
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) B.box('surface', sx * w / 2 - (sx > 0 ? 0.045 : 0), 0, sz * d / 2 - (sz > 0 ? 0.045 : 0), sx * w / 2 + (sx < 0 ? 0.045 : 0), h, sz * d / 2 + (sz < 0 ? 0.045 : 0), { color: '#7d5f3f', surf: S(SLOT.planks, 0.7, 1, 0) });
   });
 }
-export function milkCrate(B, x, y, z, ry, color) {
+export function milkCrate(B: SetBuilder, x: number, y: number, z: number, ry: number, color: string) {
   const w = 0.46, h = 0.3, d = 0.34, C = { color, surf: S(SLOT.plain, 0.35, 0.55, 0) };
   B.at(mat4(x, y, z, ry), () => {
     B.box('surface', -w / 2, 0, -d / 2, w / 2, 0.025, d / 2, C);
@@ -256,9 +268,9 @@ export function milkCrate(B, x, y, z, ry, color) {
 }
 
 // Speaker stack: two cabinets with woofers + a horn, an amp head on top (with a glowing power LED in the emit bucket).
-export function speakerStack(B, x, z, ry) {
+export function speakerStack(B: SetBuilder, x: number, z: number, ry: number) {
   B.at(mat4(x, 0, z, ry), () => {
-    const cab = (y, w, h, d, cones) => {
+    const cab = (y: number, w: number, h: number, d: number, cones: number[][]) => {
       B.rbox('surface', w, h, d, 0.02, { m: mat4(0, y + h / 2, 0), color: '#161719', surf: S(SLOT.rubber, 0.25, 1, 0) });
       B.box('surface', -w / 2 + 0.03, y + 0.03, d / 2 - 0.005, w / 2 - 0.03, y + h - 0.03, d / 2 + 0.005, { color: '#0c0c0d', surf: S(SLOT.grate, 0.1, 1, 0.2) });
       for (const [cx, cy, r] of cones) {
@@ -278,7 +290,7 @@ export function speakerStack(B, x, z, ry) {
 }
 
 // Traffic cone with two retro-reflective bands.
-export function cone(B, x, z, ry, tipped = false) {
+export function cone(B: SetBuilder, x: number, z: number, ry: number, tipped = false) {
   B.at(mat4(x, 0, z, ry, tipped ? 0 : 0, tipped ? Math.PI / 2 - 0.35 : 0), () => {
     B.box('surface', -0.19, 0, -0.19, 0.19, 0.035, 0.19, { color: '#1a1a1a', surf: S(SLOT.rubber, 0.4, 1, 0) });
     const prof = [[0.15, 0.035], [0.14, 0.12], [0.1, 0.36], [0.06, 0.58], [0.03, 0.7], [0.0, 0.705]].map(([r, y]) => new THREE.Vector2(r, y));
@@ -288,7 +300,7 @@ export function cone(B, x, z, ry, tipped = false) {
 }
 
 // Bike leaning on a wall: wheels (tyre torus + rim + spokes), diamond frame, bars, saddle.
-export function bike(B, x, z, ry, lean = 0.18, color = '#c2372f') {
+export function bike(B: SetBuilder, x: number, z: number, ry: number, lean = 0.18, color = '#c2372f') {
   B.at(mat4(x, 0, z, ry, 0, lean), () => {
     const R = 0.33, wb = 1.02, F = { color, surf: S(SLOT.plain, 0.35, 0.4, 0.3) }, K = PAINT.steelBlack;
     for (const wx of [-wb / 2, wb / 2]) {
@@ -297,7 +309,7 @@ export function bike(B, x, z, ry, lean = 0.18, color = '#c2372f') {
       for (let k = 0; k < 12; k++) { const a = (k / 12) * Math.PI * 2; B.tube('surface', [[wx, R + 0.024, 0], [wx + Math.cos(a) * (R - 0.04), R + 0.024 + Math.sin(a) * (R - 0.04), 0]], 0.0025, { sharp: true, seg: 1, radial: 3, color: '#9aa0a6', surf: S(SLOT.plain, 0, 0.3, 0.9) }); }
     }
     const bb = [-0.05, 0.3, 0], st = [-0.16, 0.84, 0], hd = [0.36, 0.86, 0], rw = [-wb / 2, R + 0.024, 0], fw = [wb / 2, R + 0.024, 0];
-    const t = (a, b, r = 0.018, P = F) => B.tube('surface', [a, b], r, { sharp: true, seg: 1, radial: 6, ...P });
+    const t = (a: number[], b: number[], r = 0.018, P = F) => B.tube('surface', [a, b], r, { sharp: true, seg: 1, radial: 6, ...P });
     t(bb, st); t(bb, hd, 0.022); t(st, hd); t(bb, rw, 0.013); t(st, rw, 0.012); t(hd, fw, 0.015);
     t(hd, [0.34, 0.98, 0], 0.016, K); t([0.3, 0.98, -0.24], [0.38, 0.98, 0.24], 0.013, K);
     B.rbox('surface', 0.24, 0.05, 0.12, 0.02, { m: mat4(-0.18, 0.9, 0), color: '#111', surf: S(SLOT.rubber, 0.2, 0.8, 0) });
@@ -307,8 +319,8 @@ export function bike(B, x, z, ry, lean = 0.18, color = '#c2372f') {
 }
 
 // Trash bags: lumpy glossy black blobs.
-export function trashBag(B, x, y, z, s = 1, seed = 1) {
-  let g = new THREE.IcosahedronGeometry(0.3 * s, 3); g.deleteAttribute('normal'); g.deleteAttribute('uv'); g = mergeVertices(g); const p = g.attributes.position;
+export function trashBag(B: SetBuilder, x: number, y: number, z: number, s = 1, seed = 1) {
+  let g: THREE.BufferGeometry = new THREE.IcosahedronGeometry(0.3 * s, 3); g.deleteAttribute('normal'); g.deleteAttribute('uv'); g = mergeVertices(g); const p = g.attributes.position;
   let a = seed * 9.1;
   for (let i = 0; i < p.count; i++) { const v = _p.fromBufferAttribute(p, i); const n = 1 + 0.18 * Math.sin(v.x * 11 + a) * Math.sin(v.z * 9 + a * 0.7) + 0.1 * Math.sin(v.y * 15 + a); v.multiplyScalar(n); v.y = Math.max(v.y * 0.82, -0.3 * s * 0.8); p.setXYZ(i, v.x, v.y, v.z); }
   g.computeVertexNormals();
@@ -317,14 +329,14 @@ export function trashBag(B, x, y, z, s = 1, seed = 1) {
 }
 
 // Catenary between two points (sag in metres), n samples.
-export function catenary(a, b, sag, n = 16) {
+export function catenary(a: THREE.Vector3, b: THREE.Vector3, sag: number, n = 16) {
   const out = [];
   for (let i = 0; i <= n; i++) { const t = i / n; out.push(new THREE.Vector3().lerpVectors(a, b, t).add(new THREE.Vector3(0, -sag * 4 * t * (1 - t), 0))); }
   return out;
 }
 
 // Decal-only quad (mode 3 / 4 = discard outside the paint) on a wall plane or the dock top; rect = atlas [u0, v0, u1, v1].
-export function decalQuad(B, m, w, h, rect, swap = false, slot = SLOT.plain, color = '#777') {
+export function decalQuad(B: SetBuilder, m: THREE.Matrix4, w: number, h: number, rect: number[], swap = false, slot = SLOT.plain, color = '#777') {
   const g = new THREE.PlaneGeometry(w, h);
-  B.add('surface', g, { m, color, surf: [slot, 0.4, 1, 0], dec: (u, v) => [rect[0] + (rect[2] - rect[0]) * u, rect[1] + (rect[3] - rect[1]) * v, swap ? 4 : 3] });
+  B.add('surface', g, { m, color, surf: [slot, 0.4, 1, 0], dec: (u: number, v: number) => [rect[0] + (rect[2] - rect[0]) * u, rect[1] + (rect[3] - rect[1]) * v, swap ? 4 : 3] });
 }

@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 
 const FONT = 'LSTitan';
-let _fonts = null;
+let _fonts: Promise<void> | null = null;
 export function loadSetFonts() {
   if (_fonts) return _fonts;
   if (typeof FontFace === 'undefined') return (_fonts = Promise.resolve());
@@ -12,12 +12,12 @@ export function loadSetFonts() {
   const r = new FontFace('LSRubik', `url(${new URL('../../assets/fonts/Rubik-latin.woff2', import.meta.url)})`, { weight: '400 900' });
   return (_fonts = Promise.all([f.load(), r.load()]).then(([a, b]) => { document.fonts.add(a); document.fonts.add(b); }).catch(() => {}));
 }
-const titan = (px) => `${px}px ${FONT}, "Arial Black", sans-serif`;
-const rubik = (px, w = 800) => `${w} ${px}px LSRubik, system-ui, sans-serif`;
+const titan = (px: number) => `${px}px ${FONT}, "Arial Black", sans-serif`;
+const rubik = (px: number, w = 800) => `${w} ${px}px LSRubik, system-ui, sans-serif`;
 
-function mulberry(a) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
-function canvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
-function tex(c, srgb = true, mips = true) {
+function mulberry(a: number) { return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function canvas(w: number, h: number) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+function tex(c: HTMLCanvasElement, srgb = true, mips = true) {
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
   t.anisotropy = 8; t.generateMipmaps = mips; t.minFilter = mips ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
@@ -25,11 +25,18 @@ function tex(c, srgb = true, mips = true) {
 }
 // paint encodings
 const PA = 'rgb(255,0,0)', PB = 'rgb(0,255,0)', PW = 'rgb(0,0,255)', PK = 'rgb(0,0,0)';
-const mixP = (a, b, w) => `rgb(${Math.round(255 * a)},${Math.round(255 * b)},${Math.round(255 * w)})`;
+type Pt = number[];
+/** 네온 획: 점(m), 글자 번호 */
+export interface NeonStroke { pts: Pt[]; letter: number }
+/** 바닥 웅덩이: 중심, 반지름, 깊이, 방향, 덩이 수 */
+export interface Puddle { x: number; z: number; rx: number; rz: number; d?: number; a?: number; n?: number }
+/** 바닥 잉크 자국: 위치·반지름·팀·씨앗·팔 수 */
+export interface GroundSplat { x: number; z: number; r: number; team: number; seed?: number; arms?: number }
+const mixP = (a: number, b: number, w: number) => `rgb(${Math.round(255 * a)},${Math.round(255 * b)},${Math.round(255 * w)})`;
 
 // ------------------------------------------------------------------------------------------------ splat shapes
 // An ink splat: lumpy core, radial arms ending in droplets, loose satellite drops, optional drips running down (walls).
-function splat(g, cx, cy, r, rnd, { drips = 0, arms = 9, dripLen = 2.2 } = {}) {
+function splat(g: CanvasRenderingContext2D, cx: number, cy: number, r: number, rnd: () => number, { drips = 0, arms = 9, dripLen = 2.2 } = {}) {
   g.beginPath();
   const N = 28;
   for (let i = 0; i <= N; i++) {
@@ -58,7 +65,7 @@ function splat(g, cx, cy, r, rnd, { drips = 0, arms = 9, dripLen = 2.2 } = {}) {
 // ------------------------------------------------------------------------------------------------ decal atlas
 // 2048 x 2048. Rects are in px (y down); DECAL maps a name to [u0, v0, u1, v1] in texture space (v up, CanvasTexture flipY).
 const DA = 2048;
-const DRECT = {
+const DRECT: Record<string, number[]> = {
   graffiti: [0, 0, 2048, 1152],
   splat0: [0, 1152, 384, 384], splat1: [384, 1152, 384, 384], splat2: [768, 1152, 384, 384], splat3: [1152, 1152, 384, 384],
   poster0: [1536, 1152, 256, 384], poster1: [1792, 1152, 256, 384],
@@ -69,30 +76,30 @@ export const DECAL = Object.fromEntries(Object.entries(DRECT).map(([k, [x, y, w,
 
 // Returns the texture at once (drawn with fallback fonts) and redraws when the set fonts arrive; .userData.ready resolves then.
 export function createDecalAtlas() {
-  const c = canvas(DA, DA), g = c.getContext('2d');
+  const c = canvas(DA, DA), g = c.getContext('2d')!;
   const t = tex(c, false);
   const draw = () => { drawDecals(g); t.needsUpdate = true; };
   draw();
   t.userData.ready = loadSetFonts().then(draw);
   return t;
 }
-function drawDecals(g) {
+function drawDecals(g: CanvasRenderingContext2D) {
   g.clearRect(0, 0, DA, DA);
   const rnd = mulberry(77);
-  const at = (name, fn) => { const [x, y, w, h] = DRECT[name]; g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip(); g.translate(x, y); fn(w, h); g.restore(); };
-  at('graffiti', (w, h) => drawGraffiti(g, w, h, mulberry(5)));
-  ['splat0', 'splat1', 'splat2', 'splat3'].forEach((n, i) => at(n, (w, h) => { g.fillStyle = PA; splat(g, w / 2, h * (i < 2 ? 0.42 : 0.5), w * 0.2, mulberry(11 + i), { drips: i < 2 ? 5 : 0, arms: 8 + i * 2 }); }));
-  at('poster0', (w, h) => poster(g, w, h, 0, rnd));
-  at('poster1', (w, h) => poster(g, w, h, 1, rnd));
-  at('poster2', (w, h) => poster(g, w, h, 2, rnd));
-  at('stencil', (w, h) => { g.fillStyle = PW; g.font = titan(110); g.textBaseline = 'middle'; g.fillText('LOADING DOCK', 18, h / 2 + 6); stencilBreaks(g, w, h, rnd); });
-  at('tag0', (w, h) => tag(g, w, h, 'Rook', PB, rnd));
-  at('tag1', (w, h) => tag(g, w, h, 'squidz', PA, rnd));
-  at('arrow', (w, h) => { g.fillStyle = PW; g.font = titan(96); g.textBaseline = 'middle'; g.fillText('DOCK 2', 20, h / 2 + 4); g.beginPath(); g.moveTo(380, 50); g.lineTo(470, h / 2); g.lineTo(380, h - 50); g.lineTo(380, h / 2 + 18); g.lineTo(330, h / 2 + 18); g.lineTo(330, h / 2 - 18); g.lineTo(380, h / 2 - 18); g.closePath(); g.fill(); stencilBreaks(g, w, h, rnd); });
-  at('nopark', (w, h) => { g.fillStyle = mixP(0.9, 0, 0.9); g.font = titan(88); g.textBaseline = 'middle'; g.fillText('NO PARKING', 16, h / 2 + 4); stencilBreaks(g, w, h, rnd); });
-  at('throwup', (w, h) => throwup(g, w, h, rnd));
+  const at = (name: string, fn: (w: number, h: number) => void) => { const [x, y, w, h] = DRECT[name]; g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip(); g.translate(x, y); fn(w, h); g.restore(); };
+  at('graffiti', (w: number, h: number) => drawGraffiti(g, w, h, mulberry(5)));
+  ['splat0', 'splat1', 'splat2', 'splat3'].forEach((n, i) => at(n, (w: number, h: number) => { g.fillStyle = PA; splat(g, w / 2, h * (i < 2 ? 0.42 : 0.5), w * 0.2, mulberry(11 + i), { drips: i < 2 ? 5 : 0, arms: 8 + i * 2 }); }));
+  at('poster0', (w: number, h: number) => poster(g, w, h, 0, rnd));
+  at('poster1', (w: number, h: number) => poster(g, w, h, 1, rnd));
+  at('poster2', (w: number, h: number) => poster(g, w, h, 2, rnd));
+  at('stencil', (w: number, h: number) => { g.fillStyle = PW; g.font = titan(110); g.textBaseline = 'middle'; g.fillText('LOADING DOCK', 18, h / 2 + 6); stencilBreaks(g, w, h, rnd); });
+  at('tag0', (w: number, h: number) => tag(g, w, h, 'Rook', PB, rnd));
+  at('tag1', (w: number, h: number) => tag(g, w, h, 'squidz', PA, rnd));
+  at('arrow', (w: number, h: number) => { g.fillStyle = PW; g.font = titan(96); g.textBaseline = 'middle'; g.fillText('DOCK 2', 20, h / 2 + 4); g.beginPath(); g.moveTo(380, 50); g.lineTo(470, h / 2); g.lineTo(380, h - 50); g.lineTo(380, h / 2 + 18); g.lineTo(330, h / 2 + 18); g.lineTo(330, h / 2 - 18); g.lineTo(380, h / 2 - 18); g.closePath(); g.fill(); stencilBreaks(g, w, h, rnd); });
+  at('nopark', (w: number, h: number) => { g.fillStyle = mixP(0.9, 0, 0.9); g.font = titan(88); g.textBaseline = 'middle'; g.fillText('NO PARKING', 16, h / 2 + 4); stencilBreaks(g, w, h, rnd); });
+  at('throwup', (w: number, h: number) => throwup(g, w, h, rnd));
 }
-function stencilBreaks(g, w, h, rnd) {
+function stencilBreaks(g: CanvasRenderingContext2D, w: number, h: number, rnd: () => number) {
   // stencil bridges + spray overspray speckle: cut thin gaps, then dust dots around
   g.save(); g.globalCompositeOperation = 'destination-out';
   for (let x = 30; x < w; x += 44 + rnd() * 30) g.fillRect(x, 0, 5, h);
@@ -101,7 +108,7 @@ function stencilBreaks(g, w, h, rnd) {
   for (let i = 0; i < 900; i++) { g.globalAlpha = 0.25 * rnd(); g.fillRect(rnd() * w, rnd() * h, 2, 2); }
   g.globalAlpha = 1; g.fillStyle = f;
 }
-function tag(g, w, h, word, paint, rnd) {
+function tag(g: CanvasRenderingContext2D, w: number, h: number, word: string, paint: string, rnd: () => number) {
   g.save(); g.translate(20, h * 0.66); g.rotate(-0.12); g.transform(1, 0, -0.35, 1, 0, 0);
   g.font = rubik(92, 900); g.lineJoin = 'round';
   g.strokeStyle = PK; g.lineWidth = 16; g.strokeText(word, 0, 0);
@@ -109,7 +116,7 @@ function tag(g, w, h, word, paint, rnd) {
   g.strokeStyle = PW; g.lineWidth = 3; g.beginPath(); g.moveTo(-6, 20); g.bezierCurveTo(90, 40, 220, 8, 300, 26); g.stroke();
   g.restore();
 }
-function throwup(g, w, h, rnd) {
+function throwup(g: CanvasRenderingContext2D, w: number, h: number, rnd: () => number) {
   // a quick two-letter bubble throw-up "IW": white fill, black outline, team B shadow
   g.save(); g.translate(w * 0.1, h * 0.78); g.rotate(-0.06);
   g.font = titan(250); g.lineJoin = 'round';
@@ -119,10 +126,10 @@ function throwup(g, w, h, rnd) {
   g.restore();
   g.fillStyle = PK; for (let i = 0; i < 3; i++) { const x = w * (0.2 + i * 0.22); g.fillRect(x, h * 0.8, 8, 30 + rnd() * 50); }
 }
-function poster(g, w, h, kind, rnd) {
+function poster(g: CanvasRenderingContext2D, w: number, h: number, kind: number, rnd: () => number) {
   // wheat-pasted posters; torn edges come from the alpha, weathering from the shader
   g.fillStyle = PW; g.beginPath();
-  const edge = (x0, y0, x1, y1, n) => { for (let i = 0; i <= n; i++) { const t = i / n; g.lineTo(x0 + (x1 - x0) * t + (rnd() - 0.5) * 6, y0 + (y1 - y0) * t + (rnd() - 0.5) * 6); } };
+  const edge = (x0: number, y0: number, x1: number, y1: number, n: number) => { for (let i = 0; i <= n; i++) { const t = i / n; g.lineTo(x0 + (x1 - x0) * t + (rnd() - 0.5) * 6, y0 + (y1 - y0) * t + (rnd() - 0.5) * 6); } };
   g.moveTo(6, 6); edge(6, 6, w - 6, 6, 12); edge(w - 6, 6, w - 6, h - 6, 16); edge(w - 6, h - 6, 6, h - 6, 12); edge(6, h - 6, 6, 6, 16); g.fill();
   if (kind === 0) {
     g.fillStyle = PK; g.fillRect(14, 14, w - 28, h - 28);
@@ -143,7 +150,7 @@ function poster(g, w, h, kind, rnd) {
   g.textAlign = 'left';
 }
 // original squid mark (used by the poster and the neon sign's shape language)
-function squidGlyph(g, cx, cy, s, paint) {
+function squidGlyph(g: CanvasRenderingContext2D, cx: number, cy: number, s: number, paint: string) {
   g.save(); g.translate(cx, cy); g.scale(s, s); g.fillStyle = paint;
   g.beginPath(); g.moveTo(0, -0.62); g.quadraticCurveTo(0.3, -0.42, 0.52, -0.2); g.lineTo(0.3, -0.15); g.quadraticCurveTo(0.34, 0.02, 0.26, 0.16);
   g.lineTo(-0.26, 0.16); g.quadraticCurveTo(-0.34, 0.02, -0.3, -0.15); g.lineTo(-0.52, -0.2); g.quadraticCurveTo(-0.3, -0.42, 0, -0.62); g.fill();
@@ -154,7 +161,7 @@ function squidGlyph(g, cx, cy, s, paint) {
 
 // The shutter piece: "INKWAVE" wildstyle-lite over a team-B cloud, black 3-D block, team-A fill fading to a pale top,
 // team-B split band, white shines, drips, sparkles, and a signature.
-function drawGraffiti(g, W, H, rnd) {
+function drawGraffiti(g: CanvasRenderingContext2D, W: number, H: number, rnd: () => number) {
   // cloud backdrop
   g.fillStyle = PB;
   g.beginPath();
@@ -171,7 +178,8 @@ function drawGraffiti(g, W, H, rnd) {
   const total = adv.reduce((a, b) => a + b, 0);
   let x = (W - total) / 2 - W * 0.02;
   const L = [...word].map((ch, i) => { const o = { ch, x, y: H * (0.7 + 0.05 * Math.sin(i * 1.3 + 0.4)), r: (rnd() - 0.5) * 0.18 + (i % 2 ? 0.05 : -0.05), s: 0.92 + rnd() * 0.16 }; x += adv[i]; return o; });
-  const each = (fn) => L.forEach((l) => { g.save(); g.translate(l.x + adv[0] * 0.4, l.y); g.rotate(l.r); g.scale(l.s, l.s); g.transform(1, 0, -0.18, 1, 0, 0); g.translate(-adv[0] * 0.4, 0); fn(l); g.restore(); });
+  type Letter = (typeof L)[number];
+  const each = (fn: (l: Letter) => void) => L.forEach((l) => { g.save(); g.translate(l.x + adv[0] * 0.4, l.y); g.rotate(l.r); g.scale(l.s, l.s); g.transform(1, 0, -0.18, 1, 0, 0); g.translate(-adv[0] * 0.4, 0); fn(l); g.restore(); });
   // 3-D block (black), extruded down-right
   g.fillStyle = PK;
   for (let d = 34; d > 0; d -= 2) each((l) => g.fillText(l.ch, d * 0.75, d * 0.62));
@@ -186,7 +194,7 @@ function drawGraffiti(g, W, H, rnd) {
     g.fillStyle = gr; g.fillText(l.ch, 0, 0);
   });
   // split band (team B) through the lower third of every letter, clipped to the glyph with source-atop
-  const tmp = canvas(W, H), t = tmp.getContext('2d');
+  const tmp = canvas(W, H), t = tmp.getContext('2d')!;
   t.font = g.font; t.lineJoin = 'round';
   L.forEach((l) => { t.save(); t.translate(l.x + adv[0] * 0.4, l.y); t.rotate(l.r); t.scale(l.s, l.s); t.transform(1, 0, -0.18, 1, 0, 0); t.translate(-adv[0] * 0.4, 0); t.fillStyle = '#fff'; t.fillText(l.ch, 0, 0); t.restore(); });
   t.globalCompositeOperation = 'source-in';
@@ -202,7 +210,7 @@ function drawGraffiti(g, W, H, rnd) {
     g.fillStyle = PA; g.beginPath(); g.roundRect(dx - w, y0 - 14, 2 * w, len + 8, w); g.fill();
   }
   // sparkles + arrow flourish
-  const star = (sx, sy, r) => { g.beginPath(); for (let k = 0; k < 8; k++) { const a = (k / 8) * Math.PI * 2, rr = k % 2 ? r * 0.22 : r; g.lineTo(sx + Math.cos(a) * rr, sy + Math.sin(a) * rr); } g.fill(); };
+  const star = (sx: number, sy: number, r: number) => { g.beginPath(); for (let k = 0; k < 8; k++) { const a = (k / 8) * Math.PI * 2, rr = k % 2 ? r * 0.22 : r; g.lineTo(sx + Math.cos(a) * rr, sy + Math.sin(a) * rr); } g.fill(); };
   g.fillStyle = PW;
   star(W * 0.12, H * 0.22, 46); star(W * 0.9, H * 0.18, 60); star(W * 0.82, H * 0.86, 30); star(W * 0.2, H * 0.9, 24);
   g.strokeStyle = PK; g.lineWidth = 26; g.lineCap = 'round';
@@ -217,10 +225,10 @@ function drawGraffiti(g, W, H, rnd) {
 // RGB only (canvas alpha stays 255 so premultiplication can't eat the data): R = team A ink, G = team B ink,
 // B = standing water depth. Covers GROUND_RECT (world x0, z0, x1, z1).
 export const GROUND_RECT = [-4, -14, 4, 7];
-export function createGroundMask(puddles, splats) {
-  const W = 1024, H = 2048, c = canvas(W, H), g = c.getContext('2d');
+export function createGroundMask(puddles: Puddle[], splats: GroundSplat[]) {
+  const W = 1024, H = 2048, c = canvas(W, H), g = c.getContext('2d')!;
   const [x0, z0, x1, z1] = GROUND_RECT;
-  const px = (x) => ((x - x0) / (x1 - x0)) * W, pz = (z) => ((z - z0) / (z1 - z0)) * H, sc = W / (x1 - x0);
+  const px = (x: number) => ((x - x0) / (x1 - x0)) * W, pz = (z: number) => ((z - z0) / (z1 - z0)) * H, sc = W / (x1 - x0);
   g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
   // puddles: blobby unions of soft ellipses, blurred so depth ramps up from the rim (additive in blue)
   g.globalCompositeOperation = 'lighter';
@@ -251,19 +259,19 @@ export function createGroundMask(puddles, splats) {
 // ------------------------------------------------------------------------------------------------ lit atlas (emissive)
 // 2048 x 1024 sRGB: vending machine front, shop back-room interior, four window interiors.
 const LA = [2048, 1024];
-const LRECT = { vending: [0, 0, 512, 1024], door: [512, 0, 512, 1024], win0: [1024, 0, 512, 512], win1: [1536, 0, 512, 512], win2: [1024, 512, 512, 512], win3: [1536, 512, 512, 512] };
+const LRECT: Record<string, number[]> = { vending: [0, 0, 512, 1024], door: [512, 0, 512, 1024], win0: [1024, 0, 512, 512], win1: [1536, 0, 512, 512], win2: [1024, 512, 512, 512], win3: [1536, 512, 512, 512] };
 export const LIT = Object.fromEntries(Object.entries(LRECT).map(([k, [x, y, w, h]]) => [k, [x / LA[0], 1 - (y + h) / LA[1], (x + w) / LA[0], 1 - y / LA[1]]]));
 export function createLitAtlas() {
-  const c = canvas(LA[0], LA[1]), g = c.getContext('2d');
+  const c = canvas(LA[0], LA[1]), g = c.getContext('2d')!;
   const t = tex(c, true);
   const draw = () => { drawLit(g); t.needsUpdate = true; };
   draw();
   t.userData.ready = loadSetFonts().then(draw);
   return t;
 }
-function drawLit(g) {
-  const at = (name, fn) => { const [x, y, w, h] = LRECT[name]; g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip(); g.translate(x, y); fn(w, h); g.restore(); };
-  at('vending', (w, h) => {
+function drawLit(g: CanvasRenderingContext2D) {
+  const at = (name: string, fn: (w: number, h: number) => void) => { const [x, y, w, h] = LRECT[name]; g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip(); g.translate(x, y); fn(w, h); g.restore(); };
+  at('vending', (w: number, h: number) => {
     // header: lit logo band; body: five shelves of cans/bottles behind glass, cool white light
     let gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, '#dff3ff'); gr.addColorStop(1, '#9fc9e8'); g.fillStyle = gr; g.fillRect(0, 0, w, h);
     g.fillStyle = '#16c0d8'; g.fillRect(0, 0, w, 170);
@@ -284,7 +292,7 @@ function drawLit(g) {
     }
     g.textAlign = 'left';
   });
-  at('door', (w, h) => {
+  at('door', (w: number, h: number) => {
     // warm back room: floor, a wall of skate decks, boxes, a hanging bulb glow
     let gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, '#6b3a1e'); gr.addColorStop(0.55, '#c9803f'); gr.addColorStop(1, '#8a4e25'); g.fillStyle = gr; g.fillRect(0, 0, w, h);
     const rg = g.createRadialGradient(w * 0.55, h * 0.18, 10, w * 0.55, h * 0.2, h * 0.6); rg.addColorStop(0, 'rgba(255,236,190,0.95)'); rg.addColorStop(1, 'rgba(255,200,120,0)'); g.fillStyle = rg; g.fillRect(0, 0, w, h);
@@ -294,7 +302,7 @@ function drawLit(g) {
     for (let i = 0; i < 4; i++) { g.fillStyle = ['#b98552', '#a47244', '#c79a62', '#8f6238'][i]; g.fillRect(40 + i * 110 + (i % 2) * 20, 700 - (i % 2) * 90, 120, 200 + (i % 2) * 90); g.fillStyle = 'rgba(0,0,0,0.18)'; g.fillRect(40 + i * 110 + (i % 2) * 20, 760, 120, 10); }
     g.fillStyle = 'rgba(20,10,5,0.55)'; g.fillRect(0, 900, w, 124);
   });
-  const room = (name, base, lamp, kind) => at(name, (w, h) => {
+  const room = (name: string, base: string[], lamp: [number, number, string], kind: string) => at(name, (w: number, h: number) => {
     let gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, base[0]); gr.addColorStop(1, base[1]); g.fillStyle = gr; g.fillRect(0, 0, w, h);
     const rg = g.createRadialGradient(lamp[0] * w, lamp[1] * h, 4, lamp[0] * w, lamp[1] * h, w * 0.7); rg.addColorStop(0, lamp[2]); rg.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = rg; g.fillRect(0, 0, w, h);
     if (kind === 'curtain') { g.fillStyle = 'rgba(120,30,20,0.85)'; g.fillRect(0, 0, w * 0.3, h); g.fillRect(w * 0.78, 0, w * 0.22, h); for (let x = 0; x < w * 0.3; x += 18) { g.fillStyle = 'rgba(0,0,0,0.2)'; g.fillRect(x, 0, 6, h); } }
@@ -312,7 +320,7 @@ function drawLit(g) {
 // ------------------------------------------------------------------------------------------------ skyline
 // Silhouettes with lit windows; alpha = building. Two strips (near / far) in one 2048 x 1024 texture.
 export function createSkyline() {
-  const W = 2048, H = 1024, c = canvas(W, H), g = c.getContext('2d'), rnd = mulberry(99);
+  const W = 2048, H = 1024, c = canvas(W, H), g = c.getContext('2d')!, rnd = mulberry(99);
   g.clearRect(0, 0, W, H);
   for (let band = 0; band < 2; band++) {
     const y0 = band * 512, base = band ? '#0d1322' : '#141a2c';
@@ -339,7 +347,7 @@ export function createSkyline() {
 // ------------------------------------------------------------------------------------------------ neon glyphs
 // Single-stroke neon letters in a 1-high em box: arrays of strokes, each { p: [[x, y], ...], smooth } (y up).
 // Corners get a small bend radius (real tubes are bent, not mitred); smooth strokes are Catmull-Rom'd.
-const GL = {
+const GL: Record<string, { w: number; s: Array<{ p: Pt[]; smooth?: boolean }> } | undefined> = {
   I: { w: 0.16, s: [{ p: [[0.08, 0], [0.08, 1]] }] },
   N: { w: 0.62, s: [{ p: [[0.02, 0], [0.02, 1], [0.6, 0], [0.6, 1]] }] },
   K: { w: 0.6, s: [{ p: [[0.04, 0], [0.04, 1]] }, { p: [[0.56, 1], [0.1, 0.46], [0.6, 0]] }] },
@@ -350,7 +358,7 @@ const GL = {
   '&': { w: 0.66, s: [{ smooth: true, p: [[0.66, 0.02], [0.4, 0.3], [0.14, 0.62], [0.12, 0.84], [0.26, 0.99], [0.44, 0.92], [0.46, 0.74], [0.3, 0.58], [0.06, 0.4], [0.04, 0.16], [0.2, 0.01], [0.42, 0.04], [0.6, 0.3]] }] },
   ' ': { w: 0.3, s: [] },
 };
-function smoothPts(p, n = 6) {
+function smoothPts(p: Pt[], n = 6) {
   const out = [];
   for (let i = 0; i < p.length - 1; i++) {
     const a = p[Math.max(0, i - 1)], b = p[i], c = p[i + 1], d = p[Math.min(p.length - 1, i + 2)];
@@ -363,7 +371,7 @@ function smoothPts(p, n = 6) {
   out.push(p[p.length - 1]);
   return out;
 }
-function bendCorners(p, r) {
+function bendCorners(p: Pt[], r: number) {
   if (p.length < 3) return p;
   const out = [p[0]];
   for (let i = 1; i < p.length - 1; i++) {
@@ -377,10 +385,10 @@ function bendCorners(p, r) {
   return out;
 }
 // Text → strokes in metres (baseline at y = 0, left at x = 0). buzz = index of the letter that buzzes.
-export function neonText(str, height, gap = 0.16) {
-  const strokes = []; let x = 0;
+export function neonText(str: string, height: number, gap = 0.16) {
+  const strokes: NeonStroke[] = []; let x = 0;
   [...str].forEach((ch, i) => {
-    const gl = GL[ch] || GL[' '];
+    const gl = GL[ch] || GL[' ']!;
     for (const s of gl.s) {
       const pts = (s.smooth ? smoothPts(s.p) : bendCorners(s.p, 0.07)).map(([u, v]) => [x + u * height, v * height]);
       strokes.push({ pts, letter: i });
@@ -391,26 +399,26 @@ export function neonText(str, height, gap = 0.16) {
 }
 // The squid sign: mantle + fins (one closed tube), two eye loops, four wavy tentacles. Unit ≈ 1 m tall, centred on x.
 export function neonSquid(size = 1) {
-  const S = (p) => p.map(([x, y]) => [x * size, y * size]);
+  const S = (p: Pt[]) => p.map(([x, y]) => [x * size, y * size]);
   // mantle: pointed crown, two swept fins, body tapering into the tentacle root (one closed tube)
   const half = [[0, 1.08], [0.1, 0.99], [0.2, 0.88], [0.36, 0.8], [0.47, 0.72], [0.36, 0.66], [0.24, 0.62], [0.23, 0.5], [0.2, 0.38], [0.14, 0.33]];
   const mantle = smoothPts([...half, ...half.slice().reverse().map(([x, y]) => [-x, y])], 5);
-  const eye = (cx) => { const p = []; for (let i = 0; i <= 14; i++) { const a = (i / 14) * Math.PI * 2; p.push([cx + Math.cos(a) * 0.05, 0.5 + Math.sin(a) * 0.068]); } return p; };
+  const eye = (cx: number) => { const p = []; for (let i = 0; i <= 14; i++) { const a = (i / 14) * Math.PI * 2; p.push([cx + Math.cos(a) * 0.05, 0.5 + Math.sin(a) * 0.068]); } return p; };
   // tentacles: parallel waves (same phase, so they never cross), the outer pair longer and curling out
-  const tent = (x0, len, curl) => smoothPts([[x0, 0.31], [x0 + 0.03, 0.31 - len * 0.33], [x0 - 0.02, 0.31 - len * 0.66], [x0 + 0.02 + curl, 0.31 - len]], 5);
+  const tent = (x0: number, len: number, curl: number) => smoothPts([[x0, 0.31], [x0 + 0.03, 0.31 - len * 0.33], [x0 - 0.02, 0.31 - len * 0.66], [x0 + 0.02 + curl, 0.31 - len]], 5);
   const strokes = [mantle, eye(-0.085), eye(0.085), tent(-0.105, 0.27, -0.06), tent(-0.035, 0.22, 0), tent(0.035, 0.22, 0), tent(0.105, 0.27, 0.06)].map((p, i) => ({ pts: S(p), letter: i }));
   return { strokes, width: 0.94 * size };
 }
 // Soft halo for a stroke set (grey in R): blurred thick lines + a tighter inner glow. Returns { texture, rect: [x0, y0, x1, y1] metres }.
-export function neonHalo(strokes, pad = 0.35, pxPerM = 180) {
+export function neonHalo(strokes: NeonStroke[], pad = 0.35, pxPerM = 180) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const s of strokes) for (const [x, y] of s.pts) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
   x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
   const W = Math.min(2048, Math.ceil((x1 - x0) * pxPerM)), H = Math.min(1024, Math.ceil((y1 - y0) * pxPerM));
-  const c = canvas(W, H), g = c.getContext('2d');
+  const c = canvas(W, H), g = c.getContext('2d')!;
   g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
-  const P = ([x, y]) => [((x - x0) / (x1 - x0)) * W, (1 - (y - y0) / (y1 - y0)) * H];
-  const draw = (lw, blur, a) => {
+  const P = ([x, y]: Pt) => [((x - x0) / (x1 - x0)) * W, (1 - (y - y0) / (y1 - y0)) * H];
+  const draw = (lw: number, blur: number, a: number) => {
     g.filter = `blur(${blur}px)`; g.strokeStyle = `rgba(255,255,255,${a})`; g.lineWidth = lw; g.lineCap = g.lineJoin = 'round';
     for (const s of strokes) { g.beginPath(); s.pts.forEach((p, i) => { const [x, y] = P(p); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.stroke(); }
   };

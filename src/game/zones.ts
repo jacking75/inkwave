@@ -43,19 +43,41 @@
 // Stages without zones get a placeholder layout (flagged placeholder: true) so the mode always runs.
 import { G, emit } from '../core/ctx.js';
 import { ZONES } from '../config.js';
+import type { Level } from '../world/level.js';
+import type { Match } from './match.js';
+
+type Poly = number[][];
+/** 구역 정의(zones-data.js): 윤곽 하나(poly) 또는 여럿(polys), 셀 높이 범위 */
+export interface ZoneDef { poly?: Poly; polys?: Poly[]; y0?: number; y1?: number }
+/** 스테이지 구역 배치: 중앙 1~2개, 알파 쪽 측면 하나(브라보 쪽은 거울) */
+export interface ZoneLayout { placeholder?: boolean; center: ZoneDef[]; side: ZoneDef }
+/** 점령 물결(ZoneMarks가 그린다): 팀(-1 지움), 시작·길이, 도달 반지름, 감속 */
+export interface ZoneFlood { team: number; t0: number; dur: number; reach: number; ease: string }
+/** 구역 하나의 실행 상태 */
+export interface Zone {
+  id: number; def: ZoneDef & { kind: string; home: number }; kind: string; home: number;
+  owner: number; share: number[]; hold: number; warnArmed: boolean; warnT: number; flood: ZoneFlood | null;
+  cells: Int32Array; center: number[]; reach: number; region: { cells: Int32Array; polys: Poly[]; y0: number; y1: number };
+}
+/** 목표(중앙 또는 측면 하나): 구역들, 홈 팀(-1 중앙) */
+export interface ZoneObjective { id: string; zones: Zone[]; home: number }
+/** 벌점 기록 */
+/** 온라인 구역 기록: [태그, 값…] */
+export type ZoneNet = Array<string | number | null>;
+interface PenaltyLog { t: number; team: number; start: number; end: number; penalty: number; next: number }
 
 const FINAL = ZONES.finalCentre ?? 30;   // the last N s (+ overtime): the centre only, no more rotations
 const WARN = ZONES.warn ?? 0.3;          // the other team's share of a held zone that sounds the "contested" warning
 const WARN_GAP = 4;                      // s between two warnings for one zone
 const MIN_STINT = 10;                    // a rotation never leaves an objective live for less than this before the lock
 const FILL_T = 0.6;                      // capture flood: the front's run time (s), eased out
-const r3 = (x) => Math.round(x * 1000) / 1000;
+const r3 = (x: number) => Math.round(x * 1000) / 1000;
 const WIPE_T = 0.7;                      // new-objective wipe: in step with ZoneMarks' reveal sweep (SWEEP_T, linear)
 
-const partsOf = (z) => z.polys || [z.poly];
-const mirrorZone = (z) => ({ ...z, poly: undefined, polys: partsOf(z).map((p) => p.map(([x, zz]) => [-x, -zz])) });
+const partsOf = (z: ZoneDef): Poly[] => z.polys || [z.poly!];
+const mirrorZone = (z: ZoneDef): ZoneDef => ({ ...z, poly: undefined, polys: partsOf(z).map((p) => p.map(([x, zz]) => [-x, -zz])) });
 
-function insidePoly(poly, x, z) {
+function insidePoly(poly: Poly, x: number, z: number) {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
     const [xi, zi] = poly[i], [xj, zj] = poly[j];
@@ -65,17 +87,17 @@ function insidePoly(poly, x, z) {
 }
 
 // placeholder zones when a stage has none yet: a 10 × 10 m square at mid, side zones a third of the way to each spawn
-function placeholderZones(level) {
+function placeholderZones(level: Level): ZoneLayout {
   const B = level.bounds, pad = level.spawnPads[0];
-  const sq = (cx, cz, h) => [[cx - h, cz - h], [cx + h, cz - h], [cx + h, cz + h], [cx - h, cz + h]];
+  const sq = (cx: number, cz: number, h: number) => [[cx - h, cz - h], [cx + h, cz - h], [cx + h, cz + h], [cx - h, cz + h]];
   const sx = pad.x * 0.4, sz = pad.z * 0.45;
   void B;
   return { placeholder: true, center: [{ poly: sq(0, 0, 5), y0: -2, y1: 6 }], side: { poly: sq(sx, sz, 4), y0: -2, y1: 6 } };
 }
 
 // the paint-grid cells of a zone: every live turf cell whose centre lies inside the outline and within [y0, y1]
-function zoneCells(zone) {
-  const L = G.level, P = G.paint, cells = [];
+function zoneCells(zone: ZoneDef) {
+  const L = G.level!, P = G.paint!, cells: number[] = [];
   let cx = 0, cz = 0, cy = 0;
   const y0 = zone.y0 ?? -2, y1 = zone.y1 ?? 6;
   const parts = partsOf(zone);
@@ -103,15 +125,20 @@ function zoneCells(zone) {
 }
 
 export class ZoneControl {
-  constructor(match) {
+  declare match: Match; declare placeholder: boolean; declare zones: Zone[]; declare objectives: ZoneObjective[]; declare active: ZoneObjective;
+  declare owner: number; declare lastOwner: number; declare neutralT: number;
+  declare count: number[]; declare penalty: number[]; declare start: number[]; declare tieEnd: Array<number | null>; declare holdT: number[];
+  declare clock: number; declare final: boolean; declare sampleT: number; declare overtime: boolean; declare overtimeT: number; declare otLosing: number;
+  declare winner: number | null; declare reason: string | null; declare log: PenaltyLog[]; declare snapT: number; declare nextSwap: number;
+  constructor(match: Match) {
     this.match = match;
-    const layout = G.level.layout || {};
-    const Z = layout.zones || placeholderZones(G.level);
+    const layout = G.level!.layout || {};
+    const Z = (layout.zones as ZoneLayout | undefined) || placeholderZones(G.level!);
     this.placeholder = !!Z.placeholder;
     // zones: [center…, sideA (home 0), sideB (home 1)]
-    const defs = [...Z.center.map((z) => ({ ...z, kind: 'center', home: -1 })),
+    const defs = [...Z.center.map((z: ZoneDef) => ({ ...z, kind: 'center', home: -1 })),
       { ...Z.side, kind: 'side', home: 0 }, { ...mirrorZone(Z.side), kind: 'side', home: 1 }];
-    this.zones = defs.map((d, i) => ({ id: i, def: d, kind: d.kind, home: d.home, owner: -1, share: [0, 0], hold: 0, warnArmed: true, warnT: -99, flood: null, ...zoneCells(d) }));
+    this.zones = defs.map((d, i): Zone => ({ id: i, def: d, kind: d.kind, home: d.home, owner: -1, share: [0, 0], hold: 0, warnArmed: true, warnT: -99, flood: null, ...zoneCells(d) }));
     const nc = Z.center.length;
     // objectives: the centre (1 or 2 zones), and one per side zone
     this.objectives = [
@@ -141,11 +168,11 @@ export class ZoneControl {
 
   // online: a guest's copy follows the host's (match.follower; a host migration makes it the rules engine)
   get follower() { return !!this.match.follower; }
-  _net(e) { if (!this.follower) G.netm?.recZone?.(e); }
+  _net(e: ZoneNet) { if (!this.follower) G.netm?.recZone?.(e); }
 
   // count + penalty: how much the team still has to count off to reach 0 (the penalty formula's start / end). NOT the
   // score — who's ahead / wins is the count alone (losing())
-  total(t) { return this.count[t] + this.penalty[t]; }
+  total(t: number) { return this.count[t] + this.penalty[t]; }
   // the team currently behind (higher count; the penalty doesn't count), or -1 when level
   losing() { const a = this.count[0], b = this.count[1]; return a === b ? -1 : a > b ? 0 : 1; }
   _swapDelay() { return ZONES.rotateMin + Math.random() * (ZONES.rotateMax - ZONES.rotateMin); }
@@ -158,7 +185,7 @@ export class ZoneControl {
 
   // Zone ink: a capture floods the zone with the taker's ink; a newly operational zone is wiped to bare floor (and
   // can't be taken while the wipe runs). zone.flood tells ZoneMarks where the front is (same radius function).
-  _flood(z, team) {
+  _flood(z: Zone, team: number) {
     const fill = team === 0 || team === 1;
     const dur = fill ? FILL_T : WIPE_T, reach = fill ? z.reach + 0.4 : z.reach + 3.5, ease = fill ? 'out' : 'linear';
     z.flood = { team: fill ? team : -1, t0: G.time ?? 0, dur, reach, ease };
@@ -168,7 +195,7 @@ export class ZoneControl {
 
   // ---- coverage + control of the operational objective's zones
   _sample() {
-    const grid = G.paint.grid;
+    const grid = G.paint!.grid;
     for (const z of this.active.zones) {
       let a = 0, b = 0;
       const c = z.cells;
@@ -185,11 +212,11 @@ export class ZoneControl {
       } else this._contest(z);
     }
     if (this.follower) return;
-    const o = this.active.zones.every((z) => z.owner === 0) ? 0 : this.active.zones.every((z) => z.owner === 1) ? 1 : -1;
+    const o = this.active.zones.every((z: Zone) => z.owner === 0) ? 0 : this.active.zones.every((z: Zone) => z.owner === 1) ? 1 : -1;
     if (o !== this.owner) this._setOwner(o);
   }
   // a zone taken (flooded with the taker's ink) or neutralised
-  _zoneOwner(z, t) {
+  _zoneOwner(z: Zone, t: number) {
     this._net(['zz', z.id, t]);
     z.owner = t;
     if (t >= 0) { z.warnArmed = true; z.warnT = -99; this._flood(z, t); }
@@ -197,7 +224,7 @@ export class ZoneControl {
   }
 
   // the other team is inking a held zone close to the neutralise line: warn once (re-armed when it's pushed back)
-  _contest(z) {
+  _contest(z: Zone) {
     const o = z.share[1 - z.owner];
     if (o < WARN - 0.08) { z.warnArmed = true; return; }
     if (o < WARN || !z.warnArmed || this.clock - z.warnT < WARN_GAP) return;
@@ -205,7 +232,7 @@ export class ZoneControl {
     emit('zones:contest', { zone: z, holder: z.owner, share: o });
   }
 
-  _setOwner(o) {
+  _setOwner(o: number) {
     const prev = this.owner;
     this.owner = o;
     if (o === -1) { this.neutralT = 0; }
@@ -225,7 +252,7 @@ export class ZoneControl {
   // ROUND(0.75 × (start − end)) + (start = 100 ? 1 : 0), start / end = count + penalty. If the team caught up to the
   // other team's count during its stint (the tie point), progress past that tie isn't penalised: end = the count at the
   // tie (its penalty was already counted off by then).
-  _penalise(t) {
+  _penalise(t: number) {
     const start = this.start[t];
     const end = this.tieEnd[t] != null ? Math.max(this.tieEnd[t], this.total(t)) : this.total(t);
     const p = Math.max(0, Math.round(ZONES.penaltyK * (start - end))) + (start === ZONES.count ? 1 : 0);
@@ -235,7 +262,7 @@ export class ZoneControl {
     emit('zones:penalty', { team: t, penalty: p, total: this.total(t), start, end });
   }
 
-  _tick(t, dt) {
+  _tick(t: number, dt: number) {
     const obj = this.active;
     const rate = obj.home < 0 ? ZONES.rateCenter : obj.home === t ? ZONES.rateHome : ZONES.rateAway;
     let d = rate * dt;
@@ -249,7 +276,7 @@ export class ZoneControl {
   }
 
   // (each client fills its own players' gauges: a remote player's special meter is its owner's)
-  _fillSpecials(dt) {
+  _fillSpecials(dt: number) {
     let team = -1, rate = 0;
     if (this.owner >= 0) { team = 1 - this.owner; rate = ZONES.gaugeHeld; }
     else { team = this.losing(); rate = ZONES.gaugeNeutral; }
@@ -263,7 +290,7 @@ export class ZoneControl {
   }
 
   // ---- per frame while the match is playing (and through overtime)
-  update(dt) {
+  update(dt: number) {
     if (this.winner != null) return;
     this.clock += dt;
     this.sampleT -= dt;
@@ -288,7 +315,7 @@ export class ZoneControl {
     }
   }
 
-  _swap(to = null, final = false) {
+  _swap(to: ZoneObjective | null = null, final = false) {
     const o = this.objectives;
     const next = to || (this.active === o[0] ? (Math.random() < 0.5 ? o[1] : o[2]) : o[0]);
     this._net(['za', o.indexOf(next), final ? 1 : 0]);
@@ -299,7 +326,7 @@ export class ZoneControl {
     if (final) this.nextSwap = 0; else this._schedule();
     if (this.owner !== -1) { this.owner = -1; this.neutralT = 0; emit('zones:control', { owner: -1, prev: this.lastOwner, objective: next.id }); }
     this.sampleT = 0;
-    emit('zones:active', { objective: next.id, zones: next.zones.map((z) => z.id), final, moved: true });
+    emit('zones:active', { objective: next.id, zones: next.zones.map((z: Zone) => z.id), final, moved: true });
   }
 
   // the last 30 s: the centre only from here to the end (overtime included)
@@ -308,7 +335,7 @@ export class ZoneControl {
     this.nextSwap = 0;
     const C = this.objectives[0];
     if (this.active !== C) this._swap(C, true);
-    else { this._net(['zf']); emit('zones:active', { objective: C.id, zones: C.zones.map((z) => z.id), final: true, moved: false }); }
+    else { this._net(['zf']); emit('zones:active', { objective: C.id, zones: C.zones.map((z: Zone) => z.id), final: true, moved: false }); }
   }
 
   // ---- time's up. Returns true when the match should end now; false = overtime has begun.
@@ -335,7 +362,7 @@ export class ZoneControl {
   // Overtime ends when: the losing team's count gets below the winning team's (it wins; its penalty is counted off first); the losing team is off the objective for
   // 10 s (two-zone centre: the winning team holds at least one zone neutral / theirs for 10 s); the winning team takes
   // the objective (both zones on a two-zone centre); or after 5 minutes.
-  _overtime(dt) {
+  _overtime(dt: number) {
     this.overtimeT += dt;
     // the team behind at the horn stays "L" (read live, it would flip the moment L's count passes W's and a comeback
     // would end as a retake); sudden death from a tie: whoever falls behind first
@@ -360,7 +387,7 @@ export class ZoneControl {
     return s[0] === s[1] ? (Math.random() < 0.5 ? 0 : 1) : s[0] > s[1] ? 0 : 1;
   }
 
-  _end(winner, reason) {
+  _end(winner: number, reason: string) {
     if (this.winner != null) return;
     this._net(['ze', winner, reason, r3(this.count[0]), r3(this.count[1]), r3(this.penalty[0]), r3(this.penalty[1])]);   // (the final numbers, exact)
     this.winner = winner; this.reason = reason;
@@ -369,12 +396,13 @@ export class ZoneControl {
   }
 
   // ---- online: a follower replays the host's records (netmatch 'z', on the host's event timeline)
-  netEvent(e) {
+  netEvent(e: ZoneNet) {
     if (!Array.isArray(e) || !this.follower || this.winner != null) return;
+    const n = (i: number) => e[i] as number;   // (태그 뒤 값은 숫자다 — 'ze'의 사유만 문자열)
     switch (e[0]) {
-      case 'zz': { const z = this.zones[e[1]]; if (z) this._zoneOwner(z, e[2]); break; }
+      case 'zz': { const z = this.zones[n(1)]; if (z) this._zoneOwner(z, n(2)); break; }
       case 'zo': {
-        const o = e[1], prev = this.owner;
+        const o = n(1), prev = this.owner;
         if (o === prev) break;
         this.owner = o;
         if (o === -1) this.neutralT = 0;
@@ -384,30 +412,30 @@ export class ZoneControl {
         break;
       }
       case 'zp': {
-        const [, t, p, start, end] = e;
+        const [, t, p, start, end] = e as number[];
         this.penalty[t] += p;
         this.log.push({ t: this.match.duration - this.match.time, team: t, start, end, penalty: p, next: this.total(t) });
         emit('zones:penalty', { team: t, penalty: p, total: this.total(t), start, end });
         break;
       }
-      case 'za': { const next = this.objectives[e[1]]; if (!next) break; if (e[2]) { this.final = true; } this._swap(next, !!e[2]); break; }
+      case 'za': { const next = this.objectives[n(1)]; if (!next) break; if (n(2)) { this.final = true; } this._swap(next, !!n(2)); break; }
       case 'zf': {
         this.final = true; this.nextSwap = 0;
         const C = this.objectives[0];
-        emit('zones:active', { objective: C.id, zones: C.zones.map((z) => z.id), final: true, moved: false });
+        emit('zones:active', { objective: C.id, zones: C.zones.map((z: Zone) => z.id), final: true, moved: false });
         break;
       }
-      case 'zt': this.overtime = true; this.overtimeT = 0; this.otLosing = e[1]; emit('zones:overtime', { losing: e[1] }); break;
+      case 'zt': this.overtime = true; this.overtimeT = 0; this.otLosing = n(1); emit('zones:overtime', { losing: n(1) }); break;
       case 'zs': {
-        const [, c0, c1, p0, p1, ns, ot, nt, h0, h1] = e;
+        const [, c0, c1, p0, p1, ns, ot, nt, h0, h1] = e as number[];
         this.count[0] = c0; this.count[1] = c1; this.penalty[0] = p0; this.penalty[1] = p1;
         this.nextSwap = ns < 0 ? Infinity : ns;
         this.overtimeT = ot; this.neutralT = nt; this.holdT[0] = h0; this.holdT[1] = h1;
         break;
       }
       case 'ze':
-        if (e.length > 3) { this.count[0] = e[3]; this.count[1] = e[4]; this.penalty[0] = e[5]; this.penalty[1] = e[6]; }
-        this._end(e[1], e[2]);
+        if (e.length > 3) { this.count[0] = n(3); this.count[1] = n(4); this.penalty[0] = n(5); this.penalty[1] = n(6); }
+        this._end(n(1), e[2] as string);
         break;
     }
   }
@@ -417,7 +445,7 @@ export class ZoneControl {
     return {
       active: this.active.id, owner: this.owner, lastOwner: this.lastOwner,
       count: this.count.map((c) => Math.ceil(c)), penalty: [...this.penalty], total: [Math.ceil(this.total(0)), Math.ceil(this.total(1))],
-      zones: this.active.zones.map((z) => ({ id: z.id, owner: z.owner, share: z.share.map((s) => +s.toFixed(3)), cells: z.cells.length, center: z.center })),
+      zones: this.active.zones.map((z: Zone) => ({ id: z.id, owner: z.owner, share: z.share.map((s: number) => +s.toFixed(3)), cells: z.cells.length, center: z.center })),
       nextSwap: this.final || !Number.isFinite(this.nextSwap) ? 0 : +this.nextSwap.toFixed(1), final: this.final, overtime: this.overtime, overtimeT: +this.overtimeT.toFixed(1), neutralT: +this.neutralT.toFixed(1),
       winner: this.winner, reason: this.reason, placeholder: this.placeholder,
     };

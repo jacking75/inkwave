@@ -14,12 +14,20 @@
 const MAP_COMPOSE_EVERY = 3;
 import { G, on } from '../core/ctx.js';
 import { SPECIALS, SUB } from '../config.js';
+import type { Actor } from './actor.js';
+import type { Level } from '../world/level.js';
+import type { PaintSystem } from '../world/paint.js';
+import type { ZoneControl } from './zones.js';
+
+/** 지도 위 잠깐 효과: 종류, 위치, 팀, 반지름, 경과·수명, 점프한 배우 */
+interface MapFx { kind: string; x: number; z: number; team: number; r?: number; t: number; life: number; actor?: Actor }
+type XYZ = { x: number; y: number; z: number };
 
 const TAU = Math.PI * 2;
-let CURRENT = null;          // the live Minimap (a new one is built per stage layout)
-const fxList = [];           // transient map effects (shared; cleared when the layout changes)
+let CURRENT: Minimap | null = null;          // the live Minimap (a new one is built per stage layout)
+const fxList: MapFx[] = [];           // transient map effects (shared; cleared when the layout changes)
 const live = () => { const m = G.match; return !!(m && !m.attract); };
-function pushFx(fx) { if (!CURRENT || !live()) return; if (fxList.length > 40) fxList.shift(); fxList.push(fx); }
+function pushFx(fx: MapFx) { if (!CURRENT || !live()) return; if (fxList.length > 40) fxList.shift(); fxList.push(fx); }
 on('special:slam', ({ actor, pos, radius }) => pushFx({ kind: 'slam', x: pos.x, z: pos.z, team: actor ? actor.team : 0, r: radius || SPECIALS.slam.radius, t: 0, life: 0.9 }));
 on('bomb:explode', ({ pos, team, radius }) => pushFx({ kind: 'boom', x: pos.x, z: pos.z, team: team | 0, r: radius || SUB.bomb.radius, t: 0, life: 0.7 }));
 on('superjump', ({ actor, phase, to, home }) => { if (phase === 'flight' && to && !home) pushFx({ kind: 'jump', x: to.x, z: to.z, team: actor.team, actor, t: 0, life: 3 }); });
@@ -33,15 +41,15 @@ on('respawn', ({ actor }) => { const p = G.level?.spawnPads?.[actor.team]; if (p
 // superJumpInfo(actor, from, to, out) fills from / to ({x,y,z}) and out = { phase, k (0..1 of the phase), e (horizontal
 // progress 0..1, flight only), home } and returns out — or null when the actor isn't super jumping. No allocation.
 export const SJ_CHARGE = 0.75;
-export const sjEase = (k) => (k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2);
-export function superJumpInfo(a, from, to, out) {
+export const sjEase = (k: number) => (k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2);
+export function superJumpInfo(a: Actor | null | undefined, from: XYZ, to: XYZ, out: { phase: string; k: number; e: number; home: boolean }) {
   const s = a && a.superJumpState;
   if (!s) return null;
-  let f, d;
+  let f: XYZ | undefined, d: XYZ | undefined;
   if (s.phase === 'flight') { f = s.from; d = s.to; }
   else {
     const tg = s.target;
-    d = tg && tg.pos && tg.pos.isVector3 ? (tg.jumpAnchor ? tg.jumpAnchor() : tg.pos) : tg;
+    d = tg && 'pos' in tg && tg.pos && tg.pos.isVector3 ? ((tg as Actor & { jumpAnchor?(): XYZ }).jumpAnchor ? (tg as Actor & { jumpAnchor(): XYZ }).jumpAnchor() : tg.pos) : (tg as XYZ);
     f = a.pos;
   }
   if (!f || !d || !Number.isFinite(d.x + d.z)) return null;
@@ -56,12 +64,58 @@ export function superJumpInfo(a, from, to, out) {
 const _jf = { x: 0, y: 0, z: 0 }, _jt = { x: 0, y: 0, z: 0 }, _ji = { phase: '', k: 0, e: 0, home: false }, _ja = { x: 0, y: 0 }, _jb = { x: 0, y: 0 };
 
 // linear → sRGB 0..255
-function lin2s(c) { return Math.round(255 * (c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055)); }
-const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+function lin2s(c: number) { return Math.round(255 * (c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055)); }
+const smooth = (a: number, b: number, x: number) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 const _a = { x: 0, y: 0 }, _b = { x: 0, y: 0 };
 export class Minimap {
-  constructor(level, paint, pxPerM = 7) {
+  declare _zPaths: Path2D[] | undefined;
+  declare _zFlip: boolean | undefined;
+  declare _zFor: ZoneControl | undefined;
+  declare _tc: { x: number; y: number; };
+  declare _cN: number | undefined;
+  declare _cAcc: number | undefined;
+  declare _theme: string | undefined;
+  declare _teamKey: string;
+  declare _quiet: boolean | undefined;
+  declare _tt: Uint8Array<ArrayBuffer>;
+  declare _tm: Uint8Array<ArrayBuffer>;
+  declare _alpha: Float32Array<ArrayBuffer>;
+  declare _rgb: number[][];
+  declare owner: Uint8Array<ArrayBuffer>;
+  declare pixSy: Int32Array<ArrayBuffer>;
+  declare pixSx: Int8Array<ArrayBuffer>;
+  declare pixFy: Uint8Array<ArrayBuffer>;
+  declare pixFx: Uint8Array<ArrayBuffer>;
+  declare pixCell: Int32Array<ArrayBuffer>;
+  declare nrm: Float32Array<ArrayBuffer>;
+  declare topBlock: Int32Array<ArrayBuffer>;
+  declare hgt: Float32Array<ArrayBuffer>;
+  declare viewerTeam: number | undefined;
+  declare _band: number;
+  declare _built: boolean;
+  declare _team: Array<number | null>;
+  declare flashT: number;
+  declare time: number;
+  declare timer: number;
+  declare version: number;
+  declare flip: boolean;
+  declare flashImg: ImageData;
+  declare inkImg: ImageData;
+  declare fctx: CanvasRenderingContext2D;
+  declare flashC: HTMLCanvasElement;
+  declare ictx: CanvasRenderingContext2D;
+  declare inkC: HTMLCanvasElement;
+  declare bctx: CanvasRenderingContext2D;
+  declare base: HTMLCanvasElement;
+  declare ctx: CanvasRenderingContext2D;
+  declare canvas: HTMLCanvasElement;
+  declare h: number;
+  declare w: number;
+  declare s: number;
+  declare paint: PaintSystem;
+  declare level: Level;
+  constructor(level: Level, paint: PaintSystem, pxPerM = 7) {
     this.level = level; this.paint = paint;
     const B = level.bounds;
     this.s = pxPerM;
@@ -69,10 +123,10 @@ export class Minimap {
     this.h = Math.round((B.maxZ - B.minZ) * pxPerM);
     const mk = () => { const c = document.createElement('canvas'); c.width = this.w; c.height = this.h; return c; };
     this.canvas = mk();
-    this.ctx = this.canvas.getContext('2d');
-    this.base = mk(); this.bctx = this.base.getContext('2d', { willReadFrequently: true });
-    this.inkC = mk(); this.ictx = this.inkC.getContext('2d');
-    this.flashC = mk(); this.fctx = this.flashC.getContext('2d');
+    this.ctx = this.canvas.getContext('2d')!;
+    this.base = mk(); this.bctx = this.base.getContext('2d', { willReadFrequently: true })!;
+    this.inkC = mk(); this.ictx = this.inkC.getContext('2d')!;
+    this.flashC = mk(); this.fctx = this.flashC.getContext('2d')!;
     this.inkImg = this.ictx.createImageData(this.w, this.h);
     this.flashImg = this.fctx.createImageData(this.w, this.h);
     this.flip = false;
@@ -86,11 +140,11 @@ export class Minimap {
     this._built = false;
     this._band = 0;
     // the raster + shading pass (~0.1–0.3 s) runs when the browser is idle after loading; a match forces it early
-    const idle = typeof requestIdleCallback === 'function' ? (fn) => requestIdleCallback(fn, { timeout: 1500 }) : (fn) => setTimeout(fn, 60);
+    const idle = typeof requestIdleCallback === 'function' ? (fn: IdleRequestCallback) => requestIdleCallback(fn, { timeout: 1500 }) : (fn: TimerHandler) => setTimeout(fn, 60);
     idle(() => { if (!this._built && CURRENT === this) this._build(); });
   }
 
-  setViewerTeam(team) {
+  setViewerTeam(team: number) {
     this.viewerTeam = team;
     const f = team === 1;
     if (f === this.flip && this._built) { this.version = -1; return; }
@@ -101,15 +155,15 @@ export class Minimap {
   ensure() { if (!this._built) this._build(); }
 
   // world → canvas px (float)
-  toCanvas(x, z, out = { x: 0, y: 0 }) {
+  toCanvas(x: number, z: number, out = { x: 0, y: 0 }) {
     const B = this.level.bounds;
     let cx = (B.maxX - x) * this.s, cy = (B.maxZ - z) * this.s;
     if (this.flip) { cx = this.w - cx; cy = this.h - cy; }
     out.x = cx; out.y = cy;
     return out;
   }
-  _worldX(px) { const B = this.level.bounds; const c = this.flip ? this.w - px : px; return B.maxX - c / this.s; }
-  _worldZ(py) { const B = this.level.bounds; const c = this.flip ? this.h - py : py; return B.maxZ - c / this.s; }
+  _worldX(px: number) { const B = this.level.bounds; const c = this.flip ? this.w - px : px; return B.maxX - c / this.s; }
+  _worldZ(py: number) { const B = this.level.bounds; const c = this.flip ? this.h - py : py; return B.maxZ - c / this.s; }
 
   // ------------------------------------------------------------------------------------------ static layers
   _build() {
@@ -192,13 +246,14 @@ export class Minimap {
   _drawBase() {
     const W = this.w, H = this.h, N = W * H, hgt = this.hgt, top = this.topBlock, nrm = this.nrm, lvl = this.level, s = this.s;
     const img = this.bctx.createImageData(W, H), d = img.data;
-    const theme = G.game?.theme || G.game?.mapDef?.theme || 'day';
+    const gm = G.game as { theme?: string; mapDef?: { theme?: string } } | null | undefined;
+    const theme = gm?.theme || gm?.mapDef?.theme || 'day';
     const dusk = theme === 'sunset';
     // sun from the top-left of the map; shadows fall toward the bottom-right
     const Lx = -0.62, Ly = -0.78;
     const shadowSlope = 0.11;           // metres of height per pixel of shadow length
     const blockCol = new Map();
-    const colOf = (id) => {
+    const colOf = (id: number) => {
       let c = blockCol.get(id);
       if (c) return c;
       const b = lvl.blocks[id];
@@ -341,13 +396,14 @@ export class Minimap {
   }
 
   // ------------------------------------------------------------------------------------------ per frame
-  update(dt, force = false) {
+  update(dt: number, force = false) {
     if (!this._built) this._build();
     this.time += dt;
     this.timer -= dt;
     const teamKey = G.teamHex ? G.teamHex[0] + G.teamHex[1] : '';
     if (teamKey !== this._teamKey) { this._teamKey = teamKey; this.version = -1; }
-    const theme = G.game?.theme || G.game?.mapDef?.theme || 'day';
+    const gm = G.game as { theme?: string; mapDef?: { theme?: string } } | null | undefined;
+    const theme = gm?.theme || gm?.mapDef?.theme || 'day';
     if (theme !== this._theme) { const had = this._theme; this._theme = theme; if (had) this._drawBase(); }
     const BANDS = 3;
     if (this._band > 0) {
@@ -374,7 +430,7 @@ export class Minimap {
     if (this._cN >= MAP_COMPOSE_EVERY) { this._cN = 0; const acc = this._cAcc; this._cAcc = 0; this._compose(acc); }
   }
 
-  _compose(dt) {
+  _compose(dt: number) {
     const c = this.ctx, W = this.w, H = this.h, s = this.s;
     c.globalAlpha = 1;
     c.drawImage(this.base, 0, 0);
@@ -408,7 +464,7 @@ export class Minimap {
       this.toCanvas(f.x, f.z, tc);
       const k = f.t / f.life, col = hex[f.team] || '#fff';
       if (f.kind === 'slam' || f.kind === 'boom') {
-        const r = f.r * s * (0.3 + 0.7 * (1 - Math.pow(1 - k, 3)));
+        const r = f.r! * s * (0.3 + 0.7 * (1 - Math.pow(1 - k, 3)));
         c.globalAlpha = (1 - k) * 0.45; c.fillStyle = col; c.beginPath(); c.arc(tc.x, tc.y, r, 0, TAU); c.fill();
         c.globalAlpha = 1 - k; c.lineWidth = f.kind === 'slam' ? 4 : 3; c.strokeStyle = '#ffffff'; c.stroke();
         c.globalAlpha = 1;
@@ -495,7 +551,7 @@ export class Minimap {
   // reaches out to the landing (the target ring closing in on it); in flight ink dots stream toward the landing ahead
   // of the jumper and the flown part fades to a thin trail (your own dot rides the line). Yours bold, teammates' thin.
   // Widths are in metres (× s): the corner map shows this canvas at roughly ⅓ scale.
-  _jumpLines(c, s, hex, t, team) {
+  _jumpLines(c: CanvasRenderingContext2D, s: number, hex: string[], t: number, team: number) {
     const acts = G.match && !G.match.attract ? G.match.actors : null;
     if (!acts) return;
     const A = _ja, B = _jb, J = _ji;
@@ -550,33 +606,34 @@ export class Minimap {
     }
   }
 
-  _drawZones(c, Z, hex, t) {
+  _drawZones(c: CanvasRenderingContext2D, Z: ZoneControl, hex: [string, string], t: number) {
     if (this._zFor !== Z || this._zFlip !== this.flip) {
       this._zFor = Z; this._zFlip = this.flip;
       const tc = { x: 0, y: 0 };
       this._zPaths = Z.zones.map((z) => {
         const p = new Path2D();
         for (const part of z.def.polys || [z.def.poly]) {
-          part.forEach(([x, zz], i) => { this.toCanvas(x, zz, tc); if (i) p.lineTo(tc.x, tc.y); else p.moveTo(tc.x, tc.y); });
+          part!.forEach(([x, zz], i) => { this.toCanvas(x, zz, tc); if (i) p.lineTo(tc.x, tc.y); else p.moveTo(tc.x, tc.y); });
           p.closePath();
         }
         return p;
       });
     }
+    const paths = this._zPaths!;   // (바로 위에서 만든다)
     const act = Z.active.zones, s = this.s;          // line widths in metres: the corner map shows the canvas at ~⅓ scale
     c.save();
     c.lineJoin = 'round';
     c.setLineDash([1.5 * s, 1.1 * s]);
     for (let i = 0; i < Z.zones.length; i++) {
       if (act.includes(Z.zones[i])) continue;
-      const path = this._zPaths[i];
+      const path = paths[i];
       c.globalAlpha = 0.5; c.lineWidth = 0.95 * s; c.strokeStyle = '#15121c'; c.stroke(path);
       c.globalAlpha = 0.85; c.lineWidth = 0.45 * s; c.strokeStyle = '#ffffff'; c.stroke(path);
     }
     c.setLineDash([]);
     const pulse = 0.5 + 0.5 * Math.sin(t * 4);
     for (const z of act) {
-      const path = this._zPaths[Z.zones.indexOf(z)];
+      const path = paths[Z.zones.indexOf(z)];
       const held = z.owner === 0 || z.owner === 1, col = held ? hex[z.owner] : '#ffffff';
       c.globalAlpha = (held ? 0.36 : 0.3) + 0.1 * pulse; c.fillStyle = col; c.fill(path);
       c.globalAlpha = 1; c.lineWidth = 1.15 * s; c.strokeStyle = '#15121c'; c.stroke(path);
@@ -586,8 +643,8 @@ export class Minimap {
     c.restore();
   }
 
-  _cross(c, x, y, r) { c.beginPath(); c.moveTo(x - r, y - r); c.lineTo(x + r, y + r); c.moveTo(x + r, y - r); c.lineTo(x - r, y + r); c.stroke(); }
-  _cloud(c, x, y, r, col) {
+  _cross(c: CanvasRenderingContext2D, x: number, y: number, r: number) { c.beginPath(); c.moveTo(x - r, y - r); c.lineTo(x + r, y + r); c.moveTo(x + r, y - r); c.lineTo(x - r, y + r); c.stroke(); }
+  _cloud(c: CanvasRenderingContext2D, x: number, y: number, r: number, col: string) {
     c.beginPath();
     c.arc(x - r * 0.55, y + r * 0.1, r * 0.55, 0, TAU); c.arc(x + r * 0.55, y + r * 0.1, r * 0.5, 0, TAU); c.arc(x, y - r * 0.25, r * 0.7, 0, TAU);
     c.lineWidth = 3; c.strokeStyle = '#15121c'; c.stroke(); c.fillStyle = col; c.fill();

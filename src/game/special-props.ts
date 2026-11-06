@@ -16,30 +16,30 @@ const TAU = Math.PI * 2;
 
 // ---------------------------------------------------------------------------------------------- helpers
 /** Bevelled slab from a 2D shape (XY plane), extruded along +Z by depth and centred on z = 0. */
-function slab(shape, depth, bevel = 0.006, curveSegments = 6) {
+function slab(shape: THREE.Shape | THREE.Shape[] | undefined, depth: number, bevel = 0.006, curveSegments = 6) {
   const g = new THREE.ExtrudeGeometry(shape, { depth: Math.max(1e-4, depth - 2 * bevel), bevelEnabled: bevel > 0, bevelThickness: bevel, bevelSize: bevel, bevelSegments: 2, curveSegments });
   g.translate(0, 0, -depth / 2 + bevel);
   return finalize(g);
 }
 /** Straight rod of radius r from a to b (lathe along +Y, oriented). */
-function rod(a, b, r, seg = 8) { const len = a.distanceTo(b); return orient(lathe([[0, 0], [r, 0], [r, len], [0, len]], seg), b.clone().sub(a), a); }
+function rod(a: THREE.Vector3, b: THREE.Vector3, r: number, seg = 8) { const len = a.distanceTo(b); return orient(lathe([[0, 0], [r, 0], [r, len], [0, len]], seg), b.clone().sub(a), a); }
 /** Horizontal ring on the XZ plane → ring around +Z at z (for things facing forward). */
-function zring(R, r, x, y, z, rs = 5, ts = 24) { return at(torus(R, r, rs, ts), x, y, z); }
+function zring(R: number, r: number, x: number, y: number, z: number, rs = 5, ts = 24) { return at(torus(R, r, rs, ts), x, y, z); }
 /** Sphere (superEllipsoid e = 1). */
-function ball(r, x, y, z, ws = 12, hs = 8) { return at(superEllipsoid(r, r, r, 1, 1, ws, hs), x, y, z); }
+function ball(r: number, x: number, y: number, z: number, ws = 12, hs = 8) { return at(superEllipsoid(r, r, r, 1, 1, ws, hs), x, y, z); }
 /** Make a closed solid face outward (flip the winding if its signed volume is negative). */
-function outward(g) {
-  const p = g.attributes.position, ix = g.index.array, a = new V3(), b = new V3(), c = new V3(); let vol = 0;
+function outward(g: THREE.BufferGeometry) {
+  const p = g.attributes.position, ix = g.index!.array, a = new V3(), b = new V3(), c = new V3(); let vol = 0;
   for (let i = 0; i < ix.length; i += 3) { a.fromBufferAttribute(p, ix[i]); b.fromBufferAttribute(p, ix[i + 1]); c.fromBufferAttribute(p, ix[i + 2]); vol += a.dot(b.cross(c)); }
   if (vol < 0) { for (let i = 0; i < ix.length; i += 3) { const t = ix[i + 1]; ix[i + 1] = ix[i + 2]; ix[i + 2] = t; } g.computeVertexNormals(); }
   return g;
 }
 const _rc = new THREE.Raycaster();
 /** First front-face hit of a ray on a (static, untransformed) mesh → { p, n } or null. */
-function hitOn(mesh, origin, dir) { _rc.set(origin, dir); const h = _rc.intersectObject(mesh, false)[0]; return h ? { p: h.point.clone(), n: h.face.normal.clone() } : null; }
+function hitOn(mesh: THREE.Object3D<THREE.Object3DEventMap>, origin: THREE.Vector3, dir: THREE.Vector3) { _rc.set(origin, dir); const h = _rc.intersectObject(mesh, false)[0]; return h && h.face ? { p: h.point.clone(), n: h.face.normal.clone() } : null; }
 /** Drape a part placed on the tangent plane (p0, n) onto the mesh surface: every vertex keeps its height above that
  *  plane, measured from the surface point found straight below it (along −n). */
-function drape(g, mesh, p0, n, lift = 0.002) {
+function drape(g: THREE.BufferGeometry, mesh: THREE.Object3D, p0: THREE.Vector3, n: THREE.Vector3, lift = 0.002) {
   const d = new V3(), dn = n.clone().negate();
   return deformG(g, (v) => {
     const h = d.subVectors(v, p0).dot(n), base = v.clone().addScaledVector(n, -h);
@@ -55,7 +55,7 @@ function drape(g, mesh, p0, n, lift = 0.002) {
  *  Extras: eyesAt (centre between the eyes, on the face), mouthAt (under the mask, for a shout/ink spit FX). */
 function buildKraken() {
   const P = new Parts(), I = new Parts();
-  const ZS = 0.88, sq = (g) => { g.scale(1, 1, ZS); return g; };
+  const ZS = 0.88, sq = (g: THREE.BufferGeometry) => { g.scale(1, 1, ZS); return g; };
   const prof = smoothProfile([[0, 0.34], [0.3, 0.37], [0.47, 0.47], [0.57, 0.66], [0.605, 0.9], [0.59, 1.12], [0.535, 1.34], [0.445, 1.56], [0.325, 1.77], [0.19, 1.94], [0.075, 2.055], [0, 2.1]], 34);
   I.add(sq(lathe(prof, 36)));
   // arrowhead fins: two big rounded triangular flaps from near the tip down the upper mantle (the squid silhouette),
@@ -86,7 +86,7 @@ function buildKraken() {
   // tentacle skirt: ten thick tapering arms, alternating long/short, tips curling up; pale suckers along the top
   for (let k = 0; k < 10; k++) {
     const az = (k + 0.5) * TAU / 10, s = k % 2 ? 0.86 : 1, d = new V3(Math.sin(az), 0, Math.cos(az) * ZS), tw = new V3(Math.cos(az), 0, -Math.sin(az)).multiplyScalar(0.05 * (k % 2 ? 1 : -1));
-    const pt = (r, y) => d.clone().multiplyScalar(r).add(new V3(0, y, 0)).add(tw.clone().multiplyScalar(r));
+    const pt = (r: number, y: number | undefined) => d.clone().multiplyScalar(r).add(new V3(0, y, 0)).add(tw.clone().multiplyScalar(r));
     const pts = [pt(0.2, 0.56), pt(0.35, 0.36), pt(0.47 * s + 0.03, 0.15), pt(0.6 * s + 0.02, 0.085), pt(0.71 * s + 0.02, 0.13), pt(0.745 * s + 0.02, 0.25 * s + 0.02)];
     const tt = sweep(pts, { seg: 16, radial: 10, capSteps: 3, radius: (t) => 0.14 * (1 - 0.74 * t) + 0.012, flat: 0.82, outward: () => new V3(0, 1, 0), transport: true });
     I.add(tt.geo);
@@ -152,7 +152,7 @@ function buildSpeaker() {
   const rimZ = bz + 0.108, depth = 0.094;
   P.add(zring(WR, 0.022, 0, wy, rimZ, 8, 48), C.rubber, M.rubber);
   // woofer (cone / coneInk): ribbed shallow dish, concave behind the rim plane; team dust cap; rings on the dish
-  const dz = (r) => { const t = Math.min(1, Math.max(0, (WR - 0.004 - r) / (WR - 0.1))); return rimZ - depth * Math.pow(t, 1.3) + 0.0035 * Math.sin(t * Math.PI * 9) * (1 - t); };
+  const dz = (r: number) => { const t = Math.min(1, Math.max(0, (WR - 0.004 - r) / (WR - 0.1))); return rimZ - depth * Math.pow(t, 1.3) + 0.0035 * Math.sin(t * Math.PI * 9) * (1 - t); };
   const dish = [[0, rimZ - depth - 0.012], [WR - 0.004, rimZ - depth - 0.012], [WR - 0.004, rimZ]];
   for (let i = 1; i <= 16; i++) { const r = WR - 0.004 - i * (WR - 0.1) / 16; dish.push([r, dz(r)]); }
   dish.push([0, rimZ - depth]);
@@ -168,7 +168,7 @@ function buildSpeaker() {
     P.add(at(superEllipsoid(0.018, 0.018, 0.012, 1, 1, 10, 6), tx, ty, bz + 0.008), C.metal, M.metal);
   }
   const knob = () => lathe(smoothProfile([[0, 0], [0.028, 0.0], [0.03, 0.012], [0.026, 0.03], [0, 0.034]], 7), 14, (v) => { const rr = Math.hypot(v.x, v.z); if (rr > 0.01) { const k = 1 - 0.07 * Math.max(0, Math.cos(Math.atan2(v.z, v.x) * 9)); v.x *= k; v.z *= k; } });
-  for (const [x, col] of [[-0.2, C.white], [0.2, C.hazard]]) {
+  for (const [x, col] of [[-0.2, C.white], [0.2, C.hazard]] as Array<[number, string]>) {
     P.add(orient(knob(), new V3(0, 0, 1), new V3(x, 1.265, bz)), C.dark, M.gloss);
     P.add(orient(superEllipsoid(0.004, 0.012, 0.003, 0.6, 0.6, 5, 5), new V3(0, 0, 1), new V3(x, 1.265 + 0.016, bz + 0.035)), col, M.gloss);
   }
@@ -297,7 +297,7 @@ function buildCrab() {
   P.add(cara, C.cream, M.gloss);
   P.add(at(superEllipsoid(0.56, 0.1, 0.44, 0.5, 0.7, 24, 8), 0, 0.46, -0.02), C.dark, M.gloss);
   P.add(at(superEllipsoid(0.62, 0.035, 0.49, 0.5, 0.72, 32, 4), 0, 0.64, -0.02), C.dark, M.satin);
-  const down = new V3(0, -1, 0), topAt = (x, z) => hitOn(caraMesh, new V3(x, 2, z), down);
+  const down = new V3(0, -1, 0), topAt = (x: number, z: number) => hitOn(caraMesh, new V3(x, 2, z), down)!;   // (덮개 위 x·z는 늘 맞는다)
   // team stripes over the top either side of the hatch, emblem on the front slope
   for (const sx of [1, -1]) {
     const pts = []; for (let i = 0; i <= 10; i++) { const z = -0.4 + i * 0.075, h = topAt(sx * 0.35, z); pts.push(h.p.add(new V3(0, 0.006, 0))); }
@@ -324,7 +324,7 @@ function buildCrab() {
   P.add(lathe([[0, 1.132], [hr - 0.015, 1.132], [hr - 0.015, 1.138], [0, 1.138]], 32).translate(0, 0, hz), C.darker, M.satin);
   {
     const piv = new V3(hr + 0.05, rimY + 0.03, hz);
-    const lidG = (g) => { g.translate(-0.3, 0, 0); g.rotateZ(-1.95); g.translate(piv.x, piv.y, piv.z); return g; };
+    const lidG = (g: THREE.BufferGeometry) => { g.translate(-0.3, 0, 0); g.rotateZ(-1.95); g.translate(piv.x, piv.y, piv.z); return g; };
     P.add(lidG(lathe(smoothProfile([[0, -0.03], [0.24, -0.03], [0.262, -0.02], [0.268, 0.0], [0.25, 0.022], [0.16, 0.034], [0, 0.036]], 8), 32)), C.cream, M.gloss);
     I.add(lidG(hring(0.2, 0.012, 0.03, 5, 32)));
     P.add(lidG(lathe([[0, 0.03], [0.05, 0.03], [0.05, 0.046], [0, 0.046]], 12)), C.metal, M.metal);
@@ -354,9 +354,9 @@ function buildCrab() {
     const palmC = wr.clone().addScaledVector(fwd, 0.19);
     I.add(placeXY(superEllipsoid(0.16, 0.175, 0.23, 0.7, 0.8, 14, 10, (q) => { if (q.z > 0) { const t = q.z / 0.23; q.x *= 1 - 0.25 * t; q.y *= 1 - 0.2 * t; } }), side, up, palmC));
     const fb = palmC.clone().addScaledVector(fwd, 0.17);
-    const F = (f, h) => fb.clone().addScaledVector(fwd, f).addScaledVector(up, h);
+    const F = (f: number, h: number) => fb.clone().addScaledVector(fwd, f).addScaledVector(up, h);
     const fingers = [[[F(0, 0.09), F(0.16, 0.135), F(0.33, 0.07), F(0.41, -0.03)], 0.09, -1], [[F(0, -0.08), F(0.17, -0.12), F(0.35, -0.065), F(0.45, 0.03)], 0.105, 1]];
-    for (const [pts, r0, inner] of fingers) {
+    for (const [pts, r0, inner] of fingers as Array<[THREE.Vector3[], number, number]>) {
       const f = sweep(pts, { seg: 10, radial: 9, capSteps: 3, radius: (t) => r0 * (1 - 0.72 * t) + 0.008, flat: 0.8, outward: () => side.clone(), transport: true });
       I.add(f.geo);
       const e = f.sample(0.94); P.add(orient(lathe(smoothProfile([[0, -0.04], [0.034, -0.026], [0.026, 0.026], [0, 0.065]], 6), 10), e.T, e.P), C.dark, M.gloss);
@@ -378,7 +378,7 @@ function buildCrab() {
     const a = k * TAU / 6, bx = Math.cos(a) * 0.056, by = gy + Math.sin(a) * 0.056;
     S.add(latheZ([[0, 0.0], [0.019, 0.0], [0.019, 0.29], [0.023, 0.3], [0.023, 0.322], [0.015, 0.325], [0.012, 0.31], [0, 0.308]], 8).translate(bx, by, gz1), C.gunmetal, M.metal);
   }
-  for (const [z, col] of [[0.06, C.dark], [0.22, C.cream]]) S.add(latheZ([[0, z - 0.014], [0.085, z - 0.014], [0.092, z - 0.006], [0.092, z + 0.006], [0.085, z + 0.014], [0, z + 0.014]], 28).translate(0, gy, gz1), col, M.gloss);
+  for (const [z, col] of [[0.06, C.dark], [0.22, C.cream]] as Array<[number, string]>) S.add(latheZ([[0, z - 0.014], [0.085, z - 0.014], [0.092, z - 0.006], [0.092, z + 0.006], [0.085, z + 0.014], [0, z + 0.014]], 28).translate(0, gy, gz1), col, M.gloss);
   SI.add(zring(0.093, 0.008, 0, gy, gz1 + 0.22, 5, 28));
   { const m = superEllipsoid(0.008, 0.014, 0.02, 0.6, 0.6, 6, 5), a = Math.PI / 6; m.rotateZ(a); S.add(at(m, Math.cos(a) * 0.092, gy + Math.sin(a) * 0.092, gz1 + 0.06), C.hazard, M.print); }
   // mortar on the back-right: turret drum, trunnion cheeks, stubby cream tube pitched up and forward
@@ -396,7 +396,7 @@ function buildCrab() {
   const cannonMuzzle = tb.clone().addScaledVector(cdir, 0.278);
   // legs: 3 per side, stubby and chunky; hip pivots on the hull flanks; armoured femur up-out to a knee, tibia down to
   // a rubber-capped foot
-  const legs = [];
+  const legs: Array<{ body: THREE.BufferGeometry | null; ink: THREE.BufferGeometry | null; at: THREE.Vector3; side: number; index: number }> = [];
   for (const sx of [1, -1]) [0.22, -0.06, -0.34].forEach((z0, idx) => {
     const B = new Parts(), BI = new Parts();
     const splay = (1 - idx) * 0.3;                                        // front legs reach forward, back legs back
@@ -417,10 +417,10 @@ function buildCrab() {
   // armoured ball (rolling mode): latitude bands about the X axis (roll axis) over a dark seam sphere, team equator
   // with cream chevrons, rivets, dark hub caps with bolt circles and team squid emblems
   const BP = new Parts(), BI = new Parts(), BR = 0.95;
-  const ax = (g) => { g.rotateZ(-Math.PI / 2); g.translate(0, BR, 0); return g; };      // lathe +Y axis → +X, lifted
+  const ax = (g: THREE.BufferGeometry) => { g.rotateZ(-Math.PI / 2); g.translate(0, BR, 0); return g; };      // lathe +Y axis → +X, lifted
   BP.add(ax(lathe(sphZone(BR - 0.018, 0, -Math.PI / 2 + 0.01, Math.PI / 2 - 0.01, 22), 40)), C.darker, M.satin);
-  for (const [e0, e1, kind] of [[-1.2, -0.64, 'c'], [-0.6, -0.2, 'c'], [-0.16, 0.16, 'i'], [0.2, 0.6, 'c'], [0.64, 1.2, 'c']]) {
-    const pr = [], n = 9;
+  for (const [e0, e1, kind] of [[-1.2, -0.64, 'c'], [-0.6, -0.2, 'c'], [-0.16, 0.16, 'i'], [0.2, 0.6, 'c'], [0.64, 1.2, 'c']] as Array<[number, number, string]>) {
+    const pr: number[][] = [], n = 9;
     for (let i = 0; i <= n; i++) { const e = e0 + (e1 - e0) * i / n, m = Math.min(i, n - i), edge = m === 0 ? 0.014 : m === 1 ? 0.003 : 0; pr.push([(BR - edge) * Math.cos(e), (BR - edge) * Math.sin(e)]); }
     const g = ax(lathe(pr, 44));
     if (kind === 'i') BI.add(g); else BP.add(g, C.cream, M.gloss);
@@ -452,12 +452,14 @@ function buildCrab() {
 }
 
 // ---------------------------------------------------------------------------------------------- registry
-const BUILDERS = { kraken: buildKraken, speaker: buildSpeaker, missile: buildMissile, jetpack: buildJetpack, crab: buildCrab };
+const BUILDERS: Record<string, () => SpecialProp> = { kraken: buildKraken, speaker: buildSpeaker, missile: buildMissile, jetpack: buildJetpack, crab: buildCrab };
 export const SPECIAL_PROP_KINDS = Object.keys(BUILDERS);
-const _cache = new Map();
+const _cache = new Map<string, SpecialProp>();
 /** Geometry set for a special's world prop (cached per kind; shared — do not dispose). Unknown kinds → null. */
-export function getSpecialProp(kind) {
+/** 스페셜 소품 형상 묶음: 종류, 몸체·잉크 + 종류별 부품·위치(다리, 눈·입 위치, 크기 …) */
+export type SpecialProp = { kind: string; body: THREE.BufferGeometry | null; ink: THREE.BufferGeometry | null; [k: string]: unknown };
+export function getSpecialProp(kind: string): SpecialProp | null {
   if (!BUILDERS[kind]) return null;
   if (!_cache.has(kind)) _cache.set(kind, BUILDERS[kind]());
-  return _cache.get(kind);
+  return _cache.get(kind)!;
 }
