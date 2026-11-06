@@ -3,6 +3,7 @@ import type { Actor, ActorIntent } from '../actor.js';
 import type { WeaponRunner, WeaponInput } from '../weapons.js';
 import type { WeaponCfg, SubCfg } from '../../config.js';
 import type { SubSystem } from '../subs.js';
+import type { BotBrain } from '../bots.js';
 import { G } from '../../core/ctx.js';
 // Registries for main-weapon and sub-weapon kinds that live in their own modules (src/game/kits/<kind>.js). Each kit
 // module registers itself when imported (kits/index.js imports them all); the core systems look a kind up here after
@@ -60,10 +61,12 @@ import { G } from '../../core/ctx.js';
 //   MAIN_KITS only: netState?(runner) → int   the pose / state bits other screens need (packed each tick)
 //                   netApply?(runner, bits, dt)   a remote runner: rebuild runner.kit from those bits
 // KIT_GHOSTS[kind] = { ghost } — ghost-only entries for things that aren't a main or sub kit (e.g. a special's objects)
-/** 위 주석의 봇 훅(bots.ts가 부른다). brain·ctx는 bots.ts가 정의한다. */
+/** 봇 판단 문맥(bots.ts가 넘긴다): 목표·거리·조준 등 — 필드는 bots.ts 소유 */
+export type BotCtx = Record<string, unknown>;
+/** 위 주석의 봇 훅(bots.ts가 부른다). */
 export interface KitBotHooks {
-  fight?(brain: unknown, ctx: unknown): boolean; paint?(brain: unknown, ctx?: unknown): boolean; tactics?(brain: unknown, ctx: unknown): void;
-  stayIn?(brain: unknown, ctx: unknown): boolean; targetBias?(brain: unknown, enemy: Actor): number;
+  fight?(brain: BotBrain, ctx: BotCtx): boolean; paint?(brain: BotBrain, ctx?: BotCtx): boolean; tactics?(brain: BotBrain, ctx: BotCtx): void;
+  stayIn?(brain: BotBrain, ctx: BotCtx): boolean; targetBias?(brain: BotBrain, enemy: Actor): number;
   paintPitch?: number; melee?: boolean; charges?: boolean; long?: boolean; painter?: boolean;
 }
 /** 위협·방패 기술자(봇이 읽는다). 키트마다 필드가 다르다. */
@@ -82,6 +85,7 @@ export interface MainKit {
   shields?(out: KitDescriptor[]): KitDescriptor[];
   ghost?(actor: Actor, data: number[]): void; netHurt?(id: number, dmg: number): void;
   netState?(runner: WeaponRunner): number; netApply?(runner: WeaponRunner, bits: number, dt: number): void;
+  [tool: `_${string}`]: unknown;   // 시험·도구용 내부 노출(_bolts 등)
 }
 /** 보조무기 키트(위 주석 참조) */
 export interface SubKit {
@@ -93,9 +97,10 @@ export interface SubKit {
   blockRay?(from: THREE.Vector3, dir: THREE.Vector3, len: number, team: number, dmg: number): number;
   damageArea?(c: THREE.Vector3, radius: number, dmg: number, team: number): void;
   noArc?: boolean;
-  bot?: { fight?(brain: unknown, dist: number): boolean; paint?(brain: unknown): boolean };
+  bot?: { fight?(brain: BotBrain, dist: number): boolean; paint?(brain: BotBrain): boolean };
   threats?(out: KitDescriptor[]): KitDescriptor[];
   ghost?(actor: Actor, data: number[]): void; netHurt?(id: number, dmg: number): void;
+  [tool: `_${string}`]: unknown;
 }
 export const MAIN_KITS: Record<string, MainKit | undefined> = {};
 export const SUB_KITS: Record<string, SubKit | undefined> = {};

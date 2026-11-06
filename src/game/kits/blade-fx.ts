@@ -5,6 +5,7 @@
 //   a streaming tail you see from the side), team ink with a white-hot leading edge.
 import * as THREE from 'three';
 import { G } from '../../core/ctx.js';
+import type { Actor } from '../actor.js';
 import { SFX } from '../../audio/audio.js';
 import { pts } from '../../audio/music.js';
 
@@ -13,7 +14,7 @@ const DEG = Math.PI / 180;
 // ------------------------------------------------------------------------------------------ geometry
 // arc: u along the sweep (0 start → 1 end), v across (0 inner → 1 outer, the blade tip's path). plane 'h' = XZ
 // (angle from +Z toward +X), 'v' = YZ (angle from +Z toward +Y)
-function arcGeometry(a0, a1, r0, r1, plane, nu = 44, nv = 7) {
+function arcGeometry(a0: number, a1: number, r0: number, r1: number, plane: string, nu = 44, nv = 7) {
   const pos = [], uv = [], idx = [];
   for (let i = 0; i <= nu; i++) {
     const u = i / nu, th = a0 + (a1 - a0) * u;
@@ -130,13 +131,18 @@ function waveMaterial() {
   });
 }
 // GTAO / depth override passes would draw the raw sheets as occluders: sit them out (same as the charger ribbons)
-function gate(renderer, scene, camera, geometry) { geometry.drawRange.count = scene.overrideMaterial ? 0 : Infinity; }
+function gate(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, geometry: THREE.BufferGeometry) { geometry.drawRange.count = scene.overrideMaterial ? 0 : Infinity; }
 
 // ------------------------------------------------------------------------------------------ pools
 const ARC_N = 14, WAVE_N = 12;
+type FxMesh = THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+/** 베기 궤적 하나: 무리·메시, 사용 중, 배우·경과·길이·쪽·강공·방향·사라짐 */
+interface Arc { grp: THREE.Group; mesh: FxMesh; busy: boolean; a: Actor | null; t: number; dur: number; side: number; heavy: boolean; yaw: number; fade: number }
+/** 검기 메시 하나 */
+export interface Wave { mesh: FxMesh; busy: boolean }
 export const BladeFX = {
-  scene: null, arcs: [], waves: [], live: [],
-  _geoH: null, _geoV: null, _geoW: null,
+  scene: null as THREE.Scene | null, arcs: [] as Arc[], waves: [] as Wave[], live: [] as Arc[],
+  _geoH: null as THREE.BufferGeometry | null, _geoV: null as THREE.BufferGeometry | null, _geoW: null as THREE.BufferGeometry | null,
   ensure() {
     if (!G.scene) return false;
     if (this.scene === G.scene) return true;
@@ -146,21 +152,21 @@ export const BladeFX = {
     this._geoV = this._geoV || arcGeometry(118 * DEG, -58 * DEG, 0.3, 1.7, 'v');
     this._geoW = this._geoW || waveGeometry();
     for (let i = 0; i < ARC_N; i++) {
-      const grp = new THREE.Group(), m = new THREE.Mesh(this._geoH, arcMaterial());
+      const grp = new THREE.Group(), m = new THREE.Mesh(this._geoH!, arcMaterial());
       m.frustumCulled = false; m.renderOrder = 5; m.onBeforeRender = gate;
-      grp.add(m); grp.visible = false; this.scene.add(grp);
-      this.arcs.push({ grp, mesh: m, busy: false });
+      grp.add(m); grp.visible = false; this.scene!.add(grp);
+      this.arcs.push({ grp, mesh: m, busy: false, a: null, t: 0, dur: 0, side: 1, heavy: false, yaw: 0, fade: 0 });
     }
     for (let i = 0; i < WAVE_N; i++) {
-      const m = new THREE.Mesh(this._geoW, waveMaterial());
+      const m = new THREE.Mesh(this._geoW!, waveMaterial());
       m.frustumCulled = false; m.renderOrder = 5; m.onBeforeRender = gate; m.visible = false;
-      this.scene.add(m);
+      this.scene!.add(m);
       this.waves.push({ mesh: m, busy: false });
     }
     return true;
   },
   // a slash arc riding with actor a: side ±1 (+1 sweeps the kid's right → left), heavy = the overhead cut
-  slash(a, side, heavy, dur, yaw = a.aimYaw) {
+  slash(a: Actor, side: number, heavy: boolean, dur: number, yaw = a.aimYaw) {
     if (G.camera && G.camera.position.distanceToSquared(a.pos) > 50 * 50) return;   // too far to read: skip the trail
     if (!this.ensure()) return;
     let s = this.arcs.find((x) => !x.busy);
@@ -168,7 +174,7 @@ export const BladeFX = {
     s.busy = true; s.a = a; s.t = 0; s.dur = dur; s.side = side; s.heavy = heavy; s.yaw = yaw;
     s.fade = heavy ? 0.26 : 0.2;
     const m = s.mesh, u = m.material.uniforms;
-    m.geometry = heavy ? this._geoV : this._geoH;
+    m.geometry = (heavy ? this._geoV : this._geoH)!;
     u.uColor.value.copy(G.teamColors[a.team] || a.color); u.uHead.value = 0; u.uFade.value = 1; u.uTail.value = heavy ? 0.4 : 0.32; u.uHeavy.value = heavy ? 1 : 0;
     // the tap arc: mirrored per side (sweep direction), tilted into a diagonal (high at the start → low at the end)
     m.scale.set(heavy ? 1 : side, 1, 1);
@@ -178,12 +184,12 @@ export const BladeFX = {
     this._place(s);
     this.live.push(s);
   },
-  _place(s) {
-    const a = s.a;
+  _place(s: Arc) {
+    const a = s.a!;
     s.grp.position.set(a.pos.x, a.pos.y + (a.smoothY || 0) + (s.heavy ? 1.18 : 0.98), a.pos.z);
     s.grp.rotation.set(0, s.yaw, 0);
   },
-  waveMesh(color) {
+  waveMesh(color: THREE.Color) {
     if (!this.ensure()) return null;
     const w = this.waves.find((x) => !x.busy);
     if (!w) return null;
@@ -191,8 +197,8 @@ export const BladeFX = {
     w.mesh.material.uniforms.uColor.value.copy(color); w.mesh.material.uniforms.uFade.value = 1; w.mesh.material.uniforms.uT.value = 0;
     return w;
   },
-  freeWave(w) { if (!w) return; w.busy = false; w.mesh.visible = false; },
-  tick(dt) {
+  freeWave(w: Wave | null | undefined) { if (!w) return; w.busy = false; w.mesh.visible = false; },
+  tick(dt: number) {
     for (let i = this.live.length - 1; i >= 0; i--) {
       const s = this.live[i];
       s.t += dt;

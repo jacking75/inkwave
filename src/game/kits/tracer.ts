@@ -10,11 +10,16 @@
 // While the button is held the local player sees a thin guide: the true launch line to the first bounce, then the
 // first rebound (dashed), so the low angle is learnable.
 import * as THREE from 'three';
+import type { Actor } from '../actor.js';
+import type { SubSystem } from '../subs.js';
+import type { WeaponRunner, WeaponInput } from '../weapons.js';
 import { G, emit, clamp } from '../../core/ctx.js';
-import { PLAYER, SUBS } from '../../config.js';
+import { PLAYER, SUBS, SUB_CFG } from '../../config.js';
+import type { SubCfg } from '../../config.js';
+import type { LoopHandle } from '../../audio/audio.js';
 import { Physics, Hit } from '../physics.js';
 import { SUB_KITS, netRec, netId, ghostMute } from './registry.js';
-const r3 = (x) => Math.round(x * 1000) / 1000;
+const r3 = (x: number) => Math.round(x * 1000) / 1000;
 import { registerSubModel, getSubDef, GEO_KIT } from '../character-weapons.js';
 import { superEllipsoid, smoothProfile } from '../character-geo.js';
 import { getPlasticMaterial, getInkMaterial } from '../character-mats.js';
@@ -28,10 +33,10 @@ const UP = new V3(0, 1, 0), ZAX = new V3(0, 0, 1);
 const SCALE = 1.9;
 const _v = new V3(), _v2 = new V3(), _v3 = new V3(), _end = new V3(), _q = new THREE.Quaternion();
 const _hit = new Hit(), _hit2 = new Hit(), _res = { t: 0, dist: 0 };
-const nearCam = (p, r = 34) => !!G.camera && G.camera.position.distanceToSquared(p) < r * r;
-const hitBase = (e, out) => out.set(e.pos.x, e.pos.y + (e.smoothY || 0), e.pos.z);
-const hitH = (e) => e.hitH || (e.form === 'squid' ? PLAYER.squidHeight : PLAYER.height);
-const hitR = (e) => e.hitR || PLAYER.radius;
+const nearCam = (p: THREE.Vector3, r = 34) => !!G.camera && G.camera.position.distanceToSquared(p) < r * r;
+const hitBase = (e: Actor, out: THREE.Vector3) => out.set(e.pos.x, e.pos.y + (e.smoothY || 0), e.pos.z);
+const hitH = (e: Actor) => e.hitH || (e.form === 'squid' ? PLAYER.squidHeight : PLAYER.height);
+const hitR = (e: Actor) => e.hitR || PLAYER.radius;
 
 // =============================================================================================== model
 // Hand scale, prop space (+Z forward): a slim bolt — a machined metal spike on a cream front body with a team stripe,
@@ -42,14 +47,14 @@ function buildTracer() {
   const { Parts, C, M, latheZ, torus, at, profR, led, gripSleeve, chevrons, wrapZ } = GEO_KIT;
   const P = new Parts(), I = new Parts(), L = new Parts();
   const BP = smoothProfile([[0.0122, -0.054], [0.0135, -0.045], [0.0137, -0.03], [0.0133, -0.012], [0.0128, 0.02], [0.0125, 0.045], [0.0114, 0.068]], 30);
-  const r = (z) => profR(BP, z);
-  const section = (z0, z1, dr = 0, n = 10) => {
+  const r = (z: number) => profR(BP, z);
+  const section = (z0: number, z1: number, dr = 0, n = 10) => {
     const pr = [[0, z0]];
     for (let i = 0; i <= n; i++) { const z = z0 + (z1 - z0) * i / n; pr.push([r(z) + dr, z]); }
     pr.push([0, z1]);
     return at(latheZ(pr, 22), 0, YC, 0);
   };
-  const ring = (z, tube, col, mat, R) => P.add(at(torus(R ?? r(z) + 0.0004, tube, 6, 26), 0, YC, z), col, mat);
+  const ring = (z: number, tube: number, col: THREE.ColorRepresentation, mat: number, R?: number) => P.add(at(torus(R ?? r(z) + 0.0004, tube, 6, 26), 0, YC, z), col, mat);
   // spike
   P.add(at(latheZ([[0, 0.0675], [0.0104, 0.0675], [0.0098, 0.075], [0.0078, 0.085], [0.0046, 0.0955], [0.0014, 0.1028], [0, 0.104]], 22), 0, YC, 0), C.metal, M.metal);
   ring(0.0685, 0.0019, C.dark, M.gloss, 0.0112);
@@ -102,23 +107,31 @@ const RIB_FS = `
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }`;
+type RibbonMesh = THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
+/** 날아가는 추적탄 하나: 설정·주인·팀, 위치·방향·남은 거리, 튕김, 상태, 맞은 대상, 궤적 점(위치·시각), 메시·소리, 원격 유령 */
+interface Bolt {
+  kind: string; sub: SubCfg; owner: Actor; team: number; pos: THREE.Vector3; start: THREE.Vector3; dir: THREE.Vector3; left: number; travel: number; bounces: number;
+  state: string; hitSet: Set<Actor>; pts: Array<{ p: THREE.Vector3; b: number }>; sp: boolean; age: number; scene: THREE.Scene | THREE.Object3D;
+  head: THREE.Group; rib: RibbonMesh; hum: LoopHandle | null; path: THREE.Vector3[]; direct: Actor | null; lastPt: number; ghost: boolean; gid: number;
+}
+
 const RIB_CAP = 160;
-function makeRibbon(team, life) {
+function makeRibbon(team: number, life: number) {
   const g = new THREE.BufferGeometry();
   const pos = new THREE.BufferAttribute(new Float32Array(RIB_CAP * 2 * 3), 3); pos.setUsage(THREE.DynamicDrawUsage);
   const info = new THREE.BufferAttribute(new Float32Array(RIB_CAP * 2 * 2), 2); info.setUsage(THREE.DynamicDrawUsage);
   g.setAttribute('position', pos); g.setAttribute('aInfo', info);
-  const idx = [];
+  const idx: number[] = [];
   for (let i = 0; i < RIB_CAP - 1; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
   g.setIndex(idx); g.setDrawRange(0, 0);
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uColor: { value: G.teamColors[team].clone() }, uTime: { value: 0 }, uLife: { value: life } },
+    uniforms: { uColor: { value: G.teamColors[team]!.clone() }, uTime: { value: 0 }, uLife: { value: life } },
     vertexShader: RIB_VS, fragmentShader: RIB_FS, transparent: true, depthWrite: false, side: THREE.DoubleSide,
   });
   const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 2;
   return m;
 }
-function drawRibbon(b) {
+function drawRibbon(b: Bolt) {
   const R = b.rib, P = b.pts, n = P.length;
   if (n < 2 || !G.camera) { R.geometry.setDrawRange(0, 0); return; }
   const pos = R.geometry.attributes.position, info = R.geometry.attributes.aInfo;
@@ -141,15 +154,15 @@ function drawRibbon(b) {
 }
 
 // =============================================================================================== bolt head
-function buildHead(team) {
+function buildHead(team: number) {
   const d = getSubDef('tracer');
-  const col = G.teamColors[team];
+  const col = G.teamColors[team]!;
   const outer = new THREE.Group(), model = new THREE.Group();
-  model.scale.setScalar(SCALE); model.position.y = -d.yc * SCALE;
-  const body = new THREE.Mesh(d.body, getPlasticMaterial());
-  const ink = new THREE.Mesh(d.ink, getInkMaterial(col));
+  model.scale.setScalar(SCALE); model.position.y = -(d.yc as number) * SCALE;   // (buildTracer가 yc를 둔다)
+  const body = new THREE.Mesh(d.body!, getPlasticMaterial());
+  const ink = new THREE.Mesh(d.ink!, getInkMaterial(col));
   const gm = new THREE.MeshStandardMaterial({ color: 0x111111, emissive: col.clone(), emissiveIntensity: 2.4, roughness: 0.3 });
-  model.add(body, ink, new THREE.Mesh(d.glow, gm));
+  model.add(body, ink, new THREE.Mesh(d.glow!, gm));
   // a hot glowing streak round it (reads at speed)
   const streak = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), new THREE.MeshBasicMaterial({ color: col.clone().multiplyScalar(2.2).addScalar(0.25), transparent: true, opacity: 0.55, depthWrite: false }));
   streak.scale.set(0.075, 0.075, 0.42); streak.position.z = -0.12;
@@ -159,18 +172,18 @@ function buildHead(team) {
 }
 
 // =============================================================================================== state
-const bolts = [];
+const bolts: Bolt[] = [];
 let clock = 0;
-function credit(b, area) { if (!area) return; if (b.sp) b.owner.addTurfNoSpecial(area); else b.owner.addTurf(area); }
-function sceneOf(subs) { return subs?.scene || G.scene; }
+function credit(b: Bolt, area: number) { if (!area) return; if (b.sp) b.owner.addTurfNoSpecial(area); else b.owner.addTurf(area); }
+function sceneOf(subs: SubSystem | null | undefined): THREE.Scene | THREE.Object3D { return (subs?.scene || G.scene)!; }
 
 // launch point (chest height, a little in front; never inside a wall) and direction (the crosshair line, lowered)
-function launch(a, sub, from, dir) {
+function launch(a: Actor, sub: SubCfg, from: THREE.Vector3, dir: THREE.Vector3) {
   const sy = a.smoothY || 0;
   _v.set(a.pos.x, a.pos.y + sy + 1.0, a.pos.z);
   const fx = Math.sin(a.aimYaw), fz = Math.cos(a.aimYaw);
   from.set(a.pos.x + fx * 0.3, a.pos.y + sy + 1.2, a.pos.z + fz * 0.3);
-  if (!G.physics.los(_v, from)) from.copy(_v);
+  if (!G.physics!.los(_v, from)) from.copy(_v);
   dir.copy(a.aimPoint).sub(from);
   const d = dir.length();
   if (!(d > 2) || dir.dot(a.aimDir) < 0) dir.copy(a.aimDir); else dir.multiplyScalar(1 / d);
@@ -179,7 +192,7 @@ function launch(a, sub, from, dir) {
   return dir.set(Math.sin(yaw) * cp, Math.sin(pitch), Math.cos(yaw) * cp);
 }
 // the bounce rule: mirror off the surface; off a floor the vertical part of the rebound is scaled down (skims low)
-function rebound(dir, n, sub) {
+function rebound(dir: THREE.Vector3, n: THREE.Vector3, sub: SubCfg) {
   dir.addScaledVector(n, -2 * dir.dot(n));
   if (n.y > 0.6) {
     dir.y *= sub.floorExit;
@@ -190,7 +203,7 @@ function rebound(dir, n, sub) {
   return dir.normalize();
 }
 
-function use(subs, a, sub) {
+function use(subs: SubSystem, a: Actor, sub: SubCfg) {
   const from = new V3(), dir = new V3();
   launch(a, sub, from, dir);
   const b = spawn(subs, a, sub, from, dir, false, netId(a));
@@ -201,9 +214,9 @@ function use(subs, a, sub) {
 // Online, a remote player's bolt is a ghost: it flies and ricochets the same (its puddles are its owner's to send, its
 // hits are dropped), but it doesn't decide foe hits itself — its owner's end record does: [1, gid, x, y, z, foe nid]
 // (-1 a hit on no one here, -2 blocked by a device)
-function spawn(subs, a, sub, from, dir, ghost, gid) {
+function spawn(subs: SubSystem | null | undefined, a: Actor, sub: SubCfg, from: THREE.Vector3, dir: THREE.Vector3, ghost: boolean, gid: number) {
   const scene = sceneOf(subs);
-  const b = {
+  const b: Bolt = {
     kind: 'tracer', sub, owner: a, team: a.team, pos: from.clone(), start: from.clone(), dir, left: sub.range, travel: 0, bounces: 0,
     state: 'fly', hitSet: new Set(), pts: [], sp: !!a.specialActive, age: 0, scene, head: buildHead(a.team), rib: makeRibbon(a.team, sub.trailLife),
     hum: null, path: [from.clone()], direct: null, lastPt: -1, ghost, gid,
@@ -212,17 +225,18 @@ function spawn(subs, a, sub, from, dir, ghost, gid) {
   addPoint(b);
   bolts.push(b);
   if (nearCam(from, 40)) b.hum = G.audio?.loop?.('tracer_hum', { pos: from, volume: 0.4 }) || null;
-  if (nearCam(from, 30)) G.fx?.muzzle?.(from, dir, G.teamColors[a.team], 'shooter');
+  if (nearCam(from, 30)) G.fx?.muzzle?.(from, dir, G.teamColors[a.team]!, 'shooter');
   poseHead(b);
   return b;
 }
-function ghost(a, d) {
-  if (!Array.isArray(d)) return;
+function ghost(a: Actor, data: number[]) {
+  if (!Array.isArray(data)) return;
+  const d = data;
   const [op, gid] = d;
   if (op === 0) {
     if (bolts.some((x) => x.gid === gid)) return;
     const from = new V3(d[2], d[3], d[4]);
-    spawn(G.subs, a, SUBS.tracer, from, new V3(d[5], d[6], d[7]).normalize(), true, gid);
+    spawn(G.subs, a, SUB_CFG.tracer!, from, new V3(d[5], d[6], d[7]).normalize(), true, gid);
     if (a._nearCamera?.()) G.audio?.play('tracer_zap', { pos: from, volume: 0.8 });
     return;
   }
@@ -233,14 +247,14 @@ function ghost(a, d) {
   if (e) directHit(b, e); else end(b, d[5] === -2 ? 'blocked' : 'hit');
 }
 
-function addPoint(b) {
+function addPoint(b: Bolt) {
   const P = b.pts;
   if (P.length && P[P.length - 1].p.distanceToSquared(b.pos) < 1e-6) { P[P.length - 1].b = clock; return; }
   if (P.length >= RIB_CAP) P.shift();
   P.push({ p: b.pos.clone(), b: clock });
 }
 
-function tick(dt) {
+function tick(dt: number) {
   clock += dt;
   guideTick();
   if (!bolts.length) return;
@@ -267,12 +281,12 @@ function tick(dt) {
 }
 
 // move the bolt `dist` along its path: bounces, direct hits, devices, range
-function advance(b, dist) {
+function advance(b: Bolt, dist: number) {
   const s = b.sub;
   let remain = dist, guard = 0;
   while (remain > 1e-5 && b.state === 'fly' && guard++ < 24) {
     const step = Math.min(remain, b.left);
-    const w = G.physics.raycast(b.pos, b.dir, step, _hit, true);   // grates: straight through
+    const w = G.physics!.raycast(b.pos, b.dir, step, _hit, true);   // grates: straight through
     const seg = w.hit ? w.dist : step;
     _end.copy(b.pos).addScaledVector(b.dir, seg);
     // a foe on this stretch (the earliest one)
@@ -304,14 +318,14 @@ function advance(b, dist) {
     if (b.pos.y < PLAYER.waterY - 0.3) { addPoint(b); end(b, 'water'); return; }
   }
 }
-function bounce(b, w) {
-  const s = b.sub, n = w.normal, col = G.teamColors[b.team];
+function bounce(b: Bolt, w: Hit) {
+  const s = b.sub, n = w.normal, col = G.teamColors[b.team]!;
   addPoint(b); b.path.push(b.pos.clone());
   // a big puddle where it strikes
-  const blk = G.level.blocks[w.block];
+  const blk = G.level!.blocks[w.block];
   if (!(blk && (blk.roof || blk.perch))) {
     _v2.set(b.dir.x, 0, b.dir.z); if (_v2.lengthSq() < 1e-4) _v2.set(0, 0, 1); _v2.normalize();
-    credit(b, G.paint.splat(_v.copy(w.point).addScaledVector(n, 0.1), s.puddleRadius, b.team, { seed: Math.random(), stretch: _v2, stretchAmt: 0.35 }));
+    credit(b, G.paint!.splat(_v.copy(w.point).addScaledVector(n, 0.1), s.puddleRadius, b.team, { seed: Math.random(), stretch: _v2, stretchAmt: 0.35 }));
   }
   rebound(b.dir, n, s);
   b.pos.copy(w.point).addScaledVector(n, 0.03);
@@ -324,11 +338,11 @@ function bounce(b, w) {
   emit('weapon:impact', { pos: w.point.clone(), normal: n.clone(), team: b.team, kind: 'shot', radius: s.puddleRadius * 0.5 });
   if (b.bounces > s.maxBounces) end(b, 'bounces');
 }
-function directHit(b, e) {
-  const s = b.sub, col = G.teamColors[b.team];
+function directHit(b: Bolt, e: Actor) {
+  const s = b.sub, col = G.teamColors[b.team]!;
   b.hitSet.add(e); b.direct = e;
-  G.projectiles.applyHit(b.owner, e, s.directDamage, 'tracer');
-  G.subs.track(e, b.team, s.directMark);
+  G.projectiles!.applyHit(b.owner, e, s.directDamage, 'tracer');
+  G.subs!.track(e, b.team, s.directMark);
   if (nearCam(b.pos, 34)) {
     G.fx?.burst(b.pos, _v.copy(b.dir).negate(), col, { count: 12, speed: 4.5, size: 0.08, ring: true });
     G.fx?.glint?.(b.pos, col, 0.5);
@@ -337,15 +351,15 @@ function directHit(b, e) {
   emit('tracer:hit', { actor: b.owner, victim: e, direct: true, pos: b.pos.clone() });
   end(b, 'hit');
 }
-function end(b, why) {
+function end(b: Bolt, why: string) {
   if (b.state !== 'fly') return;
   if (!b.ghost && (why === 'hit' || why === 'blocked')) netRec(b.owner, 'tracer', [1, b.gid, r3(b.pos.x), r3(b.pos.y), r3(b.pos.z), why === 'hit' ? b.direct?.nid ?? -1 : -2]);
   b.state = why;
   b.head.visible = false;
-  if (why !== 'hit' && nearCam(b.pos, 30)) { G.fx?.burst(b.pos, _v.copy(b.dir).negate(), G.teamColors[b.team], { count: 5, speed: 2.2, size: 0.05 }); }
+  if (why !== 'hit' && nearCam(b.pos, 30)) { G.fx?.burst(b.pos, _v.copy(b.dir).negate(), G.teamColors[b.team]!, { count: 5, speed: 2.2, size: 0.05 }); }
 }
 // a foe touching the lingering trail: damaged + marked (short), once per bolt
-function trailTouch(b) {
+function trailTouch(b: Bolt) {
   const P = b.pts, n = P.length, s = b.sub;
   if (n < 2) return;
   const life = s.trailLife * 0.92;
@@ -362,17 +376,17 @@ function trailTouch(b) {
       Physics.segmentCapsuleDist(a.p, c.p, _v3, hr, H, _res);
       if (_res.dist >= reach) continue;
       b.hitSet.add(e);
-      G.projectiles.applyHit(b.owner, e, s.trailDamage, 'tracer');
-      G.subs.track(e, b.team, s.trailMark);
+      G.projectiles!.applyHit(b.owner, e, s.trailDamage, 'tracer');
+      G.subs!.track(e, b.team, s.trailMark);
       _v.lerpVectors(a.p, c.p, _res.t);
-      if (nearCam(_v, 30)) G.fx?.burst(_v, UP, G.teamColors[b.team], { count: 6, speed: 2.6, size: 0.06 });
+      if (nearCam(_v, 30)) G.fx?.burst(_v, UP, G.teamColors[b.team]!, { count: 6, speed: 2.6, size: 0.06 });
       if (b.owner.isLocal || e.isLocal) G.audio?.play('tracer_hit', { pos: e.isLocal ? undefined : _v, volume: 0.55, pitch: 1.3 });
       emit('tracer:hit', { actor: b.owner, victim: e, direct: false, pos: _v.clone() });
       break;
     }
   }
 }
-function poseHead(b) {
+function poseHead(b: Bolt) {
   const H = b.head;
   if (!H.visible) return;
   H.position.copy(b.pos);
@@ -380,9 +394,9 @@ function poseHead(b) {
   H.quaternion.copy(_q);
   H.rotateZ(b.age * 26);
   const S = H.userData.streak; S.material.opacity = 0.45 + 0.2 * Math.sin(b.age * 70);
-  if (nearCam(b.pos, 30) && Math.random() < 0.7) G.fx?.glint?.(b.pos, G.teamColors[b.team], 0.18);
+  if (nearCam(b.pos, 30) && Math.random() < 0.7) G.fx?.glint?.(b.pos, G.teamColors[b.team]!, 0.18);
 }
-function dispose(b) {
+function dispose(b: Bolt) {
   b.scene.remove(b.head, b.rib);
   b.head.userData.glow.dispose(); b.head.userData.streak.geometry.dispose(); b.head.userData.streak.material.dispose();
   b.rib.geometry.dispose(); b.rib.material.dispose();
@@ -395,12 +409,12 @@ function clearAll() {
 }
 
 // =============================================================================================== aim guide (local player)
-let guide = null, guideSeen = false;
+let guide: { line: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial | THREE.LineDashedMaterial>; exit: THREE.Line<THREE.BufferGeometry, THREE.LineBasicMaterial | THREE.LineDashedMaterial>; ring: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial> } | null = null, guideSeen = false;
 const _gFrom = new V3(), _gDir = new V3();
 function guideMeshes() {
   if (guide && guide.line.parent) return guide;
   if (!guide) {
-    const mk = (dashed) => {
+    const mk = (dashed: boolean) => {
       const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
       const m = dashed ? new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 0.22, gapSize: 0.16, transparent: true, opacity: 0.7, depthTest: false })
         : new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthTest: false });
@@ -416,16 +430,16 @@ function guideMeshes() {
 }
 function hideGuide() { if (guide) guide.line.visible = guide.exit.visible = guide.ring.visible = false; }
 function guideTick() { if (!guideSeen) hideGuide(); guideSeen = false; }
-function hold(runner, dt, inp, sub) {
+function hold(runner: WeaponRunner, dt: number, inp: WeaponInput, sub: SubCfg) {
   const a = runner.a;
   if (!a || a !== G.local || !a.alive) return;
   guideSeen = true;
   const Gd = guideMeshes();
   const from = _gFrom, dir = _gDir;
   launch(a, sub, from, dir);
-  const w = G.physics.raycast(from, dir, sub.range, _hit2, true);
+  const w = G.physics!.raycast(from, dir, sub.range, _hit2, true);
   const p1 = _v3.copy(from).addScaledVector(dir, w.hit ? w.dist : sub.range);
-  const col = a.ink >= sub.inkCost ? G.teamColors[a.team] : new THREE.Color(0.6, 0.6, 0.6);
+  const col = a.ink >= sub.inkCost ? G.teamColors[a.team]! : new THREE.Color(0.6, 0.6, 0.6);
   const la = Gd.line.geometry.attributes.position;
   la.setXYZ(0, from.x, from.y, from.z); la.setXYZ(1, p1.x, p1.y, p1.z); la.needsUpdate = true;
   Gd.line.geometry.computeBoundingSphere();
@@ -442,7 +456,7 @@ function hold(runner, dt, inp, sub) {
     const d2 = rebound(_v.copy(dir), n, sub);
     const s0 = _v2.copy(p1).addScaledVector(n, 0.03);
     const left = Math.min(6, sub.range - w.dist);
-    const w2 = G.physics.raycast(s0, d2, Math.max(0.1, left), _hit, true);
+    const w2 = G.physics!.raycast(s0, d2, Math.max(0.1, left), _hit, true);
     const p2 = s0.clone().addScaledVector(d2, w2.hit ? w2.dist : Math.max(0.1, left));
     const ea = Gd.exit.geometry.attributes.position;
     ea.setXYZ(0, p1.x, p1.y, p1.z); ea.setXYZ(1, p2.x, p2.y, p2.z); ea.needsUpdate = true;
@@ -457,7 +471,7 @@ function hold(runner, dt, inp, sub) {
 SUB_KITS.tracer = {
   ghost,
   use, hold, tick, clear: clearAll, noArc: true,
-  _bolts: bolts,   // test / tooling access
+  // (test / tooling access: _bolts below)
   bot: {
     // snap it at a foe in mid range (it's cheap); while painting, now and then skim one along the ground for puddles
     fight(brain, dist) {
