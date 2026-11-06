@@ -5,7 +5,7 @@
 //   대화: 모든 줄에서 건너뛰기, 진행 키, 초상 렌더 비용, 1-1 시작 대본 길이
 //   항구 지도: 키보드 이동·360 px 폭 가로 스크롤, 기록판, 이야기 결과(저장 실패 → 미확정 → 재시도 확정)
 //
-// usage: node .tools/story-check.js [--port 8490] [--only menu,story,panels,dialogue,dlog,hub,harbor,results]
+// usage: node .tools/story-check.js [--port 8490] [--only menu,story,panels,dialogue,dlog,hub,harbor,results,en(기본 목록 밖)]
 // 결과: 표준 출력 JSON, shots/story/*.png. 실패 항목이 있으면 종료 코드 1이다.
 import puppeteer, { type Page } from 'puppeteer-core';
 import { existsSync, mkdirSync } from 'node:fs';
@@ -392,6 +392,61 @@ try {
     await wait(300);
     const s3 = await page.evaluate('({ first: [...document.querySelectorAll(".iw-sres")].pop().classList.contains("is-first"), em: !![...document.querySelectorAll(".iw-sres")].pop().querySelector(".iw-sres__title em"), step: [...document.querySelectorAll(".iw-sres")].pop().dataset.step })') as { first: boolean; em: boolean; step: string };
     ok('results.repeat.noFirst', !s3.first && !s3.em, s3);
+    await page.close();
+  }
+  // 34번 F06: 영어 선택 상태에서 메뉴·캠페인 화면을 돌며 보이는 글자에 한글이 남지 않는지 본다(언어 이름 행은 제외)
+  if (only.has('en')) {
+    const page = await browser.newPage();
+    await page.evaluateOnNewDocument(`try { if (!sessionStorage.getItem('en-init')) { sessionStorage.setItem('en-init', '1'); localStorage.clear(); localStorage.setItem('inkwave.settings', JSON.stringify({ locale: 'en' })); } } catch {}`);
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await page.goto(`http://localhost:${port}/?skipTitle`, { waitUntil: 'load', timeout: 180000 });
+    await page.waitForFunction('window.__inkwave && __inkwave.menus && __inkwave.menus.current === "main"', { timeout: 180000, polling: 250 });
+    await wait(800);
+    const hangul = (): Promise<string[]> => page.evaluate(`(() => {
+      const out = new Set(); const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      const keep = new Set(['한국어', '언어 / Language', 'Language / 언어']);
+      for (let n = w.nextNode(); n; n = w.nextNode()) {
+        const s = n.textContent.trim(); const el = n.parentElement;
+        if (!s || !/[가-힣]/.test(s) || keep.has(s) || !el || el.closest('script,style,[hidden]')) continue;
+        const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+        if (r.width === 0 || r.height === 0 || cs.visibility === 'hidden' || cs.display === 'none' || +cs.opacity === 0) continue;
+        out.add(s.slice(0, 80));
+      }
+      return [...out];
+    })()`) as Promise<string[]>;
+    const seen: Record<string, string[]> = {};
+    for (const name of ['main', 'arena', 'harbor', 'records', 'workshop', 'campGear', 'campTraits', 'campManage', 'campCraft', 'mode', 'setup', 'locker', 'settings', 'howto', 'credits', 'online']) {
+      try { await page.evaluate(`__inkwave.menus.show(${JSON.stringify(name)}, { instant: true })`); } catch (e) { seen[name] = ['(열기 실패) ' + String(e).slice(0, 80)]; continue; }
+      await wait(900);
+      const left = await hangul();
+      if (left.length) seen[name] = left;
+      await shot(page, 'en-' + name);
+    }
+    await page.evaluate(`__inkwave.menus.showStoryResults({ mission: '1-1', title: '멈춘 시계 아래', district: 'tidewater', firstClear: true,
+      rewards: [{ name: '+3', kind: '부품' }, { name: '+40', kind: '경험치' }], xp: { from: 20, to: 70, max: 100 }, line: { speaker: 'mora', text: '새 부품보다 네가 만든 길이 먼저였구나.' },
+      next: { id: '1-2', title: '지워지는 발자국' }, commit: () => Promise.resolve(true) })`);
+    await wait(1200);
+    const res = await hangul(); if (res.length) seen.storyResults = res;
+    await shot(page, 'en-storyResults');
+    ok('en.noHangul', Object.keys(seen).length === 0, seen);
+    // 1-1 시작: 프롤로그 패널 → 시작 대본 → 전투 HUD
+    await page.evaluate('__inkwave.menus.show("main", { instant: true })'); await wait(800);
+    const play: Record<string, string[]> = {};
+    await key(page, 'Enter'); await wait(800);
+    if ((await page.evaluate('__inkwave.menus.current')) === 'locker') await key(page, 'Escape');
+    await page.waitForFunction('__inkwave.match && !__inkwave.match.attract && __inkwave.story.panels.playing', { timeout: 180000, polling: 200 });
+    await wait(1500);
+    let left = await hangul(); if (left.length) play.panel = left;
+    await shot(page, 'en-panel');
+    await page.waitForFunction('!__inkwave.story.panels.playing', { timeout: 40000, polling: 100 });
+    await wait(1600);
+    left = await hangul(); if (left.length) play.dialogue = left;
+    await shot(page, 'en-dialogue');
+    await page.waitForFunction('!__inkwave.story.layer.runner.cur', { timeout: 30000, polling: 100 });
+    await wait(2500);
+    left = await hangul(); if (left.length) play.hud = left;
+    await shot(page, 'en-hud');
+    ok('en.play.noHangul', Object.keys(play).length === 0, play);
     await page.close();
   }
 } finally {

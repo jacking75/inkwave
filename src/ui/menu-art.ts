@@ -5,6 +5,7 @@
 //   inkBurst(parent, { x, y, color, count, dist, size, splat, ring })     — DOM ink splash (auto-removes)
 //   InkWipe(host, { isFrozen })  .run({ a, b, mode:'full'|'light'|'fade', dir, onMid, onDone })
 //   createPreview(key, ctx) → { el, set(value, settings), tick(dt) }       — settings live previews
+import { t } from './i18n.js';
 import {
   h, clamp, lerp, easeInOutCubic, easeOutBack, easeOutCubic, rng, splatShape, splatSVG, shade, fmtInt, safeCall,
 } from './ui-util.js';
@@ -95,17 +96,17 @@ export function computeBossAwards(players: AwardPlayer[] = []): { byPlayer: Awar
   const maxOf = (k: 'dmg' | 'weak' | 'splats' | 'deaths' | 'turf') => (P.length ? Math.max(...P.map((p) => p[k])) : 0);
   if (P.length) {
     const md = maxOf('dmg'), mw = maxOf('weak'), ms = maxOf('splats'), mt = maxOf('turf'), mD = Math.max(1, maxOf('deaths'));
-    if (md > 0) P.filter((p) => p.dmg === md).forEach((p) => give(p, 'heavy', `${fmtInt(p.dmg)} damage`));
-    if (mw >= 3) P.filter((p) => p.weak === mw).forEach((p) => give(p, 'crit', `${mw} weak-point hits`));
-    if (ms >= 2) P.filter((p) => p.splats === ms).forEach((p) => give(p, 'brood', `${ms} crablets`));
-    if (mt > 0) P.filter((p) => p.turf === mt).forEach((p) => give(p, 'cleaner', `${fmtInt(p.turf)}p inked`));
+    if (md > 0) P.filter((p) => p.dmg === md).forEach((p) => give(p, 'heavy', t('피해 {n}', { n: fmtInt(p.dmg) })));
+    if (mw >= 3) P.filter((p) => p.weak === mw).forEach((p) => give(p, 'crit', t('약점 적중 {n}', { n: mw })));
+    if (ms >= 2) P.filter((p) => p.splats === ms).forEach((p) => give(p, 'brood', t('꽃게 {n}', { n: ms })));
+    if (mt > 0) P.filter((p) => p.turf === mt).forEach((p) => give(p, 'cleaner', t('{n}p 칠함', { n: fmtInt(p.turf) })));
     const active = P.filter((p) => p.dmg > 0 || p.turf >= 30);
     const zero = active.filter((p) => p.deaths === 0);
     if (zero.length && zero.length <= 3) zero.forEach((p) => give(p, 'unsinkable', 'Never splatted'));
     else if (!zero.length && active.length) {
       const m = Math.min(...active.map((p) => p.deaths));
       const s = active.filter((p) => p.deaths === m);
-      if (s.length === 1) give(s[0], 'survivor', `Splatted ${m}×`);
+      if (s.length === 1) give(s[0], 'survivor', t('{n}번 당함', { n: m }));
     }
     const score = (p: (typeof P)[number]) => p.dmg / Math.max(1, md) + 0.35 * (p.weak / Math.max(1, mw)) + 0.2 * (p.splats / Math.max(1, ms)) + 0.15 * (p.turf / Math.max(1, mt)) - 0.25 * (p.deaths / mD);
     const cand = P.filter((p) => p.dmg > 0 || p.turf > 0);
@@ -132,17 +133,17 @@ export function computeAwards(players: AwardPlayer[] = [], { win = true, percent
     // Turf King — most turf in the lobby (ties share the crown)
     const mt = maxOf('turf');
     const kings = mt > 0 ? P.filter((p) => p.turf === mt) : [];
-    kings.forEach((p) => give(p, 'turf', `${fmtInt(p.turf)}p inked`));
+    kings.forEach((p) => give(p, 'turf', t('{n}p 칠함', { n: fmtInt(p.turf) })));
     // Top Inker — best painter on each team that doesn't already hold the crown
-    for (const t of [0, 1]) {
-      const team = P.filter((p) => p.team === t);
+    for (const tm of [0, 1]) {
+      const team = P.filter((p) => p.team === tm);
       if (!team.length || team.some((p) => kings.includes(p))) continue;
       const m = maxOf('turf', team);
-      if (m > 0) team.filter((p) => p.turf === m).forEach((p) => give(p, 'inker', `${fmtInt(p.turf)}p inked`));
+      if (m > 0) team.filter((p) => p.turf === m).forEach((p) => give(p, 'inker', t('{n}p 칠함', { n: fmtInt(p.turf) })));
     }
     // Top Splatter
     const ms = maxOf('splats');
-    if (ms > 0) P.filter((p) => p.splats === ms).forEach((p) => give(p, 'splats', `${ms} splat${ms === 1 ? '' : 's'}`));
+    if (ms > 0) P.filter((p) => p.splats === ms).forEach((p) => give(p, 'splats', t(ms === 1 ? '{n}번 처치' : '{n}번 처치', { n: ms })));
     // Untouchable (never splatted — only special when few managed it) / Survivor (unique fewest)
     const active = P.filter((p) => p.turf >= 30 || p.splats > 0);
     const zero = active.filter((p) => p.deaths === 0);
@@ -150,10 +151,10 @@ export function computeAwards(players: AwardPlayer[] = [], { win = true, percent
     else if (!zero.length && active.length) {
       const md = Math.min(...active.map((p) => p.deaths));
       const s = active.filter((p) => p.deaths === md);
-      if (s.length === 1) give(s[0], 'survivor', `Splatted ${md}×`);
+      if (s.length === 1) give(s[0], 'survivor', t('{n}번 당함', { n: md }));
     }
     // Pure Painter — top-3 turf with zero splats
-    [...P].sort((a, b) => b.turf - a.turf).slice(0, 3).filter((p) => p.splats === 0 && p.turf > 0).forEach((p) => give(p, 'pure', `${fmtInt(p.turf)}p · 0 splats`));
+    [...P].sort((a, b) => b.turf - a.turf).slice(0, 3).filter((p) => p.splats === 0 && p.turf > 0).forEach((p) => give(p, 'pure', t('{n}p · 처치 0', { n: fmtInt(p.turf) })));
     // MVP — best normalised all-round score on the winning team
     const self = P.find((p) => p.isSelf);
     const selfTeam = self ? self.team : 0;
@@ -172,7 +173,7 @@ export function computeAwards(players: AwardPlayer[] = [], { win = true, percent
   if (pa <= 1.0001 && pb <= 1.0001) { pa *= 100; pb *= 100; }
   const margin = Math.abs(pa - pb);
   const match: MatchTag[] = [];
-  if (margin < 3) match.push({ ...MATCH_TAGS.close, value: `${margin.toFixed(1)}% margin` });
+  if (margin < 3) match.push({ ...MATCH_TAGS.close, value: t('차이 {n}%', { n: margin.toFixed(1) }) });
   else if (margin >= 20) match.push({ ...MATCH_TAGS.landslide, value: `+${margin.toFixed(1)}%` });
   return { byPlayer: by, match };
 }

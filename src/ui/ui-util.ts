@@ -2,6 +2,14 @@
 // Pure DOM; no three.js dependency.
 
 // ---------------------------------------------------------------- DOM
+import { t } from './i18n.js';
+// h()는 만들 때 문자열 자식·text·title·aria-label·placeholder를 현재 언어로 바꾼다(34번 F06: 짝 표에 있는 원문만, 없으면 그대로).
+// DOM을 훑어 바꾸지 않는다 — 언어를 바꾸면 화면이 다시 그려지며 새 언어로 만들어진다. 사용자 이름처럼 번역하면 안 되는 문자열은
+// raw()로 감싼다.
+const TR_PROPS = new Set(['text', 'title', 'aria-label', 'placeholder']);
+const RAW = Symbol('raw');
+/** 번역하지 않을 문자열(사용자 이름·방 코드 등)을 h()의 자식으로 넣을 때 */
+export function raw(s: string): Text { const n = document.createTextNode(s); (n as Text & { [RAW]?: true })[RAW] = true; return n; }
 /** h()의 속성: class·style·data·html·text는 특별 처리, on*는 리스너, 나머지는 속성(true → 빈 값, null·false → 생략)이다. */
 export interface HProps {
   class?: string; style?: string | Record<string, string | number>; data?: Record<string, string>; html?: string; text?: string;
@@ -20,10 +28,10 @@ export function h<K extends keyof HTMLElementTagNameMap>(tag: K, props: HProps |
         else { const st = v as Record<string, string>; for (const s in st) { if (s.startsWith('--')) el.style.setProperty(s, st[s]); else (el.style as unknown as Record<string, string>)[s] = st[s]; } }
       } else if (k === 'data') { const dv = v as Record<string, string>; for (const d in dv) el.dataset[d] = dv[d]; }
       else if (k === 'html') el.innerHTML = v as string;
-      else if (k === 'text') el.textContent = v as string;
+      else if (k === 'text') el.textContent = t(v as string);
       else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v as EventListener);
       else if (v === true) el.setAttribute(k, '');
-      else el.setAttribute(k, v as string);
+      else el.setAttribute(k, TR_PROPS.has(k) && typeof v === 'string' ? t(v) : v as string);
     }
   }
   appendKids(el, kids);
@@ -33,7 +41,7 @@ function appendKids(el: Element, kids: readonly HChild[]) {
   for (const c of kids) {
     if (c == null || c === false) continue;
     if (Array.isArray(c)) appendKids(el, c);
-    else el.appendChild(typeof c === 'string' || typeof c === 'number' ? document.createTextNode(String(c)) : c as Node);
+    else el.appendChild(typeof c === 'string' ? document.createTextNode(t(c)) : typeof c === 'number' ? document.createTextNode(String(c)) : c as Node);
   }
 }
 /** Parse an HTML/SVG string into its first element. */

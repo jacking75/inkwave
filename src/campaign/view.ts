@@ -2,6 +2,7 @@
 //   - 장치: 흰 이중 원(목표) / 별(선택 상자), 진행 호, 가동 가능하면 빛기둥. 완료하면 잉크색으로 채운다.
 //   - HUD: 현재 필수 목표 하나 + 완료 체크 + 막힌 이유·도움말, 대장 체력바(노출 남은 시간), 목표 방향 표식,
 //     적 머리 위 병종 표식, 체크포인트 알림, 실패 패널. 위험 예고·체력·잉크(기존 HUD)를 가리지 않는 자리에 둔다.
+import { t, t as tr } from '../ui/i18n.js';
 import * as THREE from 'three';
 import type { DeviceDef, ObjectiveDef } from './data/types.js';
 import type { DeviceState } from './missionDevices.js';
@@ -95,7 +96,7 @@ export class DeviceMarkers {
 }
 
 // ---- DOM HUD -----------------------------------------------------------------------------------------------------
-const h = (tag: string, cls: string, text = ''): HTMLElement => { const e = document.createElement(tag); e.className = cls; if (text) e.textContent = text; return e; };
+const h = (tag: string, cls: string, text = ''): HTMLElement => { const e = document.createElement(tag); e.className = cls; if (text) e.textContent = tr(text); return e; };   // 34번 F06: 현재 언어로
 
 export interface HudFrame {
   objective: ObjectiveDef | null;
@@ -133,19 +134,19 @@ export class CampaignHud {
     this.fail = null; this.last = {};
   }
 
-  _set(k: string, el: HTMLElement, v: string): void { if (this.last[k] !== v) { this.last[k] = v; el.textContent = v; } }
+  _set(k: string, el: HTMLElement, v: string): void { if (this.last[k] !== v) { this.last[k] = v; el.textContent = tr(v); } }   // (값이 바뀔 때만 번역)
 
   update(f: HudFrame, dt: number): void {
     this._set('label', this.objLabel, f.objective ? f.objective.label : '임무 완료');
     this._set('count', this.objCount, `${f.done}/${f.total}`);
     this._set('block', this.objBlock, f.block ?? '');
     this._set('hint', this.objHint, f.hint ?? '');
-    this._set('crate', this.crate, f.crate === 'open' ? '☆ 선택 상자가 있다' : f.crate === 'got' ? `★ 선택 상자 회수 · 미확정 모듈 ${f.pending}` : '');
+    this._set('crate', this.crate, f.crate === 'open' ? '☆ 선택 상자가 있다' : f.crate === 'got' ? tr('★ 선택 상자 회수 · 미확정 모듈 {n}', { n: f.pending }) : '');
     this.boss.classList.toggle('is-on', !!f.boss);
     if (f.boss) {
       this._set('bossName', this.bossName, f.boss.name);
       this.bossFill.style.width = `${Math.max(0, Math.min(1, f.boss.hp)) * 100}%`;
-      this._set('bossTag', this.bossTag, f.boss.exposed > 0 ? `약점 노출 ${f.boss.exposed.toFixed(1)}초` : '');
+      this._set('bossTag', this.bossTag, f.boss.exposed > 0 ? tr('약점 노출 {s}초', { s: f.boss.exposed.toFixed(1) }) : '');
     }
     const t = f.target;
     this.pin.classList.toggle('is-on', !!t);
@@ -159,7 +160,7 @@ export class CampaignHud {
       m.style.display = k ? '' : 'none';
       if (!k) return;
       m.style.transform = `translate3d(${k.x.toFixed(0)}px,${k.y.toFixed(0)}px,0)`;
-      if (m.textContent !== k.text) m.textContent = k.text;
+      if (m.dataset.src !== k.text) { m.dataset.src = k.text; m.textContent = tr(k.text); }
       m.classList.toggle('is-elite', k.elite);
     });
     if (this.toastT > 0) { this.toastT -= dt; if (this.toastT <= 0) this.toastEl.classList.remove('is-on'); }
@@ -171,7 +172,7 @@ export class CampaignHud {
     if (on && !el) { el = h('div', 'iw-camp__temp', '⚠ 임시 플레이 — 이 브라우저에서는 진행이 저장되지 않는다'); this.obj.appendChild(el); }
     if (!on) el?.remove();
   }
-  toast(text: string, secs = 2.4): void { this.toastEl.textContent = text; this.toastEl.classList.add('is-on'); this.toastT = secs; }
+  toast(text: string, secs = 2.4): void { this.toastEl.textContent = tr(text); this.toastEl.classList.add('is-on'); this.toastT = secs; }
   setVisible(on: boolean): void { this.el.classList.toggle('is-hidden', !on); }
 
   // 실패 패널: 공격 이름과 대응 한 줄, 재시도·장비 정비·작업장(타이머로 재촉하지 않는다)
@@ -180,7 +181,7 @@ export class CampaignHud {
     const p = h('div', 'iw-camp__fail');
     p.append(h('div', 'iw-camp__failt', '쓰러졌다'), h('div', 'iw-camp__failc', cause), h('div', 'iw-camp__faila', advice));
     const nav = h('div', 'iw-camp__failn');
-    const btns = actions.map((a) => { const b = document.createElement('button'); b.className = 'iw-camp__btn' + (a.primary ? ' is-primary' : ''); b.textContent = a.label; b.addEventListener('click', () => a.run()); nav.appendChild(b); return b; });
+    const btns = actions.map((a) => { const b = document.createElement('button'); b.className = 'iw-camp__btn' + (a.primary ? ' is-primary' : ''); b.textContent = tr(a.label); b.addEventListener('click', () => a.run()); nav.appendChild(b); return b; });
     p.append(nav);
     this.el.appendChild(p);
     this.fail = p;

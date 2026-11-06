@@ -28,7 +28,8 @@
 //   percents            accepted as 0..100 or 0..1.
 // Boss mode (docs/BOSS.md): src/ui/hud-boss.js (hud.boss) adds the boss bar / title card / callouts / damage numbers and
 // the endings; the roster slots show the 8-kid squad in squad ink. It switches on match.mode === 'boss' or boss:spawn.
-import { h, clamp, colorVars, toHex, fmtTime, fmtInt, splatSVG, splatShape, pct, shade, lerp, easeOutBack, easeOutCubic, restartAnim, prefersReducedMotion } from './ui-util.js';
+import { t, t as tr } from './i18n.js';
+import { h, clamp, colorVars, toHex, fmtTime, fmtInt, splatSVG, splatShape, pct, shade, lerp, easeOutBack, easeOutCubic, restartAnim, prefersReducedMotion, raw } from './ui-util.js';
 import type { ColorLike, HChild } from './ui-util.js';
 import { SQUID, SPLAT_ICON, DEATH_ICON, GLYPHS, SUB_ICONS, WEAPON_ICONS, richText, keycap, specialIcon, weaponIcon } from './ui-icons.js';
 import { TEAM_NAMES, SUB, PLAYER, MATCH, ZONES, WEAPON_CFG, SPECIAL_CFG, SUB_CFG } from '../config.js';
@@ -682,7 +683,7 @@ export class HUD {
         kw,
         h('div', { class: 'iw-spl__text' },
           h('div', { class: 'iw-spl__by' }, by ? 'SPLATTED BY' : 'SPLATTED!'),
-          by ? h('div', { class: 'iw-spl__name iw-display' }, String(by)) : null,
+          by ? h('div', { class: 'iw-spl__name iw-display' }, raw(String(by))) : null,
           why && why.name ? h('div', { class: `iw-spl__wn iw-spl__wn--${why.kind}` }, why.tag ? h('i', { class: 'iw-spl__wk' }, why.tag) : null, why.name) : null),
         ring),
       (hint = h('div', { class: 'iw-spl__hint', html: richText('Hold [TAB] to plan a Super Jump') })));
@@ -729,7 +730,7 @@ export class HUD {
       const barB = h('div', { class: 'iw-jd__bar b' });
       const edgeA = h('i', { class: 'iw-jd__edge a' }), edgeB = h('i', { class: 'iw-jd__edge b' });
       const clash = h('div', { class: 'iw-jd__clash', html: splatSVG({ seed: 99, fill: '#fff', r: 50, arms: 10, drops: 8 }) });
-      const wText = winner < 0 ? "IT'S A TIE!" : `${(names[winner] || TEAM_NAMES[winner] || '').toUpperCase()} WINS!`;
+      const wText = winner < 0 ? "IT'S A TIE!" : tr('{team} 승리!', { team: tr(names[winner] || TEAM_NAMES[winner] || '').toUpperCase() });
       const win = h('div', { class: 'iw-jd__win' + (winner === 1 ? ' is-b' : winner === 0 ? ' is-a' : ' is-tie') },
         h('div', { class: 'iw-jd__winsplat', html: splatSVG({ seed: 5, cls: 'iw-fwin', r: 58, arms: 11, drops: 5 }) }),
         h('div', { class: 'iw-jd__wintext iw-display' }, wText));
@@ -903,8 +904,8 @@ export class HUD {
       else if (multi >= 2) call = STREAKS[Math.min(4, multi)];
       else if (!K.first) { call = 'FIRST SPLAT!'; }
       else if (K.lastKiller && victim === K.lastKiller) { call = 'REVENGE!'; K.lastKiller = null; }
-      else if (vStreak >= 3) { call = 'SHUTDOWN!'; sub = `Ended ${victim.name}'s streak`; }
-      else if (K.streak >= 3 && K.streak % 2 === 1) { call = `SPLAT STREAK ×${K.streak}`; }
+      else if (vStreak >= 3) { call = 'SHUTDOWN!'; sub = tr('{name}의 연속 처치를 끊었다', { name: victim.name }); }
+      else if (K.streak >= 3 && K.streak % 2 === 1) { call = tr('연속 처치 ×{n}', { n: K.streak }); }
       K.first = true;
       if (call) this._callout(call, sub, multi >= 3 || call === 'WIPEOUT!');
       return;
@@ -923,7 +924,7 @@ export class HUD {
       h('span', { class: 'iw-kcard__w', html: weaponIcon(kindOf(victim.weaponId) as string) }),
       h('span', { class: 'iw-kcard__txt' },
         h('small', null, kind === 'assist' ? 'ASSIST' : 'SPLATTED'),
-        h('b', null, victim.name || 'Squidkid')));
+        h('b', null, victim.name ? raw(victim.name) : 'Squidkid')));
     colorVars(card, 'v', col);
     this.kcards.prepend(card);
     const cards = [...this.kcards.children as HTMLCollectionOf<XEl>].filter((c) => !c._out);
@@ -964,7 +965,7 @@ export class HUD {
         h('div', { class: 'iw-lu__name iw-display' }, ((names as readonly string[])[t] || (TEAM_NAMES as readonly string[])[t] || '').toUpperCase()),
         list.map((a, i) => h('div', { class: 'iw-lu__card' + (a.isLocal ? ' is-self' : ''), style: { '--i': i } },
           h('span', { class: 'iw-lu__w', html: weaponIcon(kindOf(a.weaponId) as string) }),
-          h('span', { class: 'iw-lu__txt' }, h('b', null, a.name), h('small', null, (WEAPON_CFG[a.weaponId] || {}).name || '')),
+          h('span', { class: 'iw-lu__txt' }, h('b', null, raw(a.name)), h('small', null, (WEAPON_CFG[a.weaponId] || {}).name || '')),
           a.isLocal ? h('em', null, 'YOU') : null)));
       colorVars(wrap, 't', col(t));
       return wrap;
@@ -973,7 +974,7 @@ export class HUD {
       // boss mode: the whole squad (two columns) vs HULLBREAKER
       const squad = side(0);
       squad.classList.add('is-squad');
-      squad.querySelector('.iw-lu__name')!.textContent = 'YOUR SQUAD';
+      squad.querySelector('.iw-lu__name')!.textContent = t('YOUR SQUAD');
       const foe = h('div', { class: 'iw-lu__team iw-lu__team--b iw-lu__foe' },
         h('div', { class: 'iw-lu__name iw-display' }, BOSS_NAME),
         h('div', { class: 'iw-lu__bosscard' }, h('span', { class: 'iw-lu__bossart', html: bossEmblem() }), h('small', null, BOSS_EPITHET)));
@@ -1096,7 +1097,7 @@ export class HUD {
       h('i', { class: 'iw-spl__sj', html: SJ_ICON }),
       h('b', { class: 'iw-spl__sjk' }, 'SUPER JUMP'),
       h('span', { class: 'iw-spl__sja' }, '\u2192'),
-      h('strong', { class: 'iw-spl__sjn iw-display' }, q.name),
+      h('strong', { class: 'iw-spl__sjn iw-display' }, raw(q.name)),
       h('em', { class: 'iw-spl__sjw' }, '\u2014 on respawn'));
     hint.animate([{ scale: had ? '1.08' : '1.2' }, { scale: '1' }], BUMP);
   }
@@ -1247,7 +1248,7 @@ export class HUD {
   _zPenalty({ team, penalty }: { team: number; penalty: number }) {
     if (!this._zLive() || !(penalty > 0) || (team !== 0 && team !== 1)) return;
     const me = this._zMe();
-    this._zCall(`PENALTY +${Math.round(penalty)}`, { team, sub: team === me ? 'WE COUNT IT OFF FIRST' : 'THEY COUNT IT OFF FIRST', small: true, kind: 'pen' });
+    this._zCall(tr('벌점 +{n}', { n: Math.round(penalty) }), { team, sub: team === me ? 'WE COUNT IT OFF FIRST' : 'THEY COUNT IT OFF FIRST', small: true, kind: 'pen' });
     this._snd('zone_penalty', { volume: team === me ? 0.9 : 0.65, pitch: team === me ? 0.94 : 1.06 });
   }
   _zActive({ objective, final, moved }: { objective: string; final?: boolean; moved?: boolean }) {
@@ -1256,7 +1257,7 @@ export class HUD {
     // the last 30 s lock (zones.js): a note, and the shift call-out only if it actually moved the objective
     if (final) { this.banner('one_minute', 'FINAL 30 — CENTRE ONLY'); this._snd('zone_final'); }
     if (moved === false) return;
-    this._zCall(`ZONE SHIFTED → ${this._zLabel(objective, this._zMe())}`, { kind: 'shift' });
+    this._zCall(tr('구역 이동 → {zone}', { zone: tr(this._zLabel(objective, this._zMe())) }), { kind: 'shift' });
     if (!final) this._snd('zone_shift');
     this._restart(this.zo, 'is-moved');
   }
@@ -1298,12 +1299,12 @@ export class HUD {
           h('span', { class: 'iw-jd__name' }, names[t] || TEAM_NAMES[t]),
           h('div', { class: 'iw-jz__badge' }, h('span', { class: 'iw-jz__plate' }), num, pen[t] > 0 ? h('span', { class: 'iw-jz__pen' }, `+${pen[t]}`) : null),
           h('div', { class: 'iw-jz__bar' }, fill, penBar),
-          h('small', { class: 'iw-jz__cap' }, pen[t] > 0 ? `COUNT LEFT · +${pen[t]} PENALTY` : 'COUNT LEFT'));
+          h('small', { class: 'iw-jz__cap' }, pen[t] > 0 ? tr('남은 카운트 · 벌점 +{n}', { n: pen[t] }) : 'COUNT LEFT'));
         return { el, num, fill, penBar };
       };
       const A = side(0), B = side(1);
       const sub = ko ? '' : ((<Record<string, string | undefined>>{ comeback: 'OVERTIME COMEBACK!', retake: 'RETAKEN IN OVERTIME', neutralised: 'HELD ON THROUGH OVERTIME', 'overtime-cap': 'OVERTIME LIMIT' })[reason as string] || (overtime ? 'OVERTIME' : ''));
-      const wText = win < 0 ? "IT'S A TIE!" : `${(names[win] || TEAM_NAMES[win] || '').toUpperCase()} WINS!`;
+      const wText = win < 0 ? "IT'S A TIE!" : tr('{team} 승리!', { team: tr(names[win] || TEAM_NAMES[win] || '').toUpperCase() });
       const el = h('div', { class: 'iw-jd iw-jz' + (ko ? ' is-ko' : '') },
         h('div', { class: 'iw-jd__bg' }),
         h('div', { class: 'iw-jd__title iw-display' }, h('span', null, 'FINAL COUNT')),
@@ -1898,8 +1899,8 @@ export class HUD {
     if (strike !== L.mapStrike) {
       L.mapStrike = strike;
       this.map.classList.toggle('is-strike', strike);
-      this.mapLegend.querySelector('.iw-lg__title')!.textContent = strike ? 'VORTEX STRIKE' : 'SUPER JUMP';
-      this.mapLegend.querySelector('.iw-lg__sub')!.textContent = strike ? 'Move the mouse to aim · click to launch' : 'Pick a landing spot';
+      this.mapLegend.querySelector('.iw-lg__title')!.textContent = tr(strike ? 'VORTEX STRIKE' : 'SUPER JUMP');
+      this.mapLegend.querySelector('.iw-lg__sub')!.textContent = tr(strike ? 'Move the mouse to aim · click to launch' : 'Pick a landing spot');
     }
     // the big map only opens during live play (the controller's TAB state can stay latched through time's up)
     const target = m.expanded && (this.lab || !G.match || G.match.state === 'playing') ? 1 : 0;
@@ -1980,7 +1981,7 @@ export class HUD {
     const bs = G.subs && mm ? G.subs.beaconsFor(me.team).sort((x, y) => x.born - y.born).slice(0, NB - 4) : [];
     bs.forEach((b, k) => {
       mm!.toCanvas(b.pos.x, b.pos.z, tc);
-      out[4 + k] = { x: tc.x / mm!.w, y: tc.y / mm!.h, name: `${b.owner === me ? 'Your' : b.owner!.name + "'s"} beacon · ${b.uses}`, ok: true, dev: true, beacon: b };
+      out[4 + k] = { x: tc.x / mm!.w, y: tc.y / mm!.h, name: b.owner === me ? tr('내 비콘 · {n}', { n: b.uses }) : tr('{name}의 비콘 · {n}', { name: b.owner!.name, n: b.uses }), ok: true, dev: true, beacon: b };
     });
     return out;
   }
@@ -2118,7 +2119,7 @@ export class HUD {
       if (el._col !== col) { el._col = col; colorVars(el, 'c', col); }
       if (el._on !== on) { el._on = on; el.classList.toggle('is-off', !on); }
       if (el._ready !== ready) { el._ready = ready; el.classList.toggle('is-ready', ready); }
-      if (el._tracked !== !!m.tracked) { el._tracked = !!m.tracked; el.classList.toggle('is-tracked', !!m.tracked); if (m.tracked) el.querySelector('.iw-mk__tag b')!.textContent = `${m.name} · TRACKED`; }
+      if (el._tracked !== !!m.tracked) { el._tracked = !!m.tracked; el.classList.toggle('is-tracked', !!m.tracked); if (m.tracked) el.querySelector('.iw-mk__tag b')!.textContent = tr('{name} · 추적됨', { name: m.name }); }
       el.style.setProperty('--far', far.toFixed(2));
       el.style.transform = `translate3d(${(+m.x).toFixed(1)}px,${(+m.y).toFixed(1)}px,0)`;
       if (!on) (el.lastChild as HTMLElement).style.transform = `rotate(${(+m.angle || 0).toFixed(3)}rad)`;

@@ -2,6 +2,7 @@
 //   준비(정의 검증) → 전투 → (실패 ↔ 체크포인트 재시작) → 결과. 기존 경기(연습형 Match)·플레이어·월드·무기를 재사용하되
 //   4대4 자동 스폰·경기 시간·영역 승패를 쓰지 않는다. 세션이 적·장치 표식·HUD·이벤트 구독·도색 스냅숏을 소유하고 dispose()로
 //   모두 정리한다. 전역 저장은 직접 덮어쓰지 않고 CampaignStore.commit(순수 변환)만 쓴다.
+import { t } from '../ui/i18n.js';
 import * as THREE from 'three';
 import { G, on, emit } from '../core/ctx.js';
 import { Actor } from '../game/actor.js';
@@ -247,7 +248,7 @@ export class CampaignSession {
     // 지원 호출: 남은 호출 수를 알린다(끝없이 나오는 것으로 오해하지 않게, 7-2)
     const sup = enc.support ?? [];
     const k = sup.findIndex((x) => x.unit.id === u.id);
-    if (k >= 0) { const called = this.encounters.runs.get(enc.id)?.support.size ?? k + 1; this.hud.toast(`지원 호출 — 남은 호출 ${Math.max(0, sup.length - called)}`); }
+    if (k >= 0) { const called = this.encounters.runs.get(enc.id)?.support.size ?? k + 1; this.hud.toast(t('지원 호출 — 남은 호출 {n}', { n: Math.max(0, sup.length - called) })); }
     return a;
   }
   _despawn(a: Actor): void {
@@ -638,7 +639,7 @@ export class CampaignSession {
     const role = this.lastAttacker;
     const name = role ? ENEMY_ROLES[role as keyof typeof ENEMY_ROLES]?.name ?? '잔향' : '잔향';
     this.host.onFailOpen(this);
-    this.hud.showFail(`${name}의 공격`, ADVICE[role ?? ''] ?? '엄폐 뒤에서 잉크를 채우고 다시 접근한다', [
+    this.hud.showFail(t('{name}의 공격', { name: t(name) }), ADVICE[role ?? ''] ?? '엄폐 뒤에서 잉크를 채우고 다시 접근한다', [
       { label: '체크포인트에서 다시', primary: true, run: () => this.retryCheckpoint() },
       { label: '장비·특성 정비', run: () => this.host.openGear(this) },
       { label: '작업장으로', run: () => this.abandon() },

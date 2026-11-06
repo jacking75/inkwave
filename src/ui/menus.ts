@@ -6,7 +6,7 @@
 // nav('tab_prev'|'tab_next') for LB/RB tab switching, menus.timeScale (debug slow-motion for JS-driven motion).
 import {
   h, clamp, Spring, colorVars, toHex, splatSVG, fmtInt, fmtTime, pct, safeCall, restartAnim,
-  prefersReducedMotion, easeOutCubic, easeInOutCubic, esc, blobPath,
+  prefersReducedMotion, easeOutCubic, easeInOutCubic, esc, blobPath, raw as rawText,
 } from './ui-util.js';
 import type { HChild, ColorLike } from './ui-util.js';
 import type { Award, MatchTag } from './menu-art.js';
@@ -428,7 +428,7 @@ const ZONE_GLYPH = '<svg class="iw-ico" viewBox="0 0 64 64" aria-hidden="true"><
 const MODE_INFO: Record<BattleMode, ModeInfo> = {
   turf: { id: 'turf', label: 'TURF WAR', name: 'Turf War', icon: GLYPHS.drop, text: 'Ink the most ground before the clock runs out.' },
   zones: { id: 'zones', label: 'ZONE CONTROL', name: 'Zone Control', icon: ZONE_GLYPH, text: 'Hold the live zone to count down from 100 — first to 0 wins.' },
-  boss: { id: 'boss', label: 'BOSS BATTLE', name: 'Boss Battle', icon: BOSS_GLYPH, text: `Your squad of 8 against ${BOSS_NAME}.` },
+  boss: { id: 'boss', label: 'BOSS BATTLE', name: 'Boss Battle', icon: BOSS_GLYPH, text: t('8인 분대로 {boss}에 맞선다.', { boss: BOSS_NAME }) },
 };
 const modeOf = (m: unknown): BattleMode => (m === 'zones' || m === 'boss' ? m : 'turf');
 // the battle modes (Turf War / Zone Control) — the rules cards, the in-match strip and the results use these two
@@ -449,7 +449,7 @@ const ZONE_RULE_ART: Record<string, string> = {
     ${zPill(8, 10, 48, 30, 'iw-fa', '37', 17)}${zPill(64, 10, 48, 30, 'iw-fb', '100', 15)}
     <path d="M32 44 L32 60 M25 53 L32 61 L39 53" stroke="${ZK}" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
     <path d="M32 44 L32 60 M25 53 L32 61 L39 53" stroke="#fff" stroke-width="3.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-    <g transform="translate(46 56)"><rect width="46" height="20" rx="10" fill="#ffd54a" stroke="${ZK}" stroke-width="2.5"/><text x="23" y="14.5" text-anchor="middle" font-family="'Titan One', sans-serif" font-size="11" fill="${ZK}">0 = WIN</text></g>
+    <g transform="translate(46 56)"><rect width="46" height="20" rx="10" fill="#ffd54a" stroke="${ZK}" stroke-width="2.5"/><text x="23" y="14.5" text-anchor="middle" font-family="'Titan One', sans-serif" font-size="11" fill="${ZK}">${t('0 = 승리')}</text></g>
   </svg>`,
   rotate: `<svg viewBox="0 0 120 80" aria-hidden="true">
     <rect x="18" y="6" width="84" height="68" rx="10" fill="#f4ecdc" stroke="${ZK}" stroke-width="2.5"/>
@@ -580,7 +580,7 @@ const TAB_BLURB: Record<string, string> = {
   gameplay: 'Shake, vibration, colour-safe inks, minimap and match defaults.',
 };
 
-const durLabel = (s: number): string => (s < 120 ? `${s} SEC` : `${Math.round(s / 60)} MIN`);
+const durLabel = (s: number): string => (s < 120 ? t('{s}초', { s }) : t('{m}분', { m: Math.round(s / 60) }));
 
 // FNV-1a — the Character's style seed (character.js hashStr) so an unsaved look resolves identically here
 const fnv = (str: string): number => { let x = 2166136261; for (let i = 0; i < str.length; i++) { x ^= str.charCodeAt(i); x = Math.imul(x, 16777619); } return x >>> 0; };
@@ -1330,7 +1330,7 @@ export class Menus {
     const blobs = h('div', { class: 'iw-loading__bg' }, [0, 1, 2, 3, 4, 5].map((i) => h('i', { class: `iw-bgblob iw-bgblob--${i}` })));
     const el = h('div', { class: 'iw-screen iw-loading' }, blobs,
       h('div', { class: 'iw-loading__center' },
-        h('div', { class: 'iw-in iw-in--pop', html: logoMarkup(GAME_TITLE, GAME_SUBTITLE, 'md') }),
+        h('div', { class: 'iw-in iw-in--pop', html: logoMarkup(GAME_TITLE, t(GAME_SUBTITLE), 'md') }),
         h('div', { class: 'iw-progress iw-in iw-in--up' }, h('div', { class: 'iw-progress__track' }, fill), pctEl),
         h('div', { class: 'iw-in iw-in--up' }, label)),
       tip,
@@ -1367,7 +1367,7 @@ export class Menus {
       h('span', { class: 'iw-title__presssub' }, this._input === 'pad' ? '' : 'or click to start'));
     const el = h('div', { class: 'iw-screen iw-title', onclick: () => this._titleGo() },
       h('div', { class: 'iw-title__scrim' }),
-      h('div', { class: 'iw-title__logo iw-in iw-in--logo' }, h('i', { class: 'iw-title__shock' }), h('div', { class: 'iw-title__logoin', html: logoMarkup(GAME_TITLE, GAME_SUBTITLE, 'xl') })),
+      h('div', { class: 'iw-title__logo iw-in iw-in--logo' }, h('i', { class: 'iw-title__shock' }), h('div', { class: 'iw-title__logoin', html: logoMarkup(GAME_TITLE, t(GAME_SUBTITLE), 'xl') })),
       press,
       h('div', { class: 'iw-corner iw-corner--bl iw-in' }, h('b', null, GAME_TITLE), ' · an original turf-war shooter'),
       h('div', { class: 'iw-corner iw-corner--br iw-in' }, `v${this._version()}`));
@@ -1406,8 +1406,8 @@ export class Menus {
       afterMount: () => { if (sc?.showWorkshop) safeCall(() => sc.showWorkshop!(this._style(), (G.teamColors && G.teamColors[0]) || this._accent()[0], this._loadout().weapon, { cast: false, vignette: true })); },
       destroy: () => { if (sc && this.current !== 'workshop') safeCall(() => sc.hide()); },
       onInputMode: (m) => {
-        press.firstChild!.textContent = m === 'pad' ? 'PRESS ANY BUTTON' : 'PRESS ANY KEY';
-        press.lastChild!.textContent = m === 'pad' ? '' : 'or click to start';
+        press.firstChild!.textContent = t(m === 'pad' ? 'PRESS ANY BUTTON' : 'PRESS ANY KEY');
+        press.lastChild!.textContent = t(m === 'pad' ? '' : 'or click to start');
       },
     };
   }
@@ -1462,7 +1462,7 @@ export class Menus {
         h('span', { class: 'iw-chip' }, h('i', { html: specialIcon(sp.id) }), sp.name)));
     const el = h('div', { class: 'iw-screen iw-main' },
       h('div', { class: 'iw-scrim-left' }),
-      h('div', { class: 'iw-main__logo iw-in iw-in--down', html: logoMarkup(GAME_TITLE, GAME_SUBTITLE, 'sm') }),
+      h('div', { class: 'iw-main__logo iw-in iw-in--down', html: logoMarkup(GAME_TITLE, t(GAME_SUBTITLE), 'sm') }),
       h('nav', { class: 'iw-main__menu' }, btns),
       desc,
       h('div', { class: 'iw-main__side' }, profile, kit),
@@ -1524,11 +1524,11 @@ export class Menus {
     const sc = this._sc() as (MenuShowcase & { showWorkshop?: (s: LookStyle, c: ColorLike, w: string, o?: { sat?: number }) => void; workshopFocus?: (w: WsFocus | null) => void }) | null;
     const prog = safeCall(() => this.api.storyProgress?.()) ?? NO_PROGRESS;
     const nx = nextMission(prog);
-    const moraLine = prog.done.length ? '다음 길은 지도에 표시해 뒀어.' : `${nx.district.missions[nx.index].title}부터야. 중계기 두 개.`;
+    const moraLine = prog.done.length ? '다음 길은 지도에 표시해 뒀어.' : t('{title}부터야. 중계기 두 개.', { title: t(nx.district.missions[nx.index].title) });
     const say = h('div', { class: 'iw-ws__say iw-in iw-in--down' }, h('b', null, '모라'), h('span', null, moraLine));
     // 메뉴 항목 → 시선이 가는 인물·소품(35번 R028): 임무·관리 = 틸(통신 책상), 무기·모듈 = 장비대, 제작·특성 = 모라, 기록 = 기록판
     const items: Array<BtnOpts & { who: WsFocus | null }> = [
-      { id: 'mission', label: '임무', sub: `다음: ${nx.district.missions[nx.index].id} ${nx.district.missions[nx.index].title}`, icon: GLYPHS.map, cls: 'iw-btn--menu iw-btn--xl iw-btn--primary', accept: () => this._go('harbor'), sound: 'ui_confirm', who: 'teal' },
+      { id: 'mission', label: '임무', sub: t('다음: {id} {title}', { id: nx.district.missions[nx.index].id, title: t(nx.district.missions[nx.index].title) }), icon: GLYPHS.map, cls: 'iw-btn--menu iw-btn--xl iw-btn--primary', accept: () => this._go('harbor'), sound: 'ui_confirm', who: 'teal' },
       { id: 'gear', label: '무기', icon: GLYPHS.target, cls: 'iw-btn--menu', accept: () => this._go('loadout'), who: 'rack' },
       { id: 'modules', label: '모듈 장비', sub: '어댑터 · 탱크 · 표식', icon: GLYPHS.gear, cls: 'iw-btn--menu', accept: () => (this._campApi()?.save() ? this._go('campGear') : this.toast('임무를 하나 마치면 열린다', { icon: 'lock' })), who: 'rack' },
       { id: 'craft', label: '제작', sub: '기본 설계 · 서명 재제작', icon: GLYPHS.gear, cls: 'iw-btn--menu', accept: () => (this._campApi()?.save() ? this._go('campCraft') : this.toast('임무를 하나 마치면 열린다', { icon: 'lock' })), who: 'mora' },
@@ -1596,7 +1596,7 @@ export class Menus {
       });
       return h('div', { class: `iw-harbor__card${open ? '' : ' is-locked'}`, 'data-district': d.id, style: { left: d.at[0] + '%', top: d.at[1] + '%', '--sat': (reveal ? 0.18 : sat).toFixed(2) } },
         h('div', { class: 'iw-harbor__thumb', style: { backgroundImage: `url(${stageArt(d.id, d.time, true)})` } }),
-        h('div', { class: 'iw-harbor__name' }, h('small', null, `${d.chapter}장`), d.name),
+        h('div', { class: 'iw-harbor__name' }, h('small', null, t('{n}장', { n: d.chapter })), d.name),
         h('div', { class: 'iw-harbor__ms' }, ms));
     });
     const map = h('div', { class: 'iw-harbor__map' }, h('div', { class: 'iw-harbor__sea' }), cards);
@@ -1609,9 +1609,9 @@ export class Menus {
       const m = f._mission, d = f._district;
       if (!m || !d) return;
       info.replaceChildren(
-        h('div', { class: 'iw-harbor__ititle' }, `${m.id} ${m.title}`),
+        h('div', { class: 'iw-harbor__ititle' }, `${m.id} ${t(m.title)}`),
         h('div', { class: 'iw-harbor__igoal' }, m.goal),
-        h('div', { class: 'iw-harbor__imeta' }, `보상: ${m.reward} · 지역 파밍: ${d.reward}`),
+        h('div', { class: 'iw-harbor__imeta' }, t('보상: {m} · 지역 파밍: {d}', { m: t(m.reward), d: t(d.reward) })),
         h('div', { class: 'iw-harbor__ipool' }, rewardInfoText(rewardInfo(m.id, d.id, m.kind === 'boss' ? 'boss' : 'normal', prog.done))));
       // 포커스한 카드가 보이게(좁은 화면의 가로 스크롤)
       const r = f.getBoundingClientRect(), sr = scroller.getBoundingClientRect();
@@ -1643,7 +1643,7 @@ export class Menus {
       return b;
     };
     const scripts = read.map((id) => getScript(id)).filter((s): s is NonNullable<typeof s> => !!s);
-    const sList = scripts.map((s) => btn('s-' + s.id, s.id, `${s.lines.length}줄`, () => body.replaceChildren(
+    const sList = scripts.map((s) => btn('s-' + s.id, s.id, t('{n}줄', { n: s.lines.length }), () => body.replaceChildren(
       h('h3', null, s.id), ...s.lines.map((l) => h('p', { class: 'iw-rec__line' }, h('b', null, (SPEAKER_NAME[l.speaker] ?? l.speaker) || '—'), l.text)))));
     const rList = recs.map((r) => btn('r-' + r.id, r.found ? r.title : '???', r.district, () => body.replaceChildren(
       h('h3', null, r.found ? r.title : '아직 찾지 못한 기록'),
@@ -1657,16 +1657,16 @@ export class Menus {
       const endBtn = exList[0];
       if (endBtn) this._bind(endBtn, { id: 'ending', accept: () => { this._sfx('ui_confirm'); safeCall(() => this.api.replayEnding?.()); } });
       for (const c of ex.challenges) {
-        const b = btn('c-' + c.id, `도전 ${c.mission} ${c.title}`, c.locked ? '엔딩 뒤에 열린다' : c.clears ? `완료 ${c.clears} · 최고 ${(c.bestMs / 1000).toFixed(1)}초` : '처음', () => body.replaceChildren(
-          h('h3', null, `${c.mission} ${c.title}`), h('p', null, `변형: ${c.variants}`), h('p', null, `보상: 부품 +${c.parts}${c.hasMark ? ' · 외형 표식 획득함' : ' · 첫 완료 시 외형 표식'}`),
+        const b = btn('c-' + c.id, t('도전 {m} {title}', { m: c.mission, title: t(c.title) }), c.locked ? '엔딩 뒤에 열린다' : c.clears ? t('완료 {n} · 최고 {s}초', { n: c.clears, s: (c.bestMs / 1000).toFixed(1) }) : '처음', () => body.replaceChildren(
+          h('h3', null, `${c.mission} ${c.title}`), h('p', null, t('변형: {v}', { v: c.variants })), h('p', null, t(c.hasMark ? '보상: 부품 +{n} · 외형 표식 획득함' : '보상: 부품 +{n} · 첫 완료 시 외형 표식', { n: c.parts })),
           h('p', { class: 'iw-rec__note' }, c.locked ? '7-3 「되찾는 물결」을 마치면 열린다.' : 'A·Enter로 출전한다. 첫 완료 보상은 다시 나오지 않는다.')));
         if (!c.locked) this._bind(b, { id: 'c-' + c.id, accept: () => { this._sfx('ui_confirm'); safeCall(() => this.api.startChallenge?.(c.id)); } });
         exList.push(b);
       }
-      for (const w of ex.weapons) exList.push(btn('w-' + w.id, w.name, `${w.missions.length} / 21`, () => body.replaceChildren(h('h3', null, `${w.name} 공략 기록`), h('p', null, w.missions.length ? w.missions.join(' · ') : '아직 이 무기로 끝낸 임무가 없다.'))));
+      for (const w of ex.weapons) exList.push(btn('w-' + w.id, w.name, `${w.missions.length} / 21`, () => body.replaceChildren(h('h3', null, t('{w} 공략 기록', { w: t(w.name) })), h('p', null, w.missions.length ? w.missions.join(' · ') : '아직 이 무기로 끝낸 임무가 없다.'))));
     }
     const el = h('div', { class: 'iw-screen iw-rec' },
-      this._header('기록판', { sub: `대화 ${scripts.length} · 기록 ${recs.filter((r) => r.found).length} / ${recs.length}` }),
+      this._header('기록판', { sub: t('대화 {s} · 기록 {f} / {n}', { s: scripts.length, f: recs.filter((r) => r.found).length, n: recs.length }) }),
       h('div', { class: 'iw-rec__cols' },
         h('div', { class: 'iw-rec__list iw-in iw-in--left' }, h('h4', null, '읽은 대화'), sList.length ? sList : h('p', { class: 'iw-rec__empty' }, '아직 없다'), h('h4', null, '기록'), rList, ...(exList.length ? [h('h4', null, '엔딩 · 도전 · 공략 기록'), ...exList] : [])),
         body),
@@ -1681,12 +1681,12 @@ export class Menus {
     const reduced = prefersReducedMotion();
     const dist = DISTRICTS.find((x) => x.id === d.district) ?? DISTRICTS[0];
     const art = h('div', { class: 'iw-sres__art', style: { backgroundImage: `url(${stageArt(dist.id, dist.time)})` } });
-    const cards = d.rewards.map((r, i) => h('div', { class: 'iw-sres__card', style: { '--i': String(i) } }, h('small', null, r.kind), h('b', null, r.name)));
+    const cards = d.rewards.map((r, i) => h('div', { class: 'iw-sres__card', style: { '--i': String(i) } }, h('small', null, t(r.kind)), h('b', null, t(r.name))));
     const state = h('div', { class: 'iw-sres__save' }, '저장 확인 중…');
     const retry = h('button', { class: 'iw-btn iw-btn--menu iw-sres__retry' }, h('span', { class: 'iw-btn__text' }, h('span', { class: 'iw-btn__label' }, '다시 저장')));
     retry.classList.add('is-off');
     const line = h('div', { class: 'iw-sres__line' }, h('b', null, SPEAKER_NAME[d.line.speaker] ?? d.line.speaker), h('span', null, d.line.text));
-    const next = d.next ? this._btn({ id: 'next', label: '다음 임무', sub: `${d.next.id} ${d.next.title}`, icon: GLYPHS.next, cls: 'iw-btn--menu iw-btn--primary', accept: () => this._storyBegin(d.next!.id), sound: 'ui_confirm' }) : null;
+    const next = d.next ? this._btn({ id: 'next', label: '다음 임무', sub: `${d.next.id} ${t(d.next.title)}`, icon: GLYPHS.next, cls: 'iw-btn--menu iw-btn--primary', accept: () => this._storyBegin(d.next!.id), sound: 'ui_confirm' }) : null;
     const hub = this._btn({ id: 'hub', label: '작업장으로', icon: GLYPHS.back, cls: 'iw-btn--menu', accept: () => this.show('workshop', { back: true }) });
     const xp = h('div', { class: 'iw-sres__xp', style: { '--from': (d.xp.from / d.xp.max).toFixed(3), '--to': (d.xp.to / d.xp.max).toFixed(3) } }, h('i'));
     const el = h('div', { class: `iw-screen iw-sres${d.firstClear ? ' is-first' : ''}`, 'data-step': '0' },
@@ -1699,12 +1699,12 @@ export class Menus {
     const step = (n: number, ms: number): void => { timers.push(setTimeout(() => { el.dataset.step = String(n); }, reduced ? 0 : ms)); };
     let alive = true;
     const commit = async (): Promise<void> => {
-      el.dataset.saved = 'pending'; state.textContent = '저장 확인 중…'; retry.classList.add('is-off');
+      el.dataset.saved = 'pending'; state.textContent = t('저장 확인 중…'); retry.classList.add('is-off');
       let ok = false;
       try { ok = await d.commit(); } catch { ok = false; }
       if (!alive) return;
       el.dataset.saved = ok ? 'ok' : 'fail';
-      state.textContent = ok ? '보상 확정 · 저장됨' : '저장 실패 — 보상은 아직 미확정이다';
+      state.textContent = t(ok ? '보상 확정 · 저장됨' : '저장 실패 — 보상은 아직 미확정이다');
       retry.classList.toggle('is-off', ok);
       // 실패면 재시도에, 확정되면 다음 임무에 포커스
       if (ok) { step(4, 300); step(5, 1100); timers.push(setTimeout(() => this._setFocus(next || hub), reduced ? 0 : 1100)); }
@@ -1735,7 +1735,7 @@ export class Menus {
         blurb: 'Take the live zone and hold it: your count ticks down from 100. The zone moves, so keep up!',
         chips: [[GLYPHS.users, '4 V 4'], [GLYPHS.clock, `${Math.round((ZONES.duration || 300) / 60)}:00 + OT`], [ZONE_GLYPH, 'ROTATING ZONES']] },
       { id: 'boss', name: 'BOSS BATTLE', kicker: 'CO-OP', img: stageArt('kelpline', 'dusk'), badge: 'NEW!', beta: true,
-        blurb: `Everyone's one squad against ${BOSS_NAME}, a giant crab in a rusted container. Sink it before time runs out!`,
+        blurb: t('모두가 한 분대가 되어 녹슨 컨테이너의 거대한 게 {boss}에 맞선다. 시간 안에 가라앉힌다!', { boss: BOSS_NAME }),
         chips: [[GLYPHS.users, 'SQUAD OF 8'], [GLYPHS.clock, durLabel(bossLen)], [BOSS_GLYPH, '1 BOSS']] },
     ];
     let picking = false;
@@ -2043,7 +2043,7 @@ export class Menus {
     const updateStart = () => {
       const m = byId(st.mapId);
       // mode · stage · time (+ the length Turf War lets you pick; bot skill sits right beside it in its own panel)
-      startSub.textContent = `${MODE_INFO[st.mode].name} · ${m ? m.name : ''} · ${TIME_INFO[timeOf(st.mapId)].label}${st.mode === 'zones' ? '' : ` · ${durLabel(st.duration)}`}`;
+      startSub.textContent = `${t(MODE_INFO[st.mode].name)} · ${m ? t(m.name) : ''} · ${t(TIME_INFO[timeOf(st.mapId)].label)}${st.mode === 'zones' ? '' : ` · ${durLabel(st.duration)}`}`;
       // long stage names: tighten the line a touch rather than cut it off
       requestAnimationFrame(() => {
         const box = startSub.parentElement;
@@ -2113,7 +2113,7 @@ export class Menus {
     optDusk.addEventListener('click', () => { this._setFocus(tgl); setTime(st.mapId, 'dusk', 'mouse'); });
 
     const MI = MODE_INFO[st.mode];
-    const head = this._header(MI.label, { sub: boss ? `Pick a stage and the time of day · your squad of 8 vs ${BOSS_NAME}`
+    const head = this._header(MI.label, { sub: boss ? t('스테이지와 시간대를 고른다 · 8인 분대 대 {boss}', { boss: BOSS_NAME })
       : st.mode === 'zones' ? 'Pick a stage and the time of day · 4 v 4 against bots · 5:00 + overtime' : 'Pick a stage and the time of day · 4 v 4 against bots' });
     const el = h('div', { class: 'iw-screen iw-setup iw-ss' + (boss ? ' is-boss' : '') },
       bg, h('div', { class: 'iw-ss__scrim' }),
@@ -2606,7 +2606,7 @@ export class Menus {
       const sb = this._sub();
       subIcon.innerHTML = SUB_ICONS[sb.id] || SUB_ICONS.bomb;
       subName.textContent = sb.name;
-      subBlurb.textContent = `${sb.blurb || ''} Uses ${Math.round(sb.inkCost)}% of your ink.`;
+      subBlurb.textContent = t('{blurb} 잉크를 {n}% 쓴다.', { blurb: t(sb.blurb || ''), n: Math.round(sb.inkCost) });
     };
     const cycleSub = (d: number) => {
       const i = subOrder.indexOf(this._sub().id);
@@ -2668,7 +2668,7 @@ export class Menus {
       renderSp();
       renderSub();
       spCost.textContent = w.specialCost ? `${Math.round(w.specialCost)}p` : '';
-      spCost.title = 'Turf points to fill the special gauge';
+      spCost.title = t('Turf points to fill the special gauge');
       markSeen(id);
       if (!first) restartAnim(detail, 'is-swap');
     };
@@ -2953,12 +2953,12 @@ export class Menus {
     const reset = this._btn({ id: 'reset', label: 'RESET TO DEFAULTS', icon: GLYPHS.reset, cls: 'iw-btn--ghost iw-btn--small', sound: null, accept: () => {
       if (!resetArmed) {
         resetArmed = 2.6; reset.classList.add('is-armed');
-        reset.querySelector('.iw-btn__label')!.textContent = 'PRESS AGAIN TO CONFIRM';
+        reset.querySelector('.iw-btn__label')!.textContent = t('PRESS AGAIN TO CONFIRM');
         this._sfx('ui_click');
         return;
       }
       resetArmed = 0; reset.classList.remove('is-armed');
-      reset.querySelector('.iw-btn__label')!.textContent = 'RESET TO DEFAULTS';
+      reset.querySelector('.iw-btn__label')!.textContent = t('RESET TO DEFAULTS');
       safeCall(() => this.api.setSettings && this.api.setSettings({ ...DEFAULT_SETTINGS }));
       if (!this._accentExternal) this._applyAccent();
       const s = this._settings();
@@ -2968,7 +2968,7 @@ export class Menus {
       savedPulse();
     } });
     const saved = h('div', { class: 'iw-saved' }, h('i', { html: GLYPHS.check }), h('span', null, 'Changes save automatically'));
-    const savedPulse = () => { saved.lastChild!.textContent = 'Saved!'; restartAnim(saved, 'is-on'); clearTimeout(this._savedT); this._savedT = setTimeout(() => { if (saved.isConnected) saved.lastChild!.textContent = 'Changes save automatically'; }, 1400); };
+    const savedPulse = () => { saved.lastChild!.textContent = t('Saved!'); restartAnim(saved, 'is-on'); clearTimeout(this._savedT); this._savedT = setTimeout(() => { if (saved.isConnected) saved.lastChild!.textContent = t('Changes save automatically'); }, 1400); };
 
     const panel = this._panel('iw-settings__panel iw-in', tabsEl, rowsEl, h('div', { class: 'iw-settings__foot' }, saved, reset));
     const el = h('div', { class: 'iw-screen iw-settings' },
@@ -3008,7 +3008,7 @@ export class Menus {
         if (P.cur && P.cur.tick) P.cur.tick(dt);
         if (resetArmed > 0) {
           resetArmed -= dt;
-          if (resetArmed <= 0) { resetArmed = 0; reset.classList.remove('is-armed'); reset.querySelector('.iw-btn__label')!.textContent = 'RESET TO DEFAULTS'; }
+          if (resetArmed <= 0) { resetArmed = 0; reset.classList.remove('is-armed'); reset.querySelector('.iw-btn__label')!.textContent = t('RESET TO DEFAULTS'); }
         }
       },
     };
@@ -3065,7 +3065,7 @@ export class Menus {
       const zones = rulesMode === 'zones';
       rulesEl.replaceChildren(...(zones ? zoneRules : rules).map((r, i) => card(r, i, zones)));
       notesSlot.replaceChildren(...(zones ? [zoneNotes()] : []));
-      if (headSub) headSub.textContent = `${MODE_INFO[rulesMode].name} in 30 seconds`;
+      if (headSub) headSub.textContent = t('30초로 보는 {mode}', { mode: t(MODE_INFO[rulesMode].name) });
       if (anim) restartAnim(rulesEl, 'is-swap');
     };
     const rOpts: SegOption<BattleMode>[] = BATTLE_MODES.map((mi) => [mi.id, h('span', { class: 'iw-segico' }, h('i', { html: mi.icon }), mi.label)]);
@@ -3080,7 +3080,7 @@ export class Menus {
     const segRow = h('div', { class: 'iw-ctl-switch' }, seg.el);
     this._bind(segRow, { id: 'scheme', type: 'row', adjust: seg.adjust, accept: seg.cycle });
     renderList();
-    const head = this._header('HOW TO PLAY', { sub: `${MODE_INFO[rulesMode].name} in 30 seconds` });
+    const head = this._header('HOW TO PLAY', { sub: t('30초로 보는 {mode}', { mode: t(MODE_INFO[rulesMode].name) }) });
     headSub = head.querySelector('.iw-head__sub');
     renderRules(false);
     const el = h('div', { class: 'iw-screen iw-howto' },
@@ -3107,7 +3107,7 @@ export class Menus {
     const sec = (title: string, ...lines: Array<string | HTMLElement>) => h('section', { class: 'iw-cred__sec' }, h('h3', null, title), lines.map((l) => (typeof l === 'string' ? h('p', null, l) : l)));
     const cast = h('div', { class: 'iw-cred__cast' }, BOT_NAMES.map((n, i) => h('span', { style: { '--c': i % 2 ? 'var(--b)' : 'var(--a)' } }, h('i', { html: SQUID }), n)));
     const roll = h('div', { class: 'iw-cred__roll' },
-      h('div', { class: 'iw-cred__logo', html: logoMarkup(GAME_TITLE, GAME_SUBTITLE, 'md') }),
+      h('div', { class: 'iw-cred__logo', html: logoMarkup(GAME_TITLE, t(GAME_SUBTITLE), 'md') }),
       h('p', { class: 'iw-cred__lead' }, 'An original 4 v 4 turf-war shooter.'),
       sec('Original game', 'INKWAVE by Jayden Davis', h('p', { class: 'dim' }, 'MIT License · github.com/jaydendavisnc/inkwave')),
       sec('Made with', 'Procedural everything — squidkids, weapons, stage, ink, music and sound are all generated in code.'),
@@ -3327,11 +3327,11 @@ export class Menus {
       join.classList.toggle('is-entry', st.mode !== 'idle');
       joinBtn.classList.toggle('is-ready', full() && st.mode !== 'connecting');
       joinBtn.classList.toggle('is-cancel', st.mode === 'connecting');
-      joinBtn.firstChild!.textContent = st.mode === 'connecting' ? 'CANCEL' : 'JOIN';
+      joinBtn.firstChild!.textContent = t(st.mode === 'connecting' ? 'CANCEL' : 'JOIN');
       el.classList.toggle('is-connecting', st.mode === 'connecting' || create.classList.contains('is-busy'));
       el.classList.toggle('is-entry', st.mode === 'entry' || st.mode === 'error');
-      if (st.mode === 'idle') hintEl.textContent = 'Room codes are 5 letters & numbers';
-      else if (st.mode === 'entry') hintEl.textContent = full() ? 'Press JOIN (or Enter) to hop in' : st.input === 'pad' ? '↑↓ pick a letter · A to confirm' : 'Type or paste the code';
+      if (st.mode === 'idle') hintEl.textContent = t('Room codes are 5 letters & numbers');
+      else if (st.mode === 'entry') hintEl.textContent = t(full() ? 'Press JOIN (or Enter) to hop in' : st.input === 'pad' ? '↑↓ pick a letter · A to confirm' : 'Type or paste the code');
     };
     const setMode = (m: OnlineState['mode']) => { st.mode = m; render(); };
     const clearError = () => { if (st.mode === 'error') { st.mode = 'entry'; join.classList.remove('is-err'); jstat.classList.remove('is-on'); } };
@@ -3398,7 +3398,7 @@ export class Menus {
       let pick = (up.match(/\b[A-Z0-9]{5}\b/g) || []).reverse().find((w) => [...w].every((c) => CODE_ABC.includes(c)));
       if (!pick) { const raw = up.replace(/[^A-Z0-9]/g, ''); pick = raw.length <= 8 ? raw : ''; }
       const clean = [...pick].filter((c) => CODE_ABC.includes(c)).slice(0, 5);
-      if (!clean.length) { hintEl.textContent = 'Nothing that looks like a room code on the clipboard'; this._sfx('ui_error'); restartAnim(codeRow, 'is-shake'); return; }
+      if (!clean.length) { hintEl.textContent = t('Nothing that looks like a room code on the clipboard'); this._sfx('ui_error'); restartAnim(codeRow, 'is-shake'); return; }
       if (st.mode === 'idle') enterEntry(0);
       clearError();
       st.code = ['', '', '', '', ''];
@@ -3409,8 +3409,8 @@ export class Menus {
     };
     const readClipboard = () => {
       if (navigator.clipboard && navigator.clipboard.readText) {
-        navigator.clipboard.readText().then(pasteCode, () => { enterEntry(firstEmpty()); hintEl.textContent = 'Press Ctrl+V (⌘V) to paste'; });
-      } else { enterEntry(firstEmpty()); hintEl.textContent = 'Press Ctrl+V (⌘V) to paste'; }
+        navigator.clipboard.readText().then(pasteCode, () => { enterEntry(firstEmpty()); hintEl.textContent = t('Press Ctrl+V (⌘V) to paste'); });
+      } else { enterEntry(firstEmpty()); hintEl.textContent = t('Press Ctrl+V (⌘V) to paste'); }
     };
     const showError = (msg: string | null | undefined) => {
       const E = JOIN_ERR[msg as string] || { title: 'COULDN’T JOIN', text: msg || 'Something went wrong. Try again.', icon: 'close' };   // (메시지가 없으면 항목도 없다)
@@ -3428,7 +3428,7 @@ export class Menus {
       const code = st.code.join('');
       if (code.length < 5) {
         st.caret = firstEmpty(); render();
-        hintEl.textContent = `${5 - code.length} more character${5 - code.length > 1 ? 's' : ''} to go`;
+        hintEl.textContent = t(5 - code.length > 1 ? '{n}글자 더 입력한다' : '{n}글자 더 입력한다', { n: 5 - code.length });
         restartAnim(boxes[st.caret], 'is-shake'); this._sfx('ui_error', 0.12);
         return;
       }
@@ -3437,7 +3437,7 @@ export class Menus {
       st.busy = true;
       const tok = ++st.token;
       jstat.classList.remove('is-on'); join.classList.remove('is-err');
-      hintEl.textContent = `Connecting to room ${code}…`;
+      hintEl.textContent = t('{code} 방에 연결 중…', { code });
       setMode('connecting');
       this._sfx('ui_confirm');
       try {
@@ -3458,7 +3458,7 @@ export class Menus {
       safeCall(() => this._net() && this._net()!.leave());
       create.classList.remove('is-busy'); createStatus.textContent = '';
       el.classList.remove('is-connecting');
-      hintEl.textContent = 'Cancelled';
+      hintEl.textContent = t('Cancelled');
       setMode(st.mode === 'connecting' ? 'entry' : st.mode);
       this._sfx('ui_back');
     };
@@ -3466,11 +3466,11 @@ export class Menus {
       if (st.busy) return;
       const net = this._net();
       create.classList.remove('is-err');
-      if (!net) { createStatus.textContent = 'Can’t reach the servers right now'; create.classList.add('is-err'); this._sfx('ui_error'); return; }
+      if (!net) { createStatus.textContent = t('Can’t reach the servers right now'); create.classList.add('is-err'); this._sfx('ui_error'); return; }
       st.busy = true;
       const tok = ++st.token;
       create.classList.add('is-busy');
-      createStatus.textContent = 'Opening a room';
+      createStatus.textContent = t('Opening a room');
       el.classList.add('is-connecting');
       try {
         await net.create(this._profile().name);
@@ -3781,7 +3781,7 @@ export class Menus {
       restartAnim(rMode, 'is-hit');
       render(false);
       hostSet(map !== (was && was.id) ? { mode: next, duration: dur, map } : { mode: next, duration: dur });
-      if (map !== (was && was.id)) { const n = maps.find((m) => m.id === map); this.toast(`${was ? was.name : 'That stage'} has no Boss Battle — switched to ${n ? n.name : 'another stage'}`, { icon: GLYPHS.map }); }
+      if (map !== (was && was.id)) { const n = maps.find((m) => m.id === map); this.toast(t('{a}에는 보스 배틀이 없다 — {b}(으)로 바꿨다', { a: was ? t(was.name) : t('그 스테이지'), b: n ? t(n.name) : t('다른 스테이지') }), { icon: GLYPHS.map }); }
     };
     let shownMap: string | null = null, shownTime: string | null = null;
     const renderStage = (dir = 0) => {
@@ -3813,7 +3813,7 @@ export class Menus {
       const ok = () => {
         this._sfx('ui_confirm'); this._sfx('splat_small', 0.06);
         tiles.forEach((t) => restartAnim(t, 'is-wave'));
-        restartAnim(copied, 'is-on'); copyTxt.textContent = 'COPIED'; S.copied = 2.2;
+        restartAnim(copied, 'is-on'); copyTxt.textContent = t('COPIED'); S.copied = 2.2;
         this._burstAt(copyBtn, { count: 10, dist: 5, size: 0.8 });
       };
       const fallback = () => {
@@ -3824,7 +3824,7 @@ export class Menus {
           done = document.execCommand && document.execCommand('copy');
           ta.remove();
         } catch (e) { done = false; }
-        if (done) ok(); else { this._sfx('ui_error'); this.toast(`Couldn’t reach the clipboard — the code is ${c}`, { kind: 'error', icon: GLYPHS.copy }); }
+        if (done) ok(); else { this._sfx('ui_error'); this.toast(t('클립보드를 쓸 수 없다 — 코드는 {c}', { c }), { kind: 'error', icon: GLYPHS.copy }); }
       };
       if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(c).then(ok, fallback);
       else fallback();
@@ -3837,8 +3837,8 @@ export class Menus {
       const heir = isHost() && others.length ? others[0].name : null;
       this._openModal({
         title: 'LEAVE ROOM?', danger: true,
-        text: heir ? `You’re the host — ${heir} takes over the room. You can come back with the code ${code}.`
-          : others.length ? `You can rejoin any time with the code ${code} while the room is open.` : 'You’re the last one here — the room closes when you leave.',
+        text: heir ? t('당신이 방장이다 — {heir}이(가) 방을 이어받는다. 코드 {code}로 돌아올 수 있다.', { heir, code })
+          : others.length ? t('방이 열려 있는 동안 코드 {code}로 언제든 다시 참가할 수 있다.', { code }) : 'You’re the last one here — the room closes when you leave.',
         buttons: [
           { label: 'STAY', accept: () => this._closeModal(), sound: null },
           { label: 'LEAVE', cls: 'iw-btn--danger', sound: 'ui_confirm', accept: () => { this._closeModal(true); leaveRoom(); } },
@@ -3871,7 +3871,7 @@ export class Menus {
         this._sfx('ui_error'); restartAnim(startBtn, 'is-shake');
         const waiting = players().filter((p) => !p.you && !p.ready && !p.host);
         const block = net!.startBlock ? net!.startBlock() : null;
-        this.toast(block || (waiting.length ? `Waiting for ${listNames(waiting)} to ready up` : 'Not ready to start yet'), { kind: 'info', icon: block ? GLYPHS.users : GLYPHS.clock });
+        this.toast(block || (waiting.length ? t('{names}의 준비를 기다리는 중', { names: listNames(waiting) }) : 'Not ready to start yet'), { kind: 'info', icon: block ? GLYPHS.users : GLYPHS.clock });
         return;
       }
       this._sfx('ui_confirm'); this._sfx('splat_big', 0.1);
@@ -4094,10 +4094,10 @@ export class Menus {
       const waiting = ps.filter((p) => !p.ready && !p.host);
       const host = ps.find((p) => p.host);
       let txt: string;
-      if (ps.length >= (lob.maxPlayers || 8)) txt = waiting.length ? `Room full · ${waiting.length} not ready` : 'Room full · everyone’s ready!';
+      if (ps.length >= (lob.maxPlayers || 8)) txt = waiting.length ? t('방이 가득 · {n}명 준비 안 됨', { n: waiting.length }) : 'Room full · everyone’s ready!';
       else if (ps.length <= 1) txt = 'Share the code to fill the room';
-      else if (!waiting.length) txt = isHost() ? 'Everyone’s ready — start when you like!' : `Everyone’s ready — waiting for ${host ? host.name : 'the host'}`;
-      else txt = `${ps.length - waiting.length} of ${ps.length} ready`;
+      else if (!waiting.length) txt = isHost() ? 'Everyone’s ready — start when you like!' : t('모두 준비됨 — {host}을(를) 기다리는 중', { host: host ? host.name : t('방장') });
+      else txt = t('{a} / {b} 준비됨', { a: ps.length - waiting.length, b: ps.length });
       statusTxt.textContent = txt;
       status.classList.toggle('is-allready', ps.length > 1 && !waiting.length);
       el.classList.toggle('is-alone', ps.length <= 1);
@@ -4118,8 +4118,8 @@ export class Menus {
         modeIco.innerHTML = bm ? BOSS_GLYPH : zm ? ZONE_GLYPH : GLYPHS.flag;
         el.classList.toggle('is-bossmode', bm);
         el.classList.toggle('is-zonemode', zm);
-        diffLbl.querySelector('.iw-lset__lbltxt')!.textContent = bm ? 'DIFFICULTY' : 'BOT SKILL';
-        hostChip.lastChild!.textContent = bm || zm ? 'HOST' : 'YOU’RE THE HOST';   // the longer headlines need the room
+        diffLbl.querySelector('.iw-lset__lbltxt')!.textContent = t(bm ? 'DIFFICULTY' : 'BOT SKILL');
+        hostChip.lastChild!.textContent = t(bm || zm ? 'HOST' : 'YOU’RE THE HOST');   // the longer headlines need the room
         lenSegT.el.style.display = bm || zm ? 'none' : ''; lenSegB.el.style.display = bm ? '' : 'none';
         rLen.classList.toggle('is-locked', zm);
         if (!first) { restartAnim(rMode, 'is-swap'); restartAnim(status, 'is-swap'); }
@@ -4129,7 +4129,7 @@ export class Menus {
       const humans = players().length;
       botsNote.textContent = botsLocked() ? 'No bots on this stage' : lob.bots !== false ? (humans < 8 ? `${8 - humans} bot${8 - humans === 1 ? '' : 's'} join ${bossMode() ? 'the squad' : 'in'}` : 'Room is full') : 'Empty spots stay empty';
       rBots.classList.toggle('is-locked', botsLocked());
-      if (bossMode()) { const P1 = TEAM_PALETTES[palIdx()]; if (P1) palName.textContent = `${P1.names[0]} squad · ${P1.names[1]} boss`; }
+      if (bossMode()) { const P1 = TEAM_PALETTES[palIdx()]; if (P1) palName.textContent = t('{a} 분대 · {b} 보스', { a: t(P1.names[0]), b: t(P1.names[1]) }); }
       const host = players().find((p) => p.host);
       hostName.textContent = host ? host.name : 'the host';
       if (prev) {
@@ -4141,11 +4141,11 @@ export class Menus {
         if (prev.difficulty !== lob.difficulty) flash(rDiff);
         if ((prev.mode || 'turf') !== (lob.mode || 'turf')) {
           flash(rMode);
-          if (!isHost()) this.toast(`${host ? host.name : 'The host'} picked ${bossMode() ? `BOSS BATTLE — everyone vs ${BOSS_NAME}!` : MODE_INFO[lobMode()].label}`, { icon: bossMode() ? BOSS_GLYPH : lobMode() === 'zones' ? ZONE_GLYPH : GLYPHS.flag });
+          if (!isHost()) this.toast(t('{who}이(가) {what}을(를) 골랐다', { who: host ? host.name : t('방장'), what: bossMode() ? t('보스 배틀 — 모두 대 {boss}!', { boss: BOSS_NAME }) : t(MODE_INFO[lobMode()].label) }), { icon: bossMode() ? BOSS_GLYPH : lobMode() === 'zones' ? ZONE_GLYPH : GLYPHS.flag });
         }
         if (!isHost() && (prev.map !== lob.map || prev.time !== lob.time)) {
           const m = maps.find((x) => x.id === lob.map);
-          this.toast(`${host ? host.name : 'The host'} picked ${m ? m.name : 'a stage'}${lob.time === 'dusk' ? ' at dusk' : ''}`, { icon: GLYPHS.map });
+          this.toast(t(lob.time === 'dusk' ? '{who}이(가) 해질녘 {what}을(를) 골랐다' : '{who}이(가) {what}을(를) 골랐다', { who: host ? host.name : t('방장'), what: m ? t(m.name) : t('스테이지') }), { icon: GLYPHS.map });
         }
       }
     };
@@ -4159,14 +4159,14 @@ export class Menus {
       el.classList.toggle('is-host', host);
       const ready = !!(me && me.ready);
       readyBtn.classList.toggle('is-on', ready);
-      readyBtn.querySelector('.iw-btn__label')!.textContent = ready ? 'READY!' : 'READY?';
-      readySub.textContent = ready ? 'Press again to cancel' : 'Let the host know you’re set';
+      readyBtn.querySelector('.iw-btn__label')!.textContent = t(ready ? 'READY!' : 'READY?');
+      readySub.textContent = t(ready ? 'Press again to cancel' : 'Let the host know you’re set');
       const ok = host && net && net.canStart();
       startBtn.classList.toggle('is-blocked', host && !ok);
       const waiting = players().filter((p) => !p.you && !p.ready && !p.host);
       const humans = players().length;
       const block = (net && net.startBlock ? net.startBlock() : noBotsStartBlock(lob)) || null;   // humans-only stage: 2+ players, one per side
-      startSub.textContent = ok ? (humans <= 1 && lob.bots !== false ? 'Just you and the bots' : humans <= 1 ? 'Nobody to play against yet!' : 'Everyone’s ready — let’s ink!') : block || (waiting.length ? `Waiting for ${listNames(waiting)}` : 'Getting ready…');
+      startSub.textContent = ok ? (humans <= 1 && lob.bots !== false ? 'Just you and the bots' : humans <= 1 ? 'Nobody to play against yet!' : 'Everyone’s ready — let’s ink!') : block || (waiting.length ? t('{names}을(를) 기다리는 중', { names: listNames(waiting) }) : 'Getting ready…');
       // team seg follows your actual side unless a request is pending
       if (me && !S.pendingTeam) teamSeg.refresh(S.teamPref === 'auto' ? 'auto' : teamOf(me));
       teamRow.dataset.pick = S.teamPref === 'auto' ? 'auto' : String(S.pendingTeam ? S.pendingTeam.team : teamOf(me));
@@ -4215,13 +4215,13 @@ export class Menus {
     const flushBatch = () => {
       const j = S.joins.splice(0), l = S.leaves.splice(0).filter((p) => !j.some((x) => x.id === p.id));
       if (j.length === 1) { this.toast('joined!', { kind: 'join', color: colors()[teamOf(j[0])], tag: j[0] }); this._sfx('ui_toggle', 0.1); }
-      else if (j.length) { this.toast(`${names(j)} joined the room`, { kind: 'join', color: colors()[teamOf(j[0])] }); this._sfx('ui_toggle', 0.1); }
+      else if (j.length) { this.toast(t('{names}이(가) 방에 들어왔다', { names: names(j) }), { kind: 'join', color: colors()[teamOf(j[0])] }); this._sfx('ui_toggle', 0.1); }
       if (l.length) this.toast(`${names(l)} left`, { kind: 'leave' });
     };
     sub('host', (e) => {
       const p = players().find((x) => x.id === (e && e.hostId));
       if (!p) return;
-      this.toast(p.you ? 'You’re the host now — the room is yours' : `${p.name} is the host now`, { kind: 'good', icon: GLYPHS.crown });
+      this.toast(p.you ? 'You’re the host now — the room is yours' : t('이제 {name}이(가) 방장이다', { name: p.name }), { kind: 'good', icon: GLYPHS.crown });
       if (p.you) this._sfx('special_ready', 0.2);
     });
     sub('emote', (e) => {
@@ -4386,13 +4386,13 @@ export class Menus {
             if (on !== O.on) { O.on = on; O.el.classList.toggle('is-on', on); }
             if (a) O.el.style.transform = `translate3d(${Math.round(a.x)}px,${Math.round(a.y)}px,0) scale(${clamp(a.s || 1, 0.6, 1.25).toFixed(3)})`;
             const sig = bots ? 'bot' : 'open';
-            if (O.sig !== sig) { O.sig = sig; O.txt.textContent = bots ? 'BOT' : 'OPEN'; O.el.classList.toggle('is-bot', bots); O.el.querySelector('.iw-plate__plus')!.innerHTML = bots ? GLYPHS.bot : GLYPHS.plus; }
+            if (O.sig !== sig) { O.sig = sig; O.txt.textContent = t(bots ? 'BOT' : 'OPEN'); O.el.classList.toggle('is-bot', bots); O.el.querySelector('.iw-plate__plus')!.innerHTML = bots ? GLYPHS.bot : GLYPHS.plus; }
           }
         }
         S.age += dt;
         if (S.batchT > 0) { S.batchT -= dt; if (S.batchT <= 0) flushBatch(); }
         { const acc = colors().join() + (bossMode() ? '|b' : ''); if (acc !== S.acc) { const first = !S.acc; S.acc = acc; if (!first) { for (const P of plates.values()) P.sig = ''; render(false); } } }
-        if (S.copied > 0) { S.copied -= dt; if (S.copied <= 0) copyTxt.textContent = 'COPY'; }
+        if (S.copied > 0) { S.copied -= dt; if (S.copied <= 0) copyTxt.textContent = t('COPY'); }
         if (S.emoteCd > 0) { S.emoteCd = Math.max(0, S.emoteCd - dt); emoteBtn.style.setProperty('--cd', (S.emoteCd / 1.3).toFixed(3)); }
         if (S.pendingTeam) {
           S.pendingTeam.t += dt;
@@ -4540,8 +4540,8 @@ export class Menus {
           x.el.classList.toggle('is-holding', z.owner === t);
         }
         const names = snap.names;
-        objName.textContent = z.active === 'center' ? 'CENTRE ZONE' : `${(names[z.active === 'sideA' ? 0 : 1] || TEAM_NAMES[z.active === 'sideA' ? 0 : 1]).toUpperCase()} SIDE`;
-        objState.textContent = z.owner >= 0 ? `HELD BY ${(names[z.owner] || TEAM_NAMES[z.owner]).toUpperCase()}` : 'NEUTRAL';
+        objName.textContent = z.active === 'center' ? 'CENTRE ZONE' : t('{team} 쪽', { team: t(names[z.active === 'sideA' ? 0 : 1] || TEAM_NAMES[z.active === 'sideA' ? 0 : 1]).toUpperCase() });
+        objState.textContent = z.owner >= 0 ? t('{team} 점유', { team: t(names[z.owner] || TEAM_NAMES[z.owner]).toUpperCase() }) : 'NEUTRAL';
         obj.dataset.owner = z.owner < 0 ? 'n' : z.owner ? 'b' : 'a';
         zoneStrip!.classList.toggle('is-ot', !!z.overtime);
       };
@@ -4565,7 +4565,7 @@ export class Menus {
           const st = h('span', { class: 'iw-rrow__st' });
           const row = h('div', { class: 'iw-rrow' + (p.isSelf ? ' is-self' : '') },
             h('span', { class: 'iw-rrow__w', html: weaponIcon((this._weapons()[p.weapon] || {}).kind || p.weapon) }),
-            h('span', { class: 'iw-rrow__name' }, p.name, p.isSelf ? h('em', null, 'YOU') : null),
+            h('span', { class: 'iw-rrow__name' }, rawText(p.name), p.isSelf ? h('em', null, 'YOU') : null),
             st);
           rosterRows.push({ row, st, name: p.name, team: p.team, sig: '' });
           return row;
@@ -4588,7 +4588,7 @@ export class Menus {
       const tLeft = s.time, frac = clamp(tLeft / s.duration);
       const ot = !!(zoneMode && s.zones && s.zones.overtime);
       clockNum.textContent = ot ? 'OT' : fmtTime(tLeft);
-      clockLbl.textContent = ot ? 'OVERTIME' : 'LEFT';
+      clockLbl.textContent = t(ot ? 'OVERTIME' : 'LEFT');
       clock.style.setProperty('--f', ot ? '1' : frac.toFixed(4));
       clock.classList.toggle('is-low', tLeft <= 60 || ot);
       clock.classList.toggle('is-ot', ot);
@@ -4724,7 +4724,7 @@ export class Menus {
     const clock = (t: number) => { t = Math.max(0, +t || 0); const m = Math.floor(t / 60), ss = Math.floor(t % 60); return `${m}:${ss < 10 ? '0' : ''}${ss}`; };
     const tags = boss
       ? [B.defeated
-        ? h('span', { class: 'iw-res__tag iw-res__tag--sunk' }, h('i', { html: awardIcon('stopwatch') }), `${B.name} SUNK`, h('small', null, `in ${clock(B.time)}`))
+        ? h('span', { class: 'iw-res__tag iw-res__tag--sunk' }, h('i', { html: awardIcon('stopwatch') }), t('{name} 격침', { name: B.name }), h('small', null, `in ${clock(B.time)}`))
         : h('span', { class: 'iw-res__tag iw-res__tag--escaped' }, h('i', { html: BOSS_GLYPH }), 'IT GOT AWAY', h('small', null, `${Math.max(1, Math.round((B.hpLeft || 0) * 100))}% HP left`))]
       : awards.match.map((t) => h('span', { class: `iw-res__tag iw-res__tag--${t.id}` }, h('i', { html: awardIcon(t.icon) }), t.label, t.value ? h('small', null, t.value) : null));
     const myAwards = (self ? self._aw : []).slice(0, 4);
@@ -4822,7 +4822,7 @@ export class Menus {
           const isMvp = p._aw.some((a) => a.id === 'mvp');
           const row = h('div', { class: 'iw-prow iw-in iw-in--left' + (p.isSelf ? ' is-self' : '') + (isMvp ? ' is-mvp' : '') },
             h('span', { class: 'iw-prow__w', html: weaponIcon((this._weapons()[p.weapon] || {}).kind || p.weapon) }),
-            h('span', { class: 'iw-prow__name' }, h('span', { class: 'iw-prow__nm' }, p.name), p.isSelf ? h('em', null, 'YOU') : null, badges),
+            h('span', { class: 'iw-prow__name' }, h('span', { class: 'iw-prow__nm' }, rawText(p.name)), p.isSelf ? h('em', null, 'YOU') : null, badges),
             h('span', { class: 'iw-prow__turf' }, turfBar, turfNum, h('small', null, 'p')),
             nSplat, nDeath);
           rowFx.push({ row, turfNum, turfBar, nSplat, nDeath, badges, turf: p.turf || 0, rel: (p.turf || 0) / best, aws: p._aw.slice(0, 3), start: 0.8 + ri * 0.13, shown: -1, done: false });
@@ -5009,7 +5009,7 @@ export class Menus {
     }
     const totalFill = segs.reduce((a, s) => a + Math.max(0, s.to - s.from), 0) || 1;
     let si = 0, cur = segs[0].from, filled = 0, pause = 0, xpTick = 0, done = false;
-    const setBar = (v: number, max: number) => { bar.style.setProperty('--t', clamp(v / Math.max(1, max)).toFixed(4)); nextEl.textContent = `${fmtInt(Math.max(0, max - v))} XP to next level`; };
+    const setBar = (v: number, max: number) => { bar.style.setProperty('--t', clamp(v / Math.max(1, max)).toFixed(4)); nextEl.textContent = t('다음 레벨까지 {n} XP', { n: fmtInt(Math.max(0, max - v)) }); };
     setBar(cur, segs[0].max);
     const showBd = (frac: number) => { for (const b of bdEls) if (!b.shown && frac >= b.at - 1e-6) { b.shown = true; b.el.classList.add('is-in'); } };
     const finish = () => {
@@ -5040,7 +5040,7 @@ export class Menus {
           lobbyT += dt;
           const left = Math.max(0, backIn - lobbyT), sec = Math.ceil(left);
           if (String(sec) !== lobbySecs.textContent && sec > 0) { lobbySecs.textContent = String(sec); if (sec <= 3) restartAnim(lobbySecs, 'is-tick'); }
-          if (left <= 0 && !lobbyPill.classList.contains('is-due')) { lobbyPill.classList.add('is-due'); lobbyPill.querySelector('small')!.textContent = 'HEADING BACK'; lobbySecs.textContent = '\u2026'; }
+          if (left <= 0 && !lobbyPill.classList.contains('is-due')) { lobbyPill.classList.add('is-due'); lobbyPill.querySelector('small')!.textContent = t('HEADING BACK'); lobbySecs.textContent = '\u2026'; }
           (lobbyPill.firstChild as HTMLElement).style.setProperty('--f', (left / backIn).toFixed(4));
         }
         if (done) return;

@@ -4,6 +4,7 @@
 //   - 강화: +1/+2/+3은 2·4·6장 보스 첫 완료로 열리고 단계 비용 50/90/140이다.
 //   - 이전: 같은 슬롯의 다른 카드로 단계를 옮기고 원본은 +0이 된다. 대상 단계가 같거나 높으면 거절한다(복제·환급 없음).
 // 해금은 저장의 완료 목록에서 매번 계산한다(다시 계산해도 재료·장비를 재지급하지 않는다). 검사: tests/client/craft.test.ts.
+import { t } from '../ui/i18n.js';
 import { CRAFT, DESIGN_UNLOCK, START_DESIGNS, START_WEAPONS, UPGRADE_COST, UPGRADE_UNLOCK_CHAPTER, UPGRADE_UNLOCK_MISSION, WEAPON_UNLOCK } from './data/economy.js';
 import { BASIC_IDS, MODULES } from './data/modules.js';
 import { addCards, findCard, makeCard, slotOf, type ModuleCard } from './inventory.js';
@@ -50,15 +51,15 @@ function grant(save: CampaignSave, card: ModuleCard, parts: number, cores: numbe
 export function craftBasic(save: CampaignSave, defId: string): CraftOutcome {
   const d = MODULES[defId];
   if (!d || d.signature) return no('기본 설계가 아니다');
-  if (!unlockedDesigns(save).includes(defId)) { const src = designSource(defId); return no(src ? `${src} 첫 완료 뒤 제작할 수 있다` : '아직 해금하지 않은 설계이다'); }
-  if (save.inventory.parts < CRAFT.basic) return no(`부품이 부족하다 (${save.inventory.parts}/${CRAFT.basic})`);
+  if (!unlockedDesigns(save).includes(defId)) { const src = designSource(defId); return no(src ? t('{src} 첫 완료 뒤 제작할 수 있다', { src }) : '아직 해금하지 않은 설계이다'); }
+  if (save.inventory.parts < CRAFT.basic) return no(t('부품이 부족하다 ({a}/{b})', { a: save.inventory.parts, b: CRAFT.basic }));
   return grant(save, makeCard(basicCard(defId), `m${save.uidSeq}`, 'craft'), CRAFT.basic, 0);
 }
 
 export function craftSignature(save: CampaignSave, sigId: string): CraftOutcome {
   if (!MODULES[sigId]?.signature) return no('서명 모듈이 아니다');
   if (!save.signatures.includes(sigId)) return no('한 번 얻은 서명만 다시 만들 수 있다');
-  if (save.inventory.parts < CRAFT.signatureParts || save.inventory.cores < CRAFT.signatureCores) return no(`재료가 부족하다 (부품 ${save.inventory.parts}/${CRAFT.signatureParts} · 공명핵 ${save.inventory.cores}/${CRAFT.signatureCores})`);
+  if (save.inventory.parts < CRAFT.signatureParts || save.inventory.cores < CRAFT.signatureCores) return no(t('재료가 부족하다 (부품 {a}/{b} · 공명핵 {c}/{d})', { a: save.inventory.parts, b: CRAFT.signatureParts, c: save.inventory.cores, d: CRAFT.signatureCores }));
   const r = { ...signatureCard(sigId), source: 'craft' };
   return grant(save, makeCard(r, `m${save.uidSeq}`, 'craft'), CRAFT.signatureParts, CRAFT.signatureCores);
 }
@@ -70,9 +71,9 @@ export function upgradeCard(save: CampaignSave, uid: string): CraftOutcome {
   if (!c) return no('보관함에 없는 카드이다');
   if (c.plus >= 3) return no('이미 +3이다');
   const next = c.plus + 1;
-  if (upgradeTier(save) < next) return no(`+${next} 강화는 ${UPGRADE_UNLOCK_CHAPTER[next - 1]}장 보스 완료 뒤 열린다`);
+  if (upgradeTier(save) < next) return no(t('+{n} 강화는 {ch}장 보스 완료 뒤 열린다', { n: next, ch: UPGRADE_UNLOCK_CHAPTER[next - 1] }));
   const cost = UPGRADE_COST[c.plus];
-  if (save.inventory.parts < cost) return no(`부품이 부족하다 (${save.inventory.parts}/${cost})`);
+  if (save.inventory.parts < cost) return no(t('부품이 부족하다 ({a}/{b})', { a: save.inventory.parts, b: cost }));
   return { ...save, inventory: { ...save.inventory, parts: save.inventory.parts - cost, cards: save.inventory.cards.map((x) => (x.uid === uid ? { ...x, plus: next } : x)) } };
 }
 
@@ -84,6 +85,6 @@ export function transferUpgrade(save: CampaignSave, fromUid: string, toUid: stri
   if (slotOf(a) !== slotOf(b)) return no('같은 슬롯끼리만 옮길 수 있다');
   if (a.plus <= 0) return no('옮길 강화 단계가 없다');
   if (a.locked) return no('잠근 카드의 강화는 옮기지 않는다 — 잠금을 먼저 푼다');
-  if (b.plus >= a.plus) return no(`대상이 이미 +${b.plus}이다 — 낮은 단계로 덮어쓰지 않는다`);
+  if (b.plus >= a.plus) return no(t('대상이 이미 +{n}이다 — 낮은 단계로 덮어쓰지 않는다', { n: b.plus }));
   return { ...save, inventory: { ...save.inventory, cards: save.inventory.cards.map((x) => (x.uid === toUid ? { ...x, plus: a.plus } : x.uid === fromUid ? { ...x, plus: 0 } : x)) } };
 }

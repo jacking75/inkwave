@@ -7,11 +7,13 @@
 //   - 언어를 바꾸면 구독자(onLocale)가 화면을 다시 그린다. DOM 전체를 훑어 바꾸는 방식(MutationObserver)이나 프레임마다 다시
 //     번역하지 않는다. 사용자 이름·채팅·방 코드·저장 ID·제품명(INKWAVE)·버튼 표기(A/B/X/Y)는 번역하지 않는다.
 // 순수 모듈이다(문서 lang 적용만 applyLocaleToDocument가 한다). 검사: tests/client/i18n.test.ts.
-import { PAIRS } from './i18n-pairs.js';
+import { PAIRS, EN_ALIASES } from './i18n-pairs.js';
 
 // 원문 → [한국어, 영어]
 const BY = new Map<string, readonly [string, string]>();
 for (const p of PAIRS) { BY.set(p[0], p); if (!BY.has(p[1])) BY.set(p[1], p); }
+// 같은 한국어의 다른 영어 표기: 그 영어 원문은 영어일 때 원문 그대로, 한국어일 때 그 한국어
+for (const [en, ko] of EN_ALIASES) if (!BY.has(en)) BY.set(en, [ko, en]);
 export const hasPair = (src: string): boolean => BY.has(src);
 
 export type Locale = 'ko' | 'en';

@@ -10,6 +10,7 @@
 // crosshair, tracking assist carries a fraction of the target's angular motion while you are actively aiming or moving
 // — never an auto-snap. Bullet magnetism pulls shots onto the body line of an enemy the crosshair is actually touching.
 // 에임 보조·감도는 가상 키의 표시 여부가 아니라 실제 입력 출처(frame.source)로 고른다.
+import { t } from '../ui/i18n.js';
 import * as THREE from 'three';
 import { G, clamp, lerp, angleDiff } from '../core/ctx.js';
 import { PLAYER, weaponRange } from '../config.js';
@@ -166,7 +167,7 @@ export class PlayerController {
     if (a.alive) return false;
     let q: JumpPlan | null = null;
     if (kind === 'ally') { const t = target as Actor | null; if (t && t.team === a.team && t !== a && t.alive) q = { kind, target: t, name: t.name }; }
-    else if (kind === 'beacon') { const b = target as Beacon | null; if (b && b.state === 'beacon' && b.team === a.team) q = { kind, target: b, name: b.owner === a ? 'Your beacon' : `${b.owner?.name || 'Team'}'s beacon` }; }
+    else if (kind === 'beacon') { const b = target as Beacon | null; if (b && b.state === 'beacon' && b.team === a.team) q = { kind, target: b, name: b.owner === a ? 'Your beacon' : t('{name}의 비콘', { name: b.owner?.name || t('팀') }) }; }
     if (kind === 'base') {
       const had = !!this.jumpQueue;
       this.jumpQueue = null;
@@ -183,7 +184,7 @@ export class PlayerController {
   // is the planned target still there? (teammate alive, beacon standing)
   _queueGone(q: JumpPlan | null): string | null {
     if (!q) return null;
-    if (q.kind === 'ally') return (q.target as Actor).alive ? null : `${q.name} was splatted`;
+    if (q.kind === 'ally') return (q.target as Actor).alive ? null : t('{name}이(가) 당했다', { name: q.name });
     return (q.target as Beacon).state === 'beacon' ? null : 'The jump beacon is gone';
   }
 
@@ -192,7 +193,7 @@ export class PlayerController {
     const why = this._queueGone(this.jumpQueue);
     if (!why) return;
     this.jumpQueue = null;
-    (G.hud as { jumpNote?(t: string): void } | null)?.jumpNote?.(`${why} — Super Jump cancelled`);
+    (G.hud as { jumpNote?(t: string): void } | null)?.jumpNote?.(t('{why} — 슈퍼 점프 취소', { why: t(why) }));
     G.audio?.play('ui_error', { volume: 0.45 });
   }
 
@@ -205,7 +206,7 @@ export class PlayerController {
     const why = this._queueGone(q);
     let ok = false;
     if (!why) ok = q.kind === 'beacon' ? !!G.subs?.jumpToBeacon(a, q.target as Beacon) : a.superJump(q.target as Actor);
-    if (!ok) { (G.hud as { jumpNote?(t: string): void } | null)?.jumpNote?.(`${why || 'Can’t Super Jump right now'} — Super Jump cancelled`); G.audio?.play('ui_error', { volume: 0.45 }); }
+    if (!ok) { (G.hud as { jumpNote?(t: string): void } | null)?.jumpNote?.(t('{why} — 슈퍼 점프 취소', { why: t(why || 'Can’t Super Jump right now') })); G.audio?.play('ui_error', { volume: 0.45 }); }
     return ok;
   }
 

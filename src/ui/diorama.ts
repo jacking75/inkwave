@@ -12,6 +12,7 @@
 //   · splatted: the map still opens to PLAN the Super Jump you'll take on respawn — picks queue it (player.js
 //     queueJump), the queued pin is marked, the arc runs from your base, and a panel shows the respawn countdown + plan
 // Per frame it only projects a handful of points and writes transforms / CSS vars when they change.
+import { t } from './i18n.js';
 import { h, clamp } from './ui-util.js';
 import { keycap, weaponIcon, richText, SUB_ICONS } from './ui-icons.js';
 import { DEATH_MARK_SVG } from './hud.js';
@@ -413,8 +414,8 @@ export class DioramaOverlay {
 
   _head() {
     const gm = G.game as DioGameView, m = gm?.mapDef;
-    this.title.textContent = (m?.name || 'Stage').toUpperCase();
-    this.when.textContent = gm?.time === 'dusk' ? 'DUSK' : 'DAY';
+    this.title.textContent = t(m?.name || 'Stage').toUpperCase();
+    this.when.textContent = t(gm?.time === 'dusk' ? 'DUSK' : 'DAY');
     const pad = G.input?.lastDevice === 'pad';
     const plan = !!this._planning;
     this.foot.innerHTML = pad
@@ -452,8 +453,8 @@ export class DioramaOverlay {
     const first = this._last.plan == null;
     this._last.plan = key;
     this.plan.classList.toggle('is-queued', !!q);
-    this.planT.textContent = q ? `SUPER JUMP \u2192 ${q.name.toUpperCase()}` : 'PLAN YOUR SUPER JUMP';
-    this.planS.textContent = q ? 'Launches on respawn \u00b7 pick again to change' : 'Pick a teammate or beacon to jump to on respawn';
+    this.planT.textContent = q ? t('슈퍼 점프 → {name}', { name: q.name.toUpperCase() }) : 'PLAN YOUR SUPER JUMP';
+    this.planS.textContent = t(q ? 'Launches on respawn \u00b7 pick again to change' : 'Pick a teammate or beacon to jump to on respawn');
     if (!first) this.plan.animate([{ scale: '1.08' }, { scale: '1' }], { duration: 320, easing: 'cubic-bezier(.34,1.8,.64,1)' });
   }
 }

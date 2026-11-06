@@ -1082,14 +1082,14 @@ class Game {
       if (actor.isLocal || actor._nearCamera?.()) G.audio?.play('swim_splash', { pos: actor.isLocal ? undefined : actor.pos, volume: (actor.isLocal ? 0.5 : 0.32) * Math.min(1, 0.55 + (speed || 0) / 16) });
     });
     // online, humans-only stage: a player who left is gone from the match (Match.removeActor) — say so in the feed
-    on('actor:removed', ({ actor }) => { if (this.match && !this.match.attract) this.hud?.feed({ text: `${actor.name} left the match`, color: G.teamHex[actor.team], kind: 'info' }); });
+    on('actor:removed', ({ actor }) => { if (this.match && !this.match.attract) this.hud?.feed({ text: t('{name}이(가) 경기에서 나갔다', { name: actor.name }), color: G.teamHex[actor.team], kind: 'info' }); });
     on('splatted', ({ victim, attacker, cause }) => {
       if (!this.match || this.match.attract) return;
       this._addDeathMark(victim);
       const local = this.match.local;
       if (attacker?.isLocal) {
         G.audio?.play('splat_enemy', { volume: 0.9 });
-        this.hud?.feed({ text: `You splatted ${victim.name}!`, color: G.teamHex[local!.team], kind: 'kill' });   // (공격자가 내 액터면 local이 있다)
+        this.hud?.feed({ text: t('{name}을(를) 처치했다!', { name: victim.name }), color: G.teamHex[local!.team], kind: 'kill' });   // (공격자가 내 액터면 local이 있다)
       } else if (victim.isLocal) {
         G.audio?.play('splatted_self');
         G.audio?.duck?.(0.45, 2.2);
@@ -1101,9 +1101,9 @@ class Game {
         this.rig.lookAt.copy(victim.pos);
       } else if (victim.team === local?.team) {
         G.audio?.play('ally_splatted', { volume: 0.5 });
-        this.hud?.feed({ text: `${victim.name} was splatted${attacker ? ' by ' + attacker.name : ''}`, color: G.teamHex[victim.enemyTeam], kind: 'death' });
+        this.hud?.feed({ text: attacker ? t('{name}이(가) {by}에게 당했다', { name: victim.name, by: attacker.name }) : t('{name}이(가) 당했다', { name: victim.name }), color: G.teamHex[victim.enemyTeam], kind: 'death' });
       } else if (attacker && attacker.team === local?.team) {
-        this.hud?.feed({ text: `${attacker.name} splatted ${victim.name}`, color: G.teamHex[attacker.team], kind: 'ally' });
+        this.hud?.feed({ text: t('{a}이(가) {b}을(를) 처치했다', { a: attacker.name, b: victim.name }), color: G.teamHex[attacker.team], kind: 'ally' });
       }
     });
     // 캠페인 체크포인트 재도전은 respawn 사건 없이 플레이어를 되살린다: 사망 카드를 함께 내린다
@@ -1273,7 +1273,7 @@ class Game {
     // offline never plays an online-only stage (the menus don't offer one; a stray ?autostart / api call falls back)
     if (!mapOfflineOk(map.id) && !DEV_STAGE) {
       console.warn(`[inkwave] ${map.name} is online only — offline match on ${OFFLINE_MAPS[0].name} instead`);
-      this.menus?.toast?.(`${map.name} is online only`);
+      this.menus?.toast?.(t('{map}은(는) 온라인 전용이다', { map: t(map.name) }));
       map = OFFLINE_MAPS[0];
     }
     if (opts.mode === 'boss' && !mapBossOk(map.id)) opts.mode = 'turf';
@@ -1355,7 +1355,7 @@ class Game {
 
   async startCampaign(missionId: string, o: { prologue?: boolean; resume?: boolean; challenge?: string | null } = {}) {
     const back = (msg: string) => { this.menus?.show('harbor'); this.menus?.toast?.(msg, { kind: 'info', ms: 4200 }); };
-    if (!isImplemented(missionId)) { back(`${missionId}은 아직 제작 범위 밖이다 — 현재 플레이 가능: ${MISSIONS.map((x) => x.id).join(" · ")}`); return; }
+    if (!isImplemented(missionId)) { back(t('{id}은 아직 제작 범위 밖이다 — 현재 플레이 가능: {list}', { id: missionId, list: MISSIONS.map((x) => x.id).join(' · ') })); return; }
     if (!this.store.current) {
       const r = await this.store.newGame(Date.now(), 'normal');
       if (!r.ok) { this.menus?.show('main'); this.menus?.toast?.(STORE_ERROR_TEXT[r.error], { kind: 'error', ms: 6000 }); return; }
@@ -1365,7 +1365,7 @@ class Game {
     const mission = getMission(missionId)!;
     this._campaignStart = { missionId, prologue: !!o.prologue && !o.challenge, resume: !!o.resume && !o.challenge, challenge: o.challenge ?? null };
     try { await this.startMatch({ mapId: mission.mapId, practice: true, time: mission.timeOfDay }); }
-    catch (e) { console.error(e); this.menus?.toast?.(`임무를 열지 못했다: ${(e as Error).message}`, { kind: 'error' }); }
+    catch (e) { console.error(e); this.menus?.toast?.(t('임무를 열지 못했다: {msg}', { msg: (e as Error).message }), { kind: 'error' }); }
     finally { this._campaignStart = null; }
   }
 
@@ -1375,7 +1375,7 @@ class Game {
     const open = unlockedWeapons(this.store.current);
     if (open.includes(want)) return want;
     const src = weaponSource(want);
-    this.menus?.toast?.(`${(WEAPONS as Lookup<typeof WEAPONS>)[want]?.name ?? want}은 ${src ?? '이후 임무'} 완료 뒤 캠페인에서 쓸 수 있다 — ${WEAPONS.shooter.name}로 출전`, { kind: 'info', ms: 4200 });
+    this.menus?.toast?.(t('{w}은 {src} 완료 뒤 캠페인에서 쓸 수 있다 — {base}로 출전', { w: t((WEAPONS as Lookup<typeof WEAPONS>)[want]?.name ?? want), src: src ?? t('이후 임무'), base: t(WEAPONS.shooter.name) }), { kind: 'info', ms: 4200 });
     return open[0];
   }
 
@@ -1429,7 +1429,7 @@ class Game {
       weaponLock: (id) => {
         if (unlockedWeapons(st.current).includes(id)) return null;
         const src = weaponSource(id);
-        return src ? `${src} 첫 완료 뒤 캠페인에서 쓸 수 있다` : '캠페인 무기 목록에 없다';
+        return src ? t('{src} 첫 완료 뒤 캠페인에서 쓸 수 있다', { src }) : '캠페인 무기 목록에 없다';
       },
     };
   }
@@ -1464,7 +1464,7 @@ class Game {
     const rec = pre && 'record' in pre ? pre.record : null;
     const rewards: Array<{ name: string; kind: string }> = [];
     if (rec) {
-      rewards.push({ kind: '경험치', name: `+${rec.xp.granted}${rec.xp.overCap ? ` (적용 ${rec.xp.applied})` : ''}` });
+      rewards.push({ kind: '경험치', name: rec.xp.overCap ? t('+{n} (적용 {a})', { n: rec.xp.granted, a: rec.xp.applied }) : `+${rec.xp.granted}` });
       rewards.push({ kind: '부품', name: `+${rec.parts}` });
       if (rec.cores) rewards.push({ kind: '공명핵', name: `+${rec.cores}` });
       for (const md of rec.modules) rewards.push({ kind: md.grade === 'special' ? '특제' : md.grade === 'precise' ? '정밀' : '일반', name: MODULES[md.defId].name + (md.toPending ? ' (대기함)' : '') });
@@ -1501,10 +1501,10 @@ class Game {
     const rec = pre && 'result' in pre ? pre.result : null;
     await this.quitToMenu('workshop');
     const dist = HARBOR.find((d) => d.missions.some((x) => x.id === mission.id))!;
-    const rewards = [{ kind: '부품', name: `+${c.parts}` }, { kind: '기록', name: `${(ms / 1000).toFixed(1)}초${rec && rec.best === Math.round(ms) ? ' (최고)' : ''}` }, ...(rec?.mark ? [{ kind: '외형 표식', name: rec.mark }] : [])];
+    const rewards = [{ kind: '부품', name: `+${c.parts}` }, { kind: '기록', name: t(rec && rec.best === Math.round(ms) ? '{s}초 (최고)' : '{s}초', { s: (ms / 1000).toFixed(1) }) }, ...(rec?.mark ? [{ kind: '외형 표식', name: rec.mark }] : [])];
     void res;
     this.menus?.showStoryResults?.({
-      mission: mission.id, title: `도전 · ${c.title}`, district: dist.id, firstClear: false, rewards,
+      mission: mission.id, title: t('도전 · {title}', { title: t(c.title) }), district: dist.id, firstClear: false, rewards,
       xp: { from: this.store.current?.xp ?? 0, to: this.store.current?.xp ?? 0, max: 12350 },
       line: { speaker: 'mora', text: '같은 길도 다른 손으로 칠하면 다르게 보여.' },
       next: null, commit,
@@ -1522,7 +1522,7 @@ class Game {
     const s = this.store.current;
     if (!s) return null;
     const open = endingUnlocked(s);
-    const vt = (v: (typeof CHALLENGES)[number]['variants'][number]) => (v.kind === 'reorder' ? `목표 순서 ${v.order.join(' → ')}` : `${ENEMY_ROLES[v.role].name} 추가`);
+    const vt = (v: (typeof CHALLENGES)[number]['variants'][number]) => (v.kind === 'reorder' ? t('목표 순서 {o}', { o: v.order.join(' → ') }) : t('{e} 추가', { e: t(ENEMY_ROLES[v.role].name) }));
     return {
       ending: open,
       challenges: CHALLENGES.map((c) => ({ id: c.id, mission: c.mission, title: c.title, variants: c.variants.map(vt).join(' · '), parts: c.parts, clears: s.challenges[c.id]?.clears ?? 0, bestMs: s.challenges[c.id]?.bestMs ?? 0, hasMark: s.marks.includes(c.mark), locked: !open })),
@@ -2251,7 +2251,7 @@ class Game {
         const st = b.current;
         if (!st) return '완료';
         const n = `${b.step + 1}/${BIND_STEPS.length}`;
-        return b.state === 'release' ? `${n} · 기록했다 — 손을 떼 주세요` : `${n} · ${st.label}${st.kind === 'axis' ? '' : ' 버튼을 누른다'}${st.required ? '' : ' (선택 — 건너뛸 수 있다)'}`;
+        return b.state === 'release' ? t('{n} · 기록했다 — 손을 떼 주세요', { n }) : `${n} · ${st.label}${st.kind === 'axis' ? '' : ' 버튼을 누른다'}${st.required ? '' : ' (선택 — 건너뛸 수 있다)'}`;
       },
       state: () => b.state,
       skip: () => b.skip(),
@@ -2261,7 +2261,7 @@ class Game {
       save: () => {
         const r = b.result();
         end();
-        if (!r.profile) return { ok: false, message: `저장하지 않았다 — ${[...r.missing.map((m) => '누락: ' + m), ...r.conflicts.map((c) => '중복: ' + c)].join(', ')}` };
+        if (!r.profile) return { ok: false, message: t('저장하지 않았다 — {why}', { why: [...r.missing.map((m) => t('누락: {k}', { k: m })), ...r.conflicts.map((c) => t('중복: {k}', { k: c }))].join(', ') }) };
         this.input.pads.setProfile(r.profile);
         const ok = this._savePadProfiles();
         return { ok, message: ok ? '컨트롤러 매핑을 저장했다 — Xbox 배치로 조작한다' : '매핑을 적용했지만 저장하지 못했다(이번 실행에만 적용)' };

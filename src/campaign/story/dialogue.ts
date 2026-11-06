@@ -7,6 +7,7 @@
 // 시간이 다 되면 다음 줄로 넘어간다(cue.wait === 'tap'이면 진행 키를 기다린다).
 // 큐: comm(전투 중 통신)은 보스 예고가 진행 중이면(hold) 보류했다가 풀리면 재생한다. intro·outro·boss·death·hub·record는
 // 보류 없이 바로 끼어든다(진행 중인 comm은 큐 앞으로 되돌아간다). blocksInput인 대본 동안 전투 입력을 막는다.
+import { t, getLocale } from '../../ui/i18n.js';
 import { emit } from '../../core/ctx.js';
 
 export type Mood = 'neutral' | 'smile' | 'worry' | 'determined' | 'surprise' | 'tired' | 'joy' | 'pout' | 'focus';
@@ -23,7 +24,7 @@ export interface DialogueLine {
 export type ScriptKind = 'intro' | 'outro' | 'comm' | 'record' | 'boss' | 'death' | 'hub';
 export interface DialogueScript { id: string; kind: ScriptKind; lines: DialogueLine[]; blocksInput: boolean }
 
-export const DIALOGUE = { cps: 28, msPerChar: 70, baseMs: 600, minMs: 1200, maxLines: 2, maxChars: 22 } as const;
+export const DIALOGUE = { cps: 28, msPerChar: 70, baseMs: 600, minMs: 1200, maxLines: 2, maxChars: 22, maxCharsEn: 44 } as const;   // (영어는 글자 폭이 좁아 한 줄 44자, 34번 F06)
 
 // 화자 표시 이름
 export const SPEAKER_NAME: Record<string, string> = {
@@ -162,7 +163,9 @@ export class DialogueRunner {
     const c = this.cur!;
     if (i >= c.script.lines.length) { this._finish(false); return; }
     const line = c.script.lines[i];
-    c.index = i; c.t = 0; c.shown = 0; c.lines = wrapLine(line.text) ?? [line.text];
+    // 34번 F06: 현재 언어로 바꾼 뒤 나눈다(영어는 한 줄이 길어 줄 폭을 넓힌다)
+    const text = t(line.text);
+    c.index = i; c.t = 0; c.shown = 0; c.lines = wrapLine(text, getLocale() === 'en' ? DIALOGUE.maxCharsEn : DIALOGUE.maxChars) ?? [text];
     emit('story:line', { scriptId: c.script.id, index: i, line });
     this.hooks.onLine?.(c, line);
     this.hooks.onType?.(c);

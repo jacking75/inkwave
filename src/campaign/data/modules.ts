@@ -1,5 +1,6 @@
 // 장비 모듈 정의(26번 3~5절): 세 슬롯, 기본 설계 12종, 지역 서명 7종, 지역별 보조 옵션 풀. 수치는 +0 값(%)이다.
 // 실행 중 획득한 카드(개별 ID·등급·강화·잠금)는 inventory.ts가 갖는다. 이 파일은 정의만 둔다.
+import { t } from '../../ui/i18n.js';
 import type { RegionId } from './types.js';
 
 export type Slot = 'adapter' | 'tank' | 'badge';
@@ -56,13 +57,13 @@ export const UPGRADE_MUL = [1, 1.1, 1.2, 1.3] as const;
 export const SG06_TIMING = { duration: 4, interval: 10 } as const;
 
 export const STAT_LABEL: Record<StatKey, (v: number) => string> = {
-  mainInk: (v) => `주 무기 잉크 소모 -${fmt(v)}%`, subInk: (v) => `보조 무기 잉크 소모 -${fmt(v)}%`,
-  weak: (v) => `약점 피해 +${fmt(v)}%`, device: (v) => `장치·설치물 피해 +${fmt(v)}%`, stunBoss: (v) => `기절한 보스 피해 +${fmt(v)}%`,
-  inkMax: (v) => `최대 잉크 +${fmt(v)}%`, swimRefill: (v) => `잠수 잉크 보충 +${fmt(v)}%`, refill: (v) => `잉크 보충 +${fmt(v)}%`,
-  specialCharge: (v) => `유효 도색 스페셜 충전 +${fmt(v)}%`, swimSpeed: (v) => `잠수 이동 +${fmt(v)}%`, runSpeed: (v) => `달리기 +${fmt(v)}%`,
-  regen: (v) => `자동 체력 재생 +${fmt(v)}%`, objectiveGuard: (v) => `목표 진행 중 받는 피해 -${fmt(v)}%`,
-  enemyInkCharge: (v) => `적 잉크를 바꾼 면적 충전 +${fmt(v)}%`, dmgTaken: (v) => `받는 피해 +${fmt(v)}%`,
-  subSwimBurst: (v) => `보조 무기 뒤 4초 잠수 +${fmt(v)}% (10초 간격)`,
-  paintWidth: (v) => `기본 도색 폭 +${fmt(v)}%`,
+  mainInk: (v) => t('주 무기 잉크 소모 -{v}%', { v: fmt(v) }), subInk: (v) => t('보조 무기 잉크 소모 -{v}%', { v: fmt(v) }),
+  weak: (v) => t('약점 피해 +{v}%', { v: fmt(v) }), device: (v) => t('장치·설치물 피해 +{v}%', { v: fmt(v) }), stunBoss: (v) => t('기절한 보스 피해 +{v}%', { v: fmt(v) }),
+  inkMax: (v) => t('최대 잉크 +{v}%', { v: fmt(v) }), swimRefill: (v) => t('잠수 잉크 보충 +{v}%', { v: fmt(v) }), refill: (v) => t('잉크 보충 +{v}%', { v: fmt(v) }),
+  specialCharge: (v) => t('유효 도색 스페셜 충전 +{v}%', { v: fmt(v) }), swimSpeed: (v) => t('잠수 이동 +{v}%', { v: fmt(v) }), runSpeed: (v) => t('달리기 +{v}%', { v: fmt(v) }),
+  regen: (v) => t('자동 체력 재생 +{v}%', { v: fmt(v) }), objectiveGuard: (v) => t('목표 진행 중 받는 피해 -{v}%', { v: fmt(v) }),
+  enemyInkCharge: (v) => t('적 잉크를 바꾼 면적 충전 +{v}%', { v: fmt(v) }), dmgTaken: (v) => t('받는 피해 +{v}%', { v: fmt(v) }),
+  subSwimBurst: (v) => t('보조 무기 뒤 4초 잠수 +{v}% (10초 간격)', { v: fmt(v) }),
+  paintWidth: (v) => t('기본 도색 폭 +{v}%', { v: fmt(v) }),
 };
 function fmt(v: number): string { return Number.isInteger(v) ? String(v) : v.toFixed(1); }

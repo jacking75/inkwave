@@ -3,6 +3,7 @@
 //
 // 입력(막는 대본일 때만): 진행 = Enter·Space·F·클릭·탭·패드 A, 건너뛰기 = Tab·Backspace·건너뛰기 버튼·패드 B/Start.
 // 전투 중 통신(comm)은 입력을 받지 않고 시간이 되면 넘어간다.
+import { t } from '../../ui/i18n.js';
 import { DialogueRunner, SPEAKER_NAME, type DialogueHooks, type DialogueLine, type DialogueScript, type DialogueState } from './dialogue.js';
 import { PortraitView, type PortraitSource } from './portraitView.js';
 import type { Voice } from '../../game/cast/voice.js';
@@ -34,8 +35,8 @@ export class StoryLayer {
     this.box = document.createElement('div'); this.box.className = 'iw-dlg';
     this.nameEl = document.createElement('div'); this.nameEl.className = 'iw-dlg__name';
     this.textEl = document.createElement('div'); this.textEl.className = 'iw-dlg__text';
-    this.hint = document.createElement('div'); this.hint.className = 'iw-dlg__hint'; this.hint.textContent = '진행 Enter · 건너뛰기 Tab';
-    this.skipBtn = document.createElement('button'); this.skipBtn.className = 'iw-dlg__skip'; this.skipBtn.type = 'button'; this.skipBtn.textContent = '건너뛰기 ▶▶';
+    this.hint = document.createElement('div'); this.hint.className = 'iw-dlg__hint'; this.hint.textContent = t('진행 Enter · 건너뛰기 Tab');
+    this.skipBtn = document.createElement('button'); this.skipBtn.className = 'iw-dlg__skip'; this.skipBtn.type = 'button'; this.skipBtn.textContent = t('건너뛰기 ▶▶');
     this.box.append(this.nameEl, this.textEl, this.hint, this.skipBtn);
     uiRoot.appendChild(this.box);
     const hooks: DialogueHooks = {
@@ -67,7 +68,7 @@ export class StoryLayer {
     document.body.classList.add('iw-talking');   // 통신 초상이 미니맵 자리를 쓴다(styles/story.css)
     this.box.dataset.speaker = sp;
     this.box.dataset.kind = st.script.kind;
-    const name = SPEAKER_NAME[sp] ?? sp;
+    const name = t(SPEAKER_NAME[sp] ?? sp);
     this.nameEl.textContent = name; this.nameEl.hidden = !name;
     if (line.portrait !== 'none' && sp !== 'narrator') this.portrait.show(sp, line.mood, name);
     else this.portrait.hide();

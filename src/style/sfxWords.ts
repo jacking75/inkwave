@@ -5,6 +5,7 @@
 // 화면을 덮지 않게 뺀다). 캠페인 액션(스태거·퍼펙트 잠수·서지)은 해당 모듈이 직접 'fx:word'를 낸다.
 //
 // DOM은 노드 8개를 미리 만들어 재사용하고 transform·opacity만 바꾼다(레이아웃 없음). 그림책 룩에서만 켜진다.
+import { t } from '../ui/i18n.js';
 import * as THREE from 'three';
 import { G, on, emit } from '../core/ctx.js';
 import { lookId } from './lookProfile.js';
@@ -101,7 +102,7 @@ export class SfxWords {
     slot.live = true; slot.t = 0; slot.scale = small ? 0.8 : 1;
     slot.pos.set(e.pos.x, e.pos.y, e.pos.z);
     const el = slot.el;
-    el.textContent = e.text;
+    el.textContent = t(e.text);   // 34번 F06: 표시 직전에 현재 언어로 바꾼다
     el.className = 'iw-word' + (e.kind === 'eliteKill' ? ' iw-word--big' : e.kind === 'hurt' ? ' iw-word--small' : e.kind === 'cue' ? ' iw-word--warn' : '');
     el.style.setProperty('--word-shadow', e.color || G.teamHex[0]);
   }

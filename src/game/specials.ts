@@ -10,6 +10,7 @@
 // Hooks called by the actor / projectiles: start, tick, body, weapon, filterDamage, onSplat, shotHit, rayHit, areaHit.
 // World objects (tornados, twisters, speakers, bubbles, thrown stamps, shells, cheer-orb bombs, missiles) live in
 // this.world and update in update(dt).
+import { t } from '../ui/i18n.js';
 import * as THREE from 'three';
 import { G, emit, on, clamp, lerp, angleDiff } from '../core/ctx.js';
 import { SPECIALS, SPECIAL_ORDER, SUBS, PLAYER, SPECIAL_CFG, SUB_CFG } from '../config.js';
@@ -461,12 +462,12 @@ export class SpecialSystem {
     const s = a.specialActive;
     if (!s) return null;
     switch (s.kind) {
-      case 'barrage': return `${s.def.name}! Throw ${s.bomb.name}s with RMB / E — no ink needed`;
+      case 'barrage': return t('{sp}! RMB / E로 {bomb}을(를) 던진다 — 잉크가 들지 않는다', { sp: t(s.def.name), bomb: t(s.bomb.name) });
       case 'strike': return s.aiming ? 'Move the mouse to pick a spot · click to launch' : null;
       case 'zooka': return 'Fire twisters with LMB';
       case 'wail': return 'Aim the speaker · click to set it down and blast';
       case 'kraken': return 'Kraken! LMB to jump-attack';
-      case 'blower': return `Hold LMB to blow a bubble (${s.def.max - (s.count || 0)} left) · shoot bubbles to blast them`;
+      case 'blower': return t('LMB를 누르고 있으면 거품을 분다({n}개 남음) · 거품을 쏘면 터진다', { n: s.def.max - (s.count || 0) });
       case 'jetpack': return 'Ink Jet! Fire with LMB';
       case 'stamp': return 'LMB to stamp · jump + LMB to slam · RMB to throw';
       case 'booyah': return s.charge >= 1 ? 'Charged! LMB to throw' : 'Charging… teammates press C to cheer!';

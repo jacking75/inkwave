@@ -5,6 +5,8 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { t, tIn, setLocale, getLocale, normalizeLocale, interpolate, hasPair } from '../../src/ui/i18n.js';
 import { PAIRS } from '../../src/ui/i18n-pairs.js';
+import { ALL_SCRIPTS } from '../../src/campaign/story/scripts/index.js';
+import { wrapLine, DIALOGUE } from '../../src/campaign/story/dialogue.js';
 
 test('언어 값: 없거나 깨진 값은 한국어, 명시적 영어는 유지', () => {
   for (const v of [undefined, null, '', 'fr', 'EN', 3, {}]) assert.equal(normalizeLocale(v), 'ko');
@@ -66,4 +68,11 @@ test('화면 문구 누락 없음: t() 원문과 메뉴 공통 지점의 문구�
     for (const o of s.matchAll(/options:\s*\[([\s\S]*?)\]\s*,\s*help/g)) for (const m of o[1].matchAll(new RegExp(String.raw`\[\s*(?:'[^']*'|[\d.]+|true|false)\s*,\s*` + LIT + String.raw`\s*\]`, 'g'))) add(m[1]);
   }
   assert.deepEqual([...missing].slice(0, 60), []);
+});
+
+test('영어 대사도 대화 상자(두 줄·한 줄 44자)에 들어간다', () => {
+  setLocale('en');
+  const over = ALL_SCRIPTS.flatMap((sc) => sc.lines.map((l) => [sc.id, t(l.text)] as const)).filter(([, en]) => !wrapLine(en, DIALOGUE.maxCharsEn)).map(([id, en]) => `${id}: ${en}`);
+  setLocale('ko');
+  assert.deepEqual(over, []);
 });

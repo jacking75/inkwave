@@ -2,7 +2,14 @@
 // 용어: 잉크(ink)·잠수(dive)·서지(surge)·물결 게이지(Wave gauge)·체크포인트(checkpoint)·작업장(Workshop)·항구 지도(Harbor map)·
 // 잔향(Echo)·모듈(module)·특성(trait)·설계(design)·서명(signature). 제품명 INKWAVE와 버튼 표기 A/B/X/Y·LT/RT, HULLBREAKER는 번역하지 않는다.
 // 새 문구를 t()로 감싸면 여기에 짝을 더한다(tests/client/i18n.test.ts가 소스의 t('…') 원문마다 짝이 있는지 확인한다).
-export const PAIRS: ReadonlyArray<readonly [string, string]> = [
+import { STORY_PAIRS, STORY_PAIRS_EN_ALIASES } from './i18n-pairs-story.js';
+import { CAMPAIGN_PAIRS, CAMPAIGN_PAIRS_EN_ALIASES } from './i18n-pairs-campaign.js';
+import { MENU_PAIRS, MENU_PAIRS_EN_ALIASES } from './i18n-pairs-menus.js';
+import { HUD_PAIRS, HUD_PAIRS_EN_ALIASES } from './i18n-pairs-hud.js';
+import { CONFIG_PAIRS, CONFIG_PAIRS_EN_ALIASES } from './i18n-pairs-config.js';
+import { TPL_PAIRS, TPL_PAIRS_EN_ALIASES } from './i18n-pairs-tpl.js';
+
+const BASE: ReadonlyArray<readonly [string, string]> = [
   // ---- 언어·공통
   ['언어 / Language', 'Language / 언어'],
   ['한국어', '한국어'],
@@ -228,3 +235,8 @@ export const PAIRS: ReadonlyArray<readonly [string, string]> = [
   // ---- 결과·저장
   ['다시 저장', 'Save again'], ['저장 확인 중…', 'Checking save…'],
 ];
+
+// 영역별 짝 표를 합친다(이야기·캠페인·메뉴·HUD …)
+export const PAIRS: ReadonlyArray<readonly [string, string]> = [...BASE, ...STORY_PAIRS, ...CAMPAIGN_PAIRS, ...MENU_PAIRS, ...HUD_PAIRS, ...CONFIG_PAIRS, ...TPL_PAIRS];
+// 같은 한국어로 가는 다른 영어 표기(대문자 제목 등): [영어, 한국어] — 영어 원문 → 한국어 방향만 쓴다
+export const EN_ALIASES: ReadonlyArray<readonly [string, string]> = [...STORY_PAIRS_EN_ALIASES, ...CAMPAIGN_PAIRS_EN_ALIASES, ...MENU_PAIRS_EN_ALIASES, ...HUD_PAIRS_EN_ALIASES, ...CONFIG_PAIRS_EN_ALIASES, ...TPL_PAIRS_EN_ALIASES];

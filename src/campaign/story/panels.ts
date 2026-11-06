@@ -4,6 +4,7 @@
 // 좌표: 샷의 위치는 장면 기준점(host.anchor: 위치 + 방향) 기준 지역 좌표 m이다(x 오른쪽, y 위, z 앞). 같은 콘티를 임무마다
 // 다른 장소(작업장 세트·광장·보스장)에 놓을 수 있게 한다. 인물의 발은 그 자리 바닥(아래로 쏜 광선)에 붙인다.
 // 카메라는 CameraRig.cinematic(arc 0, 샷 fov)을 샷마다 건다. 끝나거나 건너뛰면 host.restore()가 카메라·시간·입력을 되돌린다.
+import { t } from '../../ui/i18n.js';
 import * as THREE from 'three';
 import { G, emit } from '../../core/ctx.js';
 import type { Character } from '../../game/character.js';
@@ -78,7 +79,7 @@ export class PanelPlayer {
     this.caption = div('iw-panels__caption'); this.line = div('iw-panels__line'); this.word = div('iw-panels__word');
     this.splash = div('iw-panels__splash');
     const top = div('iw-panels__bar iw-panels__bar--t'), bot = div('iw-panels__bar iw-panels__bar--b');
-    const skip = div('iw-panels__skip'); skip.textContent = '건너뛰기: 아무 키 · 탭';
+    const skip = div('iw-panels__skip'); skip.textContent = t('건너뛰기: 아무 키 · 탭');
     this.el.append(this.frame, top, bot, this.line, this.caption, this.word, this.splash, skip);
     host.uiRoot.appendChild(this.el);
     this.el.addEventListener('pointerdown', () => this.skip());
@@ -116,8 +117,8 @@ export class PanelPlayer {
     this.index = i; this.t = 0;
     emit('story:panel', { sceneId: sc.id, shotId: sh.id });
     this.frame.dataset.frame = sh.frame;
-    this.caption.textContent = sh.caption ?? '';
-    this.line.textContent = sh.line ? `${sh.line.speaker ? sh.line.speaker + ' — ' : ''}${sh.line.text}` : '';
+    this.caption.textContent = sh.caption ? t(sh.caption) : '';
+    this.line.textContent = sh.line ? `${sh.line.speaker ? t(sh.line.speaker) + ' — ' : ''}${t(sh.line.text)}` : '';
     this.word.textContent = '';
     if (i > 0 && sh.transition !== 'cut') {
       this.splash.className = 'iw-panels__splash' + (sh.transition === 'wipe' ? ' iw-panels__splash--wipe' : '');
@@ -183,7 +184,7 @@ export class PanelPlayer {
     if (sh.word && this.t > 0.25 && !this.word.textContent) {
       const p = this._w(sh.word.at).project(this.host.camera);
       this.word.style.left = `${(p.x * 0.5 + 0.5) * 100}%`; this.word.style.top = `${(-p.y * 0.5 + 0.5) * 100}%`;
-      this.word.textContent = sh.word.text;
+      this.word.textContent = t(sh.word.text);
     }
     if (this.t * 1000 >= sh.durationMs) this._shot(this.index + 1);
   }
