@@ -3,19 +3,20 @@
 //   notIn:  'zones'   — built in every mode except that one (e.g. benches cleared out of a zone)
 // Everything untagged is shared. A stage with no tagged items for a mode builds (and bakes) exactly as its Turf War
 // layout; one with tagged items gets its own world + lightmap (assets/lightmaps/<id>.<mode>.{png,json}).
-export const inMode = (it, mode) => (!it.onlyIn || it.onlyIn === mode) && (!it.notIn || it.notIn !== mode);
+import type { ModeTagged, StageLayout } from './layoutTypes.js';
+export const inMode = (it: ModeTagged, mode: string): boolean => (!it.onlyIn || it.onlyIn === mode) && (!it.notIn || it.notIn !== mode);
 
 // does building this stage for `mode` differ from its Turf War build?
-export function hasVariant(layout, dressing, mode) {
+export function hasVariant(layout: Pick<StageLayout, 'single' | 'half'> | null | undefined, dressing: readonly ModeTagged[] | null | undefined, mode: string): boolean {
   if (!mode || mode === 'turf') return false;
-  const any = (list) => (list || []).some((it) => (it.onlyIn || it.notIn) && inMode(it, mode) !== inMode(it, 'turf'));
+  const any = (list: readonly ModeTagged[] | null | undefined): boolean => (list || []).some((it) => (it.onlyIn || it.notIn) && inMode(it, mode) !== inMode(it, 'turf'));
   return any(layout?.single) || any(layout?.half) || any(dressing);
 }
 
 // the layout as built in `mode` (pieces filtered; zones, bounds, spawns … shared)
-export function layoutFor(layout, mode) {
+export function layoutFor<L extends Pick<StageLayout, 'single' | 'half'>>(layout: L, mode: string): L {
   return { ...layout, single: layout.single.filter((d) => inMode(d, mode)), half: layout.half.filter((d) => inMode(d, mode)) };
 }
 
 // world / lightmap key: '<id>' for the shared build, '<id>.<mode>' for a mode variant
-export const variantKey = (layoutId, layout, dressing, mode) => (hasVariant(layout, dressing, mode) ? `${layoutId}.${mode}` : layoutId);
+export const variantKey = (layoutId: string, layout: Pick<StageLayout, 'single' | 'half'> | null | undefined, dressing: readonly ModeTagged[], mode: string): string => (hasVariant(layout, dressing, mode) ? `${layoutId}.${mode}` : layoutId);

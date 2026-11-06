@@ -1,6 +1,6 @@
 // Terrace Heights — stage decals / signage for the mural atlas (see src/world/murals.js).
 //
-// drawMurals(g, R, kit) is called whenever this stage is loaded: draw into the canvas 2D context `g`, inside the
+// drawMurals(g: Ctx2D, R: MuralRect, kit: MuralKit): MuralPlacement[] is called whenever this stage is loaded: draw into the canvas 2D context `g`, inside the
 // stage region R = { x, y, w, h } (px; 2048 x 1008) only, and return the table entries for mural ids 4…11:
 //   { id, x, y, w, h, m: [faceW, faceH] }                         decal fitted at the face origin, faceW x faceH metres
 //   { id, x, y, w, h, place: [x0, xLen, y0, yLen], fx: [weather, chip] }  explicit placement (murals.js header)
@@ -19,13 +19,14 @@
 //   8 Caffè upper floor, west side: painted sundial (2.4 x 2.8 m)
 //   9 Largo floor: pebble sun at the foot of the Scalinata (5 x 5 m decal centred on the 4 x 4 m sun slab)
 //  10 Zone Control sagrato top (16 x 12 m): border, a compass rose under the tempietto's dome, a ring round its columns
+import type { Ctx2D, MuralRect, Slab, MuralKit, MuralPlacement, TextOpts } from '../../muralTypes.js';
 export const MURAL = { rose: 4, sagrato: 5, frieze: 6, ghost: 7, sundial: 8, sun: 9, sagratoZ: 10 };
 
-function rnd(seed) { let a = seed | 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function rnd(seed: number) { let a = seed | 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 const DARK = 'rgba(52,50,48,0.92)', GREYP = 'rgba(128,124,116,0.85)', WHITE = 'rgba(243,239,229,0.95)';
 
 // speckle a clipped shape with pebble-sized dots (light + dark) so flat fills read as set pebbles
-function pebbles(g, x0, y0, w, h, S, seed, dens = 1) {
+function pebbles(g: Ctx2D, x0: number, y0: number, w: number, h: number, S: number, seed: number, dens = 1) {
   const r = rnd(seed), n = Math.round((w * h) / (S * S) * 260 * dens);
   for (let i = 0; i < n; i++) {
     const x = x0 + r() * w, y = y0 + r() * h, rr = S * (0.022 + r() * 0.02);
@@ -34,7 +35,7 @@ function pebbles(g, x0, y0, w, h, S, seed, dens = 1) {
   }
 }
 // compass rose in world units (metres), centred at (cx, cz), radius Rr
-function rose(g, cx, cz, Rr, S, seed) {
+function rose(g: Ctx2D, cx: number, cz: number, Rr: number, S: number, seed: number) {
   g.save();
   g.translate(cx, cz);
   // outer rings
@@ -48,7 +49,7 @@ function rose(g, cx, cz, Rr, S, seed) {
   for (let i = 0; i <= 96; i++) { const a = (i / 96) * Math.PI * 2, rr = Rr - 0.4 + 0.05 * Math.sin(i * 1.5); const x = Math.cos(a) * rr, y = Math.sin(a) * rr; if (i) g.lineTo(x, y); else g.moveTo(x, y); }
   g.stroke();
   // 16-point star: long cardinal rays (dark / grey halves), shorter diagonal rays
-  const ray = (a, L, w, c1, c2) => {
+  const ray = (a: number, L: number, w: number, c1: string, c2: string) => {
     const ca = Math.cos(a), sa = Math.sin(a), px = -sa, py = ca;
     g.fillStyle = c1; g.beginPath(); g.moveTo(0, 0); g.lineTo(ca * L, sa * L); g.lineTo(px * w, py * w); g.closePath(); g.fill();
     g.fillStyle = c2; g.beginPath(); g.moveTo(0, 0); g.lineTo(ca * L, sa * L); g.lineTo(-px * w, -py * w); g.closePath(); g.fill();
@@ -64,8 +65,8 @@ function rose(g, cx, cz, Rr, S, seed) {
   g.restore();
 }
 
-export function drawMurals(g, R, kit) {
-  const out = [];
+export function drawMurals(g: Ctx2D, R: MuralRect, kit: MuralKit): MuralPlacement[] {
+  const out: MuralPlacement[] = [];
   // ---------------------------------------------------------------- 4: bastion prow roses (7.07 x 7.07 m at 58 px/m)
   // The prow is a square turned 45° (layout.js); its top face runs u = −local x from the max-x / min-z corner, v = local
   // z. The east prow shows the face's upper-left half (v > u) past the flank slab, its mirrored twin the lower-right
@@ -92,7 +93,7 @@ export function drawMurals(g, R, kit) {
     g.beginPath(); g.rect(r.x, r.y, r.w, r.h); g.clip();
     g.setTransform(-S, 0, 0, -S, r.x + 8 * S, r.y + r.h - 5 * S);
     // border: dark band with a white running wave, 0.5 m in from the edge
-    const band = (x0, z0, x1, z1) => { g.fillStyle = DARK; g.fillRect(x0, z0, x1 - x0, z1 - z0); };
+    const band = (x0: number, z0: number, x1: number, z1: number) => { g.fillStyle = DARK; g.fillRect(x0, z0, x1 - x0, z1 - z0); };
     band(-7.55, -4.6, 7.55, -4.2); band(-7.55, 4.2, 7.55, 4.6); band(-7.55, -4.6, -7.15, 4.6); band(7.15, -4.6, 7.55, 4.6);
     g.strokeStyle = WHITE; g.lineWidth = 0.06;
     for (const zc of [-4.4, 4.4]) { g.beginPath(); for (let x = -7.35; x <= 7.35; x += 0.05) { const y = zc + 0.1 * Math.sin((x / 0.4) * Math.PI); if (x === -7.35) g.moveTo(x, y); else g.lineTo(x, y); } g.stroke(); }
@@ -240,7 +241,7 @@ export function drawMurals(g, R, kit) {
     g.save();
     g.beginPath(); g.rect(r.x, r.y, r.w, r.h); g.clip();
     g.setTransform(-S, 0, 0, -S, r.x + 8 * S, r.y + r.h - 6 * S);
-    const band = (x0, z0, x1, z1) => { g.fillStyle = DARK; g.fillRect(x0, z0, x1 - x0, z1 - z0); };
+    const band = (x0: number, z0: number, x1: number, z1: number) => { g.fillStyle = DARK; g.fillRect(x0, z0, x1 - x0, z1 - z0); };
     band(-7.55, -5.55, 7.55, -5.15); band(-7.55, 5.15, 7.55, 5.55); band(-7.55, -5.55, -7.15, 5.55); band(7.15, -5.55, 7.55, 5.55);
     g.strokeStyle = WHITE; g.lineWidth = 0.06;
     for (const zc of [-5.35, 5.35]) { g.beginPath(); for (let x = -7.35; x <= 7.35; x += 0.05) { const y = zc + 0.1 * Math.sin((x / 0.4) * Math.PI); if (x === -7.35) g.moveTo(x, y); else g.lineTo(x, y); } g.stroke(); }

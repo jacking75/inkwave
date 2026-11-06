@@ -37,12 +37,12 @@ const wood = (o = {}) => ({ color: SP.timber, pattern: SURF.timber, ...o });
 // heights
 const P1 = -0.6, P2 = -0.9, P3 = -1.2;
 // ramp helper: low point placed so the slab's 0.6 m low-end extension ends exactly on `edge` (roofs, heap slopes)
-const rise = (x0, z0, y0, x1, z1, y1) => { const dx = x1 - x0, dz = z1 - z0, L = Math.hypot(dx, dz), a = Math.atan2(y1 - y0, L); return [x0 + (dx / L) * 0.6 * Math.cos(a), y0 + 0.6 * Math.sin(a), z0 + (dz / L) * 0.6 * Math.cos(a)]; };
+const rise = (x0: number, z0: number, y0: number, x1: number, z1: number, y1: number) => { const dx = x1 - x0, dz = z1 - z0, L = Math.hypot(dx, dz), a = Math.atan2(y1 - y0, L); return [x0 + (dx / L) * 0.6 * Math.cos(a), y0 + 0.6 * Math.sin(a), z0 + (dz / L) * 0.6 * Math.cos(a)]; };
 
 // 45° chamfer on a convex ground corner (cx, cz): the corner square of size s is left out of the ground boxes and this
 // turned slab (9 cm lower, so it tucks under its neighbours) fills the square's inner triangle — the deck edge then runs
 // diagonally across the corner. (sx, sz) points from the corner out to sea (±1, ±1).
-const chamfer = (cx, cz, s, sx, sz) => O(cx - 0.75 * sx * s, cz - 0.75 * sz * s, s * Math.SQRT2, s / Math.SQRT2, -3, -0.09, (Math.atan2(sz, sx) * 180) / Math.PI, mud({ tag: 'chamfer' }));
+const chamfer = (cx: number, cz: number, s: number, sx: number, sz: number) => O(cx - 0.75 * sx * s, cz - 0.75 * sz * s, s * Math.SQRT2, s / Math.SQRT2, -3, -0.09, (Math.atan2(sz, sx) * 180) / Math.PI, mud({ tag: 'chamfer' }));
 
 const SALTPAN = {
   id: 'saltpan',

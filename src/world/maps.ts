@@ -3,6 +3,7 @@
 // The building kit (PATTERN ids, B/R/O/OCT/ARC helpers) lives in mapkit.js; every stage except Halyard Marina lives in
 // its own folder under stages/<id>/ (layout, prop pack + placements, surfaces, murals).
 import { PATTERN, C, B, R, O, OCT, ARC, OCTRAMP, R_ } from './mapkit.js';
+import type { StageLayout } from './layoutTypes.js';
 import { STAGES } from './stages/index.js';
 import { ZONE_DEFS } from './zones-data.js';
 export * from './mapkit.js';
@@ -113,7 +114,7 @@ export const HALYARD = {
   },
 };
 
-export const MAP_LAYOUTS = { halyard: HALYARD };
+export const MAP_LAYOUTS: Record<string, StageLayout> = { halyard: HALYARD };
 for (const [id, s] of Object.entries(STAGES)) if (s.LAYOUT) MAP_LAYOUTS[id] = s.LAYOUT;
 // Zone Control zones (zones-data.js) — a layout can also carry its own `zones`
 for (const [id, z] of Object.entries(ZONE_DEFS)) if (MAP_LAYOUTS[id] && !MAP_LAYOUTS[id].zones) MAP_LAYOUTS[id].zones = z;

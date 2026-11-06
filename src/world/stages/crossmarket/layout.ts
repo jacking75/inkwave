@@ -1,7 +1,7 @@
 // Crossroads Market — stage layout (src/world/stages/crossmarket/). The stage owns every file in this folder:
 //   layout.js    level geometry (this file)        props.js    prop pack + placements (set dressing)
 //   surfaces.js  stage surface materials (texlib)  murals.js   stage decals / signage (mural atlas)
-import { PATTERN, B, R, O } from '../../mapkit.js';
+import { PATTERN, B, R, O, type PieceOpts } from '../../mapkit.js';
 import { SURF } from './surfaces.js';
 
 // Crossroads Market — the market quarter of an old harbour town where Market Street (along Z, spawn to spawn) crosses
@@ -33,7 +33,7 @@ const CM = {
 };
 // a building: paintable ground floor (0 … FL) + upper storeys that take no ink (FL … eave) with an off-limits top
 // (roof: never inked, anyone landing there slides off; the pitched roofs above are prop colliders, also roof-flagged)
-const bldg = (x0, x1, z0, z1, eave, color, pattern = SURF.ashlar, o = {}) => [
+const bldg = (x0: number, x1: number, z0: number, z1: number, eave: number, color: string, pattern = SURF.ashlar, o = {}) => [
   B(x0, x1, 0, FL, z0, z1, { color, pattern, ...o }),
   B(x0, x1, FL, eave, z0, z1, { color, pattern, paint: false, roof: true, ...o }),
 ];
@@ -41,9 +41,9 @@ const bldg = (x0, x1, z0, z1, eave, color, pattern = SURF.ashlar, o = {}) => [
 // the tramway frame: u along the tram line (through the origin, rising toward +X +Z), v across it (+v toward +Z)
 export const TH = Math.atan(0.6);                       // ≈ 30.96° off the X axis
 const CT = Math.cos(TH), ST = Math.sin(TH), DEG = (-TH * 180) / Math.PI;
-export const T = (u, v) => [u * CT - v * ST, u * ST + v * CT];          // tramway frame → world (x, z)
+export const T = (u: number, v: number) => [u * CT - v * ST, u * ST + v * CT];          // tramway frame → world (x, z)
 // box in the tramway frame: u0…u1 along the line, v0…v1 across (a turned piece)
-const TB = (u0, u1, y0, y1, v0, v1, o) => { const [cx, cz] = T((u0 + u1) / 2, (v0 + v1) / 2); return O(cx, cz, u1 - u0, v1 - v0, y0, y1, DEG, o); };
+const TB = (u0: number, u1: number, y0: number, y1: number, v0: number, v1: number, o: PieceOpts | undefined) => { const [cx, cz] = T((u0 + u1) / 2, (v0 + v1) / 2); return O(cx, cz, u1 - u0, v1 - v0, y0, y1, DEG, o); };
 const BED = 0.1;                                         // tramway bed + hall floor sit 10 cm proud of the setts
 const TW = 4;                                            // tramway half-width (track + setts to the kerbs)
 

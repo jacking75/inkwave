@@ -16,7 +16,11 @@
 //     front — covered walk below, a 3.7 m terrace walk on top, reached from the spawn wing and, near mid, by a stair
 //     along its front (the enemy's way up) or by climbing the landing pier as a squid
 // The two lanes swap at mid: your Promenade runs into the enemy's Colonnade, and vice versa.
-import { PATTERN, B, R, O, OCT } from '../../mapkit.js';
+import { PATTERN, B, R, O, OCT, type PieceOpts } from '../../mapkit.js';
+import type { OBoxPiece } from '../../layoutTypes.js';
+// 경사·고리 사이 쐐기를 메우는 판(e: 이등분선 방향으로 그만큼 바깥에서 시작)
+export interface BandFill { y0: number; y1: number; o?: PieceOpts; e?: number }
+interface Section { p: number[]; d: number[]; n: number[]; l: number; h: number; q0: number[]; q1: number[]; len: number }
 import { SURF } from './surfaces.js';
 
 const M = {
@@ -25,7 +29,7 @@ const M = {
   planter: '#b9ad9a', joint: '#a9a399',
 };
 const NP_ALL = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]];
-const stucco = (color, o = {}) => ({ color, pattern: SURF.stucco, ...o });
+const stucco = (color: string, o = {}) => ({ color, pattern: SURF.stucco, ...o });
 const D2R = Math.PI / 180;
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -45,8 +49,8 @@ export const STAIR = { x: [17.5, 20], foot: -7.0, top: -15.5, landing: -18.5 };
 // turned segments along a circle arc (centre c, radii rIn…rOut, angles a0…a1 degrees, n pieces) meeting at their inner
 // corners (like mapkit ARC); fill: lower slabs over the outer wedges between them (and at the chain ends if `ends`)
 // (y0 may be [even, odd]: the bottoms alternate to sit on arcSub's alternating tops)
-export function arcBand(c, rIn, rOut, a0, a1, n, y0, y1, o, fill = null, ends = false, skip = null) {
-  const out = [], da = (a1 - a0) / n, t = rOut - rIn, rm = (rIn + rOut) / 2, h = Math.abs(da) * D2R / 2, len = 2 * rIn * Math.tan(h);
+export function arcBand(c: number[], rIn: number, rOut: number, a0: number, a1: number, n: number, y0: number | number[], y1: number, o: PieceOpts | undefined, fill: BandFill | null = null, ends: boolean | 'closed' = false, skip: ((i: number) => boolean) | null = null): OBoxPiece[] {
+  const out: OBoxPiece[] = [], da = (a1 - a0) / n, t = rOut - rIn, rm = (rIn + rOut) / 2, h = Math.abs(da) * D2R / 2, len = 2 * rIn * Math.tan(h);
   for (let i = 0; i < n; i++) {
     if (skip && skip(i)) continue;
     const a = (a0 + da * (i + 0.5)) * D2R;
@@ -62,8 +66,8 @@ export function arcBand(c, rIn, rOut, a0, a1, n, y0, y1, o, fill = null, ends = 
 // the sea-wall plinth under a band: the same segments down in the water, but meeting at their OUTER corners (so the
 // outer face runs on unbroken and there are no wedges to fill: one slab per facet keeps the environment's deck-rect
 // count low); the overlapping inner corners take alternate tops (tops = [even, odd])
-export function arcSub(c, rIn, rOut, a0, a1, n, y0, tops, o) {
-  const out = [], da = (a1 - a0) / n, t = rOut - rIn, rm = (rIn + rOut) / 2, h = Math.abs(da) * D2R / 2, len = 2 * rOut * Math.tan(h);
+export function arcSub(c: number[], rIn: number, rOut: number, a0: number, a1: number, n: number, y0: number, tops: number[], o: PieceOpts | undefined): OBoxPiece[] {
+  const out: OBoxPiece[] = [], da = (a1 - a0) / n, t = rOut - rIn, rm = (rIn + rOut) / 2, h = Math.abs(da) * D2R / 2, len = 2 * rOut * Math.tan(h);
   for (let i = 0; i < n; i++) {
     const a = (a0 + da * (i + 0.5)) * D2R;
     out.push(O(c[0] + rm * Math.cos(a), c[1] + rm * Math.sin(a), t, len, y0, tops[i % 2], -a / D2R, o));
@@ -72,12 +76,12 @@ export function arcSub(c, rIn, rOut, a0, a1, n, y0, tops, o) {
 }
 // sections along a polyline P (travelling so the outward side is on the right: n = (dz, -dx)), spanning offsets
 // dIn…dOut from the line (negative = inward); pieces meet at their inner corners, fill covers the outer wedges
-function unit(a, b) { const dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz); return [dx / l, dz / l, l]; }
-export function chainSections(P, dIn) {
-  const S = [];
+function unit(a: number[], b: number[]) { const dx = b[0] - a[0], dz = b[1] - a[1], l = Math.hypot(dx, dz); return [dx / l, dz / l, l]; }
+export function chainSections(P: number[][], dIn: number): Section[] {
+  const S: Array<Omit<Section, 'q0' | 'q1' | 'len'>> = [];
   for (let i = 0; i < P.length - 1; i++) { const [dx, dz, l] = unit(P[i], P[i + 1]); S.push({ p: P[i], d: [dx, dz], n: [dz, -dx], l, h: Math.atan2(dx, dz) / D2R }); }
   // inner-line corner points Q (intersections of consecutive inward offset lines)
-  const Q = [];
+  const Q: number[][] = [];
   for (let i = 0; i <= S.length; i++) {
     if (i === 0) { const s = S[0]; Q.push([s.p[0] + s.n[0] * dIn, s.p[1] + s.n[1] * dIn]); continue; }
     if (i === S.length) { const s = S[i - 1], e = P[i]; Q.push([e[0] + s.n[0] * dIn, e[1] + s.n[1] * dIn]); continue; }
@@ -87,8 +91,8 @@ export function chainSections(P, dIn) {
   }
   return S.map((s, i) => ({ ...s, q0: Q[i], q1: Q[i + 1], len: Math.hypot(Q[i + 1][0] - Q[i][0], Q[i + 1][1] - Q[i][1]) }));
 }
-export function chainBand(P, dIn, dOut, y0, y1, o, fill = null, only = null) {
-  const out = [], S = chainSections(P, dIn);
+export function chainBand(P: number[][], dIn: number, dOut: number, y0: number | number[], y1: number, o: PieceOpts | undefined, fill: BandFill | null = null, only: ((i: number) => boolean) | null = null): OBoxPiece[] {
+  const out: OBoxPiece[] = [], S = chainSections(P, dIn);
   S.forEach((s, i) => {
     if (only && !only(i)) return;
     const w = dOut - dIn, cx = (s.q0[0] + s.q1[0]) / 2 + s.n[0] * w / 2, cz = (s.q0[1] + s.q1[1]) / 2 + s.n[1] * w / 2;
@@ -104,7 +108,7 @@ export function chainBand(P, dIn, dOut, y0, y1, o, fill = null, only = null) {
 }
 
 // chainBand's plinth: sections meeting at their outer corners (offset dOut), alternate tops
-export function chainSub(P, dIn, dOut, y0, tops, o) {
+export function chainSub(P: number[][], dIn: number, dOut: number, y0: number, tops: number[], o: PieceOpts | undefined) {
   const w = dOut - dIn;
   return chainSections(P, dOut).map((s, i) => O((s.q0[0] + s.q1[0]) / 2 - s.n[0] * w / 2, (s.q0[1] + s.q1[1]) / 2 - s.n[1] * w / 2, w, s.len, y0, tops[i % 2], s.h, o));
 }
@@ -135,7 +139,7 @@ const TIDEWATER = {
     B(-1.7, 1.7, 3.6, 12.5, -1.7, 1.7, stucco(M.stucco, { tag: 'tower', noPaint: NP_ALL, roof: true })),
     // the terrace balustrade (collision only — the stone balustrade you see is a prop), open at the four flights
     ...arcBand([0, 0], T.rOut - 0.34, T.rOut - 0.1, T.a0, T.a0 + 360, T.n, T.top, T.top + 1.05, { rail: true, tag: 'terrace-rail' }, null, false,
-      (i) => [8, 17, 26, 35].some((k) => Math.abs(((i - k + 36) % 36)) <= 1 || Math.abs(((k - i + 36) % 36)) <= 1)),
+      (i: number) => [8, 17, 26, 35].some((k) => Math.abs(((i - k + 36) % 36)) <= 1 || Math.abs(((k - i + 36) % 36)) <= 1)),
   ],
   half: [
     // ================= the square (paving at SQ; its ragged edges hide under the pavements / buildings)
@@ -197,15 +201,15 @@ const TIDEWATER = {
       { y0: C.deckBot, y1: C.deckTop - 0.1, o: { tag: 'walk-joint', color: M.colFloor, pattern: SURF.terrazzo } }),
     ...chainBand(F, 0, C.shops, 0, C.deckTop, stucco(M.pink, { tag: 'crescent-shops', mural: [{ n: [0, 0, 1], id: 9 }] }),
       { e: 0.06, y0: 0, y1: C.deckTop - 0.1, o: stucco(M.pink, { tag: 'crescent-shops-joint', noPaint: NP_ALL }) }),
-    ...chainBand(F, 0, C.shops, C.deckTop, 7.6, stucco(M.pink, { tag: 'crescent-upper', noPaint: NP_ALL, roof: true }), null, (i) => i === 0),
+    ...chainBand(F, 0, C.shops, C.deckTop, 7.6, stucco(M.pink, { tag: 'crescent-upper', noPaint: NP_ALL, roof: true }), null, (i: number) => i === 0),
     ...chainBand(F, 0, C.shops, C.deckTop, 9.2, stucco(M.butter, { tag: 'hotel-upper', noPaint: NP_ALL, roof: true }),
-      { e: 0.06, y0: C.deckTop, y1: 7.5, o: stucco(M.pink, { tag: 'crescent-upper-joint', noPaint: NP_ALL, roof: true }) }, (i) => i === 1),
+      { e: 0.06, y0: C.deckTop, y1: 7.5, o: stucco(M.pink, { tag: 'crescent-upper-joint', noPaint: NP_ALL, roof: true }) }, (i: number) => i === 1),
     ...chainBand(F, 0, C.shops, C.deckTop, 7.2, stucco(M.mint, { tag: 'crescent-upper', noPaint: NP_ALL, roof: true }),
-      { e: 0.06, y0: C.deckTop, y1: 7.1, o: stucco(M.mint, { tag: 'crescent-upper-joint', noPaint: NP_ALL, roof: true }) }, (i) => i === 2),
+      { e: 0.06, y0: C.deckTop, y1: 7.1, o: stucco(M.mint, { tag: 'crescent-upper-joint', noPaint: NP_ALL, roof: true }) }, (i: number) => i === 2),
     // the Grand Hotel's roof parapet balustrade (collision only, on its off-limits roof)
-    ...chainBand(F, 0.02, 0.3, 9.2, 10.05, { rail: true, tag: 'hotel-parapet' }, null, (i) => i === 1),
+    ...chainBand(F, 0.02, 0.3, 9.2, 10.05, { rail: true, tag: 'hotel-parapet' }, null, (i: number) => i === 1),
     // terrace-walk railing (collision only), on the first two sections; the north section's is split round the landing
-    ...chainBand(F, -C.deck, -C.deck + 0.16, C.deckTop, C.deckTop + 1.1, { rail: true, tag: 'walk-rail' }, null, (i) => i < 2),
+    ...chainBand(F, -C.deck, -C.deck + 0.16, C.deckTop, C.deckTop + 1.1, { rail: true, tag: 'walk-rail' }, null, (i: number) => i < 2),
     B(STAIR.x[0], 20.0, C.deckTop, C.deckTop + 1.1, STAIR.landing, STAIR.landing + 0.16, { rail: true, tag: 'walk-rail' }),
     // the landing pier (squid route up: its square-side face) + the stair up from the pier forecourt
     B(STAIR.x[0], STAIR.x[1], -1.2, C.deckTop, STAIR.landing, STAIR.top, { tag: 'colonnade-landing', color: M.colFloor, pattern: SURF.terrazzo, noPaint: [[0, 0, -1]] }),

@@ -1,7 +1,7 @@
 // Lockgate Canals — stage layout (src/world/stages/lockgate/). The stage owns every file in this folder:
 //   layout.js    level geometry (this file)        props.js    prop pack + placements (set dressing)
 //   surfaces.js  stage surface materials (texlib)  murals.js   stage decals / signage (mural atlas)
-import { PATTERN, B, R, O } from '../../mapkit.js';
+import { PATTERN, B, R, O, type PieceOpts } from '../../mapkit.js';
 import { SURF } from './surfaces.js';
 
 // Lockgate Canals — a flight of broad locks climbing out of the harbour through an old brick warehouse district. The
@@ -33,17 +33,17 @@ const wall = (o = {}) => brick({ roof: true, ...o });
 
 // ---- the diagonal frame: s along u = (c, c) (south-west → north-east), t along v = (-c, c) (toward Bravo's bank)
 const c = Math.SQRT1_2;
-const W = (s, t) => [c * (s - t), c * (s + t)];                          // frame → world (x, z)
+const W = (s: number, t: number) => [c * (s - t), c * (s + t)];                          // frame → world (x, z)
 // box in the frame: s0…s1 along u, t0…t1 along v → turned piece (local x along u)
-const D = (s0, s1, t0, t1, y0, y1, o) => { const [x, z] = W((s0 + s1) / 2, (t0 + t1) / 2); return O(x, z, s1 - s0, t1 - t0, y0, y1, -45, o); };
+const D = (s0: number, s1: number, t0: number, t1: number, y0: number, y1: number, o: PieceOpts | undefined) => { const [x, z] = W((s0 + s1) / 2, (t0 + t1) / 2); return O(x, z, s1 - s0, t1 - t0, y0, y1, -45, o); };
 // ramp in the frame: low / high points given as [s, y, t]
-const DR = (lo, hi, width, o) => { const [lx, lz] = W(lo[0], lo[2]), [hx, hz] = W(hi[0], hi[2]); return R([lx, lo[1], lz], [hx, hi[1], hz], width, o); };
+const DR = (lo: number[], hi: number[], width: number, o: PieceOpts | undefined) => { const [lx, lz] = W(lo[0], lo[2]), [hx, hz] = W(hi[0], hi[2]); return R([lx, lo[1], lz], [hx, hi[1], hz], width, o); };
 const nU = [c, 0, c], nV = [-c, 0, c];                                   // frame normals (for murals / noPaint)
-const neg = (n) => n.map((k) => -k);
+const neg = (n: number[]) => n.map((k: number) => -k);
 
 // canal geometry (Alpha's side): pound half-width 4.77 (edges z = x ± 6.75), towpath 4 m, lock E chamber x 16.5…24.5
 const HW = 4.77, TOW = 4;
-const yard = (x0, x1, z0, z1) => B(x0, x1, -0.6, 0, z0, z1, { tag: 'yard', color: LG.setts, pattern: SURF.setts });
+const yard = (x0: number, x1: number, z0: number, z1: number) => B(x0, x1, -0.6, 0, z0, z1, { tag: 'yard', color: LG.setts, pattern: SURF.setts });
 // setts columns under the diagonal towpath: each column's north-west corner stays 0.25 m inside the water edge (z =
 // x - 6.75) and the towpath quay (0.15 higher) covers the stepped edge
 const cols = [];

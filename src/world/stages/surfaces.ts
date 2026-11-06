@@ -10,14 +10,19 @@ import * as lockgate from './lockgate/surfaces.js';
 import * as terraces from './terraces/surfaces.js';
 import * as cargo from './cargo/surfaces.js';
 
-const PACKS = { tidewater, kelpline, saltpan, crossmarket, lockgate, terraces, cargo };
-export const STAGE_SLOTS = { tidewater: [28, 29, 30], kelpline: [31, 32, 33], saltpan: [34, 35, 36], crossmarket: [37, 38, 39], lockgate: [40, 41, 42], terraces: [43, 44, 45], cargo: [46, 47, 48] };
+type StageId = 'tidewater' | 'kelpline' | 'saltpan' | 'crossmarket' | 'lockgate' | 'terraces' | 'cargo';
+// 텍스처 라이브러리 재질 본문(texlib의 층 정의에서 이름·묶음을 뺀 것)
+export interface StageTexMaterial { detail: number; scale: number; tint: boolean; alpha: boolean; mode: number; sym: number; hr: number[]; ao: number; prep: string; surf: string; mask?: boolean; stair?: unknown }
+export interface StageSurfaceDef { slot: number; name: string; mat: StageTexMaterial; onWall?: unknown; onTop?: unknown }
+export interface StageSurface { stage: StageId; slot: number; name: string; group: number; mat: StageTexMaterial; onWall: unknown; onTop: unknown }
+const PACKS: Record<StageId, { SURFACES?: readonly StageSurfaceDef[] }> = { tidewater, kelpline, saltpan, crossmarket, lockgate, terraces, cargo };
+export const STAGE_SLOTS: Record<StageId, number[]> = { tidewater: [28, 29, 30], kelpline: [31, 32, 33], saltpan: [34, 35, 36], crossmarket: [37, 38, 39], lockgate: [40, 41, 42], terraces: [43, 44, 45], cargo: [46, 47, 48] };
 export const FIRST_STAGE_SLOT = 28, LAST_STAGE_SLOT = 48;
 // flat list: { stage, slot, name (texlib layer name, '<stage>:<name>'), group (texlib uber-program), mat, onWall, onTop }
 // Each stage's layers get an uber-program of their own (group 3 + its index): compiled in parallel with the others, and
 // each stays small.
-export const STAGE_SURFACES = [];
-Object.keys(STAGE_SLOTS).forEach((stage, k) => {
+export const STAGE_SURFACES: StageSurface[] = [];
+(Object.keys(STAGE_SLOTS) as StageId[]).forEach((stage, k) => {
   for (const s of PACKS[stage].SURFACES || []) {
     if (!STAGE_SLOTS[stage].includes(s.slot)) { console.warn(`[inkwave] ${stage} surface '${s.name}' is not on one of its slots`, STAGE_SLOTS[stage]); continue; }
     STAGE_SURFACES.push({ stage, slot: s.slot, name: `${stage}:${s.name}`, group: 3 + k, mat: s.mat, onWall: s.onWall, onTop: s.onTop });

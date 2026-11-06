@@ -1,7 +1,8 @@
 // Terrace Heights — stage layout (src/world/stages/terraces/). The stage owns every file in this folder:
 //   layout.js    level geometry (this file)        props.js    prop pack + placements (set dressing)
 //   surfaces.js  stage surface materials (texlib)  murals.js   stage decals / signage (mural atlas)
-import { PATTERN, B, R, O } from '../../mapkit.js';
+import { PATTERN, B, R, O, type PieceOpts } from '../../mapkit.js';
+import type { LayoutPiece, OBoxPiece } from '../../layoutTypes.js';
 import { SURF } from './surfaces.js';
 import { MURAL } from './murals.js';
 
@@ -34,15 +35,37 @@ const TH = {
   step: '#ddd4c3',          // limestone steps
   cotto: '#d9d2c6', pebble: '#d8d2c6', spawn: '#eae6de', villa: '#f2e6cf', station: '#e8d9b8', rim: '#e2d6c4',
 };
-const T = (x0, x1, z0, z1, top, o) => B(x0, x1, FL, top, z0, z1, o);
+const T = (x0: number, x1: number, z0: number, z1: number, top: number, o: PieceOpts | undefined) => B(x0, x1, FL, top, z0, z1, o);
 const cotto = (o = {}) => ({ color: TH.wall, pattern: SURF.cotto ?? PATTERN.tiles, ...o });
 const pebble = (o = {}) => ({ color: TH.wall, pattern: SURF.pebble ?? PATTERN.pavers, ...o });
-const house = (c, o = {}) => ({ color: c, pattern: SURF.calce ?? PATTERN.render, ...o });
-const stair = (o = {}) => ({ color: TH.step, pattern: PATTERN.stonestep, ...o });
+// 등고선 도구의 형식: 구간 목록(x에서 z 구간들), 경계 곡선, 영역(구간 함수 + 경계), 영역 선택지
+type Interval = [number, number];
+interface Curve { pts: number[][]; nrm: number[][]; closed?: boolean; norim?: boolean }
+interface Region { iv(x: number): Interval[]; curves: Curve[]; xs?: number[] }
+interface RegionOpts { norim?: boolean }
+// 돌린 사각형(c: 중심, ax: 두 축 단위벡터, h: 반폭) — SAT 겹침 계산용
+interface TurnedRect { c: number[]; ax: number[][]; h: number[] }
+// 돌린 건물 덩어리(중심·폭·깊이·방향 deg)와 그 위의 층 정보
+// 지면 생성기(베이크 때만): 래스터 격자, 칸 배열, 바닥 판·코핑 막대
+interface Grid { x0: number; z0: number; rs: number; nx: number; nz: number }
+type Cells = { length: number; [i: number]: number };
+interface Shape extends TurnedRect { y0?: number; y1?: number; tier?: number; deg?: number }
+// 바닥 판 층(높이 내림 dn): 장애물·점유 칸·놓인 판
+// 높이 범위가 정해진 도형(놓인 바닥·건물 조각)
+type Laid = Shape & { y0: number; y1: number };
+interface Tier { dn: number; OB: Shape[]; occ: Uint8Array; slabs: Shape[] }
+// 한 방향(deg)의 탐색 격자: 축·원점·크기·빈 칸·덮을 칸과 히스토그램 작업 배열
+interface Facet { deg: number; ex: number[]; ez: number[]; p0: number; q0: number; NP: number; NQ: number; free: Uint8Array[]; unc: Uint8Array; W(p: number, q: number): number[]; pref: number; S: Int32Array; V: Int32Array; hgt: Int32Array; stk: Int32Array; [k: string]: unknown }
+const GT = globalThis as typeof globalThis & { __TERRACES_LOG?: boolean; __TERRACES_REGEN?: boolean };
+interface Bar { P: number[]; Q: number[]; u: number[]; n: number[]; k?: number }
+interface Block { cx: number; cz: number; w: number; d: number; rot: number; psi?: number; y0?: number; top?: number; color?: string; tag?: string }
+
+const house = (c: string, o: PieceOpts = {}) => ({ color: c, pattern: SURF.calce ?? PATTERN.render, ...o });
+const stair = (o: PieceOpts = {}) => ({ color: TH.step, pattern: PATTERN.stonestep, ...o });
 // upper storeys, back walls, the chapel: scenery only — never inked, never climbed, and their tops are off-limits
 // (`roof`: nobody can stand there, anyone who lands on one slides off; the pitched roofs / domes on top are props)
 const NOPAINT = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]];
-const upper = (c, o = {}) => house(c, { noPaint: NOPAINT, roof: true, ...o });
+const upper = (c: string, o: PieceOpts = {}) => house(c, { noPaint: NOPAINT, roof: true, ...o });
 const DEG = 180 / Math.PI;
 
 // ============================================================================================================
@@ -54,52 +77,52 @@ const DEG = 180 / Math.PI;
 // ============================================================================================================
 const ZBACK = -45.4, ZMID = 0, RIM_W = 0.8;
 const Iv = {
-  norm(a) { a = a.filter(([l, h]) => h - l > 1e-6).sort((p, q) => p[0] - q[0]); const o = []; for (const s of a) { if (o.length && s[0] <= o[o.length - 1][1] + 1e-9) o[o.length - 1][1] = Math.max(o[o.length - 1][1], s[1]); else o.push([s[0], s[1]]); } return o; },
-  union(a, b) { return Iv.norm([...a, ...b]); },
-  inter(a, b) { const o = []; for (const [l1, h1] of a) for (const [l2, h2] of b) { const l = Math.max(l1, l2), h = Math.min(h1, h2); if (h > l + 1e-9) o.push([l, h]); } return Iv.norm(o); },
-  diff(a, b) { let o = a.map((s) => [...s]); for (const [l2, h2] of b) { const n = []; for (const [l, h] of o) { if (h2 <= l || l2 >= h) { n.push([l, h]); continue; } if (l2 > l) n.push([l, l2]); if (h2 < h) n.push([h2, h]); } o = n; } return Iv.norm(o); },
+  norm(a: Interval[]): Interval[] { a = a.filter(([l, h]) => h - l > 1e-6).sort((p, q) => p[0] - q[0]); const o: Interval[] = []; for (const s of a) { if (o.length && s[0] <= o[o.length - 1][1] + 1e-9) o[o.length - 1][1] = Math.max(o[o.length - 1][1], s[1]); else o.push([s[0], s[1]]); } return o; },
+  union(a: Interval[], b: Interval[]): Interval[] { return Iv.norm([...a, ...b]); },
+  inter(a: Interval[], b: Interval[]): Interval[] { const o: Interval[] = []; for (const [l1, h1] of a) for (const [l2, h2] of b) { const l = Math.max(l1, l2), h = Math.min(h1, h2); if (h > l + 1e-9) o.push([l, h]); } return Iv.norm(o); },
+  diff(a: Interval[], b: Interval[]): Interval[] { let o = a.map((s): Interval => [s[0], s[1]]); for (const [l2, h2] of b) { const n: Interval[] = []; for (const [l, h] of o) { if (h2 <= l || l2 >= h) { n.push([l, h]); continue; } if (l2 > l) n.push([l, l2]); if (h2 < h) n.push([h2, h]); } o = n; } return Iv.norm(o); },
 };
 const INF = 1e6;
-function disc(cx, cz, r, o = {}) {
-  const n = Math.max(24, Math.ceil((2 * Math.PI * r) / 0.08)), pts = [], nrm = [];
+function disc(cx: number, cz: number, r: number, o: RegionOpts = {}): Region {
+  const n = Math.max(24, Math.ceil((2 * Math.PI * r) / 0.08)), pts: number[][] = [], nrm: number[][] = [];
   for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; pts.push([cx + Math.cos(a) * r, cz + Math.sin(a) * r]); nrm.push([Math.cos(a), Math.sin(a)]); }
-  return { iv: (x) => { const d = r * r - (x - cx) * (x - cx); return d > 0 ? [[cz - Math.sqrt(d), cz + Math.sqrt(d)]] : []; }, curves: [{ pts, nrm, closed: true, norim: o.norim }] };
+  return { iv: (x: number): Interval[] => { const d = r * r - (x - cx) * (x - cx); return d > 0 ? [[cz - Math.sqrt(d), cz + Math.sqrt(d)]] : []; }, curves: [{ pts, nrm, closed: true, norim: o.norim }] };
 }
-function rect(x0, x1, z0, z1, o = {}) {
-  const e = (ax, az, bx, bz, nx, nz) => { const L = Math.hypot(bx - ax, bz - az), n = Math.max(2, Math.ceil(L / 0.08)), pts = [], nrm = []; for (let i = 0; i <= n; i++) { pts.push([ax + ((bx - ax) * i) / n, az + ((bz - az) * i) / n]); nrm.push([nx, nz]); } return { pts, nrm, norim: o.norim }; };
-  return { iv: (x) => (x >= x0 && x <= x1 ? [[z0, z1]] : []), xs: [x0, x1], curves: [e(x0, z0, x1, z0, 0, -1), e(x1, z0, x1, z1, 1, 0), e(x1, z1, x0, z1, 0, 1), e(x0, z1, x0, z0, -1, 0)] };
+function rect(x0: number, x1: number, z0: number, z1: number, o: RegionOpts = {}): Region {
+  const e = (ax: number, az: number, bx: number, bz: number, nx: number, nz: number) => { const L = Math.hypot(bx - ax, bz - az), n = Math.max(2, Math.ceil(L / 0.08)), pts: number[][] = [], nrm: number[][] = []; for (let i = 0; i <= n; i++) { pts.push([ax + ((bx - ax) * i) / n, az + ((bz - az) * i) / n]); nrm.push([nx, nz]); } return { pts, nrm, norim: o.norim }; };
+  return { iv: (x: number): Interval[] => (x >= x0 && x <= x1 ? [[z0, z1]] : []), xs: [x0, x1], curves: [e(x0, z0, x1, z0, 0, -1), e(x1, z0, x1, z1, 1, 0), e(x1, z1, x0, z1, 0, 1), e(x0, z1, x0, z0, -1, 0)] };
 }
 // half-plane on the left of the directed line (ax,az)→(bx,bz); the boundary is sampled between the two points only
-function halfplane(ax, az, bx, bz, o = {}) {
+function halfplane(ax: number, az: number, bx: number, bz: number, o: RegionOpts = {}): Region {
   const dx = bx - ax, dz = bz - az, L = Math.hypot(dx, dz), nx = dz / L, nz = -dx / L;   // outward normal (right side)
-  const n = Math.max(2, Math.ceil(L / 0.08)), pts = [], nrm = [];
+  const n = Math.max(2, Math.ceil(L / 0.08)), pts: number[][] = [], nrm: number[][] = [];
   for (let i = 0; i <= n; i++) { pts.push([ax + (dx * i) / n, az + (dz * i) / n]); nrm.push([nx, nz]); }
   // inside: nx*(x-ax) + nz*(z-az) <= 0
-  const iv = (x) => { if (Math.abs(nz) < 1e-9) return nx * (x - ax) <= 0 ? [[-INF, INF]] : []; const zc = az - (nx * (x - ax)) / nz; return nz > 0 ? [[-INF, zc]] : [[zc, INF]]; };
+  const iv = (x: number): Interval[] => { if (Math.abs(nz) < 1e-9) return nx * (x - ax) <= 0 ? [[-INF, INF]] : []; const zc = az - (nx * (x - ax)) / nz; return nz > 0 ? [[-INF, zc]] : [[zc, INF]]; };
   return { iv, curves: [{ pts, nrm, norim: o.norim }] };
 }
 // simple polygon (vertices in order, either winding); every edge is a rim candidate
-function poly(pts, o = {}) {
+function poly(pts: number[][], o: RegionOpts = {}): Region {
   const n = pts.length;
-  const R = { xs: pts.map((p) => p[0]), curves: [] };
-  R.iv = (x) => { const zs = []; for (let i = 0; i < n; i++) { const [ax, az] = pts[i], [bx, bz] = pts[(i + 1) % n]; if ((ax <= x && bx > x) || (bx <= x && ax > x)) zs.push(az + ((bz - az) * (x - ax)) / (bx - ax)); } zs.sort((a, b) => a - b); const out = []; for (let k = 0; k + 1 < zs.length; k += 2) out.push([zs[k], zs[k + 1]]); return out; };
+  const R: Region = { xs: pts.map((p) => p[0]), curves: [], iv: () => [] };
+  R.iv = (x: number): Interval[] => { const zs: number[] = []; for (let i = 0; i < n; i++) { const [ax, az] = pts[i], [bx, bz] = pts[(i + 1) % n]; if ((ax <= x && bx > x) || (bx <= x && ax > x)) zs.push(az + ((bz - az) * (x - ax)) / (bx - ax)); } zs.sort((a, b) => a - b); const out = []; for (let k = 0; k + 1 < zs.length; k += 2) out.push([zs[k], zs[k + 1]] as Interval); return out; };
   for (let i = 0; i < n; i++) {
     const [ax, az] = pts[i], [bx, bz] = pts[(i + 1) % n], L = Math.hypot(bx - ax, bz - az), m = Math.max(2, Math.ceil(L / 0.08));
     let nx = (bz - az) / L, nz = -(bx - ax) / L;
     if (R.iv(ax + (bx - ax) / 2 + nx * 0.01).some(([l, h]) => az + (bz - az) / 2 + nz * 0.01 >= l && az + (bz - az) / 2 + nz * 0.01 <= h)) { nx = -nx; nz = -nz; }
-    const p = [], nr = []; for (let k = 0; k <= m; k++) { p.push([ax + ((bx - ax) * k) / m, az + ((bz - az) * k) / m]); nr.push([nx, nz]); }
+    const p: number[][] = [], nr: number[][] = []; for (let k = 0; k <= m; k++) { p.push([ax + ((bx - ax) * k) / m, az + ((bz - az) * k) / m]); nr.push([nx, nz]); }
     R.curves.push({ pts: p, nrm: nr, norim: o.norim });
   }
   return R;
 }
-const union = (...rs) => ({ iv: (x) => rs.reduce((a, r) => Iv.union(a, r.iv(x)), []), curves: rs.flatMap((r) => r.curves), xs: rs.flatMap((r) => r.xs || []) });
-const inter = (...rs) => ({ iv: (x) => rs.slice(1).reduce((a, r) => Iv.inter(a, r.iv(x)), rs[0].iv(x)), curves: rs.flatMap((r) => r.curves), xs: rs.flatMap((r) => r.xs || []) });
-const diff = (a, b) => ({ iv: (x) => Iv.diff(a.iv(x), b.iv(x)), curves: [...a.curves, ...b.curves.map((c) => ({ ...c, nrm: c.nrm.map(([p, q]) => [-p, -q]) }))], xs: [...(a.xs || []), ...(b.xs || [])] });
-const inside = (r, x, z) => r.iv(x).some(([l, h]) => z >= l - 1e-7 && z <= h + 1e-7);
+const union = (...rs: Region[]): Region => ({ iv: (x) => rs.reduce((a: Interval[], r) => Iv.union(a, r.iv(x)), []), curves: rs.flatMap((r) => r.curves), xs: rs.flatMap((r) => r.xs || []) });
+const inter = (...rs: Region[]): Region => ({ iv: (x) => rs.slice(1).reduce((a, r) => Iv.inter(a, r.iv(x)), rs[0].iv(x)), curves: rs.flatMap((r) => r.curves), xs: rs.flatMap((r) => r.xs || []) });
+const diff = (a: Region, b: Region): Region => ({ iv: (x) => Iv.diff(a.iv(x), b.iv(x)), curves: [...a.curves, ...b.curves.map((c) => ({ ...c, nrm: c.nrm.map(([p, q]) => [-p, -q]) }))], xs: [...(a.xs || []), ...(b.xs || [])] });
+const inside = (r: Region, x: number, z: number): boolean => r.iv(x).some(([l, h]) => z >= l - 1e-7 && z <= h + 1e-7);
 
 // SAT penetration of two turned rectangles { c:[x,z], ax:[[ux,uz],[vx,vz]], h:[hu,hv] }
-const corners = (s) => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([i, k]) => [s.c[0] + s.ax[0][0] * s.h[0] * i + s.ax[1][0] * s.h[1] * k, s.c[1] + s.ax[0][1] * s.h[0] * i + s.ax[1][1] * s.h[1] * k]);
-function pen(A, Bs) {
+const corners = (s: TurnedRect): number[][] => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([i, k]) => [s.c[0] + s.ax[0][0] * s.h[0] * i + s.ax[1][0] * s.h[1] * k, s.c[1] + s.ax[0][1] * s.h[0] * i + s.ax[1][1] * s.h[1] * k]);
+function pen(A: TurnedRect, Bs: TurnedRect): number {
   let min = Infinity; const ca = corners(A), cb = corners(Bs);
   for (const ax of [...A.ax, ...Bs.ax]) { const pa = ca.map((p) => p[0] * ax[0] + p[1] * ax[1]), pb = cb.map((p) => p[0] * ax[0] + p[1] * ax[1]); min = Math.min(min, Math.min(Math.max(...pa), Math.max(...pb)) - Math.max(Math.min(...pa), Math.min(...pb))); }
   return min;
@@ -114,9 +137,9 @@ const INC = { top: [-24.3, H4, -41.4], foot: [-17.6, H0, -10.4], w: 3.8 };
 const incDir = (() => { const dx = INC.foot[0] - INC.top[0], dz = INC.foot[2] - INC.top[2], L = Math.hypot(dx, dz); return [dx / L, dz / L, L]; })();
 const incN = [incDir[1], -incDir[0]];                  // unit normal pointing east of the incline (+x-ish)
 // points along the incline: t 0 (top) … 1 (foot), off = metres to its east (right-hand side going down)
-const incP = (t, off = 0) => [INC.top[0] + (INC.foot[0] - INC.top[0]) * t + incN[0] * off, INC.top[2] + (INC.foot[2] - INC.top[2]) * t + incN[1] * off];
+const incP = (t: number, off = 0) => [INC.top[0] + (INC.foot[0] - INC.top[0]) * t + incN[0] * off, INC.top[2] + (INC.foot[2] - INC.top[2]) * t + incN[1] * off];
 // half-plane with outward normal n through P (the boundary sampled ±E along the line)
-const hpN = (P, n, E = 40, o = {}) => { const d = [-n[1], n[0]]; return halfplane(P[0] - d[0] * E, P[1] - d[1] * E, P[0] + d[0] * E, P[1] + d[1] * E, o); };
+const hpN = (P: number[], n: number[], E = 40, o: RegionOpts = {}): Region => { const d = [-n[1], n[0]]; return halfplane(P[0] - d[0] * E, P[1] - d[1] * E, P[0] + d[0] * E, P[1] + d[1] * E, o); };
 // the hill levels stop 0.8 m in under the incline's east edge (the ramp hides their ends); the footprint stops at its
 // west parapet. North of the foot there is no incline, so nothing is clipped there.
 const NORTH = rect(-28, 28, INC.foot[2] - 0.01, ZMID, { norim: true });
@@ -124,9 +147,9 @@ const eastOfIncline = union(hpN(incP(0.5, INC.w / 2 - 0.8), [-incN[0], -incN[1]]
 const eastOfInclineW = union(hpN(incP(0.5, -INC.w / 2 - 0.3), [-incN[0], -incN[1]], 40, { norim: true }), NORTH);
 // the Salita: a 4 m street beside the incline that steps down with it — level L stops there beyond t_L (so the ground
 // never rises above the track), each cut a 1.2 m step with a flight of stairs
-const SAL_W = 4.2, T_CUT = { 4: 0.02, 3: 0.245, 2: 0.495, 1: 0.745 };
-const salitaCut = (L) => inter(hpN(incP(T_CUT[L]), [-incDir[0], -incDir[1]], 12), hpN(incP(0.5, INC.w / 2 + SAL_W), incN, 40));
-const zone = (r, west = eastOfIncline, L = 0) => inter(L ? diff(r, salitaCut(L)) : r, west, rect(-28, 28, ZBACK, ZMID, { norim: true }));
+const SAL_W = 4.2, T_CUT: Record<number, number> = { 4: 0.02, 3: 0.245, 2: 0.495, 1: 0.745 };
+const salitaCut = (L: number) => inter(hpN(incP(T_CUT[L]), [-incDir[0], -incDir[1]], 12), hpN(incP(0.5, INC.w / 2 + SAL_W), incN, 40));
+const zone = (r: Region, west = eastOfIncline, L = 0): Region => inter(L ? diff(r, salitaCut(L)) : r, west, rect(-28, 28, ZBACK, ZMID, { norim: true }));
 // the north sector in front of the spawn where H3 is missing (the spawn terrace drops 2.4 m straight to the Largo)
 const wedge = (() => { const a = Math.atan2(toO[1], toO[0]), h = (27 * Math.PI) / 180, L = 20; const p1 = [C[0] + Math.cos(a - h) * L, C[1] + Math.sin(a - h) * L], p2 = [C[0] + Math.cos(a + h) * L, C[1] + Math.sin(a + h) * L]; return inter(halfplane(C[0], C[1], p1[0], p1[1]), halfplane(p2[0], p2[1], C[0], C[1])); })();
 const PIAZZA_R = 14.8, BELV = [18.9, -1.2], BELV_D = 5.0;   // belvedere bastion: flanks off the piazza, a 45° prow (half-diagonal BELV_D)
@@ -134,12 +157,12 @@ const PIAZZA_R = 14.8, BELV = [18.9, -1.2], BELV_D = 5.0;   // belvedere bastion
 const R4 = zone(union(disc(C[0], C[1], 8.5), rect(-26.8, -4.4, ZBACK, -41.3)), eastOfIncline, 4);
 const R3 = union(R4, zone(diff(union(disc(C[0], C[1], 13.5), disc(-1.5, -33.5, 6.5)), wedge), eastOfIncline, 3));
 // sector of the ring round the piazza (ψ = compass angle round O from −Z, + toward +x; radii from O)
-const uO = (psi) => [Math.sin((psi * Math.PI) / 180), -Math.cos((psi * Math.PI) / 180)];
-const sectorO = (r0, r1, psi0, psi1) => { const a = (psi0 * Math.PI) / 180, b = (psi1 * Math.PI) / 180; return diff(inter(disc(0, 0, r1), hpN([0, 0], [-Math.cos(a), -Math.sin(a)]), hpN([0, 0], [Math.cos(b), Math.sin(b)])), disc(0, 0, r0)); };
+const uO = (psi: number) => [Math.sin((psi * Math.PI) / 180), -Math.cos((psi * Math.PI) / 180)];
+const sectorO = (r0: number, r1: number, psi0: number, psi1: number): Region => { const a = (psi0 * Math.PI) / 180, b = (psi1 * Math.PI) / 180; return diff(inter(disc(0, 0, r1), hpN([0, 0], [-Math.cos(a), -Math.sin(a)]), hpN([0, 0], [Math.cos(b), Math.sin(b)])), disc(0, 0, r0)); };
 // the piazza frame: a crescent of houses on the piazza's rim (fronts on the circle, 4.4 m deep), the H2 street behind
 // them, H1 landings in the gaps between them (the Vicolo, the Passo)
 const HOUSE_R0 = PIAZZA_R, HOUSE_R1 = PIAZZA_R + 4.4, STREET_R0 = PIAZZA_R + 3.9, STREET_R1 = PIAZZA_R + 8.0;
-const GAPS = { vicolo: [-28, -10], passo: [11, 20] };
+const GAPS: Record<'vicolo' | 'passo', [number, number]> = { vicolo: [-28, -10], passo: [11, 20] };
 const R2 = union(R3, zone(union(disc(C[0], C[1], 19.0), disc(2.5, -27.5, 7.0), sectorO(STREET_R0, STREET_R1, -52, 34)), eastOfIncline, 2));
 const R1 = union(R2, zone(union(diff(union(disc(C[0], C[1], 23.5), disc(6.5, -22, 7.5)), disc(0, 0, STREET_R0)),
   sectorO(PIAZZA_R, STREET_R0 + 0.3, ...GAPS.vicolo), sectorO(PIAZZA_R, STREET_R0 + 0.3, ...GAPS.passo)), eastOfIncline, 1));
@@ -149,50 +172,50 @@ const R1 = union(R2, zone(union(diff(union(disc(C[0], C[1], 23.5), disc(6.5, -22
 const SHORE = poly([[-29.0, -45.4], [10.0, -45.4], [16.0, -36.0], [16.0, -26.4], [20.0, -22.0], [20.0, -15.0], [14.4, -9.4], [14.4, 0.0],
   [-14.4, 0.0], [-14.4, -6.8], [-17.4, -6.8], [-20.8, -8.6], [-21.6, -12.6], [-29.0, -12.6]]);
 // a bastion: straight flanks out from the piazza's sea wall (x = 14.4) and a prow of two 45° faces
-const bastion = (s) => poly([[14.4 * s, (BELV[1] - BELV_D) * s], [BELV[0] * s, (BELV[1] - BELV_D) * s], [(BELV[0] + BELV_D) * s, BELV[1] * s], [BELV[0] * s, (BELV[1] + BELV_D) * s], [14.4 * s, (BELV[1] + BELV_D) * s]]);
+const bastion = (s: number) => poly([[14.4 * s, (BELV[1] - BELV_D) * s], [BELV[0] * s, (BELV[1] - BELV_D) * s], [(BELV[0] + BELV_D) * s, BELV[1] * s], [BELV[0] * s, (BELV[1] + BELV_D) * s], [14.4 * s, (BELV[1] + BELV_D) * s]]);
 const R0 = union(R1, zone(union(SHORE, bastion(1), bastion(-1)), eastOfInclineW));
 
 // ============================================================================================================
 // Features on the hill: frames round the hilltop (φ in degrees from the direction to the piazza, + = east)
 // ============================================================================================================
 const F = toO, SD = [F[1], -F[0]];                     // forward (to the piazza), side (east)
-const P = (r, phi) => { const a = (phi * Math.PI) / 180, dx = F[0] * Math.cos(a) + SD[0] * Math.sin(a), dz = F[1] * Math.cos(a) + SD[1] * Math.sin(a); return [C[0] + dx * r, C[1] + dz * r, dx, dz]; };
-const rotOf = (dx, dz) => Math.atan2(dx, dz) * DEG;   // O() / prop rotY (deg) that turns local +Z to (dx, dz)
+const P = (r: number, phi: number) => { const a = (phi * Math.PI) / 180, dx = F[0] * Math.cos(a) + SD[0] * Math.sin(a), dz = F[1] * Math.cos(a) + SD[1] * Math.sin(a); return [C[0] + dx * r, C[1] + dz * r, dx, dz]; };
+const rotOf = (dx: number, dz: number) => Math.atan2(dx, dz) * DEG;   // O() / prop rotY (deg) that turns local +Z to (dx, dz)
 // where the piazza carve meets the ray φ (the H1 terrace's edge there)
-const carveR = (phi) => { const [, , dx, dz] = P(1, phi), b = C[0] * dx + C[1] * dz, c = C[0] * C[0] + C[1] * C[1] - PIAZZA_R * PIAZZA_R; return -b - Math.sqrt(Math.max(0, b * b - c)); };
+const carveR = (phi: number) => { const [, , dx, dz] = P(1, phi), b = C[0] * dx + C[1] * dz, c = C[0] * C[0] + C[1] * C[1] - PIAZZA_R * PIAZZA_R; return -b - Math.sqrt(Math.max(0, b * b - c)); };
 // a radial ramp from radius r0 (height y0) to r1 (height y1) along φ
-const rRamp = (phi, r0, y0, r1, y1, w, o) => { const a = P(r0, phi), b = P(r1, phi); return y0 < y1 ? R([a[0], y0, a[1]], [b[0], y1, b[1]], w, o) : R([b[0], y1, b[1]], [a[0], y0, a[1]], w, o); };
+const rRamp = (phi: number, r0: number, y0: number, r1: number, y1: number, w: number, o: PieceOpts | undefined) => { const a = P(r0, phi), b = P(r1, phi); return y0 < y1 ? R([a[0], y0, a[1]], [b[0], y1, b[1]], w, o) : R([b[0], y1, b[1]], [a[0], y0, a[1]], w, o); };
 // a house turned to the contour: its back (hill side) at rIn, its front (downhill) at rOut, w wide, centred on φ
-function hut(phi, rIn, rOut, w) { const m = P((rIn + rOut) / 2, phi); return { cx: m[0], cz: m[1], w, d: rOut - rIn, rot: rotOf(m[2], m[3]) }; }
+function hut(phi: number, rIn: number, rOut: number, w: number): Block { const m = P((rIn + rOut) / 2, phi); return { cx: m[0], cz: m[1], w, d: rOut - rIn, rot: rotOf(m[2], m[3]) }; }
 // a house on the piazza crescent between compass angles psi0..psi1 (front on the circle, facing the piazza centre)
-function frame(psi0, psi1, r0 = HOUSE_R0, r1 = HOUSE_R1) { const pc = (psi0 + psi1) / 2, u = uO(pc), rm = (r0 + r1) / 2, w = 2 * r0 * Math.tan(((psi1 - psi0) * Math.PI) / 360); return { cx: u[0] * rm, cz: u[1] * rm, w, d: r1 - r0, rot: rotOf(-u[0], -u[1]), psi: pc }; }
+function frame(psi0: number, psi1: number, r0 = HOUSE_R0, r1 = HOUSE_R1): Block { const pc = (psi0 + psi1) / 2, u = uO(pc), rm = (r0 + r1) / 2, w = 2 * r0 * Math.tan(((psi1 - psi0) * Math.PI) / 360); return { cx: u[0] * rm, cz: u[1] * rm, w, d: r1 - r0, rot: rotOf(-u[0], -u[1]), psi: pc }; }
 // the houses of Alpha's village (props.js dresses them from this table: same centre / size / turn)
 const HOUSES = {
   caffe: { ...frame(-52, -28), y0: FL, top: H3, color: TH.ochre, tag: 'caffe' },
   ceramiche: { ...frame(-10, 11), y0: FL, top: H3, color: TH.white, tag: 'ceramiche' },
   mare: { ...frame(20, 38), y0: FL, top: H2 + 0.2, color: TH.sky, tag: 'case-sul-mare' },
 };
-const houseBlock = (h, o = {}) => O(h.cx, h.cz, h.w, h.d, h.y0, h.top, h.rot, house(h.color, { tag: h.tag, ...o }));
+const houseBlock = (h: Block & { y0: number; top: number; color: string; tag: string }, o: PieceOpts = {}) => O(h.cx, h.cz, h.w, h.d, h.y0, h.top, h.rot, house(h.color, { tag: h.tag, ...o }));
 // an upper storey on part of a house: offsets along the house's own axes (lx across the front, lz back → front)
-function upperOf(h, lx, lz, w, d, top, color, o = {}) { const a = (h.rot * Math.PI) / 180, c = Math.cos(a), sn = Math.sin(a); return { cx: h.cx + c * lx + sn * lz, cz: h.cz - sn * lx + c * lz, w, d, rot: h.rot, y0: h.top, top, color, ...o }; }
+function upperOf(h: Block & { top: number }, lx: number, lz: number, w: number, d: number, top: number, color: string, o: PieceOpts & { tag: string }): Block & { y0: number; top: number; color: string; tag: string } { const a = (h.rot * Math.PI) / 180, c = Math.cos(a), sn = Math.sin(a); return { cx: h.cx + c * lx + sn * lz, cz: h.cz - sn * lx + c * lz, w, d, rot: h.rot, y0: h.top, top, color, ...o }; }
 const UPPERS = {
   caffe: upperOf(HOUSES.caffe, -1.1, -1.0, 4.2, 2.4, 6.4, TH.ochre, { tag: 'caffe-upper' }),
   ceramiche: upperOf(HOUSES.ceramiche, 1.2, -1.0, 3.6, 2.4, 6.0, TH.white, { tag: 'ceramiche-upper' }),
   mare: upperOf(HOUSES.mare, 1.2, -0.7, 2.6, 3.0, 5.6, TH.sky, { tag: 'case-sul-mare-upper' }),
 };
 // world normal of a turned block's face: (sx, sz) = (±1, 0) side faces along local x, (0, ±1) front / back
-const faceN = (h, sx, sz) => { const a = (h.rot * Math.PI) / 180, c = Math.cos(a), sn = Math.sin(a); return [c * sx + sn * sz, 0, -sn * sx + c * sz]; };
-const upperBlock = (u, o = {}) => O(u.cx, u.cz, u.w, u.d, u.y0, u.top, u.rot, upper(u.color, { tag: u.tag, ...o }));
+const faceN = (h: Block, sx: number, sz: number) => { const a = (h.rot * Math.PI) / 180, c = Math.cos(a), sn = Math.sin(a); return [c * sx + sn * sz, 0, -sn * sx + c * sz]; };
+const upperBlock = (u: Block & { y0: number; top: number; color: string; tag: string }, o: PieceOpts = {}) => O(u.cx, u.cz, u.w, u.d, u.y0, u.top, u.rot, upper(u.color, { tag: u.tag, ...o }));
 // radial ramp round the piazza centre along ψ: from r0 (height y0) to r1 (y1)
-const oRamp = (psi, r0, y0, r1, y1, w, o) => { const u = uO(psi), a = [u[0] * r0, u[1] * r0], b = [u[0] * r1, u[1] * r1]; return y0 < y1 ? R([a[0], y0, a[1]], [b[0], y1, b[1]], w, o) : R([b[0], y1, b[1]], [a[0], y0, a[1]], w, o); };
+const oRamp = (psi: number, r0: number, y0: number, r1: number, y1: number, w: number, o: PieceOpts | undefined) => { const u = uO(psi), a = [u[0] * r0, u[1] * r0], b = [u[0] * r1, u[1] * r1]; return y0 < y1 ? R([a[0], y0, a[1]], [b[0], y1, b[1]], w, o) : R([b[0], y1, b[1]], [a[0], y0, a[1]], w, o); };
 // Salita flights beside the incline: from the lower street up to each cut (t_L), 2.6 m wide in the middle of the band
-const salitaFlight = (L, y0, y1) => { const run = 3.1 / incDir[2], off = INC.w / 2 + SAL_W / 2 + 0.2, a = incP(T_CUT[L] + run, off), b = incP(T_CUT[L] - 0.005, off); return R([a[0], y0, a[1]], [b[0], y1, b[1]], 2.6, stair({ tag: 'salita-flight' })); };
+const salitaFlight = (L: number, y0: number, y1: number) => { const run = 3.1 / incDir[2], off = INC.w / 2 + SAL_W / 2 + 0.2, a = incP(T_CUT[L] + run, off), b = incP(T_CUT[L] - 0.005, off); return R([a[0], y0, a[1]], [b[0], y1, b[1]], 2.6, stair({ tag: 'salita-flight' })); };
 
 const VIC = (GAPS.vicolo[0] + GAPS.vicolo[1]) / 2, PAS = (GAPS.passo[0] + GAPS.passo[1]) / 2;
 // a straight flight from (a, height ya) to (b, height yb) in plan
-const flight = (a, ya, b, yb, w, tag) => (ya < yb ? R([a[0], ya, a[1]], [b[0], yb, b[1]], w, stair({ tag })) : R([b[0], yb, b[1]], [a[0], ya, a[1]], w, stair({ tag })));
-const along = (p, q, t) => [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
-const unit = (p, q) => { const d = Math.hypot(q[0] - p[0], q[1] - p[1]); return [(q[0] - p[0]) / d, (q[1] - p[1]) / d]; };
+const flight = (a: number[], ya: number, b: number[], yb: number, w: number, tag: string) => (ya < yb ? R([a[0], ya, a[1]], [b[0], yb, b[1]], w, stair({ tag })) : R([b[0], yb, b[1]], [a[0], ya, a[1]], w, stair({ tag })));
+const along = (p: number[], q: number[], t: number) => [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t];
+const unit = (p: number[], q: number[]) => { const d = Math.hypot(q[0] - p[0], q[1] - p[1]); return [(q[0] - p[0]) / d, (q[1] - p[1]) / d]; };
 // the east lane down the lemon shoulder: limonaia (H3) → Orto (H2) → the Case sul Mare lane (H1) → the headland (H0)
 const EAST = (() => {
   const L3 = [-1.5, -33.5], L2 = [2.5, -27.5], L1 = [6.5, -22], HD = [11.5, -17.5];
@@ -239,41 +262,41 @@ const FEATURES = [
 // promenade level (H0) is laid solid under the whole hill too, so the stage's sea footprint has no holes.
 // ============================================================================================================
 const SAG = 0.3, SEG_MAX = 7.0, RS = 0.05, RR = 0.1, MIN_SLAB = 0.3, GUT = [0.1, 0.19];
-const orect = (cx, cz, w, d, deg) => { const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a); return { c: [cx, cz], ax: [[c, -s], [s, c]], h: [w / 2, d / 2], deg }; };
-const inO = (s, x, z, g = 0) => { const dx = x - s.c[0], dz = z - s.c[1]; return Math.abs(dx * s.ax[0][0] + dz * s.ax[0][1]) <= s.h[0] + g && Math.abs(dx * s.ax[1][0] + dz * s.ax[1][1]) <= s.h[1] + g; };
-const ptO = (s, u, v) => [s.c[0] + s.ax[0][0] * u + s.ax[1][0] * v, s.c[1] + s.ax[0][1] * u + s.ax[1][1] * v];
-const rad0 = (s) => Math.hypot(s.h[0], s.h[1]);
+const orect = (cx: number, cz: number, w: number, d: number, deg: number) => { const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a); return { c: [cx, cz], ax: [[c, -s], [s, c]], h: [w / 2, d / 2], deg }; };
+const inO = (s: Shape, x: number, z: number, g = 0) => { const dx = x - s.c[0], dz = z - s.c[1]; return Math.abs(dx * s.ax[0][0] + dz * s.ax[0][1]) <= s.h[0] + g && Math.abs(dx * s.ax[1][0] + dz * s.ax[1][1]) <= s.h[1] + g; };
+const ptO = (s: Shape, u: number, v: number) => [s.c[0] + s.ax[0][0] * u + s.ax[1][0] * v, s.c[1] + s.ax[0][1] * u + s.ax[1][1] * v];
+const rad0 = (s: Shape) => Math.hypot(s.h[0], s.h[1]);
 // raster grids: { x0, z0, rs, nx, nz }
-function paintO(G, m, s, g = 0, v = 1) {
+function paintO(G: Grid, m: Cells, s: Shape, g = 0, v = 1) {
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   for (const [x, z] of corners(s)) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
   const i0 = Math.max(0, Math.floor((x0 - g - G.x0) / G.rs)), i1 = Math.min(G.nx - 1, Math.ceil((x1 + g - G.x0) / G.rs));
   const j0 = Math.max(0, Math.floor((z0 - g - G.z0) / G.rs)), j1 = Math.min(G.nz - 1, Math.ceil((z1 + g - G.z0) / G.rs));
   for (let j = j0; j <= j1; j++) { const z = G.z0 + (j + 0.5) * G.rs; for (let i = i0; i <= i1; i++) if (inO(s, G.x0 + (i + 0.5) * G.rs, z, g)) m[j * G.nx + i] = v; }
 }
-function paintR(G, m, r) {
+function paintR(G: Grid, m: Cells, r: Region) {
   for (let i = 0; i < G.nx; i++) {
     const x = G.x0 + (i + 0.5) * G.rs;
     for (const [l, h] of r.iv(x)) { const j0 = Math.max(0, Math.ceil((l - G.z0) / G.rs - 0.5)), j1 = Math.min(G.nz - 1, Math.floor((h - G.z0) / G.rs - 0.5)); for (let j = j0; j <= j1; j++) m[j * G.nx + i] = 1; }
   }
 }
-const cellAt = (G, m, x, z) => { const i = Math.floor((x - G.x0) / G.rs), j = Math.floor((z - G.z0) / G.rs); return i < 0 || j < 0 || i >= G.nx || j >= G.nz ? 0 : m[j * G.nx + i]; };
+const cellAt = (G: Grid, m: Cells, x: number, z: number) => { const i = Math.floor((x - G.x0) / G.rs), j = Math.floor((z - G.z0) / G.rs); return i < 0 || j < 0 || i >= G.nx || j >= G.nz ? 0 : m[j * G.nx + i]; };
 // footprint + vertical range of a layout piece (ramps: null)
-const shapeOf = (d) => (d.kind === 'box' ? { ...orect((d.min[0] + d.max[0]) / 2, (d.min[2] + d.max[2]) / 2, d.max[0] - d.min[0], d.max[2] - d.min[2], 0), y0: d.min[1], y1: d.max[1] }
+const shapeOf = (d: LayoutPiece): Laid | null => (d.kind === 'box' ? { ...orect((d.min[0] + d.max[0]) / 2, (d.min[2] + d.max[2]) / 2, d.max[0] - d.min[0], d.max[2] - d.min[2], 0), y0: d.min[1], y1: d.max[1] }
   : d.kind === 'obox' ? { ...orect(d.center[0], d.center[2], d.size[0], d.size[2], d.rotY), y0: d.center[1] - d.size[1] / 2, y1: d.center[1] + d.size[1] / 2 } : null);
-const mirrorDef = (d) => (d.kind === 'box' ? { ...d, min: [-d.max[0], d.min[1], -d.max[2]], max: [-d.min[0], d.max[1], -d.min[2]] }
+const mirrorDef = (d: LayoutPiece): LayoutPiece => (d.kind === 'box' ? { ...d, min: [-d.max[0], d.min[1], -d.max[2]], max: [-d.min[0], d.max[1], -d.min[2]] }
   : d.kind === 'obox' ? { ...d, center: [-d.center[0], d.center[1], -d.center[2]] } : d);
 
 // ---- boundary runs of a region: samples [x, z, nx, nz] on its true contour (clip lines and norim curves excluded)
-function boundaryRuns(r) {
+function boundaryRuns(r: Region) {
   const eps = 0.03, runs = [];
-  const clipOK = (x, z) => z <= ZMID - 0.02 && z >= ZBACK + 0.02;
+  const clipOK = (x: number, z: number) => z <= ZMID - 0.02 && z >= ZBACK + 0.02;
   for (const c of r.curves) {
     if (c.norim) continue;
     const n = c.pts.length;
-    const on = c.pts.map(([x, z], k) => clipOK(x, z) && inside(r, x - c.nrm[k][0] * eps, z - c.nrm[k][1] * eps) && !inside(r, x + c.nrm[k][0] * eps, z + c.nrm[k][1] * eps));
+    const on = c.pts.map(([x, z], k: number) => clipOK(x, z) && inside(r, x - c.nrm[k][0] * eps, z - c.nrm[k][1] * eps) && !inside(r, x + c.nrm[k][0] * eps, z + c.nrm[k][1] * eps));
     let start = 0;
-    if (c.closed) { start = on.indexOf(false); if (start < 0) { runs.push([...c.pts.map((p, k) => [p[0], p[1], ...c.nrm[k]]), [c.pts[0][0], c.pts[0][1], ...c.nrm[0]]]); continue; } }
+    if (c.closed) { start = on.indexOf(false); if (start < 0) { runs.push([...c.pts.map((p, k: number) => [p[0], p[1], ...c.nrm[k]]), [c.pts[0][0], c.pts[0][1], ...c.nrm[0]]]); continue; } }
     let run = [];
     const m = c.closed ? n + 1 : n;
     for (let j = 0; j < m; j++) {
@@ -286,32 +309,32 @@ function boundaryRuns(r) {
   return runs;
 }
 // ---- rims: coping bars on chords of the contour. A bar = outer face P→Q (on the contour), n = inward normal
-function mkBar(r, P, Q) {
+function mkBar(r: Region, P: number[], Q: number[]) {
   const dx = Q[0] - P[0], dz = Q[1] - P[1], L = Math.hypot(dx, dz), ux = dx / L, uz = dz / L;
   let ix = -uz, iz = ux; const mx = (P[0] + Q[0]) / 2, mz = (P[1] + Q[1]) / 2;
   if (!inside(r, mx + ix * 0.25, mz + iz * 0.25)) { ix = -ix; iz = -iz; }
   return { P: [P[0], P[1]], Q: [Q[0], Q[1]], u: [ux, uz], n: [ix, iz] };
 }
-const barLen = (b) => Math.hypot(b.Q[0] - b.P[0], b.Q[1] - b.P[1]);
+const barLen = (b: Bar) => Math.hypot(b.Q[0] - b.P[0], b.Q[1] - b.P[1]);
 // the bar's solid (inset = pulled in from the outer face), and the band just outside its face (no slab may reach there)
-const barRect = (b, inset = 0) => { const mx = (b.P[0] + b.Q[0]) / 2, mz = (b.P[1] + b.Q[1]) / 2, d = RIM_W - inset, off = inset + d / 2; return { c: [mx + b.n[0] * off, mz + b.n[1] * off], ax: [b.u, b.n], h: [barLen(b) / 2, d / 2] }; };
-const bandRect = (b) => { const mx = (b.P[0] + b.Q[0]) / 2, mz = (b.P[1] + b.Q[1]) / 2; return { c: [mx - b.n[0] * 0.49, mz - b.n[1] * 0.49], ax: [b.u, b.n], h: [barLen(b) / 2, 0.51] }; };
-const trimmed = (b, end, t) => (end ? { ...b, Q: [b.Q[0] - b.u[0] * t, b.Q[1] - b.u[1] * t] } : { ...b, P: [b.P[0] + b.u[0] * t, b.P[1] + b.u[1] * t] });
+const barRect = (b: Bar, inset = 0) => { const mx = (b.P[0] + b.Q[0]) / 2, mz = (b.P[1] + b.Q[1]) / 2, d = RIM_W - inset, off = inset + d / 2; return { c: [mx + b.n[0] * off, mz + b.n[1] * off], ax: [b.u, b.n], h: [barLen(b) / 2, d / 2] }; };
+const bandRect = (b: Bar) => { const mx = (b.P[0] + b.Q[0]) / 2, mz = (b.P[1] + b.Q[1]) / 2; return { c: [mx - b.n[0] * 0.49, mz - b.n[1] * 0.49], ax: [b.u, b.n], h: [barLen(b) / 2, 0.51] }; };
+const trimmed = (b: Bar, end: number, t: number) => (end ? { ...b, Q: [b.Q[0] - b.u[0] * t, b.Q[1] - b.u[1] * t] } : { ...b, P: [b.P[0] + b.u[0] * t, b.P[1] + b.u[1] * t] });
 // least trim of bar b at `end` that makes bad(bar) false (binary search); null if even a 0.3 m stub is bad
-function trimUntil(b, end, bad) {
+function trimUntil(b: Bar, end: number, bad: (b: Bar) => boolean) {
   if (!bad(b)) return b;
   const L = barLen(b); if (L < 0.35 || bad(trimmed(b, end, L - 0.3))) return null;
   let lo = 0, hi = L - 0.3;
   for (let i = 0; i < 22; i++) { const m = (lo + hi) / 2; if (bad(trimmed(b, end, m))) lo = m; else hi = m; }
   return trimmed(b, end, hi + 1e-4);
 }
-function rimBars(r) {
-  let bars = [];
+function rimBars(r: Region): Bar[] {
+  let bars: Bar[] = [];
   for (const rr of boundaryRuns(r)) {
     const cum = [0]; for (let i = 1; i < rr.length; i++) cum.push(cum[i - 1] + Math.hypot(rr[i][0] - rr[i - 1][0], rr[i][1] - rr[i - 1][1]));
     const len = cum[cum.length - 1];
     if (len < 0.4) continue;
-    const dev = (a, b) => { const P = rr[a], Q = rr[b], dx = Q[0] - P[0], dz = Q[1] - P[1], L = Math.hypot(dx, dz) || 1; let m = 0; for (let i = a; i <= b; i++) m = Math.max(m, Math.abs((rr[i][0] - P[0]) * dz - (rr[i][1] - P[1]) * dx) / L); return m; };
+    const dev = (a: number, b: number) => { const P = rr[a], Q = rr[b], dx = Q[0] - P[0], dz = Q[1] - P[1], L = Math.hypot(dx, dz) || 1; let m = 0; for (let i = a; i <= b; i++) m = Math.max(m, Math.abs((rr[i][0] - P[0]) * dz - (rr[i][1] - P[1]) * dx) / L); return m; };
     for (let n = Math.max(1, Math.ceil(len / SEG_MAX)); ; n++) {
       const idx = [0];
       for (let k = 1; k < n; k++) { let i = idx[k - 1]; while (i < rr.length - 1 && cum[i] < (len * k) / n) i++; idx.push(i); }
@@ -324,29 +347,31 @@ function rimBars(r) {
     }
   }
   // keep inside the half (z ≤ 0: the mirror's bars are the twins), the back wall and the side bounds
-  const out = (b) => corners(barRect(b)).some(([x, z]) => z > ZMID - 1e-4 || z < ZBACK - 1e-4 || x < -28 + 1e-4 || x > 28 - 1e-4);
-  bars = bars.map((b) => { if (!out(b)) return b; const a = trimUntil(b, 0, out), c = trimUntil(b, 1, out); return a && c ? (barLen(a) >= barLen(c) ? a : c) : a || c; }).filter(Boolean);
+  const out = (b: Bar) => corners(barRect(b)).some(([x, z]) => z > ZMID - 1e-4 || z < ZBACK - 1e-4 || x < -28 + 1e-4 || x > 28 - 1e-4);
+  bars = bars.map((b) => { if (!out(b)) return b; const a = trimUntil(b, 0, out), c = trimUntil(b, 1, out); return a && c ? (barLen(a) >= barLen(c) ? a : c) : a || c; }).filter((b): b is Bar => !!b);
   return bars;
 }
 // coping tops: bars that overlap at a convex joint alternate between 10 and 18 cm proud (so they may overlap instead of
 // leaving a notch); where neither height is free the later bar gives way at the joint
 const RIM_UP = [0.1, 0.19];
-function seatRims(bars, obst, y) {
-  const near = (a, b) => Math.hypot((a.P[0] + a.Q[0]) / 2 - (b.P[0] + b.Q[0]) / 2, (a.P[1] + a.Q[1]) / 2 - (b.P[1] + b.Q[1]) / 2) < (barLen(a) + barLen(b)) / 2 + 1.2;
-  const hit = (a, b) => near(a, b) && pen(barRect(a), barRect(b)) > 3e-4;
+function seatRims(bars: Bar[], obst: (y: number) => Shape[], y: number): Bar[] {
+  const near = (a: Bar, b: Bar) => Math.hypot((a.P[0] + a.Q[0]) / 2 - (b.P[0] + b.Q[0]) / 2, (a.P[1] + a.Q[1]) / 2 - (b.P[1] + b.Q[1]) / 2) < (barLen(a) + barLen(b)) / 2 + 1.2;
+  const hit = (a: Bar, b: Bar) => near(a, b) && pen(barRect(a), barRect(b)) > 3e-4;
   const OB = RIM_UP.map((u) => obst(y + u));
-  const blocked = (b, k) => OB[k].some((t) => Math.hypot(t.c[0] - barRect(b).c[0], t.c[1] - barRect(b).c[1]) < rad0(t) + barLen(b) / 2 + 1 && pen(barRect(b), t) > 3e-4);
-  const out = [];
-  for (let b of bars) {
+  const blocked = (b: Bar, k: number) => OB[k].some((t) => Math.hypot(t.c[0] - barRect(b).c[0], t.c[1] - barRect(b).c[1]) < rad0(t) + barLen(b) / 2 + 1 && pen(barRect(b), t) > 3e-4);
+  const out: Bar[] = [];
+  for (const bar0 of bars) {
+    let b: Bar | null = bar0;
     for (let tries = 0; tries < 4 && b; tries++) {
-      const k = [0, 1].find((k) => !blocked(b, k) && !out.some((o) => o.k === k && hit(o, b)));
-      if (k !== undefined) { out.push({ ...b, k }); b = null; break; }
+      const cur: Bar = b;
+      const k = [0, 1].find((k) => !blocked(cur, k) && !out.some((o) => o.k === k && hit(o, cur)));
+      if (k !== undefined) { out.push({ ...cur, k }); b = null; break; }
       // trim against the nearest same-height neighbour it hits
-      const o = out.filter((o) => hit(o, b)).sort((p, q) => pen(barRect(q), barRect(b)) - pen(barRect(p), barRect(b)))[0];
+      const o = out.filter((o) => hit(o, cur)).sort((p, q) => pen(barRect(q), barRect(cur)) - pen(barRect(p), barRect(cur)))[0];
       if (!o) { b = null; break; }
-      let best = null;
-      for (const ea of [0, 1]) for (const eb of [0, 1]) { const pa = ea ? o.Q : o.P, pb = eb ? b.Q : b.P, d = Math.hypot(pa[0] - pb[0], pa[1] - pb[1]); if (!best || d < best.d) best = { d, eb }; }
-      b = trimUntil(b, best.eb, (x) => hit(o, x));
+      let best: { d: number; eb: number } | null = null;
+      for (const ea of [0, 1]) for (const eb of [0, 1]) { const pa = ea ? o.Q : o.P, pb = eb ? cur.Q : cur.P, d = Math.hypot(pa[0] - pb[0], pa[1] - pb[1]); if (!best || d < best.d) best = { d, eb }; }
+      b = trimUntil(cur, best!.eb, (x) => hit(o, x));
     }
   }
   return out;
@@ -357,12 +382,12 @@ function seatRims(bars, obst, y) {
 // tiers may (the higher one hides the lower). The lower tiers are dearer, so they only fill in where the floor tier
 // would need many small pieces.
 const TIER_DN = [0, 0.1, 0.19], TIER_PREF = [1, 0.8, 0.72], LOWER_MAX = 5;   // m² of visible floor a lower slab may take
-function laySlabs(L, r, bars, stand, obst, y, tiers = 1, designed = []) {
+function laySlabs(L: number, r: Region, bars: Bar[], stand: Shape[], obst: (y: number) => Shape[], y: number, tiers = 1, designed: Laid[] = []) {
   const G = { x0: -28, z0: -46, rs: RS, nx: Math.round(56 / RS), nz: Math.round(46 / RS) }, N = G.nx * G.nz;
   const inR = new Uint8Array(N), rimIn = new Uint8Array(N), band = new Uint8Array(N), above = new Uint8Array(N);
   paintR(G, inR, r);
   const rIn = bars.map((b) => barRect(b, 0.02)), rBand = bars.map(bandRect);
-  const T = TIER_DN.slice(0, tiers).map((dn) => ({ dn, OB: [...obst(y - dn), ...designed], occ: new Uint8Array(N), slabs: [] }));
+  const T: Tier[] = TIER_DN.slice(0, tiers).map((dn) => ({ dn, OB: [...obst(y - dn), ...designed], occ: new Uint8Array(N), slabs: [] }));
   for (const s of rIn) paintO(G, rimIn, s);
   for (const s of rBand) paintO(G, band, s);
   for (const t of T) for (const s of t.OB) paintO(G, t.occ, s, 0.03);
@@ -377,7 +402,7 @@ function laySlabs(L, r, bars, stand, obst, y, tiers = 1, designed = []) {
     sure[j * G.nx + i] = a === 25 ? 1 : a === 0 ? 2 : 0;
   }
   const ri0 = rIn, rb0 = rBand;
-  const okAt = (x, z, ri = ri0, rb = rb0) => { const c = cellAt(G, sure, x, z); if (c === 1) return true; if (c === 2) return false; for (const t of ri) if (inO(t, x, z, 1e-6)) return true; if (!inside(r, x, z)) return false; for (const t of rb) if (inO(t, x, z, -1e-6)) return false; return true; };
+  const okAt = (x: number, z: number, ri = ri0, rb = rb0) => { const c = cellAt(G, sure, x, z); if (c === 1) return true; if (c === 2) return false; for (const t of ri) if (inO(t, x, z, 1e-6)) return true; if (!inside(r, x, z)) return false; for (const t of rb) if (inO(t, x, z, -1e-6)) return false; return true; };
   for (let k = 0; k < N; k++) {
     // the floor to lay: 3 where it shows; on the promenade level also 1 under whatever stands on it (the sea footprint)
     req[k] = geo[k] && !T[0].occ[k] && inR[k] ? (!above[k] ? 3 : L === 0 ? 1 : 0) : 0;
@@ -385,11 +410,11 @@ function laySlabs(L, r, bars, stand, obst, y, tiers = 1, designed = []) {
   }
   const box = [G.x0 + bx0 * RS - 0.2, G.x0 + (bx1 + 1) * RS + 0.2, G.z0 + bz0 * RS - 0.2, G.z0 + (bz1 + 1) * RS + 0.2];
   // exact tests
-  const near = (s, list, pad) => list.filter((t) => Math.hypot(t.c[0] - s.c[0], t.c[1] - s.c[1]) < rad0(s) + rad0(t) + pad);
-  const valid = (s, t) => {
+  const near = (s: Shape, list: Shape[], pad: number) => list.filter((t) => Math.hypot(t.c[0] - s.c[0], t.c[1] - s.c[1]) < rad0(s) + rad0(t) + pad);
+  const valid = (s: Shape, t: Tier) => {
     if (s.h[0] < 0.1 || s.h[1] < 0.1) return false;
     for (const o of near(s, [...t.slabs, ...t.OB], 0.01)) if (pen(s, o) > 3e-4) return false;
-    const ri = near(s, rIn, 0.05), rb = near(s, rBand, 0.05), ok = (x, z) => okAt(x, z, ri, rb);
+    const ri = near(s, rIn, 0.05), rb = near(s, rBand, 0.05), ok = (x: number, z: number) => okAt(x, z, ri, rb);
     const n0 = Math.max(1, Math.ceil((s.h[0] * 2) / 0.05)), n1 = Math.max(1, Math.ceil((s.h[1] * 2) / 0.05));
     for (let a = 0; a <= n0; a++) for (const b of [0, n1]) { const [x, z] = ptO(s, -s.h[0] + (2 * s.h[0] * a) / n0, -s.h[1] + (2 * s.h[1] * b) / n1); if (!ok(x, z)) return false; }
     for (let b = 1; b < n1; b++) for (const a of [0, n0]) { const [x, z] = ptO(s, -s.h[0] + (2 * s.h[0] * a) / n0, -s.h[1] + (2 * s.h[1] * b) / n1); if (!ok(x, z)) return false; }
@@ -398,8 +423,8 @@ function laySlabs(L, r, bars, stand, obst, y, tiers = 1, designed = []) {
     return true;
   };
   // move one side of s outward by e (side 0: +u, 1: −u, 2: +v, 3: −v)
-  const grown = (s, side, e) => { const k = side >> 1, sg = side & 1 ? -1 : 1, h = [...s.h]; h[k] += e / 2; const c = [s.c[0] + s.ax[k][0] * sg * e / 2, s.c[1] + s.ax[k][1] * sg * e / 2]; return { ...s, c, h }; };
-  const refine = (s, t) => {
+  const grown = (s: Shape, side: number, e: number) => { const k = side >> 1, sg = side & 1 ? -1 : 1, h = [...s.h]; h[k] += e / 2; const c = [s.c[0] + s.ax[k][0] * sg * e / 2, s.c[1] + s.ax[k][1] * sg * e / 2]; return { ...s, c, h }; };
+  const refine = (s: Shape, t: Tier) => {
     for (let i = 0; i < 12 && !valid(s, t); i++) s = { ...s, h: [s.h[0] - 0.01, s.h[1] - 0.01] };
     if (!valid(s, t)) return null;
     for (let round = 0; round < 2; round++) for (let side = 0; side < 4; side++) {
@@ -412,16 +437,16 @@ function laySlabs(L, r, bars, stand, obst, y, tiers = 1, designed = []) {
     return s;
   };
   // directions: the level's coping chords, the axes, the incline (a rectangle at a and a + 90° is the same shape)
-  const oris = [];
+  const oris: number[] = [];
   for (const d of [0, 45, Math.atan2(incDir[0], incDir[1]) * DEG, ...bars.map((b) => Math.atan2(-b.u[1], b.u[0]) * DEG)]) { const m = ((d % 90) + 90) % 90; if (!oris.some((o) => Math.min(Math.abs(o - m), 90 - Math.abs(o - m)) < 1.5)) oris.push(m); }
-  const F = [];
+  const F: Facet[] = [];
   for (const deg of oris) {
     const a = (deg * Math.PI) / 180, ex = [Math.cos(a), -Math.sin(a)], ez = [Math.sin(a), Math.cos(a)];
     const cs = [[box[0], box[2]], [box[1], box[2]], [box[1], box[3]], [box[0], box[3]]];
     const ps = cs.map(([x, z]) => x * ex[0] + z * ex[1]), qs = cs.map(([x, z]) => x * ez[0] + z * ez[1]);
     const p0 = Math.min(...ps), q0 = Math.min(...qs), NP = Math.ceil((Math.max(...ps) - p0) / RR), NQ = Math.ceil((Math.max(...qs) - q0) / RR);
     const free = T.map(() => new Uint8Array(NP * NQ)), unc = new Uint8Array(NP * NQ);
-    const W = (p, q) => [p * ex[0] + q * ez[0], p * ex[1] + q * ez[1]];
+    const W = (p: number, q: number) => [p * ex[0] + q * ez[0], p * ex[1] + q * ez[1]];
     for (let j = 0; j < NQ; j++) for (let i = 0; i < NP; i++) {
       const p = p0 + (i + 0.5) * RR, q = q0 + (j + 0.5) * RR, [x, z] = W(p, q);
       if (!cellAt(G, geo, x, z)) continue;
@@ -431,7 +456,7 @@ function laySlabs(L, r, bars, stand, obst, y, tiers = 1, designed = []) {
     }
     F.push({ deg, ex, ez, p0, q0, NP, NQ, free, unc, W, pref: deg === 0 ? 1.12 : 1, S: new Int32Array((NP + 1) * (NQ + 1)), V: new Int32Array((NP + 1) * (NQ + 1)), hgt: new Int32Array(NP + 1), stk: new Int32Array(NP + 2) });
   }
-  const mark = (s, ti, g) => {
+  const mark = (s: Shape, ti: number, g: number) => {
     for (const f of F) {
       const cs = corners(s), ps = cs.map(([x, z]) => x * f.ex[0] + z * f.ex[1]), qs = cs.map(([x, z]) => x * f.ez[0] + z * f.ez[1]);
       const i0 = Math.max(0, Math.floor((Math.min(...ps) - g - f.p0) / RR)), i1 = Math.min(f.NP - 1, Math.ceil((Math.max(...ps) + g - f.p0) / RR));
@@ -444,7 +469,7 @@ function laySlabs(L, r, bars, stand, obst, y, tiers = 1, designed = []) {
     }
   };
   for (let step = 0; step < 400; step++) {
-    let best = null;
+    let best: { sc: number; w: number; f: Facet; ti: number; l: number; rr: number; j: number; H: number } | null = null;
     for (const f of F) {
       const { NP, NQ, unc, S, V, hgt, stk } = f, W1 = NP + 1;
       for (let j = 0; j < NQ; j++) { let row = 0, rv = 0; for (let i = 0; i < NP; i++) { const u = unc[j * NP + i]; row += u; rv += u === 3 ? 1 : 0; S[(j + 1) * W1 + i + 1] = S[j * W1 + i + 1] + row; V[(j + 1) * W1 + i + 1] = V[j * W1 + i + 1] + rv; } }
@@ -482,8 +507,8 @@ function laySlabs(L, r, bars, stand, obst, y, tiers = 1, designed = []) {
 }
 
 // ---- gutters: cover the bare floor the slabs left (0.025 m raster), each patch with its tightest turned rectangle
-function layGutters(L, r, bars, stand, obst, y, slabs, rIn, rBand, okAt, dirs, designed = []) {
-  const out = [];
+function layGutters(L: number, r: Region, bars: Bar[], stand: Shape[], obst: (y: number) => Shape[], y: number, slabs: Shape[], rIn: Shape[], rBand: Shape[], okAt: (x: number, z: number) => boolean, dirs: number[], designed: Laid[] = []): Shape[] {
+  const out: Shape[] = [];
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   for (const s of [...slabs, ...rIn]) for (const [x, z] of corners(s)) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
   const rs = 0.025, G = { x0: x0 - 0.3, z0: z0 - 0.3, rs, nx: Math.ceil((x1 - x0 + 0.6) / rs), nz: Math.ceil((z1 - z0 + 0.6) / rs) }, N = G.nx * G.nz;
@@ -498,19 +523,19 @@ function layGutters(L, r, bars, stand, obst, y, slabs, rIn, rBand, okAt, dirs, d
   for (const b of bars) paintO(G, cov, barRect(b));
   const bare = new Uint8Array(N);
   // (the hills end under the incline's service stair: slivers along that clip line are hidden by it)
-  const underStair = (x, z) => { const o = (x - INC.top[0]) * incN[0] + (z - INC.top[2]) * incN[1]; return o > INC.w / 2 - 0.8 - 0.05 && o < INC.w / 2 + 0.1; };
+  const underStair = (x: number, z: number) => { const o = (x - INC.top[0]) * incN[0] + (z - INC.top[2]) * incN[1]; return o > INC.w / 2 - 0.8 - 0.05 && o < INC.w / 2 + 0.1; };
   // (the promenade under the incline itself is hidden by it)
-  const underIncline = (x, z) => { const o = (x - INC.top[0]) * incN[0] + (z - INC.top[2]) * incN[1], t = ((x - INC.top[0]) * incDir[0] + (z - INC.top[2]) * incDir[1]) / incDir[2]; return o > -INC.w / 2 - 0.35 && o < INC.w / 2 + 0.1 && t < 0.97; };
+  const underIncline = (x: number, z: number) => { const o = (x - INC.top[0]) * incN[0] + (z - INC.top[2]) * incN[1], t = ((x - INC.top[0]) * incDir[0] + (z - INC.top[2]) * incDir[1]) / incDir[2]; return o > -INC.w / 2 - 0.35 && o < INC.w / 2 + 0.1 && t < 0.97; };
   for (let k = 0; k < N; k++) bare[k] = inR[k] && !band[k] && !cov[k] && !occ[k] && !(L > 0 ? underStair : underIncline)(G.x0 + ((k % G.nx) + 0.5) * rs, G.z0 + (((k / G.nx) | 0) + 0.5) * rs) ? 1 : 0;
   // patches (8-connected)
   const seen = new Uint8Array(N), q = new Int32Array(N);
-  const ok = (x, z) => okAt(x, z);
+  const ok = (x: number, z: number) => okAt(x, z);
   // tightest turned rectangle round a patch: try every hull edge direction (the optimum has a side on one) + the level's
-  const hull = (P) => { const p = [...P].sort((a, b) => a[0] - b[0] || a[1] - b[1]); if (p.length < 3) return p; const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); const lo = [], up = []; for (const q of p) { while (lo.length > 1 && cr(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); } for (const q of p.reverse()) { while (up.length > 1 && cr(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop(); up.push(q); } return lo.slice(0, -1).concat(up.slice(0, -1)); };
-  const fitRect = (pts) => {
+  const hull = (P: number[][]) => { const p = [...P].sort((a, b) => a[0] - b[0] || a[1] - b[1]); if (p.length < 3) return p; const cr = (o: number[], a: number[], b: number[]) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); const lo = [], up = []; for (const q of p) { while (lo.length > 1 && cr(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); } for (const q of p.reverse()) { while (up.length > 1 && cr(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop(); up.push(q); } return lo.slice(0, -1).concat(up.slice(0, -1)); };
+  const fitRect = (pts: number[][]) => {
     const hp = hull(pts), degs = [...dirs];
     for (let i = 0; i < hp.length; i++) { const a = hp[i], b = hp[(i + 1) % hp.length]; degs.push(Math.atan2(-(b[1] - a[1]), b[0] - a[0]) * DEG); }
-    let best = null;
+    let best: { A: number; s: Shape } | null = null;
     for (const deg of degs) {
       const a = (deg * Math.PI) / 180, ex = [Math.cos(a), -Math.sin(a)], ez = [Math.sin(a), Math.cos(a)];
       let p0 = Infinity, p1 = -Infinity, q0 = Infinity, q1 = -Infinity;
@@ -518,20 +543,20 @@ function layGutters(L, r, bars, stand, obst, y, slabs, rIn, rBand, okAt, dirs, d
       const g = rs / 2 + 0.03, A = (p1 - p0 + 2 * g) * (q1 - q0 + 2 * g);
       if (!best || A < best.A - 1e-9) { const pc = (p0 + p1) / 2, qc = (q0 + q1) / 2; best = { A, s: orect(pc * ex[0] + qc * ez[0], pc * ex[1] + qc * ez[1], p1 - p0 + 2 * g, q1 - q0 + 2 * g, deg) }; }
     }
-    return best.s;
+    return best!.s;
   };
-  const inside2 = (s) => {
+  const inside2 = (s: Shape) => {
     const n0 = Math.max(1, Math.ceil((s.h[0] * 2) / 0.04)), n1 = Math.max(1, Math.ceil((s.h[1] * 2) / 0.04));
     for (let a = 0; a <= n0; a++) for (let b = 0; b <= n1; b += a === 0 || a === n0 ? 1 : n1) { const [x, z] = ptO(s, -s.h[0] + (2 * s.h[0] * a) / n0, -s.h[1] + (2 * s.h[1] * b) / n1); if (!ok(x, z)) return false; }
     return true;
   };
   // pull in only the sides that poke out (a patch along a clip line keeps its length)
-  const firstOut = (s) => {
+  const firstOut = (s: Shape) => {
     const n0 = Math.max(1, Math.ceil((s.h[0] * 2) / 0.04)), n1 = Math.max(1, Math.ceil((s.h[1] * 2) / 0.04));
     for (let a = 0; a <= n0; a++) for (let b = 0; b <= n1; b += a === 0 || a === n0 ? 1 : n1) { const u = -s.h[0] + (2 * s.h[0] * a) / n0, v = -s.h[1] + (2 * s.h[1] * b) / n1, [x, z] = ptO(s, u, v); if (!ok(x, z)) return [u, v]; }
     return null;
   };
-  const fits = (s) => {
+  const fits = (s: Shape) => {
     for (let i = 0; i < 16; i++) {
       const o = firstOut(s); if (!o) return s;
       const k = Math.abs(o[0]) / s.h[0] >= Math.abs(o[1]) / s.h[1] ? 0 : 1, side = k * 2 + (o[k] < 0 ? 1 : 0);
@@ -540,15 +565,15 @@ function layGutters(L, r, bars, stand, obst, y, slabs, rIn, rBand, okAt, dirs, d
     }
     return null;
   };
-  const grown = (s, side, e) => { const k = side >> 1, sg = side & 1 ? -1 : 1, h = [...s.h]; h[k] += e / 2; const c = [s.c[0] + s.ax[k][0] * sg * e / 2, s.c[1] + s.ax[k][1] * sg * e / 2]; return { ...s, c, h }; };
-  const tierFor = (s) => [0, 1].find((tier) => ![...out.filter((o) => o.tier === tier), ...slabs.filter((o) => o.tier === tier + 1), ...obst(y - GUT[tier]), ...designed.filter((o) => Math.abs(o.y1 - (y - GUT[tier])) < 0.085)].some((t) => Math.hypot(t.c[0] - s.c[0], t.c[1] - s.c[1]) < rad0(s) + rad0(t) + 0.01 && pen(s, t) > 3e-4));
-  const place = (pts, depth = 0) => {
+  const grown = (s: Shape, side: number, e: number) => { const k = side >> 1, sg = side & 1 ? -1 : 1, h = [...s.h]; h[k] += e / 2; const c = [s.c[0] + s.ax[k][0] * sg * e / 2, s.c[1] + s.ax[k][1] * sg * e / 2]; return { ...s, c, h }; };
+  const tierFor = (s: Shape) => [0, 1].find((tier) => ![...out.filter((o) => o.tier === tier), ...slabs.filter((o) => o.tier === tier + 1), ...obst(y - GUT[tier]), ...designed.filter((o) => Math.abs(o.y1 - (y - GUT[tier])) < 0.085)].some((t) => Math.hypot(t.c[0] - s.c[0], t.c[1] - s.c[1]) < rad0(s) + rad0(t) + 0.01 && pen(s, t) > 3e-4));
+  const place = (pts: number[][], depth = 0) => {
     const s = fits(fitRect(pts)), tier = s ? tierFor(s) : undefined;
     if (s && tier !== undefined) { out.push({ ...s, tier }); return true; }
     if (pts.length < 6 || depth > 6) { if (pts.length > 12) console.warn('terraces ground: unfilled patch', L, pts.length, pts[0]); return false; }
     // split along the long axis
     const t = fitRect(pts), ax = t.h[0] >= t.h[1] ? t.ax[0] : t.ax[1], ps = pts.map(([x, z]) => x * ax[0] + z * ax[1]), mid = [...ps].sort((a, b) => a - b)[ps.length >> 1];
-    place(pts.filter((_, i) => ps[i] < mid), depth + 1); place(pts.filter((_, i) => ps[i] >= mid), depth + 1);
+    place(pts.filter((_, i: number) => ps[i] < mid), depth + 1); place(pts.filter((_, i: number) => ps[i] >= mid), depth + 1);
     return true;
   };
   const patches = [];
@@ -583,16 +608,16 @@ function layGutters(L, r, bars, stand, obst, y, slabs, rIn, rBand, okAt, dirs, d
   return out;
 }
 
-function generateGround(features) {
+function generateGround(features: LayoutPiece[]): OBoxPiece[] {
   const REG = [R0, R1, R2, R3, R4], LY = [H0, H1, H2, H3, H4];
-  const FEAT = features.map(shapeOf).filter(Boolean);
-  const laid = [];                    // ground shapes so far (with y0/y1)
+  const FEAT = features.map(shapeOf).filter((x): x is Laid => !!x);
+  const laid: Laid[] = [];                    // ground shapes so far (with y0/y1)
   const out = [];
   for (let L = 4; L >= 0; L--) {
     const r = REG[L], y = LY[L];
     const all = () => [...FEAT, ...laid];
     const stand = all().filter((s) => s.y0 <= y + 0.01 && s.y1 >= y + 0.08);
-    const obst = (yy) => all().filter((s) => Math.abs(s.y1 - yy) < 0.085 && s.y0 < yy - 1e-3);
+    const obst = (yy: number) => all().filter((s) => Math.abs(s.y1 - yy) < 0.085 && s.y0 < yy - 1e-3);
     const bars = seatRims(rimBars(r), obst, y);
     const t0 = Date.now();
     // designed floor pieces set a little below this level (the bastion prow, the Largo sun): nothing is laid over them
@@ -600,35 +625,35 @@ function generateGround(features) {
     const { slabs, rIn, rBand, okAt, dirs } = laySlabs(L, r, bars, stand, obst, y, 3, designed);
     const t1 = Date.now();
     const guts = layGutters(L, r, bars, stand, obst, y, slabs, rIn, rBand, okAt, dirs, designed);
-    if (globalThis.__TERRACES_LOG) console.log(`level ${L}: ${bars.length} rims, ${slabs.length} slabs (${t1 - t0} ms), ${guts.length} gutters (${Date.now() - t1} ms)`);
+    if (GT.__TERRACES_LOG) console.log(`level ${L}: ${bars.length} rims, ${slabs.length} slabs (${t1 - t0} ms), ${guts.length} gutters (${Date.now() - t1} ms)`);
     for (const b of bars) {
       const s = barRect(b), deg = Math.atan2(-b.u[1], b.u[0]) * DEG;
-      laid.push({ ...s, y0: FL, y1: y + RIM_UP[b.k] });
+      laid.push({ ...s, y0: FL, y1: y + RIM_UP[b.k!] });   // (seatRims가 단 높이 번호)
       const np = L === 4 && inside(wedge, s.c[0], s.c[1]);
-      out.push(O(s.c[0], s.c[1], barLen(b), RIM_W, FL, y + RIM_UP[b.k], deg, { ...RIM_MAT, tag: 'rim-' + L + '-' + b.k, ...(np ? { noPaint: NO_SIDES } : {}) }));
+      out.push(O(s.c[0], s.c[1], barLen(b), RIM_W, FL, y + RIM_UP[b.k!], deg, { ...RIM_MAT, tag: 'rim-' + L + '-' + b.k, ...(np ? { noPaint: NO_SIDES } : {}) }));
     }
-    for (const s of slabs) { const yt = y - TIER_DN[s.tier]; laid.push({ ...s, y0: FL, y1: yt }); out.push(O(s.c[0], s.c[1], s.h[0] * 2, s.h[1] * 2, FL, yt, s.deg, { ...STRIP_MAT[L], tag: 'ground-' + L + '-' + s.tier })); }
-    for (const s of guts) { laid.push({ ...s, y0: FL, y1: y - GUT[s.tier] }); out.push(O(s.c[0], s.c[1], s.h[0] * 2, s.h[1] * 2, FL, y - GUT[s.tier], s.deg, { ...GUT_MAT, tag: 'gutter-' + L + '-' + s.tier })); }
+    for (const s of slabs) { const yt = y - TIER_DN[s.tier!]; laid.push({ ...s, y0: FL, y1: yt }); out.push(O(s.c[0], s.c[1], s.h[0] * 2, s.h[1] * 2, FL, yt, s.deg!, { ...STRIP_MAT[L], tag: 'ground-' + L + '-' + s.tier })); }
+    for (const s of guts) { laid.push({ ...s, y0: FL, y1: y - GUT[s.tier!] }); out.push(O(s.c[0], s.c[1], s.h[0] * 2, s.h[1] * 2, FL, y - GUT[s.tier!], s.deg!, { ...GUT_MAT, tag: 'gutter-' + L + '-' + s.tier })); }
   }
   return out;
 }
 // The ground is generated once by the builder above and baked into GROUND_DATA below (the builder takes a while,
 // which would otherwise run at every game boot). Regenerate after editing the regions or the features with
-//   node $S/maps/terraces/tools/bake-ground.mjs   (sets globalThis.__TERRACES_REGEN and rewrites the table)
+//   node $S/maps/terraces/tools/bake-ground.mjs   (sets GT.__TERRACES_REGEN and rewrites the table)
 // Rows: [0, level, cx, cz, w, d, rotY°, tier] = a slab (FL → level height − TIER_DN[tier]) · [1, level, cx, cz, length, rotY°, noPaint, k] = a
 // rim (RIM_W deep, RIM_UP[k] proud) · [2, level, cx, cz, w, d, rotY°, tier] = a pebble gutter (10 / 18 cm below the floor)
 const LEVEL_Y = [H0, H1, H2, H3, H4];
 const STRIP_MAT = [pebble({ color: TH.pebble }), pebble(), pebble(), cotto(), cotto()], RIM_MAT = cotto({ color: TH.rim }), GUT_MAT = pebble({ color: TH.pebble });
 const NO_SIDES = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
-function unbake(rows) {
-  return rows.map((r) => (r[0] === 0 ? O(r[2], r[3], r[4], r[5], FL, LEVEL_Y[r[1]] - TIER_DN[r[7]], r[6], { ...STRIP_MAT[r[1]], tag: 'ground-' + r[1] + '-' + r[7] })
+function unbake(rows: number[][]): OBoxPiece[] {
+  return rows.map((r: number[]) => (r[0] === 0 ? O(r[2], r[3], r[4], r[5], FL, LEVEL_Y[r[1]] - TIER_DN[r[7]], r[6], { ...STRIP_MAT[r[1]], tag: 'ground-' + r[1] + '-' + r[7] })
     : r[0] === 1 ? O(r[2], r[3], r[4], RIM_W, FL, LEVEL_Y[r[1]] + RIM_UP[r[7]], r[5], { ...RIM_MAT, tag: 'rim-' + r[1] + '-' + r[7], ...(r[6] ? { noPaint: NO_SIDES } : {}) })
     : O(r[2], r[3], r[4], r[5], FL, LEVEL_Y[r[1]] - GUT[r[7]], r[6], { ...GUT_MAT, tag: 'gutter-' + r[1] + '-' + r[7] })));
 }
-export function bakeGround(list) {
-  const q = (v) => +v.toFixed(4);
+export function bakeGround(list: OBoxPiece[]): number[][] {
+  const q = (v: number) => +v.toFixed(4);
   return list.map((d) => {
-    const t = d.tag.split('-'), lv = +t[1];
+    const t = String(d.tag).split('-'), lv = +t[1];
     if (t[0] === 'rim') return [1, lv, q(d.center[0]), q(d.center[2]), q(d.size[0]), q(d.rotY), d.noPaint ? 1 : 0, +t[2]];
     if (t[0] === 'ground') return [0, lv, q(d.center[0]), q(d.center[2]), q(d.size[0]), q(d.size[2]), q(d.rotY), +t[2]];
     return [2, lv, q(d.center[0]), q(d.center[2]), q(d.size[0]), q(d.size[2]), q(d.rotY), +t[2]];
@@ -699,7 +724,7 @@ const EXTRA = [
   R([INC.foot[0] - incN[0] * 2.03, H0 + 1.0, INC.foot[2] - incN[1] * 2.03], [INC.top[0] - incN[0] * 2.03, H4 + 1.0, INC.top[2] - incN[1] * 2.03], 0.26, { tag: 'incline-parapet', color: TH.wall, pattern: SURF.calce ?? PATTERN.render }),
 ];
 // (the ground is shared by every mode: it is laid round the Turf War pieces)
-export const GROUND_FRESH = globalThis.__TERRACES_REGEN || !GROUND_DATA ? generateGround([...SINGLE.filter((d) => !d.onlyIn), ...FEATURES, ...EXTRA, ...[...FEATURES, ...EXTRA].map(mirrorDef)]) : null;
+export const GROUND_FRESH = GT.__TERRACES_REGEN || !GROUND_DATA ? generateGround([...SINGLE.filter((d) => !d.onlyIn), ...FEATURES, ...EXTRA, ...[...FEATURES, ...EXTRA].map(mirrorDef)]) : null;
 const GROUND = GROUND_FRESH || unbake(GROUND_DATA);
 
 const TERRACES = {

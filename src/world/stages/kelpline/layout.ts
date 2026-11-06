@@ -1,7 +1,12 @@
 // Kelpline Terminal — stage layout (src/world/stages/kelpline/). The stage owns every file in this folder:
 //   layout.js    level geometry (this file)        props.js    prop pack + placements (set dressing)
 //   surfaces.js  stage surface materials (texlib)  murals.js   stage decals / signage (mural atlas)
-import { PATTERN, B, R, O } from '../../mapkit.js';
+import { PATTERN, B, R, O, type PieceOpts } from '../../mapkit.js';
+import type { BoxPiece, LayoutPiece, RampPiece } from '../../layoutTypes.js';
+// 면 표식(벽화·도색 금지)을 가진 조각: turn()이 정박지 회전에 맞춰 법선을 돌린다
+type Faces = { mural?: Array<{ n: number[]; [k: string]: unknown }>; noPaint?: number[][] };
+// 컨테이너 선택지: door 1 = 문이 +Z(또는 +X) 끝, reefer = 냉동기 끝, roof = 지붕 표식, logo 1~3 = 선사 로고, noPaint = 꾸민 면
+interface ContainerOpts { door?: number; reefer?: boolean | number; roof?: boolean; logo?: number; noPaint?: number[][] }
 import { SURF } from './surfaces.js';
 
 // Kelpline Terminal — Berth 4 of a working container terminal at shift change. A finger pier runs diagonally out into
@@ -37,32 +42,32 @@ const K = {
 export const ROT = 35;
 const RA = (ROT * Math.PI) / 180, RC = Math.cos(RA), RS = Math.sin(RA);
 export const ROT_RAD = RA;
-export const toWorld = (x, z) => [x * RC + z * RS, -x * RS + z * RC];
+export const toWorld = (x: number, z: number): [number, number] => [x * RC + z * RS, -x * RS + z * RC];
 // face normals (murals, noPaint) are matched against WORLD face normals by the level: turn them with the berth too
-const turnN = (n) => [+(n[0] * RC + n[2] * RS).toFixed(4), n[1], +(-n[0] * RS + n[2] * RC).toFixed(4)];
-const turnFaces = (o) => ({ ...o, ...(o.mural ? { mural: o.mural.map((m) => ({ ...m, n: turnN(m.n) })) } : {}), ...(o.noPaint ? { noPaint: o.noPaint.map(turnN) } : {}) });
-function turn(p) {
+const turnN = (n: number[]) => [+(n[0] * RC + n[2] * RS).toFixed(4), n[1], +(-n[0] * RS + n[2] * RC).toFixed(4)];
+const turnFaces = <T extends Faces>(o: T): T => ({ ...o, ...(o.mural ? { mural: o.mural.map((m) => ({ ...m, n: turnN(m.n) })) } : {}), ...(o.noPaint ? { noPaint: o.noPaint.map(turnN) } : {}) });
+function turn(p: LayoutPiece & { keep?: boolean }): LayoutPiece {
   if (p.keep) { const { keep, ...q } = p; return q; }   // square to the harbour (not turned with the berth)
   if (p.kind === 'box') {
     const { min, max, kind, ...o } = p;
     const [cx, cz] = toWorld((min[0] + max[0]) / 2, (min[2] + max[2]) / 2);
-    return O(cx, cz, max[0] - min[0], max[2] - min[2], min[1], max[1], ROT, turnFaces(o));
+    return O(cx, cz, max[0] - min[0], max[2] - min[2], min[1], max[1], ROT, turnFaces(o as Faces & Record<string, unknown>));
   }
-  if (p.kind === 'obox') { const [cx, cz] = toWorld(p.center[0], p.center[2]); return { ...turnFaces(p), center: [cx, p.center[1], cz], rotY: p.rotY + ROT }; }
+  if (p.kind === 'obox') { const [cx, cz] = toWorld(p.center[0], p.center[2]); return { ...turnFaces(p as typeof p & Faces), center: [cx, p.center[1], cz], rotY: p.rotY + ROT }; }
   const [lx, lz] = toWorld(p.low[0], p.low[2]), [hx, hz] = toWorld(p.high[0], p.high[2]);
-  return { ...turnFaces(p), low: [lx, p.low[1], lz], high: [hx, p.high[1], hz] };
+  return { ...turnFaces(p as RampPiece & Faces), low: [lx, p.low[1], lz], high: [hx, p.high[1], hz] };
 }
 
 // Container sides that look into a slot narrower than SLOT (boxes stowed 10 cm apart, a box against the back wall or its
 // neighbour's end) are never seen — nobody gets in there — but ink splash still reaches them: turf nobody can see.
 // Every such side of a stack box is made non-inkable (noPaint, local normal; turn() rotates it into the world).
 const SLOT = 0.45;
-function slotSides(pieces) {
-  const mir = (d) => ({ ...d, min: [-d.max[0], d.min[1], -d.max[2]], max: [-d.min[0], d.max[1], -d.min[2]] });
-  const solid = (d) => d.kind === 'box' && !d.keep && !d.rail && !d.grate;
+function slotSides(pieces: { single: LayoutPiece[]; half: LayoutPiece[] }): void {
+  const mir = (d: BoxPiece): BoxPiece => ({ ...d, min: [-d.max[0], d.min[1], -d.max[2]], max: [-d.min[0], d.max[1], -d.min[2]] });
+  const solid = (d: LayoutPiece): d is BoxPiece => d.kind === 'box' && !d.keep && !d.rail && !d.grate;
   const all = [...pieces.single.filter(solid), ...pieces.half.filter(solid), ...pieces.half.filter(solid).map(mir)];
   const sides = [[0, 1], [0, -1], [2, 1], [2, -1]];   // [axis, sign]
-  const cover = (p, ax, sg) => {
+  const cover = (p: BoxPiece, ax: number, sg: number): number => {
     const face = sg > 0 ? p.max[ax] : p.min[ax], ox = ax === 0 ? 2 : 0;   // the face's in-plane horizontal axis
     const n = 12, m = 6;
     let hit = 0;
@@ -74,31 +79,31 @@ function slotSides(pieces) {
     return hit / (n * m);
   };
   for (const p of pieces.half) {
-    if (p.kind !== 'box' || !/^box/.test(p.tag || '')) continue;
+    if (p.kind !== 'box' || !/^box/.test(String(p.tag || ''))) continue;
     const np = sides.filter(([ax, sg]) => cover(p, ax, sg) >= 0.9).map(([ax, sg]) => (ax === 0 ? [sg, 0, 0] : [0, 0, sg]));
-    if (np.length) p.noPaint = [...(p.noPaint || []), ...np];
+    if (np.length) p.noPaint = [...((p.noPaint as number[][] | undefined) || []), ...np];
   }
 }
 
 // ISO box: 2.44 wide, 2.6 high (high cube ≈ 2.9, we use 2.6 so tiers stay jump-sized), 6.06 / 12.19 long
-const CW = 2.44, CH = 2.6, LEN = { 20: 6.06, 40: 12.19 };
+const CW = 2.44, CH = 2.6, LEN: Record<number, number> = { 20: 6.06, 40: 12.19 };
 // a container along z: x0 = its −X side, z0 = its −Z end, tier 0 = on the ground. o.door: 1 = doors at the +Z end
 // (0 = −Z), o.logo: 1–3 = 40' line logo (murals 9/10 on both long sides), o.reefer: machinery end.
 // The tag carries the dressing spec for props.js (container castings, doors, reefer units).
-const LOGO_ID = { 1: 9, 2: 10, 3: 9 };   // 1 KRAKEN, 2 TIDEBANK, 3 KRAKEN (40')
-const LOGO = (o, n) => (LOGO_ID[o.logo] ? [{ n: n[0], id: LOGO_ID[o.logo] }, { n: n[1], id: LOGO_ID[o.logo] }] : undefined);
+const LOGO_ID: Record<number, number> = { 1: 9, 2: 10, 3: 9 };   // 1 KRAKEN, 2 TIDEBANK, 3 KRAKEN (40')
+const LOGO = (o: ContainerOpts, n: number[][]) => (o.logo && LOGO_ID[o.logo] ? [{ n: n[0], id: LOGO_ID[o.logo] }, { n: n[1], id: LOGO_ID[o.logo] }] : undefined);
 const NOCLIMB = [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
-function box(x0, z0, len, tier, color, o = {}) {
+function box(x0: number, z0: number, len: number, tier: number, color: string, o: ContainerOpts = {}) {
   return B(x0, x0 + CW, tier * CH, (tier + 1) * CH, z0, z0 + LEN[len], { color, pattern: PATTERN.container, tag: `box:${len}:${o.door ?? 1}:${o.reefer ? 1 : 0}`, mural: LOGO(o, [[1, 0, 0], [-1, 0, 0]]), ...(o.roof ? { roof: true, noPaint: NOCLIMB } : {}) });
 }
-function boxX(x0, z0, len, tier, color, o = {}) {   // along x (o.door: 1 = doors at the +X end; o.noPaint: dressed faces)
+function boxX(x0: number, z0: number, len: number, tier: number, color: string, o: ContainerOpts = {}) {   // along x (o.door: 1 = doors at the +X end; o.noPaint: dressed faces)
   return B(x0, x0 + LEN[len], tier * CH, (tier + 1) * CH, z0, z0 + CW, { color, pattern: PATTERN.container, tag: `boxx:${len}:${o.door ?? 1}:${o.reefer ? 1 : 0}`, mural: LOGO(o, [[0, 0, 1], [0, 0, -1]]), ...(o.noPaint ? { noPaint: o.noPaint } : {}) });
 }
 // steel stair (ramp with the treads surface) + its two handrails as rail colliders (collision-only: kids can't step off
 // the side, shots / ink / squids pass; the handrails you see are drawn by props.js kelpline_stair)
 const HR = 0.95;
-function stairZ(x, zLow, zHigh, y0, y1, w, o = {}) {
-  const out = [R([x, y0, zLow], [x, y1, zHigh], w, { tag: 'stair', color: K.stair, pattern: PATTERN.treads, ...o })];
+function stairZ(x: number, zLow: number, zHigh: number, y0: number, y1: number, w: number, o: PieceOpts = {}) {
+  const out: Array<RampPiece | BoxPiece> = [R([x, y0, zLow], [x, y1, zHigh], w, { tag: 'stair', color: K.stair, pattern: PATTERN.treads, ...o })];
   const run = zHigh - zLow, rise = y1 - y0;
   for (const sx of [-1, 1]) for (let k = 0; k < 3; k++) {
     const za = zLow + (run * k) / 3, zb = zLow + (run * (k + 1)) / 3, top = y0 + (rise * (k + 1)) / 3 + HR + 0.05;
@@ -122,7 +127,7 @@ const G = GRID, A = G.A, RF = G.RF;
 const quay = (o = {}) => ({ color: K.quay, pattern: SURF.quay, ...o });
 // the pier's outer walls down to the water: nobody can reach them and the quay-edge steel + fenders dress their top →
 // not inkable (sea: the local normals of the sides that face the harbour)
-const sea = (...n) => ({ noPaint: n });
+const sea = (...n: number[][]) => ({ noPaint: n });
 const X_ = [1, 0, 0], _X = [-1, 0, 0], Z_ = [0, 0, 1], _Z = [0, 0, -1];
 
 // Local-frame pieces (exported for props.js: the container / stair dressing is generated from them)
@@ -216,17 +221,17 @@ const single = LOCAL.single.map(turn), half = LOCAL.half.map(turn);
 // bounds: the AABB of every turned piece (and its 180° twin), 1 m margin
 const bounds = (() => {
   let mx = 0, mz = 0;
-  const pt = (x, z) => { mx = Math.max(mx, Math.abs(x)); mz = Math.max(mz, Math.abs(z)); };
+  const pt = (x: number, z: number) => { mx = Math.max(mx, Math.abs(x)); mz = Math.max(mz, Math.abs(z)); };
   for (const p of [...LOCAL.single, ...LOCAL.half]) {
     if (p.kind === 'ramp') { for (const e of [p.low, p.high]) pt(...toWorld(e[0], e[2])); continue; }
-    if (p.kind === 'box') { for (const x of [p.min[0], p.max[0]]) for (const z of [p.min[2], p.max[2]]) pt(...(p.keep ? [x, z] : toWorld(x, z))); continue; }
+    if (p.kind === 'box') { for (const x of [p.min[0], p.max[0]]) for (const z of [p.min[2], p.max[2]]) pt(...(p.keep ? [x, z] as [number, number] : toWorld(x, z))); continue; }
     const a = ((p.rotY + ROT) * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a), [cx, cz] = toWorld(p.center[0], p.center[2]);
     for (const i of [-1, 1]) for (const k of [-1, 1]) pt(cx + (c * i * p.size[0]) / 2 + (s * k * p.size[2]) / 2, cz - (s * i * p.size[0]) / 2 + (c * k * p.size[2]) / 2);
   }
   const X = Math.ceil(mx + 1), Z = Math.ceil(mz + 1);
   return { minX: -X, maxX: X, minZ: -Z, maxZ: Z };
 })();
-const W = (x, y, z) => { const [a, b] = toWorld(x, z); return [+a.toFixed(3), y, +b.toFixed(3)]; };
+const W = (x: number, y: number, z: number) => { const [a, b] = toWorld(x, z); return [+a.toFixed(3), y, +b.toFixed(3)]; };
 const pad = W(0, 2.6, -43.6);
 
 const KELPLINE = {

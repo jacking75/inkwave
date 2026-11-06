@@ -1,6 +1,6 @@
 // Crossroads Market — stage decals / signage for the mural atlas (see src/world/murals.js).
 //
-// drawMurals(g, R, kit) is called whenever this stage is loaded: draw into the canvas 2D context `g`, inside the
+// drawMurals(g: Ctx2D, R: MuralRect, kit: MuralKit): MuralPlacement[] is called whenever this stage is loaded: draw into the canvas 2D context `g`, inside the
 // stage region R = { x, y, w, h } (px; 2048 x 1008) only, and return the table entries for mural ids 4…11:
 //   { id, x, y, w, h, m: [faceW, faceH] }                         decal fitted at the face origin, faceW x faceH metres
 //   { id, x, y, w, h, place: [x0, xLen, y0, yLen], fx: [weather, chip] }  explicit placement (murals.js header)
@@ -12,37 +12,38 @@
 //   5  FISH · OYSTERS · ICE — the fishmonger's upper wall over Fish Lane (5 × 5.4 m face, ashlar)
 //   6  TEA · COFFEE · COCOA — the tall row's gable facing the hall (4.5 × 5.8 m face, render)
 //   7  mosaic threshold band across each gable entrance of the (turned) hall floor, in 4.5 m halves
+import type { Ctx2D, MuralRect, Slab, MuralKit, MuralPlacement, TextOpts } from '../../muralTypes.js';
 export const MURAL = { market: 4, fish: 5, tea: 6, mosaic: 7 };
 
-export function drawMurals(g, R, kit) {
+export function drawMurals(g: Ctx2D, R: MuralRect, kit: MuralKit): MuralPlacement[] {
   const { fontB, font } = kit;
   const X0 = R.x, Y0 = R.y;
   const CREAM = '#efe4c8', RED = '#a8453a', GREEN = '#3f6b55', NAVY = '#2b3a58', GOLD = '#c9a24e', INK = '#3a2e26';
-  const out = [];
+  const out: MuralPlacement[] = [];
 
   // faded paint: draw at partial alpha, then knock holes of "lost paint" through it in a seeded pattern
   let seed = 7;
   const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
-  function wear(x, y, w, h, n = 90, maxR = 10) {
+  function wear(x: number, y: number, w: number, h: number, n = 90, maxR = 10) {
     g.save(); g.globalCompositeOperation = 'destination-out';
     for (let i = 0; i < n; i++) { g.globalAlpha = 0.25 + rnd() * 0.5; g.beginPath(); g.ellipse(x + rnd() * w, y + rnd() * h, 2 + rnd() * maxR, 1 + rnd() * maxR * 0.5, rnd() * 3, 0, Math.PI * 2); g.fill(); }
     // vertical rain streaks
     for (let i = 0; i < 26; i++) { g.globalAlpha = 0.12 + rnd() * 0.2; const sx = x + rnd() * w; g.fillRect(sx, y + rnd() * h * 0.3, 2 + rnd() * 4, h * (0.3 + rnd() * 0.6)); }
     g.restore();
   }
-  function text(s, cx, cy, px, fill, f = fontB, maxW = 9999, stroke = null, sw = 0) {
+  function text(s: string, cx: number, cy: number, px: number, fill: string, f = fontB, maxW = 9999, stroke: string | null = null, sw = 0) {
     g.font = f(px); let p = px;
     while (g.measureText(s).width > maxW && p > 10) { p -= 2; g.font = f(p); }
     g.textAlign = 'center'; g.textBaseline = 'middle';
     if (stroke) { g.lineJoin = 'round'; g.lineWidth = sw; g.strokeStyle = stroke; g.strokeText(s, cx, cy); }
     g.fillStyle = fill; g.fillText(s, cx, cy);
   }
-  function panel(x, y, w, h, bg, border) {
+  function panel(x: number, y: number, w: number, h: number, bg: string, border: string) {
     g.fillStyle = bg; g.fillRect(x, y, w, h);
     g.strokeStyle = border; g.lineWidth = 8; g.strokeRect(x + 10, y + 10, w - 20, h - 20);
     g.lineWidth = 3; g.strokeRect(x + 22, y + 22, w - 44, h - 44);
   }
-  function ribbon(cx, cy, w, h, fill) {
+  function ribbon(cx: number, cy: number, w: number, h: number, fill: string) {
     g.fillStyle = fill;
     g.beginPath(); g.moveTo(cx - w / 2, cy - h / 2); g.lineTo(cx + w / 2, cy - h / 2); g.lineTo(cx + w / 2 + h * 0.4, cy); g.lineTo(cx + w / 2, cy + h / 2); g.lineTo(cx - w / 2, cy + h / 2); g.lineTo(cx - w / 2 - h * 0.4, cy); g.closePath(); g.fill();
   }
@@ -61,7 +62,7 @@ export function drawMurals(g, R, kit) {
     // a basket of produce
     g.fillStyle = '#8a5a34'; g.beginPath(); g.moveTo(x + 150, y + 400); g.lineTo(x + 330, y + 400); g.lineTo(x + 305, y + 480); g.lineTo(x + 175, y + 480); g.closePath(); g.fill();
     g.strokeStyle = '#6a4226'; g.lineWidth = 4; for (let i = 0; i < 6; i++) { g.beginPath(); g.moveTo(x + 160 + i * 32, y + 402); g.lineTo(x + 180 + i * 26, y + 478); g.stroke(); }
-    for (const [dx, dy, r, c] of [[-60, -18, 26, RED], [-18, -30, 28, '#d98a2e'], [28, -22, 26, '#7a9a4a'], [66, -14, 22, RED], [8, -54, 22, '#e0c050']]) { g.fillStyle = c; g.beginPath(); g.arc(x + 240 + dx, y + 400 + dy, r, 0, Math.PI * 2); g.fill(); }
+    for (const [dx, dy, r, c] of [[-60, -18, 26, RED], [-18, -30, 28, '#d98a2e'], [28, -22, 26, '#7a9a4a'], [66, -14, 22, RED], [8, -54, 22, '#e0c050']] as Array<[number, number, number, string]>) { g.fillStyle = c; g.beginPath(); g.arc(x + 240 + dx, y + 400 + dy, r, 0, Math.PI * 2); g.fill(); }
     g.strokeStyle = '#6a4226'; g.lineWidth = 7; g.beginPath(); g.arc(x + 240, y + 402, 92, Math.PI * 1.08, Math.PI * 1.92); g.stroke();
     text('FRESH EVERY DAY', x + w / 2, y + 522, 34, GREEN, fontB, w - 90);
     g.globalAlpha = 1;

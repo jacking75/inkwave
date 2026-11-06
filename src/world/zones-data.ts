@@ -3,10 +3,10 @@
 //   center: [zone] or [zone, zone] (two-zone centre: both must be held)
 //   side:   the zone on Alpha's half (closer to Alpha's spawn); Bravo's is its 180° mirror
 //   zone:   { poly: [[x, z], …] } or { polys: [[[x, z], …], …] } (several parts, one shared coverage)
-const rect = (x0, x1, z0, z1) => [[x0, z0], [x1, z0], [x1, z1], [x0, z1]];
+const rect = (x0: number, x1: number, z0: number, z1: number) => [[x0, z0], [x1, z0], [x1, z1], [x0, z1]];
 // turned rectangle: centre, local x axis (unit, [ax, az]), half extents along local x / local z (= (-az, ax))
-const orect = (cx, cz, [ax, az], hx, hz) => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([i, k]) => [cx + ax * hx * i - az * hz * k, cz + az * hx * i + ax * hz * k].map((v) => +v.toFixed(3)));
-const circle = (cx, cz, r, n = 24) => Array.from({ length: n }, (_, i) => { const a = (i / n) * Math.PI * 2; return [+(cx + Math.cos(a) * r).toFixed(3), +(cz + Math.sin(a) * r).toFixed(3)]; });
+const orect = (cx: number, cz: number, [ax, az]: number[], hx: number, hz: number) => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([i, k]) => [cx + ax * hx * i - az * hz * k, cz + az * hx * i + ax * hz * k].map((v) => +v.toFixed(3)));
+const circle = (cx: number, cz: number, r: number, n = 24) => Array.from({ length: n }, (_, i) => { const a = (i / n) * Math.PI * 2; return [+(cx + Math.cos(a) * r).toFixed(3), +(cz + Math.sin(a) * r).toFixed(3)]; });
 const K35 = [0.819, -0.574];   // Kelpline berth: local x axis (the whole berth is turned 35°)
 const X31 = [0.857, 0.514];    // Crossroads Market: the tram street / market hall axis (turned 31°)
 const L45 = [-0.707, 0.707];   // Lockgate: the humpback bridge's run

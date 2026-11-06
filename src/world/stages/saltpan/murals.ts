@@ -1,6 +1,6 @@
 // Saltpan Basin — stage decals / signage for the mural atlas (see src/world/murals.js).
 //
-// drawMurals(g, R, kit) is called whenever this stage is loaded: draw into the canvas 2D context `g`, inside the
+// drawMurals(g: Ctx2D, R: MuralRect, kit: MuralKit): MuralPlacement[] is called whenever this stage is loaded: draw into the canvas 2D context `g`, inside the
 // stage region R = { x, y, w, h } (px; 2048 x 1008) only, and return the table entries for mural ids 4…11:
 //   { id, x, y, w, h, m: [faceW, faceH] }                         decal fitted at the face origin, faceW x faceH metres
 //   { id, x, y, w, h, place: [x0, xLen, y0, yLen], fx: [weather, chip] }  explicit placement (murals.js header)
@@ -14,9 +14,10 @@
 //   5  packing-shed roof, the slope facing base: SALTPAN BASIN · SALT CO.
 //   6  loading-gallery deck: stencilled LOADING STAGE band + bay ticks along the front edge
 //   7  wind-pump staging: painted ring (SALTPAN BASIN · BRINE PUMP No 1 · 1889) and a compass star round the tower
+import type { Ctx2D, MuralRect, Slab, MuralKit, MuralPlacement, TextOpts } from '../../muralTypes.js';
 export const MURAL_IDS = { roofMid: 4, roofBase: 5, gallery: 6, staging: 7 };
 
-function paintText(g, s, x, y, px, font, fill, maxW) {
+function paintText(g: Ctx2D, s: string, x: number, y: number, px: number, font: (px: number) => string, fill: string, maxW: number) {
   g.font = font(px);
   let p = px;
   while (g.measureText(s).width > maxW && p > 10) { p -= 4; g.font = font(p); }
@@ -24,7 +25,7 @@ function paintText(g, s, x, y, px, font, fill, maxW) {
   g.fillText(s, x, y);
 }
 // brush-worn edges: knock random flecks out of what was just painted in a rect
-function wear(g, x, y, w, h, n, seed) {
+function wear(g: Ctx2D, x: number, y: number, w: number, h: number, n: number, seed: number) {
   let s = seed;
   const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
   g.save(); g.globalCompositeOperation = 'destination-out';
@@ -32,8 +33,8 @@ function wear(g, x, y, w, h, n, seed) {
   g.restore();
 }
 
-export function drawMurals(g, R, kit) {
-  const out = [];
+export function drawMurals(g: Ctx2D, R: MuralRect, kit: MuralKit): MuralPlacement[] {
+  const out: MuralPlacement[] = [];
   const PAINT = '#efe9dc', RED = '#b8493d';
   // ---- 4: roof slope facing mid (11 x 4.24 m, 100 px/m), drawn rotated 180° so it reads from the mid side
   {

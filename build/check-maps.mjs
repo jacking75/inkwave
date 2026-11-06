@@ -3,9 +3,9 @@
 // block as dead, and equal tops z-fight). Run: node build/check-maps.mjs [layoutId...]
 // With --svg, also writes a large top-down preview of each layout to build/preview/<id>.svg.
 import fs from 'node:fs';
-const { MAP_LAYOUTS } = await import(new URL('../src/world/maps.js', import.meta.url));
-const { layoutThumbSVG } = await import(new URL('../src/world/mapThumb.js', import.meta.url));
-const { layoutFor, hasVariant } = await import(new URL('../src/world/variants.js', import.meta.url));
+const { MAP_LAYOUTS } = await import(new URL('../.web-dev/src/world/maps.js', import.meta.url));
+const { layoutThumbSVG } = await import(new URL('../.web-dev/src/world/mapThumb.js', import.meta.url));
+const { layoutFor, hasVariant } = await import(new URL('../.web-dev/src/world/variants.js', import.meta.url));
 const args = process.argv.slice(2);
 const svg = args.includes('--svg');
 const ids0 = args.filter((a) => !a.startsWith('--')).length ? args.filter((a) => !a.startsWith('--')) : Object.keys(MAP_LAYOUTS);

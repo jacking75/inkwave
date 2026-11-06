@@ -1,6 +1,6 @@
 // Tidewater Plaza — stage decals / signage for the mural atlas (see src/world/murals.js).
 //
-// drawMurals(g, R, kit) is called whenever this stage is loaded: draw into the canvas 2D context `g`, inside the
+// drawMurals(g: Ctx2D, R: MuralRect, kit: MuralKit): MuralPlacement[] is called whenever this stage is loaded: draw into the canvas 2D context `g`, inside the
 // stage region R = { x, y, w, h } (px; 2048 x 1008) only, and return the table entries for mural ids 4…11:
 //   { id, x, y, w, h, m: [faceW, faceH] }                         decal fitted at the face origin, faceW x faceH metres
 //   { id, x, y, w, h, place: [x0, xLen, y0, yLen], fx: [weather, chip] }  explicit placement (murals.js header)
@@ -18,13 +18,14 @@
 //   9  a ghost sign (TIDEWATER ROCK) on the colonnade shops' gable toward mid
 //   10 TIDEWATER cut into the terrace's jumpable kerb sides
 //   11 the pier booths' toll boards (PIER TOLL 2d, OPEN 9 TILL DUSK)
+import type { Ctx2D, MuralRect, Slab, MuralKit, MuralPlacement, TextOpts } from '../../muralTypes.js';
 const NAVY = '#27304d', CREAM = '#f3ead6', CORAL = '#d9735f', TEAL = '#3f8f86', SEA = '#4f8fa0', GOLD = '#c9a453',
   MUST = '#e3b54c', INK = '#1f2533', ROSE = '#e98aa6', STONE = '#d8d0c0';
 
-function rng(seed) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function rng(seed: number) { let a = seed >>> 0; return () => { a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 
 // text set round an arc (centre cx, cy, radius r, starting angle a0 going clockwise), letters upright to the centre
-function arcText(g, str, cx, cy, r, a0, spread, font, fill) {
+function arcText(g: Ctx2D, str: string, cx: number, cy: number, r: number, a0: number, spread: number, font: string, fill: string) {
   g.save(); g.font = font; g.fillStyle = fill; g.textAlign = 'center'; g.textBaseline = 'middle';
   const n = str.length;
   for (let i = 0; i < n; i++) {
@@ -34,7 +35,7 @@ function arcText(g, str, cx, cy, r, a0, spread, font, fill) {
   g.restore();
 }
 // mosaic tesserae: a fine grid of darker grout lines + per-tile tone jitter, clipped to what is already drawn
-function tesserae(g, x, y, w, h, step, seed) {
+function tesserae(g: Ctx2D, x: number, y: number, w: number, h: number, step: number, seed: number) {
   const R = rng(seed);
   g.save();
   g.globalCompositeOperation = 'source-atop';
@@ -51,7 +52,7 @@ function tesserae(g, x, y, w, h, step, seed) {
   g.restore();
 }
 // Greek wave ("running dog") band round a circle between r0 and r1
-function waveRing(g, cx, cy, r0, r1, n, col, bg) {
+function waveRing(g: Ctx2D, cx: number, cy: number, r0: number, r1: number, n: number, col: string, bg: string) {
   g.fillStyle = bg; g.beginPath(); g.arc(cx, cy, r1, 0, Math.PI * 2); g.arc(cx, cy, r0, 0, Math.PI * 2, true); g.fill();
   g.fillStyle = col;
   const rm = (r0 + r1) / 2, hw = (r1 - r0) / 2;
@@ -68,7 +69,7 @@ function waveRing(g, cx, cy, r0, r1, n, col, bg) {
     g.closePath(); g.fill();
   }
 }
-function star(g, cx, cy, n, rOut, rIn, a0, fillA, fillB) {
+function star(g: Ctx2D, cx: number, cy: number, n: number, rOut: number, rIn: number, a0: number, fillA: string, fillB: string) {
   for (let i = 0; i < n; i++) {
     const a = a0 + (i / n) * Math.PI * 2, da = Math.PI / n;
     // two-tone points: lit half + shaded half
@@ -77,7 +78,7 @@ function star(g, cx, cy, n, rOut, rIn, a0, fillA, fillB) {
   }
 }
 // soft weathering: erase flecks + a few fade blotches (destination-out inside a rect)
-function weather(g, x, y, w, h, n, seed, amt = 0.5) {
+function weather(g: Ctx2D, x: number, y: number, w: number, h: number, n: number, seed: number, amt = 0.5) {
   const R = rng(seed);
   g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip();
   g.globalCompositeOperation = 'destination-out';
@@ -85,17 +86,17 @@ function weather(g, x, y, w, h, n, seed, amt = 0.5) {
   for (let i = 0; i < 8; i++) { const gr = g.createRadialGradient(0, 0, 0, 0, 0, 1); gr.addColorStop(0, `rgba(0,0,0,${0.25 * amt})`); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.save(); g.translate(x + R() * w, y + R() * h); g.scale(20 + R() * 60, 12 + R() * 40); g.fillStyle = gr; g.beginPath(); g.arc(0, 0, 1, 0, Math.PI * 2); g.fill(); g.restore(); }
   g.restore();
 }
-function sign(g, x, y, w, h, fill, stroke, lw, r = 10) {
+function sign(g: Ctx2D, x: number, y: number, w: number, h: number, fill: string, stroke: string | null, lw: number, r = 10) {
   g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
   if (fill) { g.fillStyle = fill; g.fill(); }
   if (stroke) { g.lineWidth = lw; g.strokeStyle = stroke; g.stroke(); }
 }
-function fitFont(g, str, maxW, px, fontFn) { let p = px; g.font = fontFn(p); while (g.measureText(str).width > maxW && p > 8) { p -= 2; g.font = fontFn(p); } return p; }
+function fitFont(g: Ctx2D, str: string, maxW: number, px: number, fontFn: (px: number) => string) { let p = px; g.font = fontFn(p); while (g.measureText(str).width > maxW && p > 8) { p -= 2; g.font = fontFn(p); } return p; }
 
-export function drawMurals(g, R, kit) {
+export function drawMurals(g: Ctx2D, R: MuralRect, kit: MuralKit): MuralPlacement[] {
   const { font, fontB } = kit;
   const X = R.x, Y = R.y;
-  const out = [];
+  const out: MuralPlacement[] = [];
 
   // ---------------------------------------------------------------- 4: borough crest mosaic (512 px = 10 m)
   {
@@ -115,7 +116,7 @@ export function drawMurals(g, R, kit) {
     star(g, cx, cy, 4, 3.25 * s, 0.9 * s, -Math.PI / 2, CREAM, '#d9ccb2');
     // cardinal letters just outside the star tips' base
     g.font = font(Math.round(0.55 * s)); g.fillStyle = NAVY; g.textAlign = 'center'; g.textBaseline = 'middle';
-    for (const [t, a] of [['N', -Math.PI / 2], ['E', 0], ['S', Math.PI / 2], ['W', Math.PI]]) { g.save(); g.translate(cx + Math.cos(a) * 3.62 * s, cy + Math.sin(a) * 3.62 * s); g.rotate(a + Math.PI / 2); g.fillStyle = CORAL; g.fillText(t, 0, 0); g.restore(); }
+    for (const [t, a] of [['N', -Math.PI / 2], ['E', 0], ['S', Math.PI / 2], ['W', Math.PI]] as Array<[string, number]>) { g.save(); g.translate(cx + Math.cos(a) * 3.62 * s, cy + Math.sin(a) * 3.62 * s); g.rotate(a + Math.PI / 2); g.fillStyle = CORAL; g.fillText(t, 0, 0); g.restore(); }
     // centre (under the fountain basin): plain navy
     g.fillStyle = NAVY; g.beginPath(); g.arc(cx, cy, 2.55 * s, 0, Math.PI * 2); g.fill();
     tesserae(g, r.x, r.y, r.w, r.h, 5, 41);

@@ -18,7 +18,7 @@
     "package": "tauri build",
     "music": "node build/music-manifest.mjs",
     "bake": "electron build/bake-ao.cjs",
-    "check-maps": "node build/check-maps.mjs",
+    "check-maps": "npm run compile && node build/check-maps.mjs",
     "icon": "sh build/make-icon.sh",
     "botlab": "tools/botlab/run.sh tools/botlab/match.cjs",
     "smoke": "tsc -p tsconfig.client-tools.json && node .tools/smoke.js",

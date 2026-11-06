@@ -64,9 +64,10 @@ function apply(changes: readonly ts.FileTextChanges[], id: string): number {
     for (const c of sorted) {
       let nt = c.newText;
       // 사용처 추론은 깨끗한 결과만 받는다: any·인라인 객체 타입·60자 넘는 타입은 버리고 사람이 타입을 단다(광범위한 any 금지)
-      if (id === 'inferFromUsage' && (/any/.test(nt) || /[{}]/.test(nt) || nt.length > 60)) continue;
+      if (id === 'inferFromUsage' && (/\bany\b/.test(nt) || /[{}]/.test(nt) || nt.length > 60)) continue;
       // 클래스 속성 선언은 declare로(동작 보존)
       if (id === 'fixMissingMember') nt = nt.replace(/^(\s*)(?!declare\b|readonly\b|private\b|static\b|public\b)([A-Za-z_$][\w$]*)(\??): ([^;\n]+);/gm, '$1declare $2$3: $4;');
+      if (args.includes('--debug') && /any/.test(nt)) console.log('[debug]', id, JSON.stringify(nt).slice(0, 120));
       text = text.slice(0, c.span.start) + nt + text.slice(c.span.start + c.span.length);
       n++;
     }

@@ -80,7 +80,7 @@
 //       never breaks into dotted, shimmering holes or vanishes at distance. texSize = lib.size.
 
 import * as THREE from 'three';
-import { STAGE_SURFACES } from './stages/surfaces.js';
+import { STAGE_SURFACES, type StageTexMaterial } from './stages/surfaces.js';
 
 export const TEXLIB_MODE = { plain: 0, grid: 1, hex: 2 };
 const { plain: PLAIN, grid: GRID, hex: HEX } = TEXLIB_MODE;
@@ -209,10 +209,7 @@ const PREP_SIG = 'vec2 uv, vec2 P, inout Req f[4], inout WReq w[2]';
 const SURF_SIG = 'vec2 uv, vec2 P, float n[4], vec4 c[2], inout S s';
 
 // 재질 한 층의 정의(prep·surf는 GLSL 조각). group = 함께 컴파일하는 묶음, mask = 두 부분 알베도, stair = 계단 패턴
-interface TexMaterial {
-  name: string; detail: number; scale: number; tint: boolean; alpha: boolean; mode: number; sym: number; hr: [number, number]; ao: number;
-  prep: string; surf: string; group?: number; mask?: boolean; stair?: unknown;
-}
+interface TexMaterial extends StageTexMaterial { name: string; group?: number }
 const MATERIALS: TexMaterial[] = [
   {
     name: 'concrete', detail: 1.0, scale: 4.0, tint: true, alpha: false, mode: GRID, sym: 7, hr: [-0.004, 0.0008], ao: 0.5,

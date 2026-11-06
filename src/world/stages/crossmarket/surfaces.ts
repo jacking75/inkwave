@@ -20,7 +20,7 @@ const GRID = 1, PLAIN = 0;
 // shared GLSL: one sett course. a = along the course (m), b = across (m), CH = course height, SL = mean sett length,
 // NS / NR = setts per course / courses per repeat (the jitter hash wraps on them), seed. Returns
 // (edge distance e (m, > 0 inside the sett), local x / half-length, local y / half-height, sett id hash)
-const COURSE = (fn, CH, SL, NS, NR, JIT, R) => /* glsl */`
+const COURSE = (fn: string, CH: string, SL: string, NS: number, NR: number, JIT: string, R: string) => /* glsl */`
   float rowf_${fn} = floor(b / ${CH});
   int rid_${fn} = wrp(ivec2(int(rowf_${fn}), 0), ivec2(${NR}, 1)).x;
   float ly_${fn} = b - rowf_${fn} * ${CH};
