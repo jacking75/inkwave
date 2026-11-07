@@ -90,7 +90,7 @@ npm run relay    # 접속 주소는 ws://<이 컴퓨터의 IP 주소>:8787이다
 
 사용자의 실행·성능 측정 요청에 따라 PC 브라우저에서 기존 게임과 데스크톱 성능 정책을 비교 검증했다. 제한된 시작 정책은 메뉴 자동 전투·로비 선행 로딩·전체 효과 사전 준비를 생략하고, 바닥 재질 세부 표현을 단순화한다. 메뉴는 최대 30fps, 전투는 기본 60fps로 제한하며 직접 선택하지 않은 그림자는 끈다. 첫 전투와 새 효과의 셰이더 준비 지연은 남아 있다. 상세 측정과 제약은 [34번 수정 계획](docs_working/데스크톱-성능-게임패드-언어-정적검토-34.md)의 F07에 기록한다.
 
-데스크톱 기본 실행·패키징은 **Tauri 2**를 사용한다. 공통 게임의 기존 JavaScript와 자산을 재사용하며, 새 호스트 연결·준비 도구는 TypeScript, 네이티브 진입점은 Rust로 작성했다. 이 PC의 Rust 1.89 MSVC·Visual Studio C++ 구성요소·Windows SDK·WebView2 설치를 확인했으며 도구 체인을 갱신하지 않았다.
+데스크톱 기본 실행·패키징은 **Tauri 2**를 사용한다. 공통 게임 코드는 모두 TypeScript로 이전했고(`src/`의 `.js` 0개, 33번 T070·T071) 기존 자산을 재사용한다. 호스트 연결·준비 도구는 TypeScript, 네이티브 진입점은 Rust이다. 이 PC의 Rust 1.89 MSVC·Visual Studio C++ 구성요소·Windows SDK·WebView2 설치를 확인했으며 도구 체인을 갱신하지 않았다.
 
 `npm start`는 웹 자산을 준비한 뒤 **Tauri 시작 화면**을 연다. 별도 개발 서버를 띄우지 않으며 시작 화면은 게임·three.js를 불러오지 않는다. 사용자가 `게임 시작`을 눌렀을 때만 낮은 화질의 분할 번들을 불러온다. 첫 전투에는 현재 보이는 캐릭터 메시를 먼저 준비하고, 장비·라커 화면은 열 때 준비한다. 낮은 화질에서는 멀리 있는 캐릭터의 상세도 전환을 단순화한다. 기존 Electron의 설정·프로필은 자동 이전하지 않으며 원본은 보존한다.
 
@@ -105,7 +105,7 @@ Windows에는 **Visual Studio IDE 전체가 필요하지 않다.** Tauri의 공�
 | `npm run desktop:typecheck` | 새 TypeScript 호스트 연결과 준비 도구를 검사한다. 앱을 기동하지 않는다. 기존 게임 전체의 TypeScript 이전 완료를 뜻하지 않는다. |
 | `npm run desktop:prepare` | 타입 검사 후 `.desktop-dist/`에 웹 자산과 호스트 연결을 생성한다. 기존 `dist/`와 원본 자산은 수정하지 않는다. |
 | `npm run desktop:check` | 웹 자산 준비 후 Rust를 최대 두 작업으로 검사한다. 앱은 기동하지 않지만 컴파일·다운로드 비용은 발생할 수 있다. |
-| `npm run dev` | 타입 검사(`tsc --noEmit`) 통과 후 `.web-dev/`를 조립하고 포트 8490 웹 서버와 변경 감시를 시작한다. `.ts`는 esbuild로 변환하고 `.js`는 그대로 복사한다. 반영은 새로고침이며 타입 오류가 나면 직전 출력이 남고 화면에 붉은 상자로 알린다. |
+| `npm run dev` | 타입 검사(`tsc --noEmit`) 통과 후 `.web-dev/`를 조립하고 포트 8490 웹 서버와 변경 감시를 시작한다. `.ts`는 esbuild로 변환한다. 반영은 새로고침이며 타입 오류가 나면 직전 출력이 남고 화면에 붉은 상자로 알린다. |
 | `npm run serve` | `npm run dev`와 같은 경로를 감시 없이 한 번 조립해 띄운다. |
 | `npm run typecheck` | 게임 클라이언트(`tsconfig.json`), 행동 검사(`tests/client`, `tsconfig.tests.json`), 웹 개발 도구(`tools/client/`)의 타입 검사이다. |
 | `npm run test:client` | `tests/client/**/*.test.ts`를 esbuild로 묶어 `node --test`로 돌리는 행동 검사이다(입력 프레임·패드·가상 키·캠페인 규칙·보상·저장). 실제 패드·터치 기기와 사람 완주를 대신하지 않는다. |
@@ -113,13 +113,32 @@ Windows에는 **Visual Studio IDE 전체가 필요하지 않다.** Tauri의 공�
 | `npm run smoke`, `npm run smoke:dist` | 개발 서버(8490) 또는 `dist/`(별도 8493)를 headless Chrome으로 열어 자동 조종 경기와 콘솔 오류·404를 확인한다(Windows·macOS·Linux). |
 | `npm run compile` | `.web-dev/`만 조립한다(서버 없음). Node 도구 `tools/light-shots.mjs`·`stage-shots.mjs`는 이 출력을 읽는다. |
 | `npm run package` | Tauri 릴리스와 Windows NSIS 설치 파일을 만든다. 출력은 `src-tauri/target/release/` 아래이며 현재 패키징 검증은 미실행이다. |
-| `npm run check` | 기존 JavaScript 구문 검사이다. TypeScript 타입 검사나 게임 동작 검증을 대신하지 않는다. |
+| `npm run check` | Node로 돌리는 도구·빌드 스크립트·조립 출력의 JavaScript 구문 검사이다. `src/`의 TypeScript 타입 검사는 `typecheck`가 맡으며 게임 동작 검증을 대신하지 않는다. |
 | `npm run check-maps` | 기존 맵 정합성 검사이다. 실제 이동·완주·성능 검증을 대신하지 않는다. |
 | `npm run build` | `npm run compile` 뒤 컴파일 출력과 웹 파일을 `dist/`에 수집한다. Tauri 앱은 만들지 않는다. |
-| `npm run botlab`, `npm run net-test` | 게임을 기동하는 자동 검사이다. 이번 성능 검사에서는 실행하지 않았다. |
-| `node .tools/input-check.js`, `node .tools/mission-check.js` | 개발 서버에 붙어 입력 체계(가짜 패드·마우스 가상 키·에뮬레이션 터치)와 캠페인 1장(목표·체크포인트·저장·보상·작업장·주행)을 검사한다. `npm run compile` 또는 `npm run dev` 뒤 `tsc -p tsconfig.client-tools.json`으로 만든다. 상태 처리 검증이며 실기기·사람 완주가 아니다. |
+| `npm run botlab`, `npm run net-test` | 게임을 기동하는 자동 검사이다. `net-test`는 로컬 중계(`npm run relay`)에 두 클라이언트를 붙여 방 만들기·참가·경기를 확인한다(2026-11-07 통과). |
+| `npm run android:init`, `npm run android:build` | Tauri 2 Android 셸을 만들고 디버그 APK(aarch64)를 빌드한다. Android SDK·NDK·JDK가 필요하다(33번 M002·M003). 실기기 조작·저장·성능은 미검증(M004)이다. |
+| `node .tools/<검사>.js` | 개발 서버(`npm run dev`)에 headless Chrome으로 붙는 자동 검사이다. 먼저 `tsc -p tsconfig.client-tools.json`으로 `.tools/`를 만든다. `mission-check`(21개 임무 목표·체크포인트·저장·보상, `--mission 1-1,…`), `story-check`(이야기 메뉴·패널·대화·항구 지도·기록, `--only en`은 영어 화면 한글 잔존), `workshop-check`(제작·강화·해금·작업장 카메라·저장 실패 재시도), `regress-check`(대전·구역·보스·연습·온라인 mock·이전 설정 보존), `campaign-check`·`action-run-check`(캠페인 액션·연출), `resource-check`(반복 전환 자원 수), `perf-check`(프레임·GPU 시간 측정표), `input-check`(가짜 패드·가상 키·터치). 상태 처리·자동 실행 검증이며 실기기·사람 완주가 아니다. |
+| `node tools/mobile-lab.mjs` | 휴대폰 크기 터치 에뮬레이션에서 가상 버튼 배치·실제 터치 반응을 확인한다. 표시되는 fps는 데스크톱 GPU 위 정보값이다. |
 
 수정 후 검사도 먼저 스크립트 내용을 확인하고 앱을 기동하지 않는 검사부터 수행한다. 빌드 성공과 실제 성능·패드 조작 검증은 별도로 판정한다. Tauri로 바꿨다는 이유만으로 실행을 재개하지 않는다.
+
+### 언어와 저장 백업
+
+- 언어: 첫 실행은 한국어이다. 시작 화면의 언어 선택이나 설정 › 조작 탭 맨 위의 `언어 / Language`에서 English로 바꾸면 저장되어 다음 실행에도 유지된다(34번 F06). 사용자 이름·방 코드는 번역하지 않는다.
+- 캠페인 저장은 브라우저 IndexedDB(`inkwave-campaign`)에 있다. 작업장 › 캠페인 관리의 `저장 내보내기`로 JSON 파일을 받고, `저장 가져오기`로 다른 브라우저·기기에 옮긴다. 가져오기는 검사를 통과한 파일만 받으며 실패하면 지금 저장을 그대로 둔다. 설정·대전 프로필은 설정 화면의 내보내기·가져오기로 따로 옮긴다.
+
+### 검증 상태
+
+결과를 서로 다른 것으로 구분한다. 세부 근거는 33번 각 태스크 절과 [36번 남은 일감](docs_working/남은-일감-순서-36.md)에 있다.
+
+| 구분 | 상태(2026-11-07) |
+|---|---|
+| 웹 코드 검사 | `npm run typecheck`·`npm run check`·`npm run test:client`(84개, 전체 21개 임무 계산 완주 포함) 통과 |
+| 자동 실행 검사 | 21개 임무 `mission-check`, 이야기·작업장·기존 모드 회귀, 영어 화면, 반복 전환 자원, 모바일 터치 에뮬레이션 통과(headless, 이 PC) |
+| 사람의 실제 완주·조작감 | 미검증 — [33번 14절](docs_working/클라이언트-캠페인-상세구현계획-33.md#14-사용자-최종-일괄-검증) U 항목 |
+| 실물 패드·실기기 | 미검증 — 33번 14절 U 항목, Android 실기기 M004, iOS M005(macOS 필요) |
+| 앱 빌드 | Android 디버그 APK 생성 확인(M003). 데스크톱 설치 패키지(`npm run package`)는 미실행 |
 
 음원 구성은 [`songs/README.md`](songs/README.md)를 참고한다. Tauri 전환 시에도 로컬 음원의 오프라인 로딩·탐색·반복 재생을 검증한다. 기존 자동 시작·자동 조종 URL 옵션은 실행 제한을 우회하는 방법으로 사용하지 않는다.
 
@@ -157,6 +176,7 @@ Windows에는 **Visual Studio IDE 전체가 필요하지 않다.** Tauri의 공�
 | [클라이언트 구현 설계 (32번)](docs_working/클라이언트-멀티플랫폼-구현설계-32.md) | 입력 프레임·매핑·생명주기·플랫폼 경계와 검증 시나리오이다. |
 | [클라이언트·캠페인 상세 구현 계획 (33번)](docs_working/클라이언트-캠페인-상세구현계획-33.md) | 구현 태스크 T001~T074·M001~M005의 선행 조건·완료 조건·검증이다. |
 | [데스크톱 성능·게임패드·언어 정적 검토 (34번)](docs_working/데스크톱-성능-게임패드-언어-정적검토-34.md) | 데스크톱 문제의 코드 근거와 수정 계획, Tauri 전환 기록이다. |
+| [남은 일감 순서 (36번)](docs_working/남은-일감-순서-36.md) | 남은 구현 일감의 진행 순서와 사람이 직접 하는 확인 목록이다. |
 | [스토리 중심 액션 리디자인 계획 (35번)](docs_working/스토리-액션-리디자인-구현계획-35.md) | 잉크 그림책 룩, 귀여운 비율·표정·마스코트, 퍼펙트 잠수·잉크 서지 같은 액션, 이야기 우선 메뉴 구조의 태스크 R001~R034이다. |
 | [docs/CONTRACTS.md](docs/CONTRACTS.md), [docs/EVENTS.md](docs/EVENTS.md), [docs/RIG.md](docs/RIG.md), [docs/NET.md](docs/NET.md) | 기존 모듈·이벤트·리그·네트워크 계약이다. |
 | [AGENTS.md](AGENTS.md) | 이 저장소에서 작업할 때 지키는 핵심 규칙이다. |

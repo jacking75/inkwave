@@ -295,7 +295,7 @@ export function manageScreen(M: MenuKit, api: CampaignUiApi): ScreenLike {
     M._btn({ id: 'import', label: '저장 가져오기', sub: '검사를 통과한 파일만 · 실패하면 지금 저장을 그대로 둔다', cls: 'iw-btn--menu', accept: () => {
       if (api.inMission()) { M.toast('임무 중에는 가져올 수 없다', { kind: 'error' }); return; }
       const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/json,.json';
-      inp.onchange = () => { const f = inp.files?.[0]; if (!f) return; void f.text().then((t) => api.importSave(t)).then((r) => M.toast(r.ok ? '저장을 가져왔다' : t('가져오기 실패 — {why}', { why: t(r.reason ?? api.errorText(r.error!)) }), { kind: r.ok ? 'good' : 'error', ms: 4200 })); };
+      inp.onchange = () => { const f = inp.files?.[0]; if (!f) return; void f.text().then((txt) => api.importSave(txt)).then((r) => M.toast(r.ok ? '저장을 가져왔다' : t('가져오기 실패 — {why}', { why: t(r.reason ?? api.errorText(r.error!)) }), { kind: r.ok ? 'good' : 'error', ms: 4200 })); };
       inp.click();
     } }),
     M._btn({ id: 'new', label: '새 게임', sub: '지금 저장을 덮어쓴다(먼저 내보내기를 권한다)', cls: 'iw-btn--menu iw-btn--danger', accept: () => {
