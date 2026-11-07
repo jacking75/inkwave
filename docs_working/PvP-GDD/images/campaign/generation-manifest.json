@@ -1,11 +1,12 @@
 {
+  "format": "2026-11-07: all 29 sheets converted from PNG to JPEG (quality 90, 4:4:4). Every sha256 in this file is the hash of the original PNG before conversion.",
   "method": "built-in image_gen",
   "model": "not selectable; user approved tool without model verification",
   "status": "complete",
   "tasks": [
     {
       "id": "stage-1-1",
-      "asset": "stage-1-1.png",
+      "asset": "stage-1-1.jpg",
       "doc": "stages/스테이지-1-1-멈춘-시계-아래-3.md",
       "panels": 4,
       "refs": [
@@ -29,7 +30,7 @@
     },
     {
       "id": "stage-1-2",
-      "asset": "stage-1-2.png",
+      "asset": "stage-1-2.jpg",
       "doc": "stages/스테이지-1-2-지워지는-발자국-4.md",
       "panels": 4,
       "refs": [
@@ -53,7 +54,7 @@
     },
     {
       "id": "stage-1-3",
-      "asset": "stage-1-3.png",
+      "asset": "stage-1-3.jpg",
       "doc": "stages/스테이지-1-3-광장의-통행금지-5.md",
       "panels": 4,
       "refs": [
@@ -77,7 +78,7 @@
     },
     {
       "id": "stage-2-1",
-      "asset": "stage-2-1.png",
+      "asset": "stage-2-1.jpg",
       "doc": "stages/스테이지-2-1-비어-있는-가판대-6.md",
       "panels": 4,
       "refs": [
@@ -101,7 +102,7 @@
     },
     {
       "id": "stage-2-2",
-      "asset": "stage-2-2.png",
+      "asset": "stage-2-2.jpg",
       "doc": "stages/스테이지-2-2-유리-지붕의-감시자-7.md",
       "panels": 4,
       "refs": [
@@ -125,7 +126,7 @@
     },
     {
       "id": "stage-2-3",
-      "asset": "stage-2-3.png",
+      "asset": "stage-2-3.jpg",
       "doc": "stages/스테이지-2-3-시장의-마지막-방송-8.md",
       "panels": 4,
       "refs": [
@@ -149,7 +150,7 @@
     },
     {
       "id": "stage-3-1",
-      "asset": "stage-3-1.png",
+      "asset": "stage-3-1.jpg",
       "doc": "stages/스테이지-3-1-목적지-없는-화물-9.md",
       "panels": 4,
       "refs": [
@@ -173,7 +174,7 @@
     },
     {
       "id": "stage-3-2",
-      "asset": "stage-3-2.png",
+      "asset": "stage-3-2.jpg",
       "doc": "stages/스테이지-3-2-적재-구역-봉쇄-10.md",
       "panels": 4,
       "refs": [
@@ -197,7 +198,7 @@
     },
     {
       "id": "stage-3-3",
-      "asset": "stage-3-3.png",
+      "asset": "stage-3-3.jpg",
       "doc": "stages/스테이지-3-3-껍질-속의-명령-11.md",
       "panels": 4,
       "refs": [
@@ -222,7 +223,7 @@
     },
     {
       "id": "stage-4-1",
-      "asset": "stage-4-1.png",
+      "asset": "stage-4-1.jpg",
       "doc": "stages/스테이지-4-1-끊어진-계류선-12.md",
       "panels": 4,
       "refs": [
@@ -246,7 +247,7 @@
     },
     {
       "id": "stage-4-2",
-      "asset": "stage-4-2.png",
+      "asset": "stage-4-2.jpg",
       "doc": "stages/스테이지-4-2-돌아오지-않은-작업반-13.md",
       "panels": 4,
       "refs": [
@@ -270,7 +271,7 @@
     },
     {
       "id": "stage-4-3",
-      "asset": "stage-4-3.png",
+      "asset": "stage-4-3.jpg",
       "doc": "stages/스테이지-4-3-등대-없는-항로-14.md",
       "panels": 4,
       "refs": [
@@ -294,7 +295,7 @@
     },
     {
       "id": "stage-5-1",
-      "asset": "stage-5-1.png",
+      "asset": "stage-5-1.jpg",
       "doc": "stages/스테이지-5-1-소금-밭의-두-흐름-15.md",
       "panels": 4,
       "refs": [
@@ -318,7 +319,7 @@
     },
     {
       "id": "stage-5-2",
-      "asset": "stage-5-2.png",
+      "asset": "stage-5-2.jpg",
       "doc": "stages/스테이지-5-2-마르는-길-16.md",
       "panels": 4,
       "refs": [
@@ -342,7 +343,7 @@
     },
     {
       "id": "stage-5-3",
-      "asset": "stage-5-3.png",
+      "asset": "stage-5-3.jpg",
       "doc": "stages/스테이지-5-3-바람이-멈춘-펌프-17.md",
       "panels": 4,
       "refs": [
@@ -366,7 +367,7 @@
     },
     {
       "id": "stage-6-1",
-      "asset": "stage-6-1.png",
+      "asset": "stage-6-1.jpg",
       "doc": "stages/스테이지-6-1-닫힌-물길-18.md",
       "panels": 4,
       "refs": [
@@ -390,7 +391,7 @@
     },
     {
       "id": "stage-6-2",
-      "asset": "stage-6-2.png",
+      "asset": "stage-6-2.jpg",
       "doc": "stages/스테이지-6-2-두-문지기-19.md",
       "panels": 4,
       "refs": [
@@ -414,7 +415,7 @@
     },
     {
       "id": "stage-6-3",
-      "asset": "stage-6-3.png",
+      "asset": "stage-6-3.jpg",
       "doc": "stages/스테이지-6-3-역류의-관제실-20.md",
       "panels": 4,
       "refs": [
@@ -438,7 +439,7 @@
     },
     {
       "id": "stage-7-1",
-      "asset": "stage-7-1.png",
+      "asset": "stage-7-1.jpg",
       "doc": "stages/스테이지-7-1-가장-높은-우회로-21.md",
       "panels": 4,
       "refs": [
@@ -462,7 +463,7 @@
     },
     {
       "id": "stage-7-2",
-      "asset": "stage-7-2.png",
+      "asset": "stage-7-2.jpg",
       "doc": "stages/스테이지-7-2-남은-신호-22.md",
       "panels": 4,
       "refs": [
@@ -486,7 +487,7 @@
     },
     {
       "id": "stage-7-3",
-      "asset": "stage-7-3.png",
+      "asset": "stage-7-3.jpg",
       "doc": "stages/스테이지-7-3-되찾는-물결-23.md",
       "panels": 4,
       "refs": [
@@ -515,7 +516,7 @@
       "title": "일러스트 시각 설계",
       "doc": "일러스트-시각설계-29.md",
       "desc": "Six equally sized panels: A small adventurer paints a navigable orange path in the cream-colored Victorian seaside clock-tower square; B the same adventurer dives into that ink then climbs a painted low wall; C a cobalt enemy aim-line is interrupted by a real stone pillar, orange flank path visible; D giant armored orange hermit crab with rusty shipping container shell faces a tiny player and telegraphs a ground ring; E dusk harbor workshop with mechanic and radio scout; F a small recovery terminal changing from dark to lit, adjacent loot crate with star and checkpoint double-ring. Sketch tactical scenes, retain small hero to large environment scale.",
-      "asset": "visual-direction.png",
+      "asset": "visual-direction.jpg",
       "refs": [
         "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
         "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp",
@@ -524,7 +525,7 @@
       "prompt": "Use case: illustration-story. Create a rough game-design storyboard for the original game INKWAVE. Landscape sheet, six equal panels in a 3 by 2 grid, wide gutters, only panel letters A B C D E F. Loose pencil construction, thick readable silhouettes, flat gouache color blocks on ivory paper, low-fidelity useful concept sketches rather than polished marketing art. Original small stylized tentacle-haired harbor-adventurer wearing tee, shorts, chunky shoes, ink tank; use provided existing character reference for game identity. Orange player ink is a navigable path, cobalt enemy ink obstructs it. White double circles mean objectives, outlined circles and lines mean telegraphed danger. Draw visible player actions and tactical spatial relationships. No realistic guns, gore, Nintendo logos, extra text, dense UI, or invented flying vehicles. This is a conceptual proposed campaign, not a claimed screenshot. Reference images are style/environment references, not edit targets.\nSix equally sized panels: A small adventurer paints a navigable orange path in the cream-colored Victorian seaside clock-tower square; B the same adventurer dives into that ink then climbs a painted low wall; C a cobalt enemy aim-line is interrupted by a real stone pillar, orange flank path visible; D giant armored orange hermit crab with rusty shipping container shell faces a tiny player and telegraphs a ground ring; E dusk harbor workshop with mechanic and radio scout; F a small recovery terminal changing from dark to lit, adjacent loot crate with star and checkpoint double-ring. Sketch tactical scenes, retain small hero to large environment scale.",
       "status": "generated",
       "source": "C:\\Users\\heungbae\\.codex\\generated_images\\01a148d8-47da-7d63-90d4-8876edd614ed\\exec-5e904532-0af0-4554-8d7e-019fd7740c80.png",
-      "saved": "docs_working/PvP-GDD/images/campaign/visual-direction.png",
+      "saved": "docs_working/PvP-GDD/images/campaign/visual-direction.jpg",
       "review": {
         "status": "reviewed",
         "note": "기존 파일을 재생성하거나 덮어쓰지 않고 유지했다. 신규 장면판과 화풍·주황/코발트 구분·공간 관계를 대조했다."
@@ -542,7 +543,7 @@
       "title": "게임플레이",
       "doc": "systems/게임플레이-상세-24.md",
       "desc": "Six sequential action panels: A third-person player shoots orange ink onto a dry brick path; B player becomes small squid silhouette swimming within that painted path to refill tank; C player paints a side wall and climbs to flank a blue umbrella-shield enemy; D player holds a compact recovery-terminal circle as a clear progress arc fills; E player jumps a telegraphed shock ring from a giant crab, leaving a safe orange retreat path; F calm checkpoint behind cover allows gear change and retry. Use arrows for movement, transparent outlined warnings for danger, no long text.",
-      "asset": "gameplay.png",
+      "asset": "gameplay.jpg",
       "refs": [
         "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
         "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp",
@@ -569,7 +570,7 @@
       "title": "NPC와 서사",
       "doc": "systems/NPC와-서사-상세-25.md",
       "desc": "Four character/story panels on the same warm sketch paper: A customizable short tentacle-haired new recovery worker with orange tank, no fixed name; B Mora the practical mechanic with tied-back olive tentacle hair, work apron, goggles on head, wrench and patched jacket at existing harbor workshop; C Til the radio archivist with short teal tentacle hair, headset, notepad and small recorder, alert but kind; D Archive as a low rectangular old harbor terminal with three status lamps and a simple waveform, never a humanoid robot. Existing game character proportions, no need for new body rigs. Each panel includes portrait and tiny scene showing the role. Letters only.",
-      "asset": "npc.png",
+      "asset": "npc.jpg",
       "refs": [
         "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
         "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp"
@@ -595,7 +596,7 @@
       "title": "잔향 적의 역할",
       "doc": "systems/게임플레이-상세-24.md",
       "desc": "Six clear enemy role sketches, cobalt ink and consistent diamond crest: A shooter grunt behind a crate with short ink blaster; B painter with wide roller creating enemy terrain; C umbrella shield guard facing forward with orange flanking arrow behind; D long ink charger sniper with thin telegraphed line and clear stone cover; E bucket/ink cannon bombardier with two telegraphed floor circles; F three small low-detail crablets beside player-scale silhouette. Distinguish weapon silhouette, pose, role icon and counterplay. Use original existing tentacle character look, not new monsters.",
-      "asset": "enemies.png",
+      "asset": "enemies.jpg",
       "refs": [
         "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
         "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp"
@@ -621,7 +622,7 @@
       "title": "보스 기본형",
       "doc": "systems/NPC와-서사-상세-25.md",
       "desc": "Three broad panels A B C: A original tentacle humanoid commander with umbrella shield, orange player flanking a low rear glowing weak point; B stationary harbor controller assembled from existing pump/crates, three low peripheral transmitters, central low core, orange sequential route arrows not simultaneous capture; C gigantic armored hermit crab with rusty container shell, asymmetric claws, low belly weak point, collision wall and tiny orange adventurer. Show one telegraphed action and counterplay in each. Retain all three boss archetypes as reused assets, no new huge creature.",
-      "asset": "bosses.png",
+      "asset": "bosses.jpg",
       "refs": [
         "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
         "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp",
@@ -649,7 +650,7 @@
       "title": "아이템",
       "doc": "systems/아이템-상세-26.md",
       "desc": "Six-panel equipment explainer: A familiar ink weapon with small removable nozzle adapter; B transparent backpack ink tank with a modular filter cartridge; C a small recovery-worker badge with double-circle crest; D three quality cards distinguished by border and one or two simple option glyphs, not shiny weapon replacements; E seven small regional signature modules laid out with clock, lens, crab-shell chip, valve, turbine axle, canal conductor, wave memory silhouettes; F a low-fidelity gear comparison screen showing exactly three equipment slots and one swap arrow. Large simple forms, short panel letters only, no tiny illegible numbers, no entirely new guns.",
-      "asset": "items.png",
+      "asset": "items.jpg",
       "refs": [
         "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
         "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp"
@@ -676,7 +677,7 @@
       "title": "캐릭터 성장",
       "doc": "systems/성장-상세-27.md",
       "desc": "Four-panel growth explainer: A same small hero at beginning and end, unchanged scale and basic look, slightly fuller health and tank bars; B three small perk branches with movement, weak-point and ink-cycle glyphs, ten filled square point tokens across branches; C three tactical mini-vignettes showing mobility flank, weak-point punish, safe ink-space control rather than different body classes; D familiar module moves from old to new gear slot carrying three upgrade dots, old module loses dots. Pencil-and-flat-color planning diagram, no long text, use A-D only.",
-      "asset": "growth.png",
+      "asset": "growth.jpg",
       "refs": [
         "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
         "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp"
@@ -703,7 +704,7 @@
       "title": "파밍과 보상",
       "doc": "systems/파밍과-보상-상세-28.md",
       "desc": "Four-panel farming/reward explainer: A mission select board with seven harbor-area thumbnails and one highlighted regional lens reward, no real map geography; B player chooses optional crate side-route while exit route remains open, orange arrows and star; C completion workbench shows one module, scrap parts and single resonance core, with nine small unfilled tokens followed by tenth special-marked token for pity; D same-slot crafting and upgrade transfer at mechanic bench with old module returning to zero dots, duplicate marked for manual salvage. Show deliberate target farming and one-time completion banking, not casino loot showers. Only A-D letters.",
-      "asset": "farming.png",
+      "asset": "farming.jpg",
       "refs": [
         "C:\\github_dev\\inkwave\\assets\\news\\lobby.webp",
         "C:\\github_dev\\inkwave\\assets\\stages\\tidewater-day.webp"
@@ -727,7 +728,7 @@
     }
   ],
   "preservedAsset": {
-    "asset": "visual-direction.png",
+    "asset": "visual-direction.jpg",
     "sha256": "2a5a5ef92e57823e5d167c854952e057d9770f71cda833a4540c2da8896b756e"
   },
   "validation": {

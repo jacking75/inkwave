@@ -50,7 +50,8 @@
 - `working_log.md`를 만들거나 사용하지 않는다. 검증·설계 근거는 해당 태스크 절에 기록한다.
 - 새 문서는 저장소와 Git 이력의 최대 일련번호 다음 번호를 확장자 앞에 붙인다(현재 최대 35). 번호 재사용과 기존 문서 일괄 개명을 하지 않는다. `AGENTS.md`·`README.md`의 이름은 유지한다.
 - Markdown은 UTF-8과 실제 상대 링크를 쓰고 새 문서·이동 뒤 링크를 검수한다. HTML·PDF를 함께 생성하지 않는다.
-- `docs_working/PvP-GDD/images/campaign/`의 그림 29장과 `generation-manifest.json`을 보존한다. 덮어쓰거나 임의로 재생성하지 않는다.
+- `docs_working/PvP-GDD/images/campaign/`의 그림 29장(JPEG)과 `generation-manifest.json`을 보존한다. 덮어쓰거나 임의로 재생성하지 않는다.
+- 2D 이미지는 JPEG로 바꿔도 되는 것은 `.jpg`로 둔다. 투명도·정확한 값이 필요한 것(알파 PNG, 데이터 텍스처, 도구가 PNG를 요구하는 Tauri 아이콘·AO 라이트맵)만 PNG로 남긴다. 새 이미지를 추가하거나 PNG를 바꿀 때 변환 가능 여부를 먼저 따지고 관련 문서 링크를 함께 고친다.
 - commit·push·배포는 사용자 요청 때만 한다. push 뒤 로컬/원격 SHA와 작업 트리 상태를 확인한다.
 
 ## 도구 오류와 비밀값
