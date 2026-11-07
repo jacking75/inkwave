@@ -555,7 +555,7 @@ const SETTINGS_TABS: SettingsTab[] = [
     { key: 'menuScene', label: 'Menu backdrop · 메뉴 배경', type: 'seg', options: [['static', 'Still'], ['live', 'Live']], help: '정적 배경은 메뉴에서 3D를 그리지 않아 가볍다. 실시간은 메뉴 뒤에서 봇 경기가 돈다. 다시 시작한 뒤 적용된다.' },
     { key: 'showFps', label: 'Show FPS counter', type: 'toggle', help: 'Displays frames per second in the corner during matches.' },
     { key: 'fpsCap', label: 'Frame rate limit', type: 'seg', options: [[0, 'Max'], [60, '60'], [30, '30']], help: 'Max follows your display (up to 120 Hz on ProMotion Macs). A 60 cap gives steadier pacing and longer battery life.' },
-    // desktop app only (the Electron preload provides window.inkwaveNative)
+    // desktop app only (the Tauri host adapter, desktop/bootstrap.ts, provides window.inkwaveNative)
     ...(typeof window !== 'undefined' && window.inkwaveNative ? [{ key: 'fullscreen', label: 'Fullscreen', type: 'toggle' as const, help: 'Fill the whole display. Also ⌃⌘F or F11.' }] : []),
   ] },
   { id: 'audio', label: 'Audio', icon: 'speaker', rows: [

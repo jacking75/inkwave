@@ -100,8 +100,8 @@ Windows에는 **Visual Studio IDE 전체가 필요하지 않다.** Tauri의 공�
 
 | 명령 | 현재 역할과 주의점 |
 |---|---|
-| `npm install --ignore-scripts` | 잠금 파일의 의존성을 설치한다. Tauri 도구를 포함하며 기존 베이크 도구용 Electron 의존성도 남아 있다. |
-| `npm start` | Tauri 시작 화면을 연다. Electron을 실행하지 않는다. Windows에는 Visual Studio C++ 빌드 도구·Windows SDK가 필요하다. |
+| `npm install --ignore-scripts` | 잠금 파일의 의존성을 설치한다. Tauri 도구를 포함한다. Electron 의존성은 34번 F01-F에서 없앴다. |
+| `npm start` | Tauri 시작 화면을 연다. Windows에는 Visual Studio C++ 빌드 도구·Windows SDK가 필요하다. |
 | `npm run desktop:typecheck` | 새 TypeScript 호스트 연결과 준비 도구를 검사한다. 앱을 기동하지 않는다. 기존 게임 전체의 TypeScript 이전 완료를 뜻하지 않는다. |
 | `npm run desktop:prepare` | 타입 검사 후 `.desktop-dist/`에 웹 자산과 호스트 연결을 생성한다. 기존 `dist/`와 원본 자산은 수정하지 않는다. |
 | `npm run desktop:check` | 웹 자산 준비 후 Rust를 최대 두 작업으로 검사한다. 앱은 기동하지 않지만 컴파일·다운로드 비용은 발생할 수 있다. |
@@ -116,7 +116,8 @@ Windows에는 **Visual Studio IDE 전체가 필요하지 않다.** Tauri의 공�
 | `npm run check` | Node로 돌리는 도구·빌드 스크립트·조립 출력의 JavaScript 구문 검사이다. `src/`의 TypeScript 타입 검사는 `typecheck`가 맡으며 게임 동작 검증을 대신하지 않는다. |
 | `npm run check-maps` | 기존 맵 정합성 검사이다. 실제 이동·완주·성능 검증을 대신하지 않는다. |
 | `npm run build` | `npm run compile` 뒤 컴파일 출력과 웹 파일을 `dist/`에 수집한다. Tauri 앱은 만들지 않는다. |
-| `npm run botlab`, `npm run net-test` | 게임을 기동하는 자동 검사이다. `net-test`는 로컬 중계(`npm run relay`)에 두 클라이언트를 붙여 방 만들기·참가·경기를 확인한다(2026-11-07 통과). |
+| `npm run botlab`, `npm run net-test` | 게임을 기동하는 자동 검사이다. `botlab`은 개발 서버에 headless Chrome으로 붙어 봇 경기·페이지 시험을 돌린다([사용법](tools/botlab/README.md)). `net-test`는 로컬 중계(`npm run relay`)에 두 클라이언트를 붙여 방 만들기·참가·경기를 확인한다(2026-11-07 통과). |
+| `npm run bake -- <배치>` | 개발 서버의 실제 게임에서 맵 배치의 AO 라이트맵(`assets/lightmaps/`)을 headless Chrome으로 굽는다. 결과는 이전 Electron 굽기와 같다(lockgate 바이트 동일 확인). |
 | `npm run android:init`, `npm run android:build` | Tauri 2 Android 셸을 만들고 디버그 APK(aarch64)를 빌드한다. Android SDK·NDK·JDK가 필요하다(33번 M002·M003). 실기기 조작·저장·성능은 미검증(M004)이다. |
 | `node .tools/<검사>.js` | 개발 서버(`npm run dev`)에 headless Chrome으로 붙는 자동 검사이다. 먼저 `tsc -p tsconfig.client-tools.json`으로 `.tools/`를 만든다. `mission-check`(21개 임무 목표·체크포인트·저장·보상, `--mission 1-1,…`), `story-check`(이야기 메뉴·패널·대화·항구 지도·기록, `--only en`은 영어 화면 한글 잔존), `workshop-check`(제작·강화·해금·작업장 카메라·저장 실패 재시도), `regress-check`(대전·구역·보스·연습·온라인 mock·이전 설정 보존), `campaign-check`·`action-run-check`(캠페인 액션·연출), `resource-check`(반복 전환 자원 수), `perf-check`(프레임·GPU 시간 측정표), `input-check`(가짜 패드·가상 키·터치). 상태 처리·자동 실행 검증이며 실기기·사람 완주가 아니다. |
 | `node tools/mobile-lab.mjs` | 휴대폰 크기 터치 에뮬레이션에서 가상 버튼 배치·실제 터치 반응을 확인한다. 표시되는 fps는 데스크톱 GPU 위 정보값이다. |

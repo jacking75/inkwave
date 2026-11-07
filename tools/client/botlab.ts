@@ -1,42 +1,82 @@
-// Botlab match: an all-bot (autopilot) match stepped at a fixed 60 Hz in sim time (not wall time, so machine load
-// doesn't change the result), as fast as the machine allows. See tools/botlab/README.md.
-//   MAP=halyard MODE=turf SECS=180 tools/botlab/run.sh tools/botlab/match.cjs
-//   MODE=zones plays a full 5:00 (+ overtime) Zone Control match; MODE=turf plays SECS seconds of Turf War.
-//   WEAPONS / SUBS equip the 8 players (slot order = team 0 first): 'all=bow' · 'team0=blade;team1=shooter' ·
-//   'blade,blade,shooter,…' (per slot, blank = keep) · unset = the usual random loadouts.
-//   TRACK=<weapon> (+ TRACK_TEAM=0|1): a closer look at the players on that weapon (see trk below).
-//   TUNE='mitts.punchInterval=0.12,mitts.punchDamage=45': what-if tuning for this run only (WEAPONS / SUBS values).
-// Reports: stuck %, splats (by cause), per-weapon splats / deaths / turf, specials, super jumps, console errors, sim
-// cost, and in Zone Control the objective stats. Last line: RESULT_JSON {…} (also written to OUT if set).
-const { app } = require('electron');
-require(process.env.S + '/offscreen-boot.cjs');
-const MAP = process.env.MAP || 'halyard', MODE = process.env.MODE || 'zones', SECS = +(process.env.SECS || 180);
-const OUT = process.env.OUT || '';
-const WEAPONS = process.env.WEAPONS || '', SUBS = process.env.SUBS || '', TRACK = process.env.TRACK || '', TRACK_TEAM = process.env.TRACK_TEAM ?? '', TUNE = process.env.TUNE || '';
-setTimeout(() => { console.log('WATCHDOG'); app.exit(1); setTimeout(() => process.exit(1), 3000); }, +(process.env.WATCHDOG || 900000));   // (hard exit if a hung page blocks quitting)
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-let claimed = false;
-app.on('browser-window-created', (_, win) => {
-  if (claimed) return; claimed = true;
-  win.webContents.setBackgroundThrottling(false);
-  const logs = [];
-  win.webContents.on('console-message', (e) => { const m = String(e.message); if (/error|warn/i.test(String(e.level)) && !/Security Warning|Autofill/.test(m)) logs.push(`[${e.level}] ${m.slice(0, 300)}`); });
-  let started = false;
-  win.webContents.on('did-finish-load', async () => {
-    if (started) return; started = true;
-    await win.loadURL('app://inkwave/index.html?autopilot');
-    const js = (c) => win.webContents.executeJavaScript(c, true);
-    for (let i = 0; i < 120; i++) { if (await js('!!window.__inkwave?.api')) break; await wait(250); }
-    await js('window.__inkwave._onPointerUnlock = () => {}; 0');
-    await js(`window.__inkwave.api.startMatch({ mapId: '${MAP}', mode: '${MODE}', duration: ${MODE === 'zones' ? 300 : SECS} })`);
-    for (let i = 0; i < 240; i++) { if (await js(`window.__inkwave.match?.state === 'playing'`)) break; await wait(250); }
+// Botlab: 모든 선수가 봇(자동 조종)인 경기를 고정 60 Hz 게임 시간으로 끝까지 돌려 봇을 재고 다듬는다. 페이지 시험(PAGE)도 돌린다.
+// 34번 F01-F: Electron 오프스크린 창(tools/botlab/*.cjs)에서 headless Chrome + 개발 서버로 옮겼다. 페이지 안 측정 코드는 그대로이다.
+//   npm run botlab                                    (먼저 `npm run dev`, 포트 8490 — PORT로 바꾼다)
+//   MAP=halyard MODE=turf SECS=180 npm run botlab     MODE=zones는 5:00(+연장) 구역전 한 판
+//   WEAPONS / SUBS: 'all=bow' · 'team0=blade;team1=shooter' · 'blade,blade,shooter,…'(슬롯별, 비우면 그대로)
+//   TRACK=<무기>(+ TRACK_TEAM=0|1): 그 무기 선수의 피해·거리·사망 상태, TUNE='mitts.punchInterval=0.12': 이번 실행만 수치 바꾸기
+//   PAGE=<페이지 스크립트>: 경기를 띄운 뒤 그 스크립트를 페이지에서 돌려 [{ name, ok, info }]를 PASS/FAIL로 찍는다(MAP=testbox는 시험 전용 평지)
+// 결과: 표준 출력 요약과 마지막 줄 RESULT_JSON {…}(OUT이면 파일로도). 여러 개를 함께 돌리면 GPU를 나눠 쓴다(전에는 run.sh 슬롯 잠금).
+import puppeteer from 'puppeteer-core';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+
+const env = process.env;
+const MAP = env.MAP || 'halyard', MODE = env.MODE || (env.PAGE ? 'turf' : 'zones'), SECS = +(env.SECS || 180);
+const OUT = env.OUT || '';
+const WEAPONS = env.WEAPONS || '', SUBS = env.SUBS || '', TRACK = env.TRACK || '', TRACK_TEAM = env.TRACK_TEAM ?? '', TUNE = env.TUNE || '';
+const PORT = env.PORT || '8490';
+const executablePath = env.CHROME_PATH || [
+  `${env.PROGRAMFILES}\\Google\\Chrome\\Application\\chrome.exe`,
+  `${env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`,
+  '/usr/bin/google-chrome', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+].find((p) => p && existsSync(p));
+if (!executablePath) throw new Error('CHROME_PATH로 Chrome 실행 파일을 지정해야 한다.');
+
+// 페이지가 돌려주는 결과 중 요약 출력이 읽는 부분(나머지는 RESULT_JSON에 그대로 싣는다)
+interface Track { weapon: string; n: number; team: number[]; kills: number; deaths: number; fired: number; aliveS: number; fightS: number; dmgOut: Record<string, number>; dmgIn: number; armour: number;
+  distOut: number | null; distIn: number | null; killDist: number | null; deathDist: number | null; deathState: Record<string, number>; deathBy: Record<string, number>; deathClean: number;
+  reach: number[]; leaps: number; leapKind: Record<string, number>; leapHits: number; leapKills: number; clings: number }
+interface BotResult {
+  simT: number; simMs: number; state: string; stuckPct: number; splats: number; water: number; specials: number; jumps: number; cov: number[];
+  byCause: Record<string, number>; byWeapon: Record<string, { n: number; splats: number; deaths: number; turf: number }>;
+  per: { turf: number; zoneTurf: number; splats: number; xpVar: number }; frameErr: { n: number; msg: string }; eps: unknown[]; holdPct: number; roles: Record<string, number>;
+  track?: Track; boss?: { hpFrac: number; maxHp: number; dead: boolean; phase: number; dmgByWeapon: Record<string, number>; downs: number };
+  // 구역전만
+  held: number[]; neutral: number; captures: number; controlEvents: number; takeovers: number; firstCapture: number | null; counts: number[]; penalty: number[];
+  winner: number; reason: string; overtime: boolean; overtimeT: number; penalties: unknown[]; rotations: number; zonePct: number; insideAvg: number[]; nearAvg: number[];
+  whereT: string[]; teams: string[]; where: Record<string, number>; farMode: Record<string, number>; ready: number; windows: string; reach: string | null; log: string;
+}
+interface PageCase { name: string; ok: boolean; info?: unknown }
+
+const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+const watchdog = setTimeout(() => { console.log('WATCHDOG'); process.exit(1); }, +(env.WATCHDOG || (env.PAGE ? 600000 : 900000)));
+const browser = await puppeteer.launch({
+  executablePath, headless: true, protocolTimeout: 1800000,
+  args: ['--enable-gpu', '--ignore-gpu-blocklist', '--mute-audio', '--disable-renderer-backgrounding', '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--window-size=1280,720'],
+  defaultViewport: { width: 1280, height: 720 },
+});
+try {
+  const page = await browser.newPage();
+  const logs: string[] = [];
+  page.on('console', (m) => { const t = m.text(); if (/error|warn/i.test(m.type()) && !/Failed to load resource/.test(t)) logs.push(`[${m.type()}] ${t.slice(0, 300)}`); });
+  page.on('pageerror', (e) => logs.push('[pageerror] ' + String(e).slice(0, 300)));
+  await page.goto(`http://localhost:${PORT}/?skipTitle&autopilot`, { waitUntil: 'load', timeout: 180000 });
+  await page.waitForFunction('!!window.__inkwave?.api', { timeout: 180000, polling: 250 });
+  const js = <T = unknown>(c: string): Promise<T> => page.evaluate(c) as Promise<T>;
+  await js('window.__inkwave._onPointerUnlock = () => {}; 0');
+  if (env.PAGE && MAP === 'testbox') await js(`(async () => {
+      // 시험 전용 평지: 56 × 96 m 갑판, 출발 계단과 벽 하나(집라인 대상) — 출하하지 않는다
+      const { MAPS } = await import('./src/config.js'); const { MAP_LAYOUTS } = await import('./src/world/maps.js');
+      if (!MAPS.find((m) => m.id === 'testbox')) MAPS.push({ id: 'testbox', name: 'Test Box', blurb: '', theme: 'day', times: { day: 'day', dusk: 'sunset' } });
+      const B = (x0, x1, y0, y1, z0, z1, o = {}) => ({ kind: 'box', min: [x0, y0, z0], max: [x1, y1, z1], color: '#d8d2c4', pattern: 3, ...o });
+      MAP_LAYOUTS.testbox = { id: 'testbox', bounds: { minX: -28, maxX: 28, minZ: -48, maxZ: 48 }, spawnPads: [[0, 2.4, -44], [0, 2.4, 44]], spawnBarrier: 4.2,
+        single: [B(-28, 28, -1.2, 0, -40, 40)], half: [B(-8, 8, -1.2, 2.4, -48, -40), B(14, 15, 0, 4, -8, 8)], decor: { lamps: [], palms: [], flags: [] } };
+      return true; })()`);
+  await js(`window.__inkwave.api.startMatch({ mapId: '${MAP}', mode: '${MODE}', duration: ${env.PAGE ? 180 : MODE === 'zones' ? 300 : SECS} })`);
+  await page.waitForFunction(`window.__inkwave.match?.state === 'playing'`, { timeout: 120000, polling: 250 });
+  if (env.PAGE) {
+    const out = await js<PageCase[]>(readFileSync(env.PAGE, 'utf8'));
+    let pass = 0;
+    for (const c of out) { console.log((c.ok ? 'PASS ' : 'FAIL ') + c.name + (c.info !== undefined ? '  ' + JSON.stringify(c.info) : '')); pass += c.ok ? 1 : 0; }
+    console.log(`RESULT ${pass}/${out.length}`);
+    console.log('console errors:', logs.length ? [...new Set(logs)].slice(0, 5).join(' || ') : 'none');
+  } else {
     // what-if tuning (TUNE, see the header): patched into the live config before the loadouts
-    const tuned = TUNE ? await js(`(async () => { const C = await import('./src/config.js'); const out = [];
+    const tuned = TUNE ? await js<string>(`(async () => { const C = await import('./src/config.js'); const out = [];
       for (const kv of ${JSON.stringify(TUNE)}.split(',')) { const [path, v] = kv.split('='); const [id, key] = path.split('.'); const o = C.WEAPONS[id] || C.SUBS[id];
         if (!o || !(key in o)) { out.push('?' + path); continue; } o[key] = isNaN(+v) ? v : +v; out.push(path + '=' + o[key]); }
       return out.join(','); })()`) : '';
     // loadouts: WEAPONS / SUBS (see the header)
-    const equip = await js(`(() => {
+    const equip = await js<string>(`(() => {
       const m = window.__inkwave.match, A = m.actors;
       const plan = (spec) => { if (!spec) return A.map(() => null); if (spec.startsWith('all=')) return A.map(() => spec.slice(4));
         if (spec.includes('team')) { const t = {}; for (const p of spec.split(';')) { const [k, v] = p.split('='); t[+k.replace('team', '')] = v; } return A.map((a) => t[a.team] || null); }
@@ -46,7 +86,7 @@ app.on('browser-window-created', (_, win) => {
       return A.map((a) => 'AB'[a.team] + ':' + a.weaponId + '+' + (a.subId || '-')).join(' ');
     })()`);
     const t0 = Date.now();
-    const r = await js(`(async () => {
+    const r = await js<BotResult>(`(async () => {
       const g = window.__inkwave, m = g.match, Z = m.zones, N = __G.nav;
       const { on } = await import('./src/core/ctx.js');
       g.debug.freeze();
@@ -241,7 +281,7 @@ per: (() => { const A = m.actors, n = A.length || 1; const turf = A.reduce((s, a
       return res;
     })()`);
     const wallS = ((Date.now() - t0) / 1000).toFixed(0);
-    const perf = await js(`(() => { const p = window.__inkwave.perf; return p ? { cpuSimMs: +p.sim.toFixed(2) } : null; })()`);
+    const perf = await js<{ cpuSimMs: number } | null>(`(() => { const p = window.__inkwave.perf; return p ? { cpuSimMs: +p.sim.toFixed(2) } : null; })()`);
     if (MODE === 'zones') {
       console.log(`== ${MAP} [zones]: winner ${r.winner === 0 ? 'Alpha' : r.winner === 1 ? 'Bravo' : '-'} (${r.reason}) | final ${r.counts[0]} vs ${r.counts[1]} (penalty +${r.penalty.join('/+')}) | OT ${r.overtime ? r.overtimeT + 's' : 'no'}`);
       console.log(`   held A ${r.held[0]}s B ${r.held[1]}s neutral ${r.neutral}s | captures ${r.captures} (takeovers ${r.takeovers}), control events ${r.controlEvents}, first capture @${r.firstCapture}s | rotations ${r.rotations}`);
@@ -263,9 +303,14 @@ per: (() => { const A = m.actors, n = A.length || 1; const turf = A.reduce((s, a
     if (r.frameErr.n) console.log(`   FRAME ERRORS ${r.frameErr.n}: ${r.frameErr.msg}`);
     const uniq = [...new Set(logs)];
     console.log(`CONSOLE ${uniq.length} unique warning/error line(s)`); for (const l of uniq.slice(0, 20)) console.log('  ' + l);
-    r.map = MAP; r.mode = MODE; r.loadouts = equip; r.tune = tuned; r.consoleLines = uniq.length;
-    console.log('RESULT_JSON ' + JSON.stringify(r));
-    if (OUT) require('fs').writeFileSync(OUT, JSON.stringify(r));
-    app.quit();
-  });
-});
+    const full = { ...r, map: MAP, mode: MODE, loadouts: equip, tune: tuned, consoleLines: uniq.length };
+    console.log('RESULT_JSON ' + JSON.stringify(full));
+    if (OUT) writeFileSync(OUT, JSON.stringify(full));
+  }
+} catch (e) {
+  console.log('HARNESS ERROR', (e as Error).message);
+  process.exitCode = 1;
+} finally {
+  clearTimeout(watchdog);
+  await browser.close();
+}

@@ -8,7 +8,7 @@ import { readdirSync, statSync } from 'node:fs';
 import { join, extname, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const ROOTS = ['src', 'electron', 'build', 'tools', 'server/src'];
+const ROOTS = ['src', 'build', 'tools', 'server/src'];
 const EXTS = new Set(['.js', '.mjs', '.cjs']);
 const SKIP = new Set(['node_modules', '.git', '.botlab', 'dist']);
 
