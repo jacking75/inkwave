@@ -842,6 +842,7 @@ export class LobbySet {
     this.halos?.forEach((h) => h.material.uniforms.map.value.dispose());
     this._rRT?.dispose(); this._envRT?.dispose(); this._envOld?.dispose(); this._pmrem?.dispose();
     this.lights?.spill.map?.dispose();
+    this.lights?.key.shadow.dispose();   // 그림자 맵(렌더 타깃·깊이 텍스처)은 재질 traverse로 풀리지 않는다(33번 T073: 작업장 재진입마다 +2)
     this._envScene?.traverse((o) => { const m = o as THREE.Mesh<THREE.BufferGeometry, THREE.Material>; if (m.geometry) m.geometry.dispose(); if (m.material) m.material.dispose(); });
     this.root.removeFromParent();
   }

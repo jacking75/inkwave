@@ -142,6 +142,7 @@ export class TouchControls {
     for (const b of [...LAYOUT, ...TOP_LAYOUT]) {
       const d = document.createElement('div');
       d.className = 'iw-touch__btn' + (b.cls ? ' ' + b.cls : '');
+      d.dataset.name = b.name;   // (검사·도구가 언어와 무관하게 고른다)
       if (b.label) d.textContent = t(b.label);   // 34번 F06
       el.appendChild(d);
       this.btnEls.set(b.name, d);

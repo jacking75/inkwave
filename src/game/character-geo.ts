@@ -1787,8 +1787,37 @@ export function getHairStyle(st: ResolvedStyle | number, lod = 'hero') {
   if (!_hair.has(ks)) _hair.set(ks, buildHair(k.hair, k.hat, k.brows, lod));
   return _hair.get(ks)!;
 }
+// 머리 형상 수명(33번 T073): 캐릭터가 쓰는 동안 참조를 세고, 아무도 쓰지 않는 형상은 최근 HAIR_IDLE_KEEP개만 남겨 둔다.
+// 캠페인 적은 무작위 모양이라 키가 계속 새로 생긴다 — 안 쓰는 오래된 형상은 GPU 버퍼와 함께 버린다(다시 필요하면 새로 만든다).
+const HAIR_IDLE_KEEP = 24;
+const _hairRefs = new Map<string, number>();
+const _hairIdle: string[] = [];   // 참조 0인 키(오래된 것부터)
+export function hairKeyOf(st: ResolvedStyle | number, lod = 'hero'): string { return `${keyStr(hairKey(st))}.${lod}.${hairQuality()}`; }
+/** 형상을 쓰기 시작한다: 돌려받은 키를 다 쓰면 releaseHair에 넘긴다. */
+export function acquireHair(st: ResolvedStyle | number, lod = 'hero'): { key: string; hair: ReturnType<typeof buildHair> } {
+  const hair = getHairStyle(st, lod), key = hairKeyOf(st, lod);
+  _hairRefs.set(key, (_hairRefs.get(key) ?? 0) + 1);
+  const i = _hairIdle.indexOf(key); if (i >= 0) _hairIdle.splice(i, 1);
+  return { key, hair };
+}
+export function releaseHair(key: string): void {
+  const n = (_hairRefs.get(key) ?? 0) - 1;
+  if (n > 0) { _hairRefs.set(key, n); return; }
+  _hairRefs.delete(key);
+  if (!_hair.has(key) || _hairIdle.includes(key)) return;
+  _hairIdle.push(key);
+  while (_hairIdle.length > HAIR_IDLE_KEEP) {
+    const old = _hairIdle.shift()!;
+    const e = _hair.get(old);
+    if (e && !_hairRefs.has(old)) { e.geo.dispose(); _hair.delete(old); }
+  }
+}
+/** 진단·검사용: 캐시에 남은 머리 형상 수 */
+export const hairCacheSize = (): number => _hair.size;
 export function getRestPositions(st: ResolvedStyle) {
-  const h = getHairStyle(st); const out: Record<string, THREE.Vector3> = {};
+  // (뼈 자리만 읽는다 — 쓰는 캐릭터가 따로 잡는다)
+  const { key, hair: h } = acquireHair(st); releaseHair(key);
+  const out: Record<string, THREE.Vector3> = {};
   for (const n of BONE_NAMES) out[n] = (REST_BODY[n] || h.rest[n] || HEAD_C).clone();
   return out;
 }

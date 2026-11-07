@@ -11,6 +11,9 @@ import {
   PROFILES, EXPR, ECHO, pickIdle, pickLine, passReactGate,
   type CastId, type ExpressionProfile, type IdleKind, type ReactKind, type EchoSpec, type ExprVector, type ReactGate,
 } from './cast.js';
+
+// 잔향 병종 표식 형상: 모든 잔향이 함께 쓴다(캐릭터마다 만들고 버리지 않던 것을 하나로, 33번 T073)
+const MARK_GEO = new THREE.OctahedronGeometry(1, 0);
 import { applyPose, type StoryPose } from './poses.js';
 
 type CharacterOptions = ConstructorParameters<typeof Character>[0];
@@ -87,7 +90,8 @@ function applyEchoLook(c: Character, st: CastState): void {
   if (head && !st.mark && st.echo) {
     const s = ECHO.markSize[st.echo.tier];
     const mat = new THREE.MeshStandardMaterial({ color: 0x222222, emissive: new THREE.Color(st.echo.markColor), emissiveIntensity: 1.6, roughness: 0.3 });
-    const m = new THREE.Mesh(new THREE.OctahedronGeometry(1, 0), mat);
+    const m = new THREE.Mesh(MARK_GEO, mat);
+    c._ownMats.push(mat);   // 캐릭터 해제 때 재질도 버린다(33번 T073)
     m.scale.set(s * 0.75, s, s * 0.35);
     m.position.set(0, 0.255, 0.165);
     m.name = 'echo-mark';

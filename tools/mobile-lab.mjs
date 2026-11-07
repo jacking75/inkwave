@@ -37,7 +37,7 @@ page.on('pageerror', (e) => errors.push('[pageerror] ' + e.message));
 // The error beacon deliberately requests a path that cannot exist and relies on the dev server logging the 404 — it
 // is how a device with no console reports to the machine serving it. Expected, so not counted as a bad request.
 const isBeacon = (u) => u.includes('/__inkwave_error/');
-page.on('response', (r) => { if (r.status() >= 400 && !isBeacon(r.url())) badUrls.push(r.status() + ' ' + r.url()); });
+page.on('response', (r) => { if (r.status() >= 400 && !isBeacon(r.url()) && !r.url().endsWith('/songs/manifest.json')) badUrls.push(r.status() + ' ' + r.url()); });   // (음원 목록은 선택 파일: 없으면 절차 음악)
 page.on('requestfailed', (r) => { if (!isBeacon(r.url())) badUrls.push('[failed] ' + r.url() + ' ' + (r.failure()?.errorText || '')); });
 
 // Force the layer on so the run is deterministic whatever Chrome reports for `pointer: coarse`. The auto-detect
@@ -154,7 +154,7 @@ try {
   await page.waitForFunction(() => window.__inkwave?.touch?.enabled === true, { timeout: 30000, polling: 100 });
   const tap = async (b) => { const i = await touchStart(b.cx, b.cy); await sleep(60); await touchEnd(i); await sleep(220); };
   const mapBtn = (await page.evaluate(() => {
-    const el = [...document.querySelectorAll('.iw-touch__btn')].find((x) => x.textContent === 'MAP');
+    const el = document.querySelector('.iw-touch__btn[data-name="map"]');   // (라벨은 언어마다 다르다)
     const r = el.getBoundingClientRect();
     return { cx: r.x + r.width / 2, cy: r.y + r.height / 2 };
   }));

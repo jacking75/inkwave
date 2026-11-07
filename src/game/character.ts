@@ -19,7 +19,7 @@ import { PLAYER } from '../config.js';
 import { G, on } from '../core/ctx.js';
 import {
   BONE_NAMES, BONE_PARENT, BONE_INDEX, HAIR_MAX, HAIR_SEGS, REST,
-  getKidShared, getHairStyle, getRestPositions, getBoneInverses, getClothGeo,
+  getKidShared, acquireHair, releaseHair, getRestPositions, getBoneInverses, getClothGeo,
 } from './character-geo.js';
 import {
   makeCharUniforms, makeSkinMaterial, makeClothMaterial, makeHairMaterial, getDarkMaterial, makeEyeMaterial,
@@ -825,6 +825,7 @@ export class Character {
   declare _camE5: number;
   declare _camPos: THREE.Vector3;
   declare _ownMats: THREE.Material[];
+  declare _hairKeys: string[] | undefined;   // 잡고 있는 머리 형상 키(dispose에서 놓는다)
   declare matsD: Array<Record<string, THREE.Material>>;
   declare lod: { tier: number; to: number; f: number; px: number; force: number; fadeOut: { value: THREE.Vector2 }; fadeIn: { value: THREE.Vector2 }; q?: string; props?: boolean };
   declare mats: { skin: THREE.MeshPhysicalMaterial; cloth: THREE.MeshPhysicalMaterial; hair: THREE.MeshPhysicalMaterial; dark: THREE.MeshPhysicalMaterial; eye: THREE.MeshPhysicalMaterial; fill: THREE.MeshPhysicalMaterial; squid: THREE.MeshPhysicalMaterial; squidGhost: THREE.MeshPhysicalMaterial; glow: THREE.MeshStandardMaterial; };
@@ -993,7 +994,8 @@ export class Character {
 
   // ---------------------------------------------------------------------------------------------
   _buildRig() {
-    const hair = getHairStyle(this.style);   // keyed on the style object (hair + hat + brows)
+    const { key: hk, hair } = acquireHair(this.style);   // keyed on the style object (hair + hat + brows)
+    (this._hairKeys ??= []).push(hk);   // (dispose에서 놓는다, 33번 T073)
     this.hairMeta = hair.meta;
     const rest = getRestPositions(this.style);
     const bones: THREE.Bone[] = []; const byName: Record<string, THREE.Bone> = {};
@@ -1223,7 +1225,8 @@ export class Character {
   // ---------------------------------------------------------------------------------------------
   _tierParts(t: number) {
     const tn = TIERS[t];
-    const K = getKidShared(tn), H = getHairStyle(this.style, tn);
+    const K = getKidShared(tn), { key: hk, hair: H } = acquireHair(this.style, tn);
+    (this._hairKeys ??= []).push(hk);
     const parts: TierPart[] = [
       { key: 'skin', geo: K.skin, mat: 'skin', shadow: true },
       { key: 'cloth', geo: (getClothGeo && getClothGeo(this.style, tn)) || K.cloth, mat: 'cloth', shadow: true },
@@ -1627,6 +1630,8 @@ export class Character {
     for (const D of this.matsD) for (const k in D) D[k].dispose();
     for (const k in this.weapons) for (let w: WeaponInst | null = this.weapons[k]; w; w = w.left) { for (const m of w.lamps) m.dispose(); w.coil?.dispose(); }
     this.skeleton.dispose();
+    for (const k of this._hairKeys ?? []) releaseHair(k);
+    this._hairKeys = [];
   }
 
   /** Debug snapshot for the lab (feet plant state etc.). */
