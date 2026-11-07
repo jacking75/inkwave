@@ -119,7 +119,7 @@ Windows에는 **Visual Studio IDE 전체가 필요하지 않다.** Tauri의 공�
 | `npm run botlab`, `npm run net-test` | 게임을 기동하는 자동 검사이다. `botlab`은 개발 서버에 headless Chrome으로 붙어 봇 경기·페이지 시험을 돌린다([사용법](tools/botlab/README.md)). `net-test`는 로컬 중계(`npm run relay`)에 두 클라이언트를 붙여 방 만들기·참가·경기를 확인한다(2026-11-07 통과). |
 | `npm run bake -- <배치>` | 개발 서버의 실제 게임에서 맵 배치의 AO 라이트맵(`assets/lightmaps/`)을 headless Chrome으로 굽는다. 결과는 이전 Electron 굽기와 같다(lockgate 바이트 동일 확인). |
 | `npm run android:init`, `npm run android:build` | Tauri 2 Android 셸을 만들고 디버그 APK(aarch64)를 빌드한다. Android SDK·NDK·JDK가 필요하다(33번 M002·M003). 실기기 조작·저장·성능은 미검증(M004)이다. |
-| `node .tools/<검사>.js` | 개발 서버(`npm run dev`)에 headless Chrome으로 붙는 자동 검사이다. 먼저 `tsc -p tsconfig.client-tools.json`으로 `.tools/`를 만든다. `mission-check`(21개 임무 목표·체크포인트·저장·보상, `--mission 1-1,…`), `story-check`(이야기 메뉴·패널·대화·항구 지도·기록, `--only en`은 영어 화면 한글 잔존), `workshop-check`(제작·강화·해금·작업장 카메라·저장 실패 재시도), `regress-check`(대전·구역·보스·연습·온라인 mock·이전 설정 보존), `campaign-check`·`action-run-check`(캠페인 액션·연출), `resource-check`(반복 전환 자원 수), `perf-check`(프레임·GPU 시간 측정표), `input-check`(가짜 패드·가상 키·터치). 상태 처리·자동 실행 검증이며 실기기·사람 완주가 아니다. |
+| `node .tools/<검사>.js` | 개발 서버(`npm run dev`)에 headless Chrome으로 붙는 자동 검사이다. 먼저 `tsc -p tsconfig.client-tools.json`으로 `.tools/`를 만든다. `mission-check`(21개 임무 목표·체크포인트·저장·보상, `--mission 1-1,…`), `story-check`(이야기 메뉴·패널·대화·항구 지도·기록, `--only en`은 영어 화면 한글 잔존), `workshop-check`(제작·강화·해금·작업장 카메라·저장 실패 재시도), `regress-check`(대전·구역·보스·연습·온라인 mock·이전 설정 보존), `campaign-check`·`action-run-check`(캠페인 액션·연출), `resource-check`(반복 전환 자원 수), `perf-check`(프레임·GPU 시간 측정표, `--mission 1-2 --headed`는 창이 있는 Chrome에서 실제 1-2 전투), `input-check`(가짜 패드·가상 키·터치). 상태 처리·자동 실행 검증이며 실기기·사람 완주가 아니다. |
 | `node tools/mobile-lab.mjs` | 휴대폰 크기 터치 에뮬레이션에서 가상 버튼 배치·실제 터치 반응을 확인한다. 표시되는 fps는 데스크톱 GPU 위 정보값이다. |
 
 수정 후 검사도 먼저 스크립트 내용을 확인하고 앱을 기동하지 않는 검사부터 수행한다. 빌드 성공과 실제 성능·패드 조작 검증은 별도로 판정한다. Tauri로 바꿨다는 이유만으로 실행을 재개하지 않는다.
@@ -139,7 +139,7 @@ Windows에는 **Visual Studio IDE 전체가 필요하지 않다.** Tauri의 공�
 | 자동 실행 검사 | 21개 임무 `mission-check`, 이야기·작업장·기존 모드 회귀, 영어 화면, 반복 전환 자원, 모바일 터치 에뮬레이션 통과(headless, 이 PC) |
 | 사람의 실제 완주·조작감 | 미검증 — [33번 14절](docs_working/클라이언트-캠페인-상세구현계획-33.md#14-사용자-최종-일괄-검증) U 항목 |
 | 실물 패드·실기기 | 미검증 — 33번 14절 U 항목, Android 실기기 M004, iOS M005(macOS 필요) |
-| 앱 빌드 | Android 디버그 APK 생성 확인(M003). 데스크톱 설치 패키지(`npm run package`)는 미실행 |
+| 앱 빌드·실행 | Tauri 데스크톱 `npm start` 실제 실행(시작·저장·재실행 유지·전체 화면·오프라인) 자동 확인, Android 디버그 APK 생성 확인(M003). 데스크톱 설치 패키지(`npm run package`)는 미실행 |
 
 음원 구성은 [`songs/README.md`](songs/README.md)를 참고한다. Tauri 전환 시에도 로컬 음원의 오프라인 로딩·탐색·반복 재생을 검증한다. 기존 자동 시작·자동 조종 URL 옵션은 실행 제한을 우회하는 방법으로 사용하지 않는다.
 

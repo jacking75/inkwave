@@ -14,6 +14,8 @@ const args = process.argv.slice(2);
 const opt = (k: string, d: string): string => { const i = args.indexOf('--' + k); return i >= 0 && args[i + 1] !== undefined ? args[i + 1] : d; };
 const port = opt('port', '8490'), seconds = Number(opt('seconds', '60'));
 const W = Number(opt('w', '1920')), H = Number(opt('h', '1080')), quality = opt('quality', 'high');
+// --mission 1-2: 실제 1-2 고지·정예 구역 전투(33번 T041, 35번 R033). --headed: 창이 있는 Chrome(화면을 가리고 포커스를 가져간다 — 사용자에게 먼저 알린다)
+const mission = opt('mission', ''), headed = args.includes('--headed');
 const executablePath = process.env.CHROME_PATH || [
   `${process.env.PROGRAMFILES}\\Google\\Chrome\\Application\\chrome.exe`,
   `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`,
@@ -22,9 +24,9 @@ if (!executablePath) throw new Error('CHROME_PATH로 Chrome 실행 파일을 지
 mkdirSync('shots/perf', { recursive: true });
 
 const browser = await puppeteer.launch({
-  executablePath, headless: true,
+  executablePath, headless: !headed,
   args: ['--enable-gpu', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required', `--window-size=${W},${H}`],
-  defaultViewport: { width: W, height: H, deviceScaleFactor: 1 },
+  defaultViewport: headed ? null : { width: W, height: H, deviceScaleFactor: 1 },
 });
 try {
   const page = await browser.newPage();
@@ -33,16 +35,33 @@ try {
   await page.evaluateOnNewDocument(`localStorage.setItem('inkwave.settings', JSON.stringify({ quality: ${JSON.stringify(quality)}, qualityChosen: true, fpsCap: 0 }));`);
   await page.goto(`http://localhost:${port}/?skipTitle&devices&drill`, { waitUntil: 'load', timeout: 180000 });
   await page.waitForFunction('window.__inkwave && __inkwave.menus && __inkwave.menus.current === "main"', { timeout: 180000, polling: 250 });
-  await page.evaluate('__inkwave.story.start("1-1", false)');
-  await page.waitForFunction('__inkwave.campaignPreview && __inkwave.match && __inkwave.match.state === "playing"', { timeout: 180000, polling: 250 });
-  await page.evaluate('__inkwave.story.layer.runner.clear()');
+  if (mission === '1-2') {
+    // 기록 두 개를 끝낸 것으로 두고 고지(사격병 2) → 정예 구역(청소반장 + 50%에서 도색병 지원)으로 옮겨 적 3 + 정예 1을 만든다
+    await page.evaluate(`(async () => { const st = __inkwave.store; if (!st.current) await st.newGame(Date.now(), 'normal'); await st.commit((v) => ({ ...v, unlocked: ['1-1', '1-2'] })); })()`);
+    await page.evaluate(`__inkwave.startCampaign('1-2', { prologue: false })`);
+    await page.waitForFunction('__inkwave.session && __inkwave.session.state === "combat" && __inkwave.campaignPreview', { timeout: 180000, polling: 250 });
+    await page.evaluate('(() => { const st = __inkwave.story; st.layer.runner.clear(); st.panels.stop(); })()');
+    const tp = (x: number, y: number, z: number): Promise<unknown> => page.evaluate(`(() => { const a = window.__G.local; a.invuln = 1e9; a.pos.set(${x}, ${y}, ${z}); if (a.vel) a.vel.set(0, 0, 0); })()`);
+    await page.evaluate(`(() => { const s = __inkwave.session; s.objectives.complete('o-r1'); s.objectives.complete('o-r2'); })()`);
+    await tp(18, 3.7, -24);
+    await page.waitForFunction(`__inkwave.session.encounters.state('enc-high') === 'active' || __inkwave.session.encounters.liveActors().length >= 2`, { timeout: 30000, polling: 200 }).catch(() => undefined);
+    await tp(13, 0, 8);
+    await page.waitForFunction(`!!__inkwave.session.encounters.unitActor('elite')`, { timeout: 30000, polling: 200 }).catch(() => undefined);
+    // 정예 체력을 실제 피해 경로로 45%까지(50% 아래에서 도색병 지원이 나온다)
+    await page.evaluate(`(() => { const a = __inkwave.session.encounters.unitActor('elite'); if (!a) return; let n = 0; while (a.alive && a.hp / a.tune.hp > 0.45 && n++ < 400) a.damage(20, window.__G.local, 'weapon'); })()`);
+    await page.waitForFunction(`__inkwave.session.encounters.liveActors().length >= 3`, { timeout: 20000, polling: 200 }).catch(() => undefined);
+  } else {
+    await page.evaluate('__inkwave.story.start("1-1", false)');
+    await page.waitForFunction('__inkwave.campaignPreview && __inkwave.match && __inkwave.match.state === "playing"', { timeout: 180000, polling: 250 });
+    await page.evaluate('__inkwave.story.layer.runner.clear()');
+  }
   const r = await page.evaluate(`(async () => {
     const g = __inkwave, G = window.__G, P = g.campaignPreview, R = g.R, gl = R.renderer.getContext(), ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
     g.pause = () => {}; if (g.match.paused) g.resume();
     // 부하: 정예 1명, 말풍선 3개(5초마다), 20초에 잉크통 폭발
     const ctx = await import('/src/core/ctx.js');
     const foes = G.match.actors.filter((a) => a.team !== G.local.team);
-    const ent = P.combat.entries.get(foes[0]); if (ent && ent.poise) ent.poise.tier = 'elite';
+    if (!${JSON.stringify(mission)}) { const ent = P.combat.entries.get(foes[0]); if (ent && ent.poise) ent.poise.tier = 'elite'; }
     const say = () => { for (const a of [G.local, ...foes.slice(0, 2)]) ctx.emit('cast:say', { actor: a, text: '잉크 길을 따라 가자!', kind: 'test', speaker: 'player' }); };
     // CPU 계측 감싸기
     const cpu = { words: [], speech: [], pong: [], telegraph: [] };
@@ -76,7 +95,7 @@ try {
       gpu: glr ? gl.getParameter(glr.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER), size: [gl.drawingBufferWidth, gl.drawingBufferHeight], dynScale: R.dynScale, lineMode: R.lineMode,
       frameMs: stat(gaps.slice(30)), renderGpuMs: stat(qFull.map(val)), stylePassGpuMs: stat(qStyle.map(val)),
       cpuMs: { words: stat(cpu.words), speech: stat(cpu.speech), pong: stat(cpu.pong), telegraph: stat(cpu.telegraph) },
-      events: { barrel: boom, liveTelegraphs: P.telegraphs.live.length },
+      events: { barrel: boom, liveTelegraphs: P.telegraphs.live.length, mission: ${JSON.stringify(mission || 'proxy-1-1')}, headed: ${headed}, foes: foes.length, liveEnemies: g.session ? g.session.encounters.liveActors().map((a) => a.bot && a.bot.unit && a.bot.unit.id) : null },
     };
   })()`);
   await page.screenshot({ path: 'shots/perf/scene.png' });
