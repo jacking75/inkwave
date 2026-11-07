@@ -56,7 +56,9 @@ async function open(query: string, clear: boolean, fakePad = false, viewport?: P
 const menuIds = (page: Page): Promise<string[]> => page.evaluate('[...document.querySelectorAll(".iw-main__menu [data-id]")].map((b) => b.dataset.id)') as Promise<string[]>;
 const focusId = (page: Page): Promise<string | null> => page.evaluate('__inkwave.menus._focus && __inkwave.menus._focus.dataset.id') as Promise<string | null>;
 const key = async (page: Page, code: string): Promise<void> => { await page.keyboard.press(code as never); await wait(220); };
-const pad = async (page: Page, i: number): Promise<void> => { await page.evaluate(`__padState.buttons[${i}] = true`); await wait(120); await page.evaluate(`__padState.buttons[${i}] = false`); await wait(250); };
+// 누른 채 두 프레임, 뗀 채 두 프레임(저프레임 headless에서 고정 120 ms는 패드 폴링 사이에 묻힐 수 있다)
+const frames2 = 'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))';
+const pad = async (page: Page, i: number): Promise<void> => { await page.evaluate(`__padState.buttons[${i}] = true; ${frames2}`); await wait(60); await page.evaluate(`__padState.buttons[${i}] = false; ${frames2}`); await wait(150); };
 
 try {
   // ---------------------------------------------------------------- 메뉴 순서·이어하기·항구 대전
@@ -68,7 +70,11 @@ try {
     await shot(page, 'menu-fresh');
     await page.evaluate('localStorage.setItem("inkwave.storylog", JSON.stringify({ v: 1, read: ["1-1.intro"], records: [] }))');
     await page.evaluate('__inkwave.menus.show("title"); __inkwave.menus.show("main", { force: true })');
+    // 타이틀 → 메인은 와이프 전환이라 새 메인이 늦게 붙는다: 고정 대기 대신 새 화면을 기다린다
+    await page.waitForFunction('__inkwave.menus.current === "main" && !__inkwave.menus.wipe.busy && document.querySelectorAll(".iw-main__menu [data-id]").length > 0', { timeout: 8000, polling: 100 }).catch(() => undefined);
     await wait(600);
+    // (메인이 다시 그려지는 동안 목록이 잠깐 비므로 항목이 붙을 때까지 기다린다)
+    await page.waitForFunction('document.querySelectorAll(".iw-main__menu [data-id]").length >= 5', { timeout: 8000, polling: 100 }).catch(() => undefined);
     const saved = await menuIds(page);
     ok('menu.save.order', JSON.stringify(saved) === JSON.stringify(['continue', 'story', 'arena', 'locker', 'settings']), saved);
     ok('menu.save.focus', (await focusId(page)) === 'continue', await focusId(page));
@@ -311,7 +317,7 @@ try {
     await page.evaluate('__inkwave.menus._go("workshop")');
     await page.waitForFunction('__inkwave.showcase.fullFrame && __inkwave.showcase._ws && __inkwave.showcase._ws.chars.size === 2', { timeout: 60000, polling: 250 }).then(() => ok('workshop.set', true), () => ok('workshop.set', false));
     await wait(1200);
-    ok('workshop.items', JSON.stringify(await menuIds(page)) === JSON.stringify(['mission', 'gear', 'modules', 'perks', 'manage', 'records']), await menuIds(page));
+    ok('workshop.items', JSON.stringify(await menuIds(page)) === JSON.stringify(['mission', 'gear', 'modules', 'craft', 'perks', 'manage', 'records']), await menuIds(page));
     await shot(page, 'workshop');
     await key(page, 'ArrowDown'); await wait(800); await shot(page, 'workshop-gear');
     await key(page, 'ArrowUp');
@@ -341,15 +347,18 @@ try {
     await page.evaluate('__inkwave.quitToMenu()'); await wait(1500);
     // 기록판
     await page.evaluate('__inkwave.menus._go("records")'); await wait(600);
-    const rec = await page.evaluate('({ items: document.querySelectorAll(".iw-rec__item").length, body: document.querySelector(".iw-rec__body").textContent.slice(0, 40) })') as { items: number; body: string };
-    ok('records.list', rec.items === 2 + 14 && rec.body.length > 0, rec);
+    // 읽은 대본(1-1 시작부터 2개 이상) + 기록 전부(찾지 못한 것은 ???). 엔딩 뒤 항목(도전·공략)은 이 저장에서 열리지 않는다
+    const rec = await page.evaluate('({ s: document.querySelectorAll(".iw-rec__item[data-id^=\\"s-\\"]").length, r: document.querySelectorAll(".iw-rec__item[data-id^=\\"r-\\"]").length, want: __inkwave.menus.api.storyRecords().length, body: document.querySelector(".iw-rec__body").textContent.slice(0, 40) })') as { s: number; r: number; want: number; body: string };
+    ok('records.list', rec.s >= 2 && rec.r === rec.want && rec.want > 0 && rec.body.length > 0, rec);
     await shot(page, 'records');
     await page.close();
     // 360 px 터치 화면: 지도가 가로로 스크롤되고(포커스 이동·손가락 끌기), 탭으로 임무를 고른다
     const mob = await open('', false, false, { width: 360, height: 740, deviceScaleFactor: 2, hasTouch: true, isMobile: true }, LOG);
     await mob.evaluate('__inkwave.menus._go("harbor")'); await wait(900);
     const sc = await mob.evaluate('(() => { const s = document.querySelector(".iw-harbor__scroll"); return { sw: s.scrollWidth, cw: s.clientWidth, x0: s.scrollLeft, docW: document.documentElement.scrollWidth }; })()') as { sw: number; cw: number; x0: number; docW: number };
-    await mob.evaluate('__inkwave.menus._setFocus(document.querySelector("[data-id=\\"m-7-3\\"]"))'); await wait(900);
+    await mob.evaluate('__inkwave.menus._setFocus(document.querySelector("[data-id=\\"m-7-3\\"]"))');
+    // 부드러운 스크롤은 저프레임 headless에서 늦게 끝난다: 고정 대기 대신 움직일 때까지(최대 6초) 기다린다
+    await mob.waitForFunction(`document.querySelector(".iw-harbor__scroll").scrollLeft > ${sc.x0 + 100}`, { timeout: 6000, polling: 100 }).catch(() => undefined);
     const x1 = await mob.evaluate('document.querySelector(".iw-harbor__scroll").scrollLeft') as number;
     ok('harbor.360.scroll', sc.sw > sc.cw && x1 > sc.x0 + 100 && sc.docW <= 360, { ...sc, x1 });
     await shot(mob, 'harbor-360');

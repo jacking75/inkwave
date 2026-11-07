@@ -144,7 +144,7 @@ try {
     await page.waitForFunction('window.__inkwave && __inkwave.menus && __inkwave.menus.current === "main"', { timeout: 180000, polling: 250 });
     const r = await page.evaluate(`(() => {
       const s = __inkwave.settings, p = __inkwave.profile, old = ${JSON.stringify(oldSettings)}, op = ${JSON.stringify(oldProfile)};
-      const kept = Object.keys(old).every((k) => JSON.stringify(s[k]) === JSON.stringify(old[k]));
+      const kept = Object.keys(old).every((k) => k === 'quality' ? s.quality === 'low' : JSON.stringify(s[k]) === JSON.stringify(old[k]));   // (34번 F02: 고르지 않은 화질은 low로 시작한다)
       const keptP = ['name', 'xp', 'level', 'wins', 'matches', 'weapon'].every((k) => p[k] === op[k]) && JSON.stringify(p.style) === JSON.stringify(op.style);
       const fresh = { look: s.look, halftone: s.halftone, speechBubbles: s.speechBubbles, mascot: s.mascot, reduceMotion: s.reduceMotion, koreanVoice: s.koreanVoice, outlineWidth: s.outlineWidth };
       return { kept, keptP, fresh, continue: [...document.querySelectorAll('.iw-main__menu [data-id]')].map((b) => b.dataset.id) };

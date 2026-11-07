@@ -119,8 +119,16 @@ export class IndexedDbStorage<T extends Revisioned> implements StoragePort<T> {
         const next = op(now);
         if (isReject(next)) { result = { ok: false, error: next.reject, reason: next.reason }; tx.abort(); return; }
         const out = { ...next, revision: (now?.revision ?? 0) + 1 } as T;
-        if (raw != null) st.put(raw, BACKUP);   // 직전 정상 값을 같은 트랜잭션에서 백업
-        st.put(out, KEY);
+        try {
+          if (raw != null) st.put(raw, BACKUP);   // 직전 정상 값을 같은 트랜잭션에서 백업
+          st.put(out, KEY);
+        } catch (e) {
+          // put이 바로 던지면(복제 불가·용량 등) 백업만 커밋되지 않게 트랜잭션을 되돌리고 실패로 알린다
+          const name = (e as DOMException)?.name;
+          result = { ok: false, error: name === 'QuotaExceededError' ? 'quota' : 'failed', reason: String(e) };
+          try { tx.abort(); } catch { /* 이미 끝난 트랜잭션 */ }
+          return;
+        }
         result = { ok: true, value: out };
       };
       tx.oncomplete = () => resolve(result ?? { ok: false, error: 'failed' });

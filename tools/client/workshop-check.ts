@@ -122,13 +122,13 @@ try {
     await page.close();
   }
   if (only.has('hub')) {
-    // 로딩 시간: 새 페이지에서 로비 세트(온라인 허브)와 작업장(같은 세트 + 모라·틸)이 화면에 다 들어오기까지
+    // 로딩 시간: 새 페이지에서 로비 세트(온라인 허브)와 작업장(같은 세트 + 모라·틸)의 내용이 준비되기까지
     const loadTime = async (screen: 'online' | 'workshop'): Promise<number> => {
       const page = await open('{}');
       const ms = await ev<number>(page, `(async () => {
         const g = __inkwave, t0 = performance.now();
         g.menus.show(${JSON.stringify(screen)});
-        const ready = () => { const L = g.showcase.lob; if (!L || !L.set || L.k < 0.99) return false; if (${JSON.stringify(screen)} !== 'workshop') return true; const W = g.showcase._ws; return !!W && W.chars.size === 2 && [...W.chars.values()].every((c) => c.root.visible); };
+        const ready = () => { const L = g.showcase.lob; if (!L || !L.set) return false; /* 페이드 L.k는 프레임 수로 오른다: headless 저프레임에서 시간 비교를 흐리므로 내용 준비만 잰다 */ if (${JSON.stringify(screen)} !== 'workshop') return true; const W = g.showcase._ws; return !!W && W.chars.size === 2 && [...W.chars.values()].every((c) => c.root.visible); };
         while (!ready()) { if (performance.now() - t0 > 60000) return -1; await new Promise((r) => requestAnimationFrame(r)); }
         return performance.now() - t0;
       })()`);
@@ -141,15 +141,17 @@ try {
     const page = await open(`{ done: ['1-1'], unlocked: ['1-1', '1-2'] }`);
     await page.evaluate('__inkwave.menus.show("workshop")');
     await page.waitForFunction('__inkwave.showcase._ws && __inkwave.showcase._ws.chars.size === 2', { timeout: 60000, polling: 200 });
-    const aim = async (id: string): Promise<{ who: string; fk: number; dMora: number; dTeal: number; camPos: number[] }> => {
+    const aim = async (id: string, who: string): Promise<{ who: string; fk: number; dMora: number; dTeal: number; camPos: number[] }> => {
       await page.evaluate(`__inkwave.menus._setFocus(document.querySelector('[data-id="${id}"]'))`);
-      await wait(1600);
+      // 글라이드는 프레임 dt로 수렴한다: 저프레임 headless에서는 고정 대기 대신 대상이 바뀌고 수렴할 때까지 기다린 뒤 조금 더 둔다
+      await page.waitForFunction(`__inkwave.showcase._ws.focus === '${who}' && __inkwave.showcase._ws.fk > 0.9`, { timeout: 15000, polling: 100 }).catch(() => undefined);
+      await wait(1500);
       return ev(page, `(() => { const sc = __inkwave.showcase, L = sc.lob, W = sc._ws, cam = L.cam, V = cam.position.constructor;
         const dir = new V(0, 0, -1).applyQuaternion(cam.quaternion);
         const off = (c) => { const p = c.root.position.clone(); p.y += 0.9; const v = p.sub(cam.position); const along = v.dot(dir); return Math.sqrt(Math.max(0, v.lengthSq() - along * along)); };
         return { who: W.focus, fk: +W.fk.toFixed(3), dMora: +off(W.chars.get('mora')).toFixed(3), dTeal: +off(W.chars.get('teal')).toFixed(3), camPos: cam.position.toArray().map((x) => +x.toFixed(3)) }; })()`);
     };
-    const gMora = await aim('modules'), gTeal = await aim('mission');
+    const gMora = await aim('craft', 'mora'), gTeal = await aim('mission', 'teal');   // (제작·특성 → 모라, 무기·모듈 → 장비대)
     ok('R028 포커스 인물 쪽으로 글라이드(시선 축과 인물 거리 감소)', gMora.who === 'mora' && gTeal.who === 'teal' && gMora.fk > 0.9 && gMora.dMora < gTeal.dMora && gTeal.dTeal < gMora.dTeal, { gMora, gTeal });
     ok('R028 카메라 몸체는 세트 자리 그대로', JSON.stringify(gMora.camPos) === JSON.stringify(gTeal.camPos), [gMora.camPos, gTeal.camPos]);
     await page.screenshot({ path: 'shots/workshop/hub-teal.png' });

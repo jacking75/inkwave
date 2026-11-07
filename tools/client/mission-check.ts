@@ -478,8 +478,10 @@ async function waveRing1(page: Page): Promise<void> {
   const early = await st(page);
   const r1 = await ev<{ hp: number; phase: number }>(page, hitTo(0.66));
   ok('T067 7-3: 고리 1은 66% 전에는 잠김, 66% 경계에서 체력이 멈춤', !early.done.includes('o-r1') && Math.abs(r1.hp - 0.66) < 0.01, { early, r1 });
-  await operate(page, -19.8, 1.8, 2.6);
-  const cut = await ev<{ done: string[]; cool: number }>(page, `(() => { ${WAVE_JS} return { done: s.objectives.snapshot(), cool: b.brain.cool }; })()`);
+  // 고리가 끊기는 그 프레임의 정비 시간을 읽는다(고정 시간 머문 뒤 읽으면 저프레임에서 남은 시간이 흔들린다)
+  const cut = await ev<{ done: string[]; cool: number }>(page, `(async () => { ${WAVE_JS} __m.tp(-19.8, 3, 1.8); __m.paintAt(-19.8, 1.8, 3); const t0 = G.time;
+    while (G.time - t0 < 6 && !s.objectives.snapshot().includes('o-r1')) { __m.tp(-19.8, 3, 1.8); await __m.frames(1); }
+    return { done: s.objectives.snapshot(), cool: b.brain.cool }; })()`);
   const p2 = await ev<{ moves: string[]; phase: number; overlap: number }>(page, `(async () => { ${WAVE_JS} const moves = new Set(); const t0 = G.time; while (G.time - t0 < 20) { __m.tp(-6, 3, -6); __m.skipStory(); if (b.move) moves.add(b.move.id); await __m.frames(3); } return { moves: [...moves], phase: b.phase }; })()`);
   ok('T067 7-3: 고리 1 끊기 → 3초 정비, 2단계 기술은 강타·통·돌진·광선·소형 게(회전 없음)', cut.done.includes('o-r1') && cut.cool >= 2 && p2.phase === 2 && p2.moves.every((x) => ['slam', 'barrage', 'charge', 'sweep', 'crablets'].includes(x)), { cut, p2 });
   // 결전 사망 → 결전만 재시작: 보스·고리 처음 상태
